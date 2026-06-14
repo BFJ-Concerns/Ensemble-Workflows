@@ -1,0 +1,30 @@
+{
+  "name": "codex-workflows",
+  "version": "0.0.0",
+  "description": "Deterministic multi-agent orchestration harness for OpenAI Codex.",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "test:live": "npm run build && CODEX_WORKFLOWS_LIVE=1 node --test \"dist/test/live/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0"
+  }
+}

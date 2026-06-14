@@ -6,7 +6,10 @@ workflow and runs it through a CLI that fans many Codex agents out over a task
 and fans their structured results back in — with schema-validated output,
 retry/verify, budget tracking, and worktree isolation.
 
-**Status:** greenfield. Not yet implemented.
+**Status:** core runtime implemented. The importable TypeScript foundation can
+spawn a `codex app-server`, run `agent()` calls, validate schema output, account
+for token budget, and schedule concurrent workers. CLI, script sandbox,
+workflow combinators, and worktree isolation are later layers.
 
 
 

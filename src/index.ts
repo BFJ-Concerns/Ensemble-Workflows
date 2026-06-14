@@ -30,7 +30,10 @@ export async function closeDefaultRuntime(): Promise<void> {
 
 export { CodexRuntime, defaultConcurrency } from "./runtime.js";
 export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
+export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
+export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
+export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
 export type {
   AgentOptions,
   Budget,

@@ -1,0 +1,142 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { WorkflowTimeoutError, extractWorkflowSource, runWorkflowScript } from "../../src/script-runner.js";
+
+import type { WorkflowRuntime } from "../../src/hooks.js";
+
+const runtime: WorkflowRuntime = {
+  budget: {
+    total: null,
+    spent: () => 0,
+    remaining: () => Number.POSITIVE_INFINITY
+  },
+  async agent(prompt: string) {
+    return `agent:${prompt}`;
+  }
+};
+
+test("runs a script with hooks as globals and captures its return value", async () => {
+  const logs: string[] = [];
+
+  const result = await runWorkflowScript({
+    filename: "workflow.js",
+    runtime,
+    args: ["left", "right"],
+    log: (message) => logs.push(message),
+    source: `
+      export const meta = { name: "basic", description: "test" };
+
+      phase("fan out");
+      log(args.join(":"));
+      const values = await parallel([
+        () => agent("one"),
+        () => "plain"
+      ]);
+      return { values, remaining: budget.remaining() };
+    `
+  });
+
+  assert.deepEqual(result.meta, { name: "basic", description: "test" });
+  assert.deepEqual(result.result, {
+    values: ["agent:one", "plain"],
+    remaining: Number.POSITIVE_INFINITY
+  });
+  assert.deepEqual(logs, ["[phase] fan out", "left:right"]);
+});
+
+test("extracts multi-line meta with nested braces, comments, and strings", () => {
+  const extracted = extractWorkflowSource(`
+    export const meta = {
+      name: "nested",
+      description: "brace } inside a string",
+      nested: {
+        text: 'quote with { brace',
+        template: \`literal { still text }\`
+      },
+      list: [{ ok: true }],
+      // a comment with }
+      block: /* a comment with { */ "done"
+    };
+
+    return "body";
+  `);
+
+  assert.match(extracted.metaSource, /description: "brace } inside a string"/);
+  assert.match(extracted.bodySource, /return "body"/);
+});
+
+test("denies ambient Node, filesystem-shaped, and network globals while permitting Date and Math", async () => {
+  const checks = await runWorkflowScript({
+    filename: "sandbox.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "sandbox" };
+
+      return {
+        process: typeof process,
+        require: typeof require,
+        fetch: typeof fetch,
+        date: typeof Date.now(),
+        random: typeof Math.random()
+      };
+    `
+  });
+
+  assert.deepEqual(checks.result, {
+    process: "undefined",
+    require: "undefined",
+    fetch: "undefined",
+    date: "number",
+    random: "number"
+  });
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "dynamic-import.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "import" };
+          return await import("node:fs");
+        `
+      }),
+    /dynamic import|importModuleDynamically|not supported|A dynamic import callback/
+  );
+});
+
+test("times out runaway async scripts", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "timeout.js",
+        runtime,
+        timeoutMs: 20,
+        log: () => {},
+        source: `
+          export const meta = { name: "timeout" };
+          return await new Promise(() => {});
+        `
+      }),
+    WorkflowTimeoutError
+  );
+});
+
+test("times out runaway synchronous scripts", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "sync-timeout.js",
+        runtime,
+        timeoutMs: 20,
+        log: () => {},
+        source: `
+          export const meta = { name: "sync-timeout" };
+          while (true) {}
+        `
+      }),
+    /Script execution timed out|Workflow timed out/
+  );
+});

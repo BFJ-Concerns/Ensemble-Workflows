@@ -6,11 +6,18 @@ workflow and runs it through a CLI that fans many Codex agents out over a task
 and fans their structured results back in — with schema-validated output,
 retry/verify, budget tracking, and worktree isolation.
 
-**Status:** core runtime implemented. The importable TypeScript foundation can
-spawn a `codex app-server`, run `agent()` calls, validate schema output, account
-for token budget, and schedule concurrent workers. CLI, script sandbox,
-workflow combinators, and worktree isolation are later layers.
+**Status:** feature-complete v1, landed and tested. The harness spawns a
+`codex app-server`, runs `agent()` calls with schema-validated structured output
+and bounded retry, schedules concurrent workers under a self-imposed cap,
+accounts for token budget, and offers the full script surface — `parallel()`,
+`pipeline()`, a `node:vm` restricted-globals sandbox, and `isolation:'worktree'`
+for writable parallel agents — driven by the `codex-workflow <script.js> [args]`
+CLI (result JSON on stdout, logs on stderr, non-zero exit on a thrown script).
 
+```bash
+codex-workflow my-workflow.js > result.json 2> run.log
+```
 
-
-
+The agent skill teaching the hooks API and the invoke pattern is maintained
+outside this repository; any shell-capable orchestrator runs the same CLI
+directly.

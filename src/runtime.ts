@@ -5,6 +5,7 @@ import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { AppServerBackpressureError, EmptyAgentOutputError } from "./errors.js";
 import { Scheduler } from "./scheduler.js";
 import { parseJsonFromText, validateJsonSchema } from "./schema.js";
+import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type {
   AgentOptions,
@@ -16,14 +17,21 @@ import type {
   SandboxMode,
   TokenUsageEvent
 } from "./types.js";
+import type {
+  IsolatedWorktree,
+  IsolatedWorktreeRecord,
+  WorktreeIsolationManager
+} from "./worktree-isolation.js";
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
 export class CodexRuntime {
   readonly budget: TokenBudget;
   readonly scheduler: Scheduler;
+  readonly worktrees: IsolatedWorktreeRecord[] = [];
 
   #transport: RuntimeTransport;
+  #worktreeManager: WorktreeIsolationManager;
   #defaultTurnTimeoutMs: number;
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
@@ -35,8 +43,10 @@ export class CodexRuntime {
     budgetTotal?: number | null;
     defaultTurnTimeoutMs: number;
     defaultMaxAttempts: number;
+    worktreeManager?: WorktreeIsolationManager;
   }) {
     this.#transport = options.transport;
+    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager(options.transport.cwd);
     this.scheduler = new Scheduler(options.concurrency);
     this.budget = new TokenBudget(options.budgetTotal ?? null);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
@@ -82,9 +92,7 @@ export class CodexRuntime {
       }
     }
 
-    for (const listener of this.#eventListeners) {
-      listener(event);
-    }
+    this.#emitEvent(event);
   }
 
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
@@ -160,9 +168,33 @@ export class CodexRuntime {
   }
 
   async #runSingleTurn(prompt: string, options: AgentOptions) {
+    if (options.isolation === "worktree") {
+      return this.#runIsolatedWorktreeTurn(prompt, options);
+    }
+
+    return this.#runTurnInCwd(prompt, options, {
+      sandbox: normaliseSandbox(options.sandbox)
+    });
+  }
+
+  async #runIsolatedWorktreeTurn(prompt: string, options: AgentOptions) {
+    const worktree = await this.#worktreeManager.create();
+
+    try {
+      return await this.#runTurnInCwd(prompt, options, {
+        cwd: worktree.path,
+        sandbox: "workspace-write"
+      });
+    } finally {
+      await this.#finishWorktree(worktree);
+    }
+  }
+
+  async #runTurnInCwd(prompt: string, options: AgentOptions, location: { cwd?: string; sandbox: SandboxMode }) {
     const threadId = await this.#transport.openThread({
       webSearch: options.webSearch ?? false,
-      sandbox: normaliseSandbox(options.sandbox)
+      sandbox: location.sandbox,
+      ...(location.cwd !== undefined ? { cwd: location.cwd } : {})
     });
 
     const turnOptions = {
@@ -174,6 +206,27 @@ export class CodexRuntime {
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {})
     });
+  }
+
+  async #finishWorktree(worktree: IsolatedWorktree): Promise<void> {
+    const record = await this.#worktreeManager.finish(worktree);
+    this.worktrees.push(record);
+    this.#emitEvent({
+      method: "worktree/finished",
+      params: {
+        path: record.path,
+        branch: record.branch,
+        changed: record.changed,
+        removed: record.removed
+      },
+      receivedAt: Date.now()
+    });
+  }
+
+  #emitEvent(event: RuntimeEvent): void {
+    for (const listener of this.#eventListeners) {
+      listener(event);
+    }
   }
 }
 

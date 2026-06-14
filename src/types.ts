@@ -1,6 +1,7 @@
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
+export type IsolationMode = "worktree";
 export type SandboxMode = "read-only" | "workspace-write";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 
@@ -9,6 +10,7 @@ export interface AgentOptions {
   model?: string;
   effort?: string;
   webSearch?: boolean;
+  isolation?: IsolationMode;
   sandbox?: SandboxMode;
   timeoutMs?: number;
   maxAttempts?: number;
@@ -76,9 +78,11 @@ export interface TurnStartOptions {
 export interface ThreadStartOptions {
   webSearch: boolean;
   sandbox: SandboxMode;
+  cwd?: string;
 }
 
 export interface RuntimeTransport {
+  readonly cwd: string;
   openThread(options: ThreadStartOptions): Promise<string>;
   runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult>;
   close(): Promise<void>;

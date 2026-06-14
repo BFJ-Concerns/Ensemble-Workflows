@@ -11,6 +11,7 @@ const runtime: WorkflowRuntime = {
     spent: () => 0,
     remaining: () => Number.POSITIVE_INFINITY
   },
+  worktrees: [],
   async agent(prompt: string) {
     return `agent:${prompt}`;
   }
@@ -43,6 +44,33 @@ test("runs a script with hooks as globals and captures its return value", async 
     remaining: Number.POSITIVE_INFINITY
   });
   assert.deepEqual(logs, ["[phase] fan out", "left:right"]);
+});
+
+test("exposes worktrees as a workflow-visible side channel", async () => {
+  const worktreeRuntime: WorkflowRuntime = {
+    ...runtime,
+    worktrees: [
+      {
+        path: "/tmp/worktree",
+        branch: "codex-workflows/example",
+        changed: true,
+        removed: false
+      }
+    ]
+  };
+
+  const result = await runWorkflowScript({
+    filename: "worktrees.js",
+    runtime: worktreeRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "worktrees" };
+
+      return worktrees.map((worktree) => ({ path: worktree.path, changed: worktree.changed }));
+    `
+  });
+
+  assert.deepEqual(result.result, [{ path: "/tmp/worktree", changed: true }]);
 });
 
 test("extracts multi-line meta with nested braces, comments, and strings", () => {

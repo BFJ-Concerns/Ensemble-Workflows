@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { CodexAppServerTransport } from "../../src/app-server.js";
 import { BudgetExceededError } from "../../src/errors.js";
@@ -10,6 +15,7 @@ import type { RuntimeEvent, TokenUsageEvent } from "../../src/types.js";
 
 const isLive = process.env.CODEX_WORKFLOWS_LIVE === "1";
 const liveOptions = { skip: !isLive };
+const execFileAsync = promisify(execFile);
 
 const nestedSchema = {
   type: "object",
@@ -158,6 +164,74 @@ test("live budget blocks the next agent after the ceiling is reached", liveOptio
   }
 });
 
+test("live worktree isolation gives autonomous writable agents separate git worktrees", liveOptions, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-isolation-"));
+  const repo = path.join(directory, "repo");
+  await mkdir(repo);
+  await git(repo, ["init"]);
+  await git(repo, ["config", "user.email", "codex-workflows@example.invalid"]);
+  await git(repo, ["config", "user.name", "Codex Workflows Test"]);
+  await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
+  await git(repo, ["add", "README.md"]);
+  await git(repo, ["commit", "-m", "initial"]);
+
+  const runtime = await createRuntime({
+    cwd: repo,
+    concurrency: 2,
+    defaultTurnTimeoutMs: 180_000,
+    defaultMaxAttempts: 1
+  });
+  const deniedServerRequests: RuntimeEvent[] = [];
+  runtime.onEvent((event) => {
+    if (event.method === "server/request/denied") {
+      deniedServerRequests.push(event);
+    }
+  });
+
+  try {
+    const clean = await runtime.agent(
+      "Do not create, edit, delete, or inspect files. Reply exactly CLEAN_WORKTREE_OK.",
+      { isolation: "worktree" }
+    );
+    assert.match(clean, /CLEAN_WORKTREE_OK/);
+    assert.equal(runtime.worktrees.length, 1);
+    assert.equal(runtime.worktrees[0]?.changed, false);
+    assert.equal(runtime.worktrees[0]?.removed, true);
+    await assert.rejects(() => access(runtime.worktrees[0]?.path ?? ""), /ENOENT/);
+
+    const [first, second] = await Promise.all([
+      runtime.agent(
+        "Use the filesystem tools to create a file named agent-a.txt in the current working directory containing exactly A_ONLY. Do not create agent-b.txt. Reply exactly WRITE_A_OK.",
+        { isolation: "worktree" }
+      ),
+      runtime.agent(
+        "Use the filesystem tools to create a file named agent-b.txt in the current working directory containing exactly B_ONLY. Do not create agent-a.txt. Reply exactly WRITE_B_OK.",
+        { isolation: "worktree" }
+      )
+    ]);
+
+    assert.match(first, /WRITE_A_OK/);
+    assert.match(second, /WRITE_B_OK/);
+    assert.deepEqual(deniedServerRequests, []);
+
+    const changedWorktrees = runtime.worktrees.filter((worktree) => worktree.changed);
+    assert.equal(changedWorktrees.length, 2);
+    assert.notEqual(changedWorktrees[0]?.path, changedWorktrees[1]?.path);
+    assert.notEqual(changedWorktrees[0]?.branch, changedWorktrees[1]?.branch);
+
+    const aWorktree = await worktreeContaining(changedWorktrees, "agent-a.txt");
+    const bWorktree = await worktreeContaining(changedWorktrees, "agent-b.txt");
+    assert.notEqual(aWorktree.path, bWorktree.path);
+    assert.equal((await readFile(path.join(aWorktree.path, "agent-a.txt"), "utf8")).trim(), "A_ONLY");
+    assert.equal((await readFile(path.join(bWorktree.path, "agent-b.txt"), "utf8")).trim(), "B_ONLY");
+    await assert.rejects(() => access(path.join(aWorktree.path, "agent-b.txt")), /ENOENT/);
+    await assert.rejects(() => access(path.join(bWorktree.path, "agent-a.txt")), /ENOENT/);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function peakInFlight(events: RuntimeEvent[]): number {
   const points = events
     .map((event) => {
@@ -181,4 +255,20 @@ function peakInFlight(events: RuntimeEvent[]): number {
 
 function lastUsage(events: TokenUsageEvent[]): TokenUsageEvent | null {
   return events.at(-1) ?? null;
+}
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd });
+}
+
+async function worktreeContaining<T extends { path: string }>(worktrees: T[], filename: string): Promise<T> {
+  for (const worktree of worktrees) {
+    try {
+      await access(path.join(worktree.path, filename));
+      return worktree;
+    } catch {
+      // Keep scanning: each isolated worker should have exactly one of the files.
+    }
+  }
+  assert.fail(`no changed worktree contained ${filename}`);
 }

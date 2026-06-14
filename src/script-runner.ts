@@ -102,6 +102,7 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
       phase: hooks.phase,
       log: hooks.log,
       budget: hooks.budget,
+      worktrees: hooks.worktrees,
       args: hooks.args
     },
     {

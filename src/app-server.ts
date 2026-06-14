@@ -102,7 +102,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   async openThread(options: ThreadStartOptions): Promise<string> {
     const config = options.webSearch ? { web_search: "live" } : {};
     const result = await this.#request("thread/start", {
-      cwd: this.cwd,
+      cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: options.sandbox,
       ephemeral: true,
@@ -270,6 +270,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const method = typeof parsed.method === "string" ? parsed.method : null;
 
     if (id !== null && method !== null) {
+      this.#onEvent?.({
+        method: "server/request/denied",
+        params: { requestId: id, requestMethod: method },
+        receivedAt: Date.now()
+      });
       this.#sendApprovalDenial(id);
       return;
     }

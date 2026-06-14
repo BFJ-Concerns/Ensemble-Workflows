@@ -37,6 +37,7 @@ export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js
 export type {
   AgentOptions,
   Budget,
+  IsolationMode,
   JsonObject,
   JsonSchema,
   RuntimeEvent,
@@ -50,6 +51,7 @@ export type {
   TurnResult,
   TurnStartOptions
 } from "./types.js";
+export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 async function getDefaultRuntime(): Promise<CodexRuntime> {
   defaultRuntime ??= createRuntimeInstance();

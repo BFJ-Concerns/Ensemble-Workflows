@@ -32,6 +32,14 @@ export async function runCodexWorkflowCli(argv: string[], options: CodexWorkflow
     const scriptPath = path.resolve(cwd, scriptArg);
     const source = await readFile(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime)({ cwd });
+    runtime.onEvent((event) => {
+      if (event.method !== "worktree/finished" || event.params.changed !== true) {
+        return;
+      }
+      const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
+      const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+      stderr.write(`[worktree] changed ${worktreePath} (${branch})\n`);
+    });
     const runnerOptions = {
       source,
       filename: scriptPath,

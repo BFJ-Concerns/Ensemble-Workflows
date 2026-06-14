@@ -85,7 +85,9 @@ function fakeRuntime(): CodexRuntime {
 
   return {
     budget,
+    worktrees: [],
+    onEvent: () => () => {},
     agent: async (prompt: string) => prompt,
     close: async () => {}
-  } as CodexRuntime;
+  } as unknown as CodexRuntime;
 }

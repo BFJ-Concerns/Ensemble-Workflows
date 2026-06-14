@@ -10,8 +10,14 @@ import type {
   TurnResult,
   TurnStartOptions
 } from "../../src/types.js";
+import type {
+  IsolatedWorktree,
+  IsolatedWorktreeRecord,
+  WorktreeIsolationManager
+} from "../../src/worktree-isolation.js";
 
 class FakeTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
   openedThreads: ThreadStartOptions[] = [];
   turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
 
@@ -35,6 +41,34 @@ class FakeTransport implements RuntimeTransport {
 
   async close(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class FakeWorktreeManager implements WorktreeIsolationManager {
+  finished: IsolatedWorktree[] = [];
+
+  #next = 0;
+  #changed: boolean;
+
+  constructor(changed: boolean) {
+    this.#changed = changed;
+  }
+
+  async create(): Promise<IsolatedWorktree> {
+    this.#next += 1;
+    return {
+      path: `/fake/worktree-${this.#next}`,
+      branch: `codex-workflows/fake-${this.#next}`
+    };
+  }
+
+  async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
+    this.finished.push(worktree);
+    return {
+      ...worktree,
+      changed: this.#changed,
+      removed: !this.#changed
+    };
   }
 }
 
@@ -114,6 +148,57 @@ test("budget records tokenUsage.last deltas and blocks later calls after exhaust
 
   assert.equal(runtime.budget.spent(), 5);
   await assert.rejects(() => runtime.agent("blocked"), BudgetExceededError);
+});
+
+test("default agents keep the read-only sandbox and base cwd", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new CodexRuntime({
+    transport,
+    concurrency: 1,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  await runtime.agent("read");
+
+  assert.deepEqual(transport.openedThreads, [{ webSearch: false, sandbox: "read-only" }]);
+});
+
+test("worktree isolation forces workspace-write in the isolated cwd and records the finished worktree", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const worktreeManager = new FakeWorktreeManager(true);
+  const runtime = new CodexRuntime({
+    transport,
+    concurrency: 1,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  const events: string[] = [];
+  runtime.onEvent((event) => {
+    events.push(event.method);
+  });
+
+  const result = await runtime.agent("write", { isolation: "worktree", sandbox: "read-only" });
+
+  assert.equal(result, "ok");
+  assert.deepEqual(transport.openedThreads, [
+    {
+      webSearch: false,
+      sandbox: "workspace-write",
+      cwd: "/fake/worktree-1"
+    }
+  ]);
+  assert.deepEqual(runtime.worktrees, [
+    {
+      path: "/fake/worktree-1",
+      branch: "codex-workflows/fake-1",
+      changed: true,
+      removed: false
+    }
+  ]);
+  assert.deepEqual(worktreeManager.finished, [{ path: "/fake/worktree-1", branch: "codex-workflows/fake-1" }]);
+  assert.deepEqual(events, ["worktree/finished"]);
 });
 
 function turn(text: string): TurnResult {

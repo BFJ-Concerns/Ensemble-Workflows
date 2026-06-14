@@ -1,8 +1,10 @@
 import type { Budget } from "./types.js";
 import type { CodexRuntime } from "./runtime.js";
+import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 
 export interface WorkflowRuntime {
   readonly budget: Budget;
+  readonly worktrees: readonly IsolatedWorktreeRecord[];
   agent: (...args: Parameters<CodexRuntime["agent"]>) => ReturnType<CodexRuntime["agent"]>;
 }
 
@@ -18,6 +20,7 @@ export interface WorkflowHooks {
   phase: (title: string) => void;
   log: (message: string) => void;
   budget: Budget;
+  worktrees: readonly IsolatedWorktreeRecord[];
   args: string[];
 }
 
@@ -41,6 +44,7 @@ export function createWorkflowHooks(options: {
       writeLog(message);
     },
     budget: options.runtime.budget,
+    worktrees: options.runtime.worktrees,
     args: [...options.args]
   };
 }

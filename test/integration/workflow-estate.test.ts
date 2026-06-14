@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { runCodexWorkflowCli } from "../../src/cli.js";
 import { CodexRuntime } from "../../src/runtime.js";
@@ -17,6 +19,8 @@ import type {
   TurnResult,
   TurnStartOptions
 } from "../../src/types.js";
+
+const execFileAsync = promisify(execFile);
 
 class CaptureStream extends Writable {
   chunks: string[] = [];
@@ -36,19 +40,23 @@ interface ScriptedTurn {
   delayMs?: number;
   tokenDelta?: number;
   throwError?: Error;
+  writeFile?: { name: string; contents: string };
 }
 
 class ScriptedTransport implements RuntimeTransport {
+  readonly cwd: string;
   readonly openedThreads: ThreadStartOptions[] = [];
   readonly turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions; startedAt: number }> = [];
 
   #responses: ScriptedTurn[];
   #eventSink: ((event: RuntimeEvent) => void) | null = null;
+  #threadCwds = new Map<string, string>();
   #nextThread = 0;
   #nextTurn = 0;
 
-  constructor(responses: ScriptedTurn[]) {
+  constructor(responses: ScriptedTurn[], cwd: string) {
     this.#responses = [...responses];
+    this.cwd = cwd;
   }
 
   setEventSink(eventSink: (event: RuntimeEvent) => void): void {
@@ -58,7 +66,9 @@ class ScriptedTransport implements RuntimeTransport {
   async openThread(options: ThreadStartOptions): Promise<string> {
     this.openedThreads.push(options);
     this.#nextThread += 1;
-    return `thread-${this.#nextThread}`;
+    const threadId = `thread-${this.#nextThread}`;
+    this.#threadCwds.set(threadId, options.cwd ?? this.cwd);
+    return threadId;
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
@@ -87,6 +97,12 @@ class ScriptedTransport implements RuntimeTransport {
 
     if (response.throwError !== undefined) {
       throw response.throwError;
+    }
+
+    if (response.writeFile !== undefined) {
+      const cwd = this.#threadCwds.get(threadId);
+      assert.ok(cwd, `no cwd tracked for ${threadId}`);
+      await writeFile(path.join(cwd, response.writeFile.name), response.writeFile.contents);
     }
 
     const text = response.text ?? "";
@@ -305,6 +321,89 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
   assert.equal(transport.turns.length, 6);
 });
 
+test("CLI workflow exposes changed isolated worktrees and removes the clean one", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-isolation-estate-"));
+  const repo = path.join(directory, "repo");
+
+  try {
+    await mkdir(repo);
+    await git(repo, ["init"]);
+    await git(repo, ["config", "user.email", "codex-workflows@example.invalid"]);
+    await git(repo, ["config", "user.name", "Codex Workflows Test"]);
+    await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
+    await git(repo, ["add", "README.md"]);
+    await git(repo, ["commit", "-m", "initial"]);
+
+    const { exitCode, stdout, stderr, transport } = await runScript(
+      `
+        export const meta = { name: "worktree-isolation-estate" };
+
+        const clean = await agent("make no file changes", { isolation: "worktree" });
+        const writes = await parallel([
+          () => agent("write agent-a.txt only", { isolation: "worktree" }),
+          () => agent("write agent-b.txt only", { isolation: "worktree" })
+        ]);
+
+        return {
+          clean,
+          writes,
+          worktrees: worktrees.map((worktree) => ({
+            path: worktree.path,
+            branch: worktree.branch,
+            changed: worktree.changed,
+            removed: worktree.removed
+          }))
+        };
+      `,
+      [
+        { text: "clean-ok", delayMs: 5 },
+        { text: "a-ok", delayMs: 30, writeFile: { name: "agent-a.txt", contents: "A_ONLY\n" } },
+        { text: "b-ok", delayMs: 10, writeFile: { name: "agent-b.txt", contents: "B_ONLY\n" } }
+      ],
+      [],
+      { cwd: repo }
+    );
+
+    assert.equal(exitCode, 0, stderr);
+    const result = JSON.parse(stdout) as {
+      clean: string;
+      writes: string[];
+      worktrees: Array<{ path: string; branch: string; changed: boolean; removed: boolean }>;
+    };
+    assert.equal(result.clean, "clean-ok");
+    assert.deepEqual(result.writes.sort(), ["a-ok", "b-ok"]);
+    assert.equal(result.worktrees.length, 3);
+
+    const cleanWorktree = result.worktrees.find((worktree) => !worktree.changed);
+    assert.ok(cleanWorktree, "expected one clean isolated worktree");
+    assert.equal(cleanWorktree.removed, true);
+    await assert.rejects(() => access(cleanWorktree.path), /ENOENT/);
+    await assert.rejects(() => git(repo, ["rev-parse", "--verify", cleanWorktree.branch]), /unknown revision|Needed a single revision/);
+
+    const changedWorktrees = result.worktrees.filter((worktree) => worktree.changed);
+    assert.equal(changedWorktrees.length, 2);
+    assert.notEqual(changedWorktrees[0]?.path, changedWorktrees[1]?.path);
+    assert.notEqual(changedWorktrees[0]?.branch, changedWorktrees[1]?.branch);
+    for (const worktree of changedWorktrees) {
+      assert.match(stderr, new RegExp(`\\[worktree\\] changed ${escapeRegExp(worktree.path)} \\(${escapeRegExp(worktree.branch)}\\)`));
+    }
+
+    const aWorktree = await worktreeContaining(changedWorktrees, "agent-a.txt");
+    const bWorktree = await worktreeContaining(changedWorktrees, "agent-b.txt");
+    assert.notEqual(aWorktree.path, bWorktree.path);
+    assert.equal((await readFile(path.join(aWorktree.path, "agent-a.txt"), "utf8")).trim(), "A_ONLY");
+    assert.equal((await readFile(path.join(bWorktree.path, "agent-b.txt"), "utf8")).trim(), "B_ONLY");
+    await assert.rejects(() => access(path.join(aWorktree.path, "agent-b.txt")), /ENOENT/);
+    await assert.rejects(() => access(path.join(bWorktree.path, "agent-a.txt")), /ENOENT/);
+
+    const isolatedThreadCwds = transport.openedThreads.map((thread) => thread.cwd).filter((cwd): cwd is string => cwd !== undefined);
+    assert.equal(isolatedThreadCwds.length, 3);
+    assert.equal(new Set(isolatedThreadCwds).size, 3);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CLI workflow returns non-zero, stderr error, and no stdout when the script throws", async () => {
   const { exitCode, stdout, stderr } = await runScript(
     `
@@ -325,15 +424,15 @@ async function runScript(
   source: string,
   responses: ScriptedTurn[],
   args: string[] = [],
-  runtimeOptions: { budgetTotal?: number } = {}
+  runtimeOptions: { budgetTotal?: number; cwd?: string } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; transport: ScriptedTransport }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-integration-"));
+  const directory = runtimeOptions.cwd ?? (await mkdtemp(path.join(tmpdir(), "codex-workflow-integration-")));
   const script = path.join(directory, "workflow.js");
   await writeFile(script, source);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
-  const transport = new ScriptedTransport(responses);
+  const transport = new ScriptedTransport(responses, directory);
   const runtime = new CodexRuntime({
     transport,
     concurrency: 8,
@@ -351,6 +450,27 @@ async function runScript(
   });
 
   return { exitCode, stdout: stdout.text(), stderr: stderr.text(), transport };
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd });
+  return stdout;
+}
+
+async function worktreeContaining<T extends { path: string }>(worktrees: T[], filename: string): Promise<T> {
+  for (const worktree of worktrees) {
+    try {
+      await access(path.join(worktree.path, filename));
+      return worktree;
+    } catch {
+      // Keep scanning: the assertion below reports the missing fixture.
+    }
+  }
+  assert.fail(`no changed worktree contained ${filename}`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function usage(totalTokens: number): TokenUsageBreakdown {

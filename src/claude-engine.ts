@@ -1,0 +1,364 @@
+import { randomUUID } from "node:crypto";
+
+import {
+  ClaudeBlockedError,
+  ClaudePollTimeoutError,
+  ClaudeTranscriptError,
+  ClaudeValveError,
+  ClaudeWorkerError
+} from "./errors.js";
+import { finalAssistantText, readTranscript, turnComplete, usageSince } from "./claude-transcript.js";
+
+import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
+import type { TranscriptEntry } from "./claude-transcript.js";
+import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type { RuntimeEvent, TurnResult } from "./types.js";
+
+/**
+ * Tunables for the Claude worker lifecycle. All have defaults; tests inject tiny
+ * intervals (and a fake control plane) to stay deterministic and fast.
+ */
+export interface ClaudeEngineConfig {
+  /** Gap between roster polls while waiting for a worker to finish. */
+  pollIntervalMs?: number;
+  /** How long to wait for a steered worker to acknowledge before treating the valve as failed. */
+  receiptTimeoutMs?: number;
+  /** Max in-session nudges for a blocked worker before giving up — keeps recovery bounded, never a hang. */
+  blockedRecoveryBound?: number;
+  /** Prefix for the unique per-dispatch session name. */
+  namePrefix?: string;
+}
+
+export interface ClaudeEngineInvocationOptions {
+  prompt: string;
+  cwd: string;
+  options: EngineTurnOptions;
+  controlPlane: ClaudeControlPlane;
+  onEvent?: (event: RuntimeEvent) => void;
+  config?: ClaudeEngineConfig;
+}
+
+let dispatchCounter = 0;
+
+// A worker can briefly drop out of the roster while parking/respawning; only a
+// run of misses is treated as genuine absence (each poll is one roster query).
+const MAX_CONSECUTIVE_ABSENCES = 3;
+
+/**
+ * One `agent({ engine: 'claude' })` call, as a stateful invocation across the
+ * shared loop's bounded attempts.
+ *
+ * - **Attempt 1** dispatches a `claude --bg` worker, polls it to `done`, and
+ *   reads its final message from the JSONL transcript.
+ * - **Attempt > 1** is *in-session correction*: the worker is still alive, so the
+ *   failure reason (carried by `previousFailure`) is steered back into the **same
+ *   session** through the reply valve and the corrected final message is read —
+ *   no redispatch, full context preserved. This is what makes Claude's schema
+ *   enforcement as strong as Codex's despite the absent backend `outputSchema`.
+ * - **Without the valve** (no tmux), correction degrades to a fresh re-dispatch
+ *   whose prompt carries the prior failure; the engine never depends on the valve.
+ * - **Operational failures** (dispatch died, poll timed out, blocked past the
+ *   bound, valve refused, transcript unreadable) become a graceful empty turn:
+ *   the session is torn down and the shared loop turns the empty result into
+ *   `null` (schema) or the empty-output error after the bound (text). It never hangs.
+ *
+ * `close()` (called by the shared loop in `finally`) stops and removes the session.
+ */
+export class ClaudeEngineInvocation implements EngineInvocation {
+  #prompt: string;
+  #cwd: string;
+  #options: EngineTurnOptions;
+  #controlPlane: ClaudeControlPlane;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+
+  #pollIntervalMs: number;
+  #receiptTimeoutMs: number;
+  #blockedRecoveryBound: number;
+  #namePrefix: string;
+
+  #handle: ClaudeSessionHandle | null = null;
+  #budgetEventCounter = 0;
+
+  constructor(options: ClaudeEngineInvocationOptions) {
+    this.#prompt = options.prompt;
+    this.#cwd = options.cwd;
+    this.#options = options.options;
+    this.#controlPlane = options.controlPlane;
+    this.#onEvent = options.onEvent;
+
+    const config = options.config ?? {};
+    this.#pollIntervalMs = config.pollIntervalMs ?? 2_000;
+    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 30_000;
+    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
+    this.#namePrefix = config.namePrefix ?? "ensemble";
+  }
+
+  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+    try {
+      const previousFailure = context.previousFailure;
+      const correcting = previousFailure !== undefined && this.#handle !== null;
+
+      if (correcting && (await this.#controlPlane.tmuxAvailable())) {
+        return await this.#correctInSession(this.#handle as ClaudeSessionHandle, previousFailure);
+      }
+
+      // First attempt, or a correction we cannot do in-session: (re)dispatch.
+      // A degraded correction folds the prior failure into the fresh prompt.
+      if (this.#handle !== null) {
+        await this.#teardown();
+      }
+      return await this.#dispatchAndCollect(previousFailure);
+    } catch (error) {
+      if (error instanceof ClaudeWorkerError) {
+        // Graceful degradation: a stalled or failed worker is an empty turn, not a
+        // hang. Drop the session so the next attempt re-dispatches fresh.
+        await this.#teardown();
+        return emptyTurnResult();
+      }
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    await this.#teardown();
+  }
+
+  async #dispatchAndCollect(previousFailure: EngineAttemptFailure | undefined): Promise<TurnResult> {
+    const handle = await this.#controlPlane.dispatch({
+      prompt: this.#buildDispatchPrompt(previousFailure),
+      name: this.#nextName(),
+      cwd: this.#cwd,
+      ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
+      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {})
+    });
+    this.#handle = handle;
+
+    const entries = await this.#runToCompletion(handle, 0);
+    return this.#buildResult(handle, entries, 0);
+  }
+
+  async #correctInSession(handle: ClaudeSessionHandle, previousFailure: EngineAttemptFailure): Promise<TurnResult> {
+    // Mark the transcript so we read only what the correction produces, never the
+    // stale pre-correction answer.
+    const mark = (await this.#readTranscript(handle)).length;
+
+    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the correction");
+    }
+
+    await this.#awaitReceipt(handle, mark);
+    const entries = await this.#runToCompletion(handle, mark);
+    return this.#buildResult(handle, entries, mark);
+  }
+
+  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
+  async #awaitReceipt(handle: ClaudeSessionHandle, mark: number): Promise<void> {
+    const deadline = Date.now() + this.#receiptTimeoutMs;
+    for (;;) {
+      const status = await this.#controlPlane.poll(handle);
+      if (status.status === "busy") {
+        return;
+      }
+      const entries = await this.#tryReadTranscript(handle);
+      if (entries !== null && entries.length > mark) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      }
+      await delay(this.#pollIntervalMs);
+    }
+  }
+
+  /**
+   * Poll until the worker's turn is complete, returning the transcript at that
+   * point. Completion is read from the transcript (`turnComplete`), not the
+   * daemon's unreliable `state` field; `state: blocked` still drives bounded
+   * valve recovery. A transient roster-query failure reports `present: false`
+   * only after `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not
+   * kill a live worker.
+   */
+  async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptEntry[]> {
+    const deadline = Date.now() + this.#options.timeoutMs;
+    let nudges = 0;
+    let absences = 0;
+
+    for (;;) {
+      const status = await this.#controlPlane.poll(handle);
+
+      if (!status.present) {
+        absences += 1;
+        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          throw new ClaudePollTimeoutError("worker left the roster before completing");
+        }
+        await delay(this.#pollIntervalMs);
+        continue;
+      }
+      absences = 0;
+
+      if (status.state === "blocked") {
+        const canNudge = nudges < this.#blockedRecoveryBound && (await this.#controlPlane.tmuxAvailable());
+        if (!canNudge) {
+          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
+        }
+        nudges += 1;
+        await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        await delay(this.#pollIntervalMs);
+        continue;
+      }
+
+      // Not actively generating: the turn may be complete. The transcript is the
+      // authoritative signal — confirm the latest assistant message has settled.
+      if (status.status !== "busy") {
+        const entries = await this.#tryReadTranscript(handle);
+        if (entries !== null && turnComplete(entries, fromIndex)) {
+          return entries;
+        }
+      }
+
+      if (Date.now() >= deadline) {
+        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+      }
+      await delay(this.#pollIntervalMs);
+    }
+  }
+
+  #buildResult(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult {
+    const text = finalAssistantText(entries, fromIndex) ?? "";
+    this.#feedBudget(handle, entries, fromIndex);
+    return {
+      text,
+      deltaText: text,
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: []
+    };
+  }
+
+  async #readTranscript(handle: ClaudeSessionHandle): Promise<TranscriptEntry[]> {
+    const path = await this.#controlPlane.transcriptPath(handle);
+    if (path === null) {
+      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
+    }
+    return readTranscript(path);
+  }
+
+  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
+  async #tryReadTranscript(handle: ClaudeSessionHandle): Promise<TranscriptEntry[] | null> {
+    try {
+      return await this.#readTranscript(handle);
+    } catch (error) {
+      if (error instanceof ClaudeTranscriptError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Feed best-effort transcript-derived usage into the shared budget by emitting
+   * the same `thread/tokenUsage/updated` event the Codex path emits — the runtime's
+   * existing recorder handles it, so no runtime change is needed (see report:
+   * cross-engine budget). One event per collected turn; zero usage is skipped.
+   */
+  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+    if (this.#onEvent === undefined) {
+      return;
+    }
+    const breakdown = usageSince(entries, fromIndex);
+    if (breakdown.totalTokens === 0) {
+      return;
+    }
+    this.#budgetEventCounter += 1;
+    this.#onEvent({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: handle.sessionId,
+        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+        tokenUsage: { last: breakdown, total: breakdown }
+      },
+      receivedAt: Date.now()
+    });
+  }
+
+  async #teardown(): Promise<void> {
+    const handle = this.#handle;
+    this.#handle = null;
+    if (handle === null) {
+      return;
+    }
+    try {
+      await this.#controlPlane.stop(handle);
+    } catch {
+      // Teardown is best-effort; never let it mask the turn's real outcome.
+    }
+  }
+
+  #buildDispatchPrompt(previousFailure: EngineAttemptFailure | undefined): string {
+    const lines: string[] = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
+    ];
+    if (this.#options.schema !== undefined) {
+      lines.push(
+        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#options.schema)
+      );
+    }
+    if (previousFailure !== undefined) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#prompt);
+    return lines.join("\n");
+  }
+
+  #correctionMessage(previousFailure: EngineAttemptFailure): string {
+    switch (previousFailure.kind) {
+      case "schema-validation":
+        return (
+          `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. ` +
+          "Reply with a single corrected JSON value that conforms to the schema — no prose, no markdown fences."
+        );
+      case "invalid-json":
+        return (
+          "Your last final message was not valid JSON for the required schema. " +
+          "Reply with exactly one JSON value that conforms to the schema — no prose, no markdown fences."
+        );
+      case "empty-output":
+      default:
+        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+    }
+  }
+
+  #blockedNudge(waitingFor: string | undefined): string {
+    const context = waitingFor !== undefined ? ` (waiting for: ${waitingFor})` : "";
+    return (
+      `You appear to be waiting for input${context}. ` +
+      "Proceed autonomously without asking — make a reasonable decision, complete the task, and output your final answer."
+    );
+  }
+
+  #nextName(): string {
+    dispatchCounter += 1;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
+  }
+}
+
+function emptyTurnResult(): TurnResult {
+  return {
+    text: "",
+    deltaText: "",
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: []
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { EnsembleRuntime } from "../../src/runtime.js";
-import { BudgetExceededError, EngineNotImplementedError, MissingEngineError } from "../../src/errors.js";
+import { BudgetExceededError, MissingEngineError } from "../../src/errors.js";
 
 import type {
   AgentOptions,
@@ -217,18 +217,9 @@ test("agent requires an explicit engine", async () => {
   assert.equal(transport.turns.length, 0);
 });
 
-test("claude engine is registered but not implemented", async () => {
-  const transport = new FakeTransport([turn("ok")]);
-  const runtime = new EnsembleRuntime({
-    transport,
-    concurrency: 1,
-    defaultTurnTimeoutMs: 1_000,
-    defaultMaxAttempts: 1
-  });
-
-  await assert.rejects(() => runtime.agent("read", { engine: "claude" }), EngineNotImplementedError);
-  assert.equal(transport.turns.length, 0);
-});
+// The Claude engine is now implemented; it is driven through the runtime with a
+// fake control plane in test/unit/claude-engine.test.ts. Routing to it (and the
+// isolation:'worktree' rejection) is covered there.
 
 function turn(text: string): TurnResult {
   return {

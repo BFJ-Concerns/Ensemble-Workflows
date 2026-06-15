@@ -1,10 +1,14 @@
 import { cpus } from "node:os";
 
 import { CodexAppServerTransport } from "./app-server.js";
-import { EngineNotImplementedError } from "./errors.js";
+import { ClaudeCliControlPlane } from "./claude-control-plane.js";
+import { ClaudeEngineInvocation } from "./claude-engine.js";
+import { ClaudeWorktreeIsolationUnsupportedError } from "./errors.js";
 import { Scheduler } from "./scheduler.js";
 import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
+import type { ClaudeControlPlane } from "./claude-control-plane.js";
+import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type {
   EngineName,
   JsonSchema,
@@ -197,22 +201,56 @@ class CodexEngineInvocation implements EngineInvocation {
   }
 }
 
+export interface ClaudeEngineAdapterOptions {
+  /** Defaults to 8 — the allowance/daemon is a scarcer resource than Codex's app-server. */
+  concurrency?: number;
+  /** Base working directory workers are dispatched from. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** Injectable for tests; defaults to the real `claude`/`tmux` control plane. */
+  controlPlane?: ClaudeControlPlane;
+  /** Routes best-effort transcript-derived token usage into the shared budget. */
+  onEvent?: (event: RuntimeEvent) => void;
+  config?: ClaudeEngineConfig;
+}
+
 export class ClaudeEngineAdapter implements EngineAdapter {
   readonly name = "claude" satisfies EngineName;
-  readonly concurrency = 8;
+  readonly concurrency: number;
 
-  #scheduler = new Scheduler(this.concurrency);
+  #scheduler: Scheduler;
+  #cwd: string;
+  #controlPlane: ClaudeControlPlane;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #config: ClaudeEngineConfig | undefined;
+
+  constructor(options: ClaudeEngineAdapterOptions = {}) {
+    this.concurrency = options.concurrency ?? 8;
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
+    this.#onEvent = options.onEvent;
+    this.#config = options.config;
+  }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.#scheduler.schedule(task);
   }
 
-  createInvocation(): EngineInvocation {
-    return {
-      async runAttempt(): Promise<TurnResult> {
-        throw new EngineNotImplementedError("Claude engine not yet implemented");
-      }
-    };
+  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    if (options.isolation === "worktree") {
+      // Claude background sessions own their own .claude/worktrees isolation; the
+      // Codex git-worktree manager does not map onto them. Reject rather than
+      // half-wire a foreign mechanism (see report → isolation:'worktree' on Claude).
+      throw new ClaudeWorktreeIsolationUnsupportedError();
+    }
+    return new ClaudeEngineInvocation({
+      prompt,
+      cwd: this.#cwd,
+      options,
+      controlPlane: this.#controlPlane,
+      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
+      ...(this.#config !== undefined ? { config: this.#config } : {})
+    });
   }
 
   async close(): Promise<void> {
@@ -250,7 +288,12 @@ export async function createDefaultEngineRegistry(
       onEvent: options.onEvent,
       onWorktreeFinished: options.onWorktreeFinished
     }),
-    new ClaudeEngineAdapter()
+    new ClaudeEngineAdapter({
+      cwd: options.cwd,
+      // Same event sink as Codex: the runtime's recorder turns the synthetic
+      // thread/tokenUsage/updated event into shared-budget spend.
+      onEvent: options.onEvent
+    })
   ]);
 }
 

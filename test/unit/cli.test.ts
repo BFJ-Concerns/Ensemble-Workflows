@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { runCodexWorkflowCli } from "../../src/cli.js";
 
@@ -74,6 +76,19 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
   assert.equal(exitCode, 1);
   assert.equal(stdout.text(), "");
   assert.match(stderr.text(), /Error: bad workflow/);
+});
+
+test("CLI entrypoint runs when invoked through a symlinked binary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-bin-"));
+  const binPath = path.join(directory, "codex-workflow");
+  const entrypointPath = fileURLToPath(new URL("../../src/cli/codex-workflow.js", import.meta.url));
+  await symlink(entrypointPath, binPath);
+
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8" });
+
+  assert.equal(result.status, 2);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Usage: codex-workflow <script.js> [args...]\n");
 });
 
 function fakeRuntime(): CodexRuntime {

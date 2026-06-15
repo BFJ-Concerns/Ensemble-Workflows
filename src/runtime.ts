@@ -1,11 +1,18 @@
-import { cpus } from "node:os";
-
-import { CodexAppServerTransport } from "./app-server.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
-import { AppServerBackpressureError, EmptyAgentOutputError } from "./errors.js";
-import { Scheduler } from "./scheduler.js";
+import {
+  AppServerBackpressureError,
+  EmptyAgentOutputError,
+  MissingEngineError,
+  UnknownEngineError
+} from "./errors.js";
+import {
+  ClaudeEngineAdapter,
+  CodexEngineAdapter,
+  EngineRegistry,
+  createDefaultEngineRegistry,
+  defaultCodexConcurrency
+} from "./engines.js";
 import { parseJsonFromText, validateJsonSchema } from "./schema.js";
-import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type {
   AgentOptions,
@@ -14,65 +21,78 @@ import type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
-  SandboxMode,
   TokenUsageEvent
 } from "./types.js";
-import type {
-  IsolatedWorktree,
-  IsolatedWorktreeRecord,
-  WorktreeIsolationManager
-} from "./worktree-isolation.js";
+import type { EngineAdapter, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
-  readonly scheduler: Scheduler;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
 
-  #transport: RuntimeTransport;
-  #worktreeManager: WorktreeIsolationManager;
+  #engines: EngineRegistry;
   #defaultTurnTimeoutMs: number;
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
   #closed = false;
 
   constructor(options: {
-    transport: RuntimeTransport;
-    concurrency: number;
+    engines?: EngineRegistry;
+    transport?: RuntimeTransport;
+    concurrency?: number;
     budgetTotal?: number | null;
     defaultTurnTimeoutMs: number;
     defaultMaxAttempts: number;
     worktreeManager?: WorktreeIsolationManager;
   }) {
-    this.#transport = options.transport;
-    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager(options.transport.cwd);
-    this.scheduler = new Scheduler(options.concurrency);
     this.budget = new TokenBudget(options.budgetTotal ?? null);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
+    this.#engines =
+      options.engines ??
+      new EngineRegistry([
+        new CodexEngineAdapter({
+          transport: requireTransport(options.transport),
+          concurrency: options.concurrency ?? defaultCodexConcurrency(),
+          ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {}),
+          onEvent: (event) => this.handleEngineEvent(event),
+          onWorktreeFinished: (record) => this.worktrees.push(record)
+        }),
+        new ClaudeEngineAdapter()
+      ]);
   }
 
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
     let runtime: EnsembleRuntime | null = null;
-    const transport = await CodexAppServerTransport.start({
+    const worktrees: IsolatedWorktreeRecord[] = [];
+    const engines = await createDefaultEngineRegistry({
       cwd: options.cwd ?? process.cwd(),
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
       onEvent: (event) => {
-        runtime?.handleTransportEvent(event);
-      }
+        runtime?.handleEngineEvent(event);
+      },
+      onWorktreeFinished: (record) => {
+        if (runtime === null) {
+          worktrees.push(record);
+          return;
+        }
+        runtime.worktrees.push(record);
+      },
+      ...(options.concurrency !== undefined ? { codexConcurrency: options.concurrency } : {})
     });
 
     runtime = new EnsembleRuntime({
-      transport,
-      concurrency: options.concurrency ?? defaultConcurrency(),
+      engines,
       budgetTotal: options.budgetTotal ?? null,
       defaultTurnTimeoutMs: options.defaultTurnTimeoutMs ?? 240_000,
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
+    runtime.worktrees.push(...worktrees);
 
     return runtime;
   }
@@ -84,7 +104,7 @@ export class EnsembleRuntime {
     };
   }
 
-  handleTransportEvent(event: RuntimeEvent): void {
+  handleEngineEvent(event: RuntimeEvent): void {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
       if (usageEvent !== null) {
@@ -95,41 +115,59 @@ export class EnsembleRuntime {
     this.#emitEvent(event);
   }
 
+  handleTransportEvent(event: RuntimeEvent): void {
+    this.handleEngineEvent(event);
+  }
+
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  async agent(prompt: string, options?: AgentOptions & { schema?: undefined }): Promise<string>;
-  async agent(prompt: string, options: AgentOptions = {}): Promise<string | unknown | null> {
+  async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+  async agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
 
-    return this.scheduler.schedule(() => this.#runAgent(prompt, options));
+    const engine = this.#engineFor(options.engine);
+    return engine.schedule(() => this.#runAgent(engine, prompt, options));
   }
 
   async close(): Promise<void> {
     this.#closed = true;
-    await this.#transport.close();
+    await this.#engines.close();
   }
 
-  #runAgent(prompt: string, options: AgentOptions): Promise<string | unknown | null> {
-    if (options.schema !== undefined) {
-      return this.#runSchemaAgent(prompt, { ...options, schema: options.schema });
+  async #runAgent(engine: EngineAdapter, prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
+    const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
+    try {
+      if (options.schema !== undefined) {
+        return await this.#runSchemaAgent(invocation, { ...options, schema: options.schema });
+      }
+      return await this.#runTextAgent(invocation, options);
+    } finally {
+      await invocation.close?.();
     }
-    return this.#runTextAgent(prompt, options);
   }
 
-  async #runTextAgent(prompt: string, options: AgentOptions): Promise<string> {
+  async #runTextAgent(invocation: EngineInvocation, options: Partial<AgentOptions>): Promise<string> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError: Error | null = null;
+    let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.budget.assertCanStart();
       try {
-        const result = await this.#runSingleTurn(prompt, options);
+        const result = await invocation.runAttempt({
+          attempt,
+          ...(previousFailure !== undefined ? { previousFailure } : {})
+        });
         const text = result.text.trim();
         if (text.length > 0) {
           return text;
         }
-        lastError = new EmptyAgentOutputError(`agent returned empty text on attempt ${attempt}`);
+        previousFailure = {
+          kind: "empty-output",
+          message: `agent returned empty text on attempt ${attempt}`
+        };
+        lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -141,15 +179,26 @@ export class EnsembleRuntime {
     throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
   }
 
-  async #runSchemaAgent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null> {
+  async #runSchemaAgent(
+    invocation: EngineInvocation,
+    options: Partial<AgentOptions> & { schema: JsonSchema }
+  ): Promise<unknown | null> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+    let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.budget.assertCanStart();
       try {
-        const result = await this.#runSingleTurn(prompt, options);
+        const result = await invocation.runAttempt({
+          attempt,
+          ...(previousFailure !== undefined ? { previousFailure } : {})
+        });
         const parsed = parseJsonFromText(result.text);
         if (parsed === null) {
+          previousFailure = {
+            kind: "invalid-json",
+            message: "agent output did not contain parseable JSON"
+          };
           continue;
         }
 
@@ -157,6 +206,10 @@ export class EnsembleRuntime {
         if (validation.ok) {
           return parsed.value;
         }
+        previousFailure = {
+          kind: "schema-validation",
+          message: JSON.stringify(validation.errors ?? [])
+        };
       } catch (error) {
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -167,66 +220,36 @@ export class EnsembleRuntime {
     return null;
   }
 
-  async #runSingleTurn(prompt: string, options: AgentOptions) {
-    if (options.isolation === "worktree") {
-      return this.#runIsolatedWorktreeTurn(prompt, options);
-    }
-
-    return this.#runTurnInCwd(prompt, options, {
-      sandbox: normaliseSandbox(options.sandbox)
-    });
-  }
-
-  async #runIsolatedWorktreeTurn(prompt: string, options: AgentOptions) {
-    const worktree = await this.#worktreeManager.create();
-
-    try {
-      return await this.#runTurnInCwd(prompt, options, {
-        cwd: worktree.path,
-        sandbox: "workspace-write"
-      });
-    } finally {
-      await this.#finishWorktree(worktree);
-    }
-  }
-
-  async #runTurnInCwd(prompt: string, options: AgentOptions, location: { cwd?: string; sandbox: SandboxMode }) {
-    const threadId = await this.#transport.openThread({
-      webSearch: options.webSearch ?? false,
-      sandbox: location.sandbox,
-      ...(location.cwd !== undefined ? { cwd: location.cwd } : {})
-    });
-
-    const turnOptions = {
-      timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs
-    } satisfies { timeoutMs: number };
-    return this.#transport.runTurn(threadId, prompt, {
-      ...turnOptions,
-      ...(options.schema !== undefined ? { schema: options.schema } : {}),
-      ...(options.model !== undefined ? { model: options.model } : {}),
-      ...(options.effort !== undefined ? { effort: options.effort } : {})
-    });
-  }
-
-  async #finishWorktree(worktree: IsolatedWorktree): Promise<void> {
-    const record = await this.#worktreeManager.finish(worktree);
-    this.worktrees.push(record);
-    this.#emitEvent({
-      method: "worktree/finished",
-      params: {
-        path: record.path,
-        branch: record.branch,
-        changed: record.changed,
-        removed: record.removed
-      },
-      receivedAt: Date.now()
-    });
-  }
-
   #emitEvent(event: RuntimeEvent): void {
     for (const listener of this.#eventListeners) {
       listener(event);
     }
+  }
+
+  #engineFor(engine: unknown): EngineAdapter {
+    if (engine === undefined) {
+      throw new MissingEngineError();
+    }
+    if (engine !== "codex" && engine !== "claude") {
+      throw new UnknownEngineError(engine);
+    }
+    const adapter = this.#engines.get(engine);
+    if (adapter === undefined) {
+      throw new UnknownEngineError(engine);
+    }
+    return adapter;
+  }
+
+  #engineTurnOptions(options: Partial<AgentOptions>): EngineTurnOptions {
+    return {
+      webSearch: options.webSearch ?? false,
+      timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs,
+      ...(options.schema !== undefined ? { schema: options.schema } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
+      ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
+      ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {})
+    };
   }
 }
 
@@ -235,15 +258,18 @@ export async function createRuntime(options: RuntimeOptions = {}): Promise<Ensem
 }
 
 export function defaultConcurrency(): number {
-  return Math.max(1, Math.min(16, cpus().length - 2));
+  return defaultCodexConcurrency();
 }
 
 export type { Budget, TokenUsageEvent };
 
-function normaliseSandbox(sandbox: SandboxMode | undefined): SandboxMode {
-  return sandbox ?? "read-only";
-}
-
 function isRetryableError(error: unknown): boolean {
   return error instanceof AppServerBackpressureError;
+}
+
+function requireTransport(transport: RuntimeTransport | undefined): RuntimeTransport {
+  if (transport === undefined) {
+    throw new Error("EnsembleRuntime requires either engines or a Codex transport");
+  }
+  return transport;
 }

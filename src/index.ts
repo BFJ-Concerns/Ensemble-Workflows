@@ -6,11 +6,11 @@ import type { EnsembleRuntime } from "./runtime.js";
 let defaultRuntime: Promise<EnsembleRuntime> | null = null;
 
 export async function agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-export async function agent(prompt: string, options?: AgentOptions & { schema?: undefined }): Promise<string>;
-export async function agent(prompt: string, options: AgentOptions = {}): Promise<string | unknown | null> {
+export async function agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+export async function agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
   const runtime = await getDefaultRuntime();
   if (options.schema !== undefined) {
-    return runtime.agent(prompt, { ...options, schema: options.schema });
+    return runtime.agent(prompt, { ...options, schema: options.schema } as AgentOptions & { schema: JsonSchema });
   }
   return runtime.agent(prompt, options as AgentOptions & { schema?: undefined });
 }
@@ -30,6 +30,7 @@ export async function closeDefaultRuntime(): Promise<void> {
 
 export { EnsembleRuntime, defaultConcurrency } from "./runtime.js";
 export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
+export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter } from "./engines.js";
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
@@ -37,6 +38,7 @@ export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js
 export type {
   AgentOptions,
   Budget,
+  EngineName,
   IsolationMode,
   JsonObject,
   JsonSchema,
@@ -51,6 +53,13 @@ export type {
   TurnResult,
   TurnStartOptions
 } from "./types.js";
+export type {
+  EngineAdapter,
+  EngineAttemptContext,
+  EngineAttemptFailure,
+  EngineInvocation,
+  EngineTurnOptions
+} from "./engines.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 async function getDefaultRuntime(): Promise<EnsembleRuntime> {

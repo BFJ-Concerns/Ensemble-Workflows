@@ -147,14 +147,17 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
       phase("collect");
       const findings = await parallel([
         () => agent("search alpha", {
+          engine: "codex",
           webSearch: true,
           schema: findingSchema
         }),
         () => agent("search beta", {
+          engine: "codex",
           webSearch: true,
           schema: findingSchema
         }),
         () => agent("search gamma", {
+          engine: "codex",
           webSearch: true,
           schema: findingSchema
         })
@@ -162,6 +165,7 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
 
       phase("compile");
       const compiled = await agent("compile " + JSON.stringify(findings), {
+        engine: "codex",
         schema: {
           type: "object",
           required: ["count", "summary"],
@@ -218,13 +222,13 @@ test("pipeline workflow interleaves items and drops only the failing item", asyn
           throw new Error("bad item");
         }
         events.push("stage0-end-" + item);
-        return await agent("stage0 " + item);
+        return await agent("stage0 " + item, { engine: "codex" });
       }, async (previous, item) => {
         events.push("stage1-start-" + item);
         if (item === "fast") {
           releaseSlow();
         }
-        return await agent("stage1 " + item + " " + previous);
+        return await agent("stage1 " + item + " " + previous, { engine: "codex" });
       });
 
       return { events, results };
@@ -267,16 +271,16 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
         }
       };
 
-      const validAfterRetry = await agent("retry until valid", { schema, maxAttempts: 2 });
-      const impossible = await agent("never satisfies schema", { schema, maxAttempts: 2 });
+      const validAfterRetry = await agent("retry until valid", { engine: "codex", schema, maxAttempts: 2 });
+      const impossible = await agent("never satisfies schema", { engine: "codex", schema, maxAttempts: 2 });
       const fanout = await parallel([
-        () => agent("plain success"),
-        () => agent("worker throws")
+        () => agent("plain success", { engine: "codex" }),
+        () => agent("worker throws", { engine: "codex" })
       ]);
       const spentBeforeBlockedCall = budget.spent();
       let blockedMessage = null;
       try {
-        await agent("should be blocked by budget");
+        await agent("should be blocked by budget", { engine: "codex" });
       } catch (error) {
         blockedMessage = error.message;
       }
@@ -338,10 +342,10 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
       `
         export const meta = { name: "worktree-isolation-estate" };
 
-        const clean = await agent("make no file changes", { isolation: "worktree" });
+        const clean = await agent("make no file changes", { engine: "codex", isolation: "worktree" });
         const writes = await parallel([
-          () => agent("write agent-a.txt only", { isolation: "worktree" }),
-          () => agent("write agent-b.txt only", { isolation: "worktree" })
+          () => agent("write agent-a.txt only", { engine: "codex", isolation: "worktree" }),
+          () => agent("write agent-b.txt only", { engine: "codex", isolation: "worktree" })
         ]);
 
         return {

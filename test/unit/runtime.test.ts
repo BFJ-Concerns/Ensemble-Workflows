@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { EnsembleRuntime } from "../../src/runtime.js";
-import { BudgetExceededError } from "../../src/errors.js";
+import { BudgetExceededError, EngineNotImplementedError, MissingEngineError } from "../../src/errors.js";
 
 import type {
+  AgentOptions,
   RuntimeTransport,
   ThreadStartOptions,
   TurnResult,
@@ -90,7 +91,7 @@ test("schema agents retry invalid output and return null after the bounded attem
     defaultMaxAttempts: 2
   });
 
-  const result = await runtime.agent("return JSON", { schema });
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
 
   assert.equal(result, null);
   assert.equal(transport.turns.length, 2);
@@ -105,7 +106,7 @@ test("schema agents return the validated object when a retry succeeds", async ()
     defaultMaxAttempts: 3
   });
 
-  const result = await runtime.agent("return JSON", { schema });
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
 
   assert.deepEqual(result, { answer: "yes" });
   assert.equal(transport.turns.length, 2);
@@ -147,7 +148,7 @@ test("budget records tokenUsage.last deltas and blocks later calls after exhaust
   });
 
   assert.equal(runtime.budget.spent(), 5);
-  await assert.rejects(() => runtime.agent("blocked"), BudgetExceededError);
+  await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 
 test("default agents keep the read-only sandbox and base cwd", async () => {
@@ -159,7 +160,7 @@ test("default agents keep the read-only sandbox and base cwd", async () => {
     defaultMaxAttempts: 1
   });
 
-  await runtime.agent("read");
+  await runtime.agent("read", { engine: "codex" });
 
   assert.deepEqual(transport.openedThreads, [{ webSearch: false, sandbox: "read-only" }]);
 });
@@ -179,7 +180,7 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
     events.push(event.method);
   });
 
-  const result = await runtime.agent("write", { isolation: "worktree", sandbox: "read-only" });
+  const result = await runtime.agent("write", { engine: "codex", isolation: "worktree", sandbox: "read-only" });
 
   assert.equal(result, "ok");
   assert.deepEqual(transport.openedThreads, [
@@ -199,6 +200,34 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
   ]);
   assert.deepEqual(worktreeManager.finished, [{ path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1" }]);
   assert.deepEqual(events, ["worktree/finished"]);
+});
+
+test("agent requires an explicit engine", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrency: 1,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  const unsafeAgent = runtime.agent as (prompt: string, options: Partial<AgentOptions>) => Promise<unknown>;
+
+  await assert.rejects(() => unsafeAgent.call(runtime, "read", {}), MissingEngineError);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("claude engine is registered but not implemented", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrency: 1,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  await assert.rejects(() => runtime.agent("read", { engine: "claude" }), EngineNotImplementedError);
+  assert.equal(transport.turns.length, 0);
 });
 
 function turn(text: string): TurnResult {

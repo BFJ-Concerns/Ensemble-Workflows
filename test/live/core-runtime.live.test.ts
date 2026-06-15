@@ -38,7 +38,9 @@ const nestedSchema = {
 test("live text agent returns non-empty text", liveOptions, async () => {
   const runtime = await createRuntime({ concurrency: 2, defaultTurnTimeoutMs: 120_000 });
   try {
-    const text = await runtime.agent("Reply with a short sentence containing the exact token TEXT_PATH_OK.");
+    const text = await runtime.agent("Reply with a short sentence containing the exact token TEXT_PATH_OK.", {
+      engine: "codex"
+    });
     assert.match(text, /TEXT_PATH_OK/);
     assert.ok(runtime.budget.spent() > 0);
   } finally {
@@ -83,7 +85,7 @@ test("live schema agent returns a client-validated nested enum object", liveOpti
   try {
     const result = await runtime.agent(
       "Return JSON for the provided schema. Use status schema_won, details.kind nested, and details.count 7.",
-      { schema: nestedSchema }
+      { engine: "codex", schema: nestedSchema }
     );
     assert.equal(validateJsonSchema(result, nestedSchema).ok, true);
   } finally {
@@ -105,7 +107,8 @@ test("live one-process runtime runs at least eight turns concurrently", liveOpti
     const results = await Promise.all(
       Array.from({ length: 8 }, (_value, index) =>
         runtime.agent(
-          `Think briefly about three reasons concurrent schedulers are useful, then reply exactly: CONCURRENCY_${index}`
+          `Think briefly about three reasons concurrent schedulers are useful, then reply exactly: CONCURRENCY_${index}`,
+          { engine: "codex" }
         )
       )
     );
@@ -156,9 +159,9 @@ test("live budget blocks the next agent after the ceiling is reached", liveOptio
     defaultTurnTimeoutMs: 120_000
   });
   try {
-    await runtime.agent("Reply exactly BUDGET_FIRST.");
+    await runtime.agent("Reply exactly BUDGET_FIRST.", { engine: "codex" });
     assert.ok(runtime.budget.spent() >= 1);
-    await assert.rejects(() => runtime.agent("Reply exactly BUDGET_SECOND."), BudgetExceededError);
+    await assert.rejects(() => runtime.agent("Reply exactly BUDGET_SECOND.", { engine: "codex" }), BudgetExceededError);
   } finally {
     await runtime.close();
   }
@@ -191,7 +194,7 @@ test("live worktree isolation gives autonomous writable agents separate git work
   try {
     const clean = await runtime.agent(
       "Do not create, edit, delete, or inspect files. Reply exactly CLEAN_WORKTREE_OK.",
-      { isolation: "worktree" }
+      { engine: "codex", isolation: "worktree" }
     );
     assert.match(clean, /CLEAN_WORKTREE_OK/);
     assert.equal(runtime.worktrees.length, 1);
@@ -202,11 +205,11 @@ test("live worktree isolation gives autonomous writable agents separate git work
     const [first, second] = await Promise.all([
       runtime.agent(
         "Use the filesystem tools to create a file named agent-a.txt in the current working directory containing exactly A_ONLY. Do not create agent-b.txt. Reply exactly WRITE_A_OK.",
-        { isolation: "worktree" }
+        { engine: "codex", isolation: "worktree" }
       ),
       runtime.agent(
         "Use the filesystem tools to create a file named agent-b.txt in the current working directory containing exactly B_ONLY. Do not create agent-a.txt. Reply exactly WRITE_B_OK.",
-        { isolation: "worktree" }
+        { engine: "codex", isolation: "worktree" }
       )
     ]);
 

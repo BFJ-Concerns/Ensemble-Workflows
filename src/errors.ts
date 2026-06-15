@@ -26,6 +26,20 @@ export class BudgetExceededError extends EnsembleError {
   }
 }
 
+export class MissingEngineError extends EnsembleError {
+  constructor() {
+    super("agent() requires an engine field: use engine: 'codex' or engine: 'claude'");
+  }
+}
+
+export class UnknownEngineError extends EnsembleError {
+  constructor(engine: unknown) {
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex' or 'claude'`);
+  }
+}
+
+export class EngineNotImplementedError extends EnsembleError {}
+
 export class EmptyAgentOutputError extends EnsembleError {}
 
 export class TurnTimeoutError extends EnsembleError {

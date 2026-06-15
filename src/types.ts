@@ -1,11 +1,13 @@
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
+export type EngineName = "codex" | "claude";
 export type IsolationMode = "worktree";
 export type SandboxMode = "read-only" | "workspace-write";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 
 export interface AgentOptions {
+  engine: EngineName;
   schema?: JsonSchema;
   model?: string;
   effort?: string;

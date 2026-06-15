@@ -31,7 +31,7 @@ test("runs a script with hooks as globals and captures its return value", async 
       phase("fan out");
       log(args.join(":"));
       const values = await parallel([
-        () => agent("one"),
+        () => agent("one", { engine: "codex" }),
         () => "plain"
       ]);
       return { values, remaining: budget.remaining() };

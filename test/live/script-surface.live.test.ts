@@ -22,6 +22,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
       phase("draft");
       const drafts = await parallel([
         () => agent("Reply with exactly one short JSON object: {\\"point\\":\\"alpha\\"}", {
+          engine: "codex",
           schema: {
             type: "object",
             required: ["point"],
@@ -30,6 +31,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
           }
         }),
         () => agent("Reply with exactly one short JSON object: {\\"point\\":\\"beta\\"}", {
+          engine: "codex",
           schema: {
             type: "object",
             required: ["point"],
@@ -43,6 +45,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
       const compiled = await agent(
         "Return JSON with count 2 and summary containing LIVE_WORKFLOW_OK. Inputs: " + JSON.stringify(drafts),
         {
+          engine: "codex",
           schema: {
             type: "object",
             required: ["count", "summary"],

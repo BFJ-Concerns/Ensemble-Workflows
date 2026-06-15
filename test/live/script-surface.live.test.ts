@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -75,6 +75,79 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
   assert.equal(parsed.drafts.length, 2);
   assert.equal(parsed.compiled.count, 2);
   assert.match(parsed.compiled.summary, /LIVE_WORKFLOW_OK/);
+});
+
+test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
+  const script = path.join(directory, "workflow.js");
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "codex-finds-claude-verifies",
+          description: "Live proof that Ensemble can verify one engine with another"
+        };
+
+        const findingSchema = {
+          type: "object",
+          required: ["token", "risk"],
+          additionalProperties: false,
+          properties: {
+            token: { type: "string", enum: ["LIVE_CROSS_FIND"] },
+            risk: { type: "string" }
+          }
+        };
+
+        const verificationSchema = {
+          type: "object",
+          required: ["token", "accepted", "checkedBy"],
+          additionalProperties: false,
+          properties: {
+            token: { type: "string", enum: ["LIVE_CROSS_VERIFY"] },
+            accepted: { type: "boolean", enum: [true] },
+            checkedBy: { type: "string", enum: ["claude"] }
+          }
+        };
+
+        phase("find");
+        const finding = await agent(
+          "Return exactly one JSON object matching the schema: token LIVE_CROSS_FIND and risk cross-engine-contract.",
+          { engine: "codex", schema: findingSchema, maxAttempts: 1 }
+        );
+
+        phase("verify");
+        const verification = await agent(
+          "Verify this Codex finding is structurally valid and relevant to cross-engine verification. " +
+            "Return JSON with token LIVE_CROSS_VERIFY, accepted true, and checkedBy claude. Finding: " +
+            JSON.stringify(finding),
+          { engine: "claude", schema: verificationSchema, maxAttempts: 2 }
+        );
+
+        return { finding, verification };
+      `
+    );
+
+    const cliPath = path.resolve("dist/src/cli/ensemble.js");
+    const result = await runNode([cliPath, script]);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /\[phase\] find/);
+    assert.match(result.stderr, /\[phase\] verify/);
+    const parsed = JSON.parse(result.stdout) as {
+      finding: { token: string; risk: string };
+      verification: { token: string; accepted: boolean; checkedBy: string };
+    };
+    assert.deepEqual(parsed.finding, { token: "LIVE_CROSS_FIND", risk: "cross-engine-contract" });
+    assert.deepEqual(parsed.verification, {
+      token: "LIVE_CROSS_VERIFY",
+      accepted: true,
+      checkedBy: "claude"
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 async function runNode(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {

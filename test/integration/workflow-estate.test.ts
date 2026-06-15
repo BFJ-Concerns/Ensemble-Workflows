@@ -8,9 +8,13 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
+import { EngineRegistry } from "../../src/engines.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { Scheduler } from "../../src/scheduler.js";
 
+import type { EngineAdapter, EngineAttemptContext, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type {
+  EngineName,
   JsonObject,
   RuntimeEvent,
   RuntimeTransport,
@@ -41,6 +45,13 @@ interface ScriptedTurn {
   tokenDelta?: number;
   throwError?: Error;
   writeFile?: { name: string; contents: string };
+}
+
+interface ScriptedEngineTurn {
+  text?: string;
+  delayMs?: number;
+  tokenDelta?: number;
+  throwError?: Error;
 }
 
 class ScriptedTransport implements RuntimeTransport {
@@ -129,6 +140,140 @@ class ScriptedTransport implements RuntimeTransport {
   }
 }
 
+class ScriptedEngineAdapter implements EngineAdapter {
+  readonly name: EngineName;
+  readonly concurrency: number;
+  readonly invocations: ScriptedEngineInvocation[] = [];
+  readonly scheduleStarts: number[] = [];
+  readonly scheduleFinishes: number[] = [];
+
+  #responses: ScriptedEngineTurn[];
+  #scheduler: Scheduler;
+  #closed = false;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+
+  constructor(options: {
+    name: EngineName;
+    concurrency: number;
+    responses: ScriptedEngineTurn[];
+    onEvent?: (event: RuntimeEvent) => void;
+  }) {
+    this.name = options.name;
+    this.concurrency = options.concurrency;
+    this.#responses = [...options.responses];
+    this.#scheduler = new Scheduler(options.concurrency);
+    this.#onEvent = options.onEvent;
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.#scheduler.schedule(async () => {
+      this.scheduleStarts.push(Date.now());
+      try {
+        return await task();
+      } finally {
+        this.scheduleFinishes.push(Date.now());
+      }
+    });
+  }
+
+  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    const invocation = new ScriptedEngineInvocation({
+      engine: this.name,
+      prompt,
+      options,
+      nextTurn: () => {
+        const response = this.#responses.shift();
+        assert.ok(response, `no scripted ${this.name} response configured for ${prompt}`);
+        return response;
+      },
+      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {})
+    });
+    this.invocations.push(invocation);
+    return invocation;
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+}
+
+class ScriptedEngineInvocation implements EngineInvocation {
+  readonly engine: EngineName;
+  readonly prompt: string;
+  readonly options: EngineTurnOptions;
+  readonly contexts: EngineAttemptContext[] = [];
+
+  #nextTurn: () => ScriptedEngineTurn;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #closed = false;
+
+  constructor(options: {
+    engine: EngineName;
+    prompt: string;
+    options: EngineTurnOptions;
+    nextTurn: () => ScriptedEngineTurn;
+    onEvent?: (event: RuntimeEvent) => void;
+  }) {
+    this.engine = options.engine;
+    this.prompt = options.prompt;
+    this.options = options.options;
+    this.#nextTurn = options.nextTurn;
+    this.#onEvent = options.onEvent;
+  }
+
+  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+    this.contexts.push(context);
+    const response = this.#nextTurn();
+
+    if (response.delayMs !== undefined) {
+      await sleep(response.delayMs);
+    }
+
+    const threadId = `${this.engine}-thread-${this.contexts.length}`;
+    const turnId = `${this.engine}-turn-${this.contexts.length}`;
+    if (response.tokenDelta !== undefined) {
+      this.#onEvent?.({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId,
+          turnId,
+          tokenUsage: {
+            last: usage(response.tokenDelta),
+            total: usage(response.tokenDelta)
+          }
+        },
+        receivedAt: Date.now()
+      });
+    }
+
+    if (response.throwError !== undefined) {
+      throw response.throwError;
+    }
+
+    const text = response.text ?? "";
+    return {
+      text,
+      deltaText: text,
+      durationMs: response.delayMs ?? 0,
+      firstDeltaMs: response.delayMs ?? 0,
+      items: { agentMessage: 1 },
+      tokenUsageEvents: []
+    };
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+}
+
 test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on stdout", async () => {
   const { exitCode, stdout, stderr, transport } = await runScript(
     `
@@ -200,6 +345,331 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
   assert.equal(result.compiled.count, 3);
   assert.match(result.compiled.summary, /alpha beta gamma/);
   assert.equal(transport.openedThreads.filter((thread) => thread.webSearch).length, 3);
+});
+
+test("engine routing rejects missing and unknown engines through the real CLI", async () => {
+  const { exitCode: missingExitCode, stdout: missingStdout, stderr: missingStderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "missing-engine" };
+      await agent("missing engine");
+    `,
+    new ScriptedEngineAdapter({ name: "codex", concurrency: 1, responses: [] }),
+    new ScriptedEngineAdapter({ name: "claude", concurrency: 1, responses: [] })
+  );
+
+  assert.equal(missingExitCode, 1);
+  assert.equal(missingStdout, "");
+  assert.match(missingStderr, /agent\(\) requires an engine field: use engine: 'codex' or engine: 'claude'/);
+
+  const { exitCode: unknownExitCode, stdout: unknownStdout, stderr: unknownStderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "unknown-engine" };
+      await agent("unknown engine", { engine: "gemini" });
+    `,
+    new ScriptedEngineAdapter({ name: "codex", concurrency: 1, responses: [] }),
+    new ScriptedEngineAdapter({ name: "claude", concurrency: 1, responses: [] })
+  );
+
+  assert.equal(unknownExitCode, 1);
+  assert.equal(unknownStdout, "");
+  assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex' or 'claude'/);
+});
+
+test("registry routes each engine and keeps per-engine concurrency caps independent", async () => {
+  const codex = new ScriptedEngineAdapter({
+    name: "codex",
+    concurrency: 1,
+    responses: [
+      { text: "codex-slow", delayMs: 80 },
+      { text: "codex-queued", delayMs: 1 }
+    ]
+  });
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 1,
+    responses: [
+      { text: "claude-slow", delayMs: 10 },
+      { text: "claude-queued", delayMs: 1 }
+    ]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "independent-engine-caps" };
+
+      const results = await parallel([
+        () => agent("codex slow", { engine: "codex" }),
+        () => agent("codex queued", { engine: "codex" }),
+        () => agent("claude slow", { engine: "claude" }),
+        () => agent("claude queued", { engine: "claude" })
+      ]);
+
+      return { results };
+    `,
+    codex,
+    claude
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    results: ["codex-slow", "codex-queued", "claude-slow", "claude-queued"]
+  });
+  assert.equal(codex.invocations.length, 2);
+  assert.equal(claude.invocations.length, 2);
+  const firstCodexFinish = codex.scheduleFinishes[0];
+  const secondCodexStart = codex.scheduleStarts[1];
+  const firstClaudeStart = claude.scheduleStarts[0];
+  const firstClaudeFinish = claude.scheduleFinishes[0];
+  const secondClaudeStart = claude.scheduleStarts[1];
+  assert.ok(firstCodexFinish !== undefined);
+  assert.ok(secondCodexStart !== undefined);
+  assert.ok(firstClaudeStart !== undefined);
+  assert.ok(firstClaudeFinish !== undefined);
+  assert.ok(secondClaudeStart !== undefined);
+  assert.ok(
+    firstClaudeStart < firstCodexFinish,
+    "Claude should start while Codex's single slot is still saturated"
+  );
+  assert.ok(firstCodexFinish <= secondCodexStart);
+  assert.ok(firstClaudeFinish <= secondClaudeStart);
+});
+
+test("scripted Claude schema retries carry previousFailure for in-session correction", async () => {
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: [
+      { text: "transcript without json" },
+      { text: "{\"status\":\"draft\",\"confidence\":0.2}" },
+      { text: "{\"status\":\"verified\",\"confidence\":0.91}" }
+    ]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "claude-schema-correction" };
+
+      const verdict = await agent("verify finding", {
+        engine: "claude",
+        maxAttempts: 3,
+        schema: {
+          type: "object",
+          required: ["status", "confidence"],
+          additionalProperties: false,
+          properties: {
+            status: { type: "string", enum: ["verified"] },
+            confidence: { type: "number" }
+          }
+        }
+      });
+
+      return { verdict };
+    `,
+    new ScriptedEngineAdapter({ name: "codex", concurrency: 8, responses: [] }),
+    claude
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    verdict: { status: "verified", confidence: 0.91 }
+  });
+
+  const [invocation] = claude.invocations;
+  assert.ok(invocation);
+  assert.equal(invocation.closed, true);
+  assert.deepEqual(
+    invocation.contexts.map((context) => ({
+      attempt: context.attempt,
+      previousFailure: context.previousFailure?.kind
+    })),
+    [
+      { attempt: 1, previousFailure: undefined },
+      { attempt: 2, previousFailure: "invalid-json" },
+      { attempt: 3, previousFailure: "schema-validation" }
+    ]
+  );
+  assert.match(invocation.contexts[2]?.previousFailure?.message ?? "", /must be equal to one of the allowed values/);
+});
+
+test("scripted Claude schema failures return null after the bounded correction attempts", async () => {
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: [{ text: "no json here" }, { text: "{\"status\":\"still-wrong\"}" }]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "claude-null-after-bound" };
+
+      const verdict = await agent("verify finding", {
+        engine: "claude",
+        maxAttempts: 2,
+        schema: {
+          type: "object",
+          required: ["status"],
+          additionalProperties: false,
+          properties: {
+            status: { type: "string", enum: ["verified"] }
+          }
+        }
+      });
+
+      return { verdict };
+    `,
+    new ScriptedEngineAdapter({ name: "codex", concurrency: 8, responses: [] }),
+    claude
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), { verdict: null });
+  assert.equal(claude.invocations[0]?.closed, true);
+});
+
+test("scripted Claude gracefully degrades to null when the correction valve is absent", async () => {
+  const claudeWithoutValve = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: [{ text: "{\"status\":\"draft\"}" }, { text: "{\"status\":\"draft\"}" }]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "claude-valve-absent" };
+
+      const verdict = await agent("verify without valve", {
+        engine: "claude",
+        maxAttempts: 2,
+        schema: {
+          type: "object",
+          required: ["status"],
+          additionalProperties: false,
+          properties: {
+            status: { type: "string", enum: ["verified"] }
+          }
+        }
+      });
+
+      return { verdict };
+    `,
+    new ScriptedEngineAdapter({ name: "codex", concurrency: 8, responses: [] }),
+    claudeWithoutValve
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), { verdict: null });
+  assert.equal(claudeWithoutValve.invocations[0]?.closed, true);
+  assert.equal(claudeWithoutValve.closed, true);
+});
+
+test("cross-engine workflow lets Codex find and Claude verify through the real CLI", async () => {
+  const codex = new ScriptedEngineAdapter({
+    name: "codex",
+    concurrency: 8,
+    responses: [{ text: "{\"topic\":\"schema parity\",\"risk\":\"medium\"}" }]
+  });
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: [{ text: "{\"accepted\":true,\"checkedBy\":\"claude\"}" }]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "codex-finds-claude-verifies" };
+
+      const finding = await agent("find cross-engine risk", {
+        engine: "codex",
+        schema: {
+          type: "object",
+          required: ["topic", "risk"],
+          additionalProperties: false,
+          properties: {
+            topic: { type: "string" },
+            risk: { type: "string" }
+          }
+        }
+      });
+      const verification = await agent("verify " + JSON.stringify(finding), {
+        engine: "claude",
+        schema: {
+          type: "object",
+          required: ["accepted", "checkedBy"],
+          additionalProperties: false,
+          properties: {
+            accepted: { type: "boolean" },
+            checkedBy: { type: "string", enum: ["claude"] }
+          }
+        }
+      });
+
+      return { finding, verification };
+    `,
+    codex,
+    claude
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    finding: { topic: "schema parity", risk: "medium" },
+    verification: { accepted: true, checkedBy: "claude" }
+  });
+  assert.match(claude.invocations[0]?.prompt ?? "", /schema parity/);
+});
+
+test("cross-engine workflow lets Claude find and Codex verify through the real CLI", async () => {
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: [{ text: "{\"topic\":\"cap bleed\",\"risk\":\"high\"}" }]
+  });
+  const codex = new ScriptedEngineAdapter({
+    name: "codex",
+    concurrency: 8,
+    responses: [{ text: "{\"accepted\":true,\"checkedBy\":\"codex\"}" }]
+  });
+
+  const { exitCode, stdout, stderr } = await runScriptWithEngines(
+    `
+      export const meta = { name: "claude-finds-codex-verifies" };
+
+      const finding = await agent("find cross-engine risk", {
+        engine: "claude",
+        schema: {
+          type: "object",
+          required: ["topic", "risk"],
+          additionalProperties: false,
+          properties: {
+            topic: { type: "string" },
+            risk: { type: "string" }
+          }
+        }
+      });
+      const verification = await agent("verify " + JSON.stringify(finding), {
+        engine: "codex",
+        schema: {
+          type: "object",
+          required: ["accepted", "checkedBy"],
+          additionalProperties: false,
+          properties: {
+            accepted: { type: "boolean" },
+            checkedBy: { type: "string", enum: ["codex"] }
+          }
+        }
+      });
+
+      return { finding, verification };
+    `,
+    codex,
+    claude
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    finding: { topic: "cap bleed", risk: "high" },
+    verification: { accepted: true, checkedBy: "codex" }
+  });
+  assert.match(codex.invocations[0]?.prompt ?? "", /cap bleed/);
 });
 
 test("pipeline workflow interleaves items and drops only the failing item", async () => {
@@ -454,6 +924,39 @@ async function runScript(
   });
 
   return { exitCode, stdout: stdout.text(), stderr: stderr.text(), transport };
+}
+
+async function runScriptWithEngines(
+  source: string,
+  codex: EngineAdapter,
+  claude: EngineAdapter,
+  args: string[] = []
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-multi-engine-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, source);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  try {
+    const exitCode = await runEnsembleCli([script, ...args], {
+      cwd: directory,
+      stdout,
+      stderr,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([codex, claude]),
+          budgetTotal: null,
+          defaultTurnTimeoutMs: 1_000,
+          defaultMaxAttempts: 3
+        })
+    });
+
+    return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

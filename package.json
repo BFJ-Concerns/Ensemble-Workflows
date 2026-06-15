@@ -1,12 +1,12 @@
 {
-  "name": "codex-workflows",
+  "name": "ensemble-workflows",
   "version": "0.0.0",
   "description": "Deterministic multi-agent orchestration harness for OpenAI Codex.",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "codex-workflow": "./dist/src/cli/codex-workflow.js"
+    "ensemble": "./dist/src/cli/ensemble.js"
   },
   "files": [
     "dist"
@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "test:live": "npm run build && CODEX_WORKFLOWS_LIVE=1 node --test \"dist/test/live/**/*.test.js\""
+    "test:live": "npm run build && ENSEMBLE_LIVE=1 node --test \"dist/test/live/**/*.test.js\""
   },
   "engines": {
     "node": ">=24.14.0"

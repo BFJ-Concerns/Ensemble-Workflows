@@ -52,7 +52,7 @@ test("exposes worktrees as a workflow-visible side channel", async () => {
     worktrees: [
       {
         path: "/tmp/worktree",
-        branch: "codex-workflows/example",
+        branch: "ensemble-workflows/example",
         changed: true,
         removed: false
       }

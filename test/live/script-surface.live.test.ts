@@ -5,11 +5,11 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-const isLive = process.env.CODEX_WORKFLOWS_LIVE === "1";
+const isLive = process.env.ENSEMBLE_LIVE === "1";
 const liveOptions = { skip: !isLive };
 
 test("live CLI runs a fan-out then compiler workflow and splits stdout from stderr", liveOptions, async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-live-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-"));
   const script = path.join(directory, "workflow.js");
   await writeFile(
     script,
@@ -59,7 +59,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
     `
   );
 
-  const cliPath = path.resolve("dist/src/cli/codex-workflow.js");
+  const cliPath = path.resolve("dist/src/cli/ensemble.js");
   const result = await runNode([cliPath, script]);
 
   assert.equal(result.code, 0, result.stderr);

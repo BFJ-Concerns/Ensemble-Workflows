@@ -1,13 +1,13 @@
-export class CodexWorkflowsError extends Error {
+export class EnsembleError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = new.target.name;
   }
 }
 
-export class AppServerExitedError extends CodexWorkflowsError {}
+export class AppServerExitedError extends EnsembleError {}
 
-export class AppServerRequestError extends CodexWorkflowsError {
+export class AppServerRequestError extends EnsembleError {
   readonly code: number | undefined;
   readonly data?: unknown;
 
@@ -20,15 +20,15 @@ export class AppServerRequestError extends CodexWorkflowsError {
 
 export class AppServerBackpressureError extends AppServerRequestError {}
 
-export class BudgetExceededError extends CodexWorkflowsError {
+export class BudgetExceededError extends EnsembleError {
   constructor(total: number, spent: number) {
     super(`Token budget exhausted: spent ${spent} of ${total} tokens`);
   }
 }
 
-export class EmptyAgentOutputError extends CodexWorkflowsError {}
+export class EmptyAgentOutputError extends EnsembleError {}
 
-export class TurnTimeoutError extends CodexWorkflowsError {
+export class TurnTimeoutError extends EnsembleError {
   constructor(message: string) {
     super(message);
   }

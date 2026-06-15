@@ -34,8 +34,8 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   async create(): Promise<IsolatedWorktree> {
     const repoRoot = await this.#gitRepoRoot();
     const name = this.#uniqueName();
-    const branch = `codex-workflows/${name}`;
-    const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}.codex-workflows-worktrees`, name);
+    const branch = `ensemble-workflows/${name}`;
+    const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
 
     await mkdir(path.dirname(worktreePath), { recursive: true });
     await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);

@@ -106,7 +106,7 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
       args: hooks.args
     },
     {
-      name: "codex-workflow-script",
+      name: "ensemble-workflow-script",
       codeGeneration: {
         strings: false,
         wasm: false

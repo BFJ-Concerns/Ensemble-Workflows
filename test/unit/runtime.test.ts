@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CodexRuntime } from "../../src/runtime.js";
+import { EnsembleRuntime } from "../../src/runtime.js";
 import { BudgetExceededError } from "../../src/errors.js";
 
 import type {
@@ -58,7 +58,7 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
     this.#next += 1;
     return {
       path: `/fake/worktree-${this.#next}`,
-      branch: `codex-workflows/fake-${this.#next}`
+      branch: `ensemble-workflows/fake-${this.#next}`
     };
   }
 
@@ -83,7 +83,7 @@ const schema = {
 
 test("schema agents retry invalid output and return null after the bounded attempts", async () => {
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"no\"}")]);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
     defaultTurnTimeoutMs: 1_000,
@@ -98,7 +98,7 @@ test("schema agents retry invalid output and return null after the bounded attem
 
 test("schema agents return the validated object when a retry succeeds", async () => {
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"yes\"}")]);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
     defaultTurnTimeoutMs: 1_000,
@@ -113,7 +113,7 @@ test("schema agents return the validated object when a retry succeeds", async ()
 
 test("budget records tokenUsage.last deltas and blocks later calls after exhaustion", async () => {
   const transport = new FakeTransport([turn("ok")]);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
     budgetTotal: 5,
@@ -152,7 +152,7 @@ test("budget records tokenUsage.last deltas and blocks later calls after exhaust
 
 test("default agents keep the read-only sandbox and base cwd", async () => {
   const transport = new FakeTransport([turn("ok")]);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
     defaultTurnTimeoutMs: 1_000,
@@ -167,7 +167,7 @@ test("default agents keep the read-only sandbox and base cwd", async () => {
 test("worktree isolation forces workspace-write in the isolated cwd and records the finished worktree", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const worktreeManager = new FakeWorktreeManager(true);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
     defaultTurnTimeoutMs: 1_000,
@@ -192,12 +192,12 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
   assert.deepEqual(runtime.worktrees, [
     {
       path: "/fake/worktree-1",
-      branch: "codex-workflows/fake-1",
+      branch: "ensemble-workflows/fake-1",
       changed: true,
       removed: false
     }
   ]);
-  assert.deepEqual(worktreeManager.finished, [{ path: "/fake/worktree-1", branch: "codex-workflows/fake-1" }]);
+  assert.deepEqual(worktreeManager.finished, [{ path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1" }]);
   assert.deepEqual(events, ["worktree/finished"]);
 });
 

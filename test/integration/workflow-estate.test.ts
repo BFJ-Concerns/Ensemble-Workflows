@@ -7,8 +7,8 @@ import { Writable } from "node:stream";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { runCodexWorkflowCli } from "../../src/cli.js";
-import { CodexRuntime } from "../../src/runtime.js";
+import { runEnsembleCli } from "../../src/cli.js";
+import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type {
   JsonObject,
@@ -322,14 +322,14 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
 });
 
 test("CLI workflow exposes changed isolated worktrees and removes the clean one", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-isolation-estate-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-isolation-estate-"));
   const repo = path.join(directory, "repo");
 
   try {
     await mkdir(repo);
     await git(repo, ["init"]);
-    await git(repo, ["config", "user.email", "codex-workflows@example.invalid"]);
-    await git(repo, ["config", "user.name", "Codex Workflows Test"]);
+    await git(repo, ["config", "user.email", "ensemble-workflows@example.invalid"]);
+    await git(repo, ["config", "user.name", "Ensemble Workflows Test"]);
     await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
     await git(repo, ["add", "README.md"]);
     await git(repo, ["commit", "-m", "initial"]);
@@ -426,14 +426,14 @@ async function runScript(
   args: string[] = [],
   runtimeOptions: { budgetTotal?: number; cwd?: string } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; transport: ScriptedTransport }> {
-  const directory = runtimeOptions.cwd ?? (await mkdtemp(path.join(tmpdir(), "codex-workflow-integration-")));
+  const directory = runtimeOptions.cwd ?? (await mkdtemp(path.join(tmpdir(), "ensemble-integration-")));
   const script = path.join(directory, "workflow.js");
   await writeFile(script, source);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
   const transport = new ScriptedTransport(responses, directory);
-  const runtime = new CodexRuntime({
+  const runtime = new EnsembleRuntime({
     transport,
     concurrency: 8,
     budgetTotal: runtimeOptions.budgetTotal ?? null,
@@ -442,7 +442,7 @@ async function runScript(
   });
   transport.setEventSink((event) => runtime.handleTransportEvent(event));
 
-  const exitCode = await runCodexWorkflowCli([script, ...args], {
+  const exitCode = await runEnsembleCli([script, ...args], {
     cwd: directory,
     stdout,
     stderr,

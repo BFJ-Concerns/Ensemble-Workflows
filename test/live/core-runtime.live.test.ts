@@ -13,7 +13,7 @@ import { parseJsonFromText, validateJsonSchema } from "../../src/schema.js";
 
 import type { RuntimeEvent, TokenUsageEvent } from "../../src/types.js";
 
-const isLive = process.env.CODEX_WORKFLOWS_LIVE === "1";
+const isLive = process.env.ENSEMBLE_LIVE === "1";
 const liveOptions = { skip: !isLive };
 const execFileAsync = promisify(execFile);
 
@@ -51,7 +51,7 @@ test("live outputSchema produces schema-conformant raw output under a conflictin
     cwd: process.cwd(),
     codexBin: "codex",
     requestTimeoutMs: 30_000,
-    clientName: "codex-workflows-live-test",
+    clientName: "ensemble-workflows-live-test",
     clientVersion: "0.0.0"
   });
 
@@ -128,7 +128,7 @@ test("live token usage exposes last deltas and cumulative totals across turns", 
     cwd: process.cwd(),
     codexBin: "codex",
     requestTimeoutMs: 30_000,
-    clientName: "codex-workflows-token-test",
+    clientName: "ensemble-workflows-token-test",
     clientVersion: "0.0.0"
   });
 
@@ -165,12 +165,12 @@ test("live budget blocks the next agent after the ceiling is reached", liveOptio
 });
 
 test("live worktree isolation gives autonomous writable agents separate git worktrees", liveOptions, async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-isolation-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-isolation-"));
   const repo = path.join(directory, "repo");
   await mkdir(repo);
   await git(repo, ["init"]);
-  await git(repo, ["config", "user.email", "codex-workflows@example.invalid"]);
-  await git(repo, ["config", "user.name", "Codex Workflows Test"]);
+  await git(repo, ["config", "user.email", "ensemble-workflows@example.invalid"]);
+  await git(repo, ["config", "user.name", "Ensemble Workflows Test"]);
   await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
   await git(repo, ["add", "README.md"]);
   await git(repo, ["commit", "-m", "initial"]);

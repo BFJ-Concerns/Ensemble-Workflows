@@ -4,10 +4,10 @@ import path from "node:path";
 import { createRuntime } from "./index.js";
 import { runWorkflowScript } from "./script-runner.js";
 
-import type { CodexRuntime } from "./runtime.js";
+import type { EnsembleRuntime } from "./runtime.js";
 import type { Writable } from "node:stream";
 
-export interface CodexWorkflowCliOptions {
+export interface EnsembleCliOptions {
   cwd?: string;
   stdout?: Writable;
   stderr?: Writable;
@@ -15,18 +15,18 @@ export interface CodexWorkflowCliOptions {
   timeoutMs?: number;
 }
 
-export async function runCodexWorkflowCli(argv: string[], options: CodexWorkflowCliOptions = {}): Promise<number> {
+export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
   const [scriptArg, ...scriptArgs] = argv;
 
   if (scriptArg === undefined) {
-    stderr.write("Usage: codex-workflow <script.js> [args...]\n");
+    stderr.write("Usage: ensemble <script.js> [args...]\n");
     return 2;
   }
 
-  let runtime: CodexRuntime | null = null;
+  let runtime: EnsembleRuntime | null = null;
 
   try {
     const scriptPath = path.resolve(cwd, scriptArg);

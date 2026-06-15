@@ -7,9 +7,9 @@ import { Writable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { runCodexWorkflowCli } from "../../src/cli.js";
+import { runEnsembleCli } from "../../src/cli.js";
 
-import type { CodexRuntime } from "../../src/runtime.js";
+import type { EnsembleRuntime } from "../../src/runtime.js";
 import type { Budget } from "../../src/types.js";
 
 class CaptureStream extends Writable {
@@ -26,7 +26,7 @@ class CaptureStream extends Writable {
 }
 
 test("CLI prints result JSON to stdout and logs to stderr", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-cli-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-"));
   const script = path.join(directory, "workflow.js");
   await writeFile(
     script,
@@ -40,7 +40,7 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
 
-  const exitCode = await runCodexWorkflowCli([script, "a", "b"], {
+  const exitCode = await runEnsembleCli([script, "a", "b"], {
     cwd: directory,
     stdout,
     stderr,
@@ -53,7 +53,7 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
 });
 
 test("CLI returns non-zero and writes errors to stderr when the script throws", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-cli-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-"));
   const script = path.join(directory, "workflow.js");
   await writeFile(
     script,
@@ -66,7 +66,7 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
 
-  const exitCode = await runCodexWorkflowCli([script], {
+  const exitCode = await runEnsembleCli([script], {
     cwd: directory,
     stdout,
     stderr,
@@ -79,19 +79,19 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
 });
 
 test("CLI entrypoint runs when invoked through a symlinked binary", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-bin-"));
-  const binPath = path.join(directory, "codex-workflow");
-  const entrypointPath = fileURLToPath(new URL("../../src/cli/codex-workflow.js", import.meta.url));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-bin-"));
+  const binPath = path.join(directory, "ensemble");
+  const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   await symlink(entrypointPath, binPath);
 
   const result = spawnSync(process.execPath, [binPath], { encoding: "utf8" });
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Usage: codex-workflow <script.js> [args...]\n");
+  assert.equal(result.stderr, "Usage: ensemble <script.js> [args...]\n");
 });
 
-function fakeRuntime(): CodexRuntime {
+function fakeRuntime(): EnsembleRuntime {
   const budget: Budget = {
     total: null,
     spent: () => 0,
@@ -104,5 +104,5 @@ function fakeRuntime(): CodexRuntime {
     onEvent: () => () => {},
     agent: async (prompt: string) => prompt,
     close: async () => {}
-  } as unknown as CodexRuntime;
+  } as unknown as EnsembleRuntime;
 }

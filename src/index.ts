@@ -1,9 +1,9 @@
 import { createRuntime as createRuntimeInstance } from "./runtime.js";
 
 import type { AgentOptions, JsonSchema, RuntimeOptions } from "./types.js";
-import type { CodexRuntime } from "./runtime.js";
+import type { EnsembleRuntime } from "./runtime.js";
 
-let defaultRuntime: Promise<CodexRuntime> | null = null;
+let defaultRuntime: Promise<EnsembleRuntime> | null = null;
 
 export async function agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
 export async function agent(prompt: string, options?: AgentOptions & { schema?: undefined }): Promise<string>;
@@ -15,7 +15,7 @@ export async function agent(prompt: string, options: AgentOptions = {}): Promise
   return runtime.agent(prompt, options as AgentOptions & { schema?: undefined });
 }
 
-export async function createRuntime(options: RuntimeOptions = {}): Promise<CodexRuntime> {
+export async function createRuntime(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
   return createRuntimeInstance(options);
 }
 
@@ -28,7 +28,7 @@ export async function closeDefaultRuntime(): Promise<void> {
   await runtime.close();
 }
 
-export { CodexRuntime, defaultConcurrency } from "./runtime.js";
+export { EnsembleRuntime, defaultConcurrency } from "./runtime.js";
 export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
@@ -53,7 +53,7 @@ export type {
 } from "./types.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
-async function getDefaultRuntime(): Promise<CodexRuntime> {
+async function getDefaultRuntime(): Promise<EnsembleRuntime> {
   defaultRuntime ??= createRuntimeInstance();
   return defaultRuntime;
 }

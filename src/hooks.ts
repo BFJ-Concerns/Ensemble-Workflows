@@ -1,11 +1,11 @@
 import type { Budget } from "./types.js";
-import type { CodexRuntime } from "./runtime.js";
+import type { EnsembleRuntime } from "./runtime.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 
 export interface WorkflowRuntime {
   readonly budget: Budget;
   readonly worktrees: readonly IsolatedWorktreeRecord[];
-  agent: (...args: Parameters<CodexRuntime["agent"]>) => ReturnType<CodexRuntime["agent"]>;
+  agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
 }
 
 export type WorkflowLogSink = (message: string) => void;

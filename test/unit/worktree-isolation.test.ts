@@ -11,7 +11,7 @@ import { GitWorktreeIsolationManager } from "../../src/worktree-isolation.js";
 const execFileAsync = promisify(execFile);
 
 test("GitWorktreeIsolationManager rejects non-git cwd with a clear error", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-non-git-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-non-git-"));
   try {
     const manager = new GitWorktreeIsolationManager(directory);
     await assert.rejects(() => manager.create(), /requires cwd to be inside a git repo/);
@@ -21,12 +21,12 @@ test("GitWorktreeIsolationManager rejects non-git cwd with a clear error", async
 });
 
 test("GitWorktreeIsolationManager removes unchanged worktrees and their temporary branch", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "codex-workflow-worktree-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-"));
   const repo = path.join(directory, "repo");
   await mkdir(repo);
   await git(repo, ["init"]);
-  await git(repo, ["config", "user.email", "codex-workflows@example.invalid"]);
-  await git(repo, ["config", "user.name", "Codex Workflows Test"]);
+  await git(repo, ["config", "user.email", "ensemble-workflows@example.invalid"]);
+  await git(repo, ["config", "user.name", "Ensemble Workflows Test"]);
   await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
   await git(repo, ["add", "README.md"]);
   await git(repo, ["commit", "-m", "initial"]);

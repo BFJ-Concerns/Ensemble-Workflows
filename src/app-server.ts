@@ -433,7 +433,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         id,
         result: {
           decision: "denied",
-          reason: "Codex-Workflows workers run with approvalPolicy never"
+          reason: "Ensemble workers run with approvalPolicy never"
         }
       })
     );

@@ -25,7 +25,7 @@ import type {
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
-export class CodexRuntime {
+export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly scheduler: Scheduler;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
@@ -53,20 +53,20 @@ export class CodexRuntime {
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
   }
 
-  static async create(options: RuntimeOptions = {}): Promise<CodexRuntime> {
-    let runtime: CodexRuntime | null = null;
+  static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
+    let runtime: EnsembleRuntime | null = null;
     const transport = await CodexAppServerTransport.start({
       cwd: options.cwd ?? process.cwd(),
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
-      clientName: options.clientName ?? "codex-workflows",
+      clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
       onEvent: (event) => {
         runtime?.handleTransportEvent(event);
       }
     });
 
-    runtime = new CodexRuntime({
+    runtime = new EnsembleRuntime({
       transport,
       concurrency: options.concurrency ?? defaultConcurrency(),
       budgetTotal: options.budgetTotal ?? null,
@@ -99,7 +99,7 @@ export class CodexRuntime {
   async agent(prompt: string, options?: AgentOptions & { schema?: undefined }): Promise<string>;
   async agent(prompt: string, options: AgentOptions = {}): Promise<string | unknown | null> {
     if (this.#closed) {
-      throw new Error("CodexRuntime is closed");
+      throw new Error("EnsembleRuntime is closed");
     }
 
     return this.scheduler.schedule(() => this.#runAgent(prompt, options));
@@ -230,8 +230,8 @@ export class CodexRuntime {
   }
 }
 
-export async function createRuntime(options: RuntimeOptions = {}): Promise<CodexRuntime> {
-  return CodexRuntime.create(options);
+export async function createRuntime(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
+  return EnsembleRuntime.create(options);
 }
 
 export function defaultConcurrency(): number {

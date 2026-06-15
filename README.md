@@ -1,4 +1,4 @@
-# Codex-Workflows
+# Ensemble
 
 A deterministic multi-agent orchestration harness for OpenAI Codex, mirroring
 Claude Code's `Workflow` tool. An LLM (most often Claude) authors a JavaScript
@@ -11,11 +11,11 @@ retry/verify, budget tracking, and worktree isolation.
 and bounded retry, schedules concurrent workers under a self-imposed cap,
 accounts for token budget, and offers the full script surface — `parallel()`,
 `pipeline()`, a `node:vm` restricted-globals sandbox, and `isolation:'worktree'`
-for writable parallel agents — driven by the `codex-workflow <script.js> [args]`
+for writable parallel agents — driven by the `ensemble <script.js> [args]`
 CLI (result JSON on stdout, logs on stderr, non-zero exit on a thrown script).
 
 ```bash
-codex-workflow my-workflow.js > result.json 2> run.log
+ensemble my-workflow.js > result.json 2> run.log
 ```
 
 The agent skill teaching the hooks API and the invoke pattern is maintained

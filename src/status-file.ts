@@ -1,0 +1,104 @@
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
+
+import type { ProgressSnapshot, RunProgress } from "./progress.js";
+
+/** Filename the writer publishes to and the statusline reader consumes. */
+export const STATUS_FILENAME = "latest.json";
+
+export interface StatusFileWriterOptions {
+  progress: RunProgress;
+  /** Directory to publish the snapshot into; created on first write. */
+  dir: string;
+  /** Notified on write failure. Defaults to swallowing — status never breaks a run. */
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * Serialises a {@link RunProgress} model to a single `latest.json` on every
+ * change, so a statusline command can render what the run is doing.
+ *
+ * Two guarantees matter:
+ *
+ * - **Atomic.** Each publish writes a temp file and renames it over the target,
+ *   so a reader never sees a half-written snapshot.
+ * - **Coalesced.** At most one write is ever in flight; changes that land
+ *   during a write collapse into a single trailing write of the latest state.
+ *   The file write itself is the throttle — no timer, no unbounded queue.
+ *
+ * Write failures are routed to `onError` and otherwise swallowed: observability
+ * must never take a run down with it.
+ */
+export class StatusFileWriter {
+  #progress: RunProgress;
+  #dir: string;
+  #onError: ((error: unknown) => void) | undefined;
+  #unsubscribe: () => void;
+
+  #writing: Promise<void> | null = null;
+  #dirty = false;
+  #closed = false;
+  #ensuredDir = false;
+  #tmpSeq = 0;
+
+  constructor(options: StatusFileWriterOptions) {
+    this.#progress = options.progress;
+    this.#dir = options.dir;
+    this.#onError = options.onError;
+    this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    // Publish an initial snapshot so the run shows up before its first agent.
+    this.#request();
+  }
+
+  /** Flushes the final (typically `finished`) snapshot and stops listening. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    this.#unsubscribe();
+    this.#dirty = true;
+    this.#drain();
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
+  }
+
+  #request(): void {
+    // Once closed, only close()'s own final flush may publish.
+    if (this.#closed) {
+      return;
+    }
+    this.#dirty = true;
+    this.#drain();
+  }
+
+  #drain(): void {
+    if (this.#writing !== null || !this.#dirty) {
+      return;
+    }
+    this.#dirty = false;
+    this.#writing = this.#write().finally(() => {
+      this.#writing = null;
+      // A change that arrived mid-write left `#dirty` set; publish the latest.
+      this.#drain();
+    });
+  }
+
+  async #write(): Promise<void> {
+    try {
+      await this.#writeAtomic(this.#progress.snapshot());
+    } catch (error) {
+      this.#onError?.(error);
+    }
+  }
+
+  async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
+    if (!this.#ensuredDir) {
+      await mkdir(this.#dir, { recursive: true });
+      this.#ensuredDir = true;
+    }
+    const target = path.join(this.#dir, STATUS_FILENAME);
+    // pid + sequence keep concurrent runs' temp files from colliding.
+    const tmp = `${target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
+    await rename(tmp, target);
+  }
+}

@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path5) {
-      let input = path5;
+    function removeDotSegments(path8) {
+      let input = path8;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path5, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path5 && path5 !== "/" ? path5 : void 0;
+        const [path8, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6570,13 +6570,17 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path4 from "node:path";
+import { homedir as homedir2 } from "node:os";
+import path7 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile2 } from "node:fs/promises";
-import path3 from "node:path";
+import { readFile as readFile3 } from "node:fs/promises";
+import path6 from "node:path";
 import { parseArgs } from "node:util";
+
+// src/runtime.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/errors.ts
 var EnsembleError = class extends Error {
@@ -6736,6 +6740,198 @@ function numericField(source, key) {
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/progress.ts
+var ENGINE_NAMES = ["codex", "claude"];
+var MAX_AGENTS_IN_SNAPSHOT = 64;
+var RunProgress = class {
+  runId;
+  #budget;
+  #now;
+  #pid;
+  #workflow = null;
+  #currentPhase = null;
+  #state = "running";
+  #startedAt;
+  #updatedAt;
+  #finishedAt = null;
+  #nextAgentId = 0;
+  #live = /* @__PURE__ */ new Map();
+  #engines = /* @__PURE__ */ new Map();
+  #listeners = /* @__PURE__ */ new Set();
+  constructor(options) {
+    this.runId = options.runId;
+    this.#budget = options.budget;
+    this.#now = options.now ?? (() => Date.now());
+    this.#pid = options.pid ?? process.pid;
+    this.#startedAt = this.#now();
+    this.#updatedAt = this.#startedAt;
+    for (const engine of ENGINE_NAMES) {
+      this.#engines.set(engine, { cap: null, active: 0, queued: 0, done: 0, failed: 0 });
+    }
+  }
+  /** Records an engine's concurrency cap so the snapshot can show saturation. */
+  registerEngine(engine, cap) {
+    this.#counters(engine).cap = cap;
+    this.#touch();
+  }
+  setWorkflow(name) {
+    this.#workflow = name;
+    this.#touch();
+  }
+  setPhase(title) {
+    this.#currentPhase = title;
+    this.#touch();
+  }
+  /**
+   * Registers a worker as queued and returns its id. The phase is captured at
+   * queue time: an explicit `phase` wins, otherwise the run's current phase.
+   */
+  queueAgent(input) {
+    const id = this.#nextAgentId += 1;
+    this.#live.set(id, {
+      id,
+      engine: input.engine,
+      label: input.label,
+      phase: input.phase ?? this.#currentPhase,
+      state: "queued",
+      attempt: 1
+    });
+    this.#counters(input.engine).queued += 1;
+    this.#touch();
+    return id;
+  }
+  /** Moves a queued worker into the running state (a scheduler slot freed up). */
+  startAgent(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "queued") {
+      return;
+    }
+    record.state = "running";
+    const counters = this.#counters(record.engine);
+    counters.queued -= 1;
+    counters.active += 1;
+    this.#touch();
+  }
+  /** Updates a running worker's attempt number (retry / in-session correction). */
+  noteAttempt(id, attempt) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.attempt === attempt) {
+      return;
+    }
+    record.attempt = attempt;
+    this.#touch();
+  }
+  /** Retires a worker, tallying it as done or failed and freeing its slot. */
+  settleAgent(id, outcome) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    this.#live.delete(id);
+    const counters = this.#counters(record.engine);
+    if (record.state === "running") {
+      counters.active -= 1;
+    } else {
+      counters.queued -= 1;
+    }
+    if (outcome === "done") {
+      counters.done += 1;
+    } else {
+      counters.failed += 1;
+    }
+    this.#touch();
+  }
+  /** Marks the run finished. The serialiser writes one final snapshot after. */
+  finish() {
+    if (this.#state === "finished") {
+      return;
+    }
+    this.#state = "finished";
+    this.#finishedAt = this.#now();
+    this.#touch();
+  }
+  /**
+   * Refreshes the change stamp without a state transition — used when token
+   * usage lands, so the snapshot's spend figures stay current and subscribers
+   * re-serialise.
+   */
+  markChanged() {
+    this.#touch();
+  }
+  onChange(listener) {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+  snapshot() {
+    const engines = {};
+    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    for (const engine of ENGINE_NAMES) {
+      const counters = this.#counters(engine);
+      const remaining = this.#budget.remaining(engine);
+      engines[engine] = {
+        cap: counters.cap,
+        active: counters.active,
+        queued: counters.queued,
+        done: counters.done,
+        failed: counters.failed,
+        spent: this.#budget.spent(engine),
+        ceiling: this.#budget.ceilings[engine],
+        remaining: Number.isFinite(remaining) ? remaining : null
+      };
+      totals.active += counters.active;
+      totals.queued += counters.queued;
+      totals.done += counters.done;
+      totals.failed += counters.failed;
+    }
+    return {
+      schema: 1,
+      runId: this.runId,
+      pid: this.#pid,
+      workflow: this.#workflow,
+      state: this.#state,
+      startedAt: this.#startedAt,
+      updatedAt: this.#updatedAt,
+      finishedAt: this.#finishedAt,
+      currentPhase: this.#currentPhase,
+      totals,
+      engines,
+      agents: this.#liveAgents()
+    };
+  }
+  #liveAgents() {
+    const records = [...this.#live.values()];
+    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
+    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+      id: record.id,
+      engine: record.engine,
+      label: record.label,
+      phase: record.phase,
+      state: record.state,
+      attempt: record.attempt
+    }));
+  }
+  #counters(engine) {
+    const counters = this.#engines.get(engine);
+    if (counters === void 0) {
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      this.#engines.set(engine, fresh);
+      return fresh;
+    }
+    return counters;
+  }
+  #touch() {
+    this.#updatedAt = this.#now();
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+};
+function rank(state) {
+  return state === "running" ? 0 : 1;
 }
 
 // src/engines.ts
@@ -7344,12 +7540,12 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscript(path5) {
+async function readTranscript(path8) {
   let text;
   try {
-    text = await readFile(path5, "utf8");
+    text = await readFile(path8, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path5}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path8}`, { cause: error });
   }
   return parseTranscriptText(text);
 }
@@ -7594,11 +7790,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path5 = await this.#controlPlane.transcriptPath(handle);
-    if (path5 === null) {
+    const path8 = await this.#controlPlane.transcriptPath(handle);
+    if (path8 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscript(path5);
+    return readTranscript(path8);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -8085,6 +8281,8 @@ function extractBalancedJson(source, open, close) {
 var EnsembleRuntime = class _EnsembleRuntime {
   budget;
   worktrees = [];
+  /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
+  progress;
   #engines;
   #defaultTurnTimeoutMs;
   #defaultMaxAttempts;
@@ -8092,6 +8290,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #closed = false;
   constructor(options) {
     this.budget = new TokenBudget(options.budgetCeilings);
+    this.progress = new RunProgress({
+      runId: options.runId ?? randomUUID3(),
+      budget: this.budget,
+      ...options.now !== void 0 ? { now: options.now } : {}
+    });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     this.#engines = options.engines ?? new EngineRegistry([
@@ -8106,6 +8309,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {}
       })
     ]);
+    this.#registerEngineCaps();
   }
   static async create(options = {}) {
     let runtime = null;
@@ -8146,11 +8350,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.#eventListeners.delete(listener);
     };
   }
+  /** Sets the run's current phase. Driven by the script's `phase()` hook. */
+  notePhase(title) {
+    this.progress.setPhase(title);
+  }
   handleEngineEvent(engine, event) {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
       if (usageEvent !== null) {
         this.budget.record(engine, usageEvent);
+        this.progress.markChanged();
       }
     }
     this.#emitEvent(event);
@@ -8163,28 +8372,44 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new Error("EnsembleRuntime is closed");
     }
     const engine = this.#engineFor(options.engine);
-    return engine.schedule(() => this.#runAgent(engine, prompt, options));
+    const agentId = this.progress.queueAgent({
+      engine: engine.name,
+      label: options.label ?? null,
+      phase: options.phase ?? null
+    });
+    return engine.schedule(async () => {
+      this.progress.startAgent(agentId);
+      try {
+        const result = await this.#runAgent(engine, prompt, options, agentId);
+        this.progress.settleAgent(agentId, result === null ? "failed" : "done");
+        return result;
+      } catch (error) {
+        this.progress.settleAgent(agentId, "failed");
+        throw error;
+      }
+    });
   }
   async close() {
     this.#closed = true;
     await this.#engines.close();
   }
-  async #runAgent(engine, prompt, options) {
+  async #runAgent(engine, prompt, options, agentId) {
     const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
     try {
       if (options.schema !== void 0) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema });
+        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId);
       }
-      return await this.#runTextAgent(engine.name, invocation, options);
+      return await this.#runTextAgent(engine.name, invocation, options, agentId);
     } finally {
       await invocation.close?.();
     }
   }
-  async #runTextAgent(engine, invocation, options) {
+  async #runTextAgent(engine, invocation, options, agentId) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError = null;
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
@@ -8209,10 +8434,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
   }
-  async #runSchemaAgent(engine, invocation, options) {
+  async #runSchemaAgent(engine, invocation, options, agentId) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
@@ -8246,6 +8472,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #emitEvent(event) {
     for (const listener of this.#eventListeners) {
       listener(event);
+    }
+  }
+  #registerEngineCaps() {
+    for (const name of ["codex", "claude"]) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== void 0) {
+        this.progress.registerEngine(name, adapter.concurrency);
+      }
     }
   }
   #engineFor(engine) {
@@ -8296,6 +8530,7 @@ function createWorkflowHooks(options) {
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
     phase: (title) => {
+      options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
     },
     log: (message) => {
@@ -8373,9 +8608,11 @@ async function runWorkflowScript(options) {
   });
   const runResult = script.runInContext(context, { timeout: timeoutMs });
   const resultRecord = asResultRecord(runResult);
+  const meta = normaliseVmValue(resultRecord.meta);
+  options.onMeta?.(meta);
   const result = await withTimeout(resultRecord.promise, timeoutMs);
   return {
-    meta: normaliseVmValue(resultRecord.meta),
+    meta,
     result: normaliseVmValue(result)
   };
 }
@@ -8557,6 +8794,197 @@ function skipBlockComment(source, start) {
   return end + 2;
 }
 
+// src/status-file.ts
+import { mkdir as mkdir2, rename, writeFile } from "node:fs/promises";
+import path3 from "node:path";
+var STATUS_FILENAME = "latest.json";
+var StatusFileWriter = class {
+  #progress;
+  #dir;
+  #onError;
+  #unsubscribe;
+  #writing = null;
+  #dirty = false;
+  #closed = false;
+  #ensuredDir = false;
+  #tmpSeq = 0;
+  constructor(options) {
+    this.#progress = options.progress;
+    this.#dir = options.dir;
+    this.#onError = options.onError;
+    this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    this.#request();
+  }
+  /** Flushes the final (typically `finished`) snapshot and stops listening. */
+  async close() {
+    this.#closed = true;
+    this.#unsubscribe();
+    this.#dirty = true;
+    this.#drain();
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
+  }
+  #request() {
+    if (this.#closed) {
+      return;
+    }
+    this.#dirty = true;
+    this.#drain();
+  }
+  #drain() {
+    if (this.#writing !== null || !this.#dirty) {
+      return;
+    }
+    this.#dirty = false;
+    this.#writing = this.#write().finally(() => {
+      this.#writing = null;
+      this.#drain();
+    });
+  }
+  async #write() {
+    try {
+      await this.#writeAtomic(this.#progress.snapshot());
+    } catch (error) {
+      this.#onError?.(error);
+    }
+  }
+  async #writeAtomic(snapshot) {
+    if (!this.#ensuredDir) {
+      await mkdir2(this.#dir, { recursive: true });
+      this.#ensuredDir = true;
+    }
+    const target = path3.join(this.#dir, STATUS_FILENAME);
+    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(snapshot)}
+`, "utf8");
+    await rename(tmp, target);
+  }
+};
+
+// src/status-config.ts
+import path4 from "node:path";
+var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
+function resolveStatusDir(env, homedir3) {
+  const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
+  if (DISABLED_VALUES.has(toggle)) {
+    return null;
+  }
+  const explicit = env.ENSEMBLE_STATUS_DIR?.trim();
+  if (explicit !== void 0 && explicit.length > 0) {
+    return explicit;
+  }
+  const stateHome = env.XDG_STATE_HOME?.trim();
+  const base = stateHome !== void 0 && stateHome.length > 0 ? stateHome : path4.join(homedir3, ".local", "state");
+  return path4.join(base, "ensemble", "status");
+}
+
+// src/status-line.ts
+import { readFile as readFile2 } from "node:fs/promises";
+import path5 from "node:path";
+var STALE_MS = 3e4;
+var ENGINE_NAMES2 = ["codex", "claude"];
+function formatStatusLine(snapshot, nowMs) {
+  const parts = ["ensemble"];
+  const head = snapshot.currentPhase ?? snapshot.workflow;
+  if (head !== null && head.length > 0) {
+    parts.push(`\u25B8 ${head}`);
+  }
+  for (const engine of ENGINE_NAMES2) {
+    const segment = engineSegment(engine, snapshot.engines[engine]);
+    if (segment !== null) {
+      parts.push(segment);
+    }
+  }
+  const { done, failed } = snapshot.totals;
+  if (done > 0 || failed > 0) {
+    parts.push(failed > 0 ? `\u2713${done} \u2717${failed}` : `\u2713${done}`);
+  }
+  const endedAt = snapshot.finishedAt ?? nowMs;
+  parts.push(formatDuration(Math.max(0, endedAt - snapshot.startedAt)));
+  return parts.join(" \xB7 ");
+}
+async function readStatusLine(dir, now) {
+  if (dir === null || dir.length === 0) {
+    return null;
+  }
+  let raw;
+  try {
+    raw = await readFile2(path5.join(dir, STATUS_FILENAME), "utf8");
+  } catch {
+    return null;
+  }
+  let snapshot;
+  try {
+    snapshot = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isProgressSnapshot(snapshot)) {
+    return null;
+  }
+  const nowMs = now();
+  if (snapshot.state === "finished") {
+    return null;
+  }
+  if (nowMs - snapshot.updatedAt > STALE_MS) {
+    return null;
+  }
+  return formatStatusLine(snapshot, nowMs);
+}
+function engineSegment(engine, progress) {
+  if (progress === void 0) {
+    return null;
+  }
+  const busy = progress.active > 0 || progress.queued > 0;
+  const spent = progress.spent > 0;
+  if (!busy && !spent) {
+    return null;
+  }
+  let segment = engine;
+  if (busy) {
+    segment += ` \u26A1${progress.active}`;
+    if (progress.queued > 0) {
+      segment += `\u23F3${progress.queued}`;
+    }
+  }
+  if (spent) {
+    segment += ` ${formatTokens(progress.spent)}`;
+    if (progress.ceiling !== null) {
+      segment += `/${formatTokens(progress.ceiling)}`;
+    }
+  }
+  return segment;
+}
+function formatTokens(tokens) {
+  if (tokens < 1e3) {
+    return String(tokens);
+  }
+  const thousands = tokens / 1e3;
+  return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+}
+function formatDuration(ms) {
+  const totalSeconds = Math.floor(ms / 1e3);
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  if (hours > 0) {
+    return `${hours}h${String(minutes).padStart(2, "0")}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+}
+function isProgressSnapshot(value) {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value;
+  return candidate.schema === 1 && typeof candidate.runId === "string" && (candidate.state === "running" || candidate.state === "finished") && typeof candidate.startedAt === "number" && typeof candidate.updatedAt === "number" && typeof candidate.totals === "object" && candidate.totals !== null && typeof candidate.engines === "object" && candidate.engines !== null;
+}
+
 // src/index.ts
 async function createRuntime2(options = {}) {
   return createRuntime(options);
@@ -8567,6 +8995,14 @@ async function runEnsembleCli(argv, options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
+  if (argv.includes("--statusline")) {
+    const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
+    if (line !== null) {
+      stdout.write(`${line}
+`);
+    }
+    return 0;
+  }
   let invocation;
   try {
     invocation = parseInvocation(argv);
@@ -8581,14 +9017,28 @@ async function runEnsembleCli(argv, options = {}) {
     return 2;
   }
   let runtime = null;
+  let progress;
+  let statusWriter = null;
   try {
-    const scriptPath = path3.resolve(cwd, invocation.scriptArg);
-    const source = await readFile2(scriptPath, "utf8");
+    const scriptPath = path6.resolve(cwd, invocation.scriptArg);
+    const source = await readFile3(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
     });
+    progress = runtime.progress;
+    const statusDir = options.statusDir ?? null;
+    if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
+      statusWriter = new StatusFileWriter({
+        progress,
+        dir: statusDir,
+        onError: (error) => {
+          stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
+`);
+        }
+      });
+    }
     runtime.onEvent((event) => {
       if (event.method !== "worktree/finished" || event.params.changed !== true) {
         return;
@@ -8606,7 +9056,8 @@ async function runEnsembleCli(argv, options = {}) {
       log: (message) => {
         stderr.write(`${message}
 `);
-      }
+      },
+      ...progress !== void 0 ? { onMeta: (meta) => progress?.setWorkflow(workflowName(meta)) } : {}
     };
     const { result } = await runWorkflowScript(
       options.timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs: options.timeoutMs }
@@ -8619,10 +9070,21 @@ async function runEnsembleCli(argv, options = {}) {
 `);
     return 1;
   } finally {
+    progress?.finish();
+    if (statusWriter !== null) {
+      await statusWriter.close();
+    }
     if (runtime !== null) {
       await runtime.close();
     }
   }
+}
+function workflowName(meta) {
+  if (typeof meta === "object" && meta !== null && "name" in meta) {
+    const name = meta.name;
+    return typeof name === "string" ? name : null;
+  }
+  return null;
 }
 var CliUsageError = class extends Error {
   constructor(message) {
@@ -8759,8 +9221,10 @@ function formatError2(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path4.resolve(process.argv[1])) === fileURLToPath(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path7.resolve(process.argv[1])) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const exitCode = await runEnsembleCli(process.argv.slice(2));
+  const exitCode = await runEnsembleCli(process.argv.slice(2), {
+    statusDir: resolveStatusDir(process.env, homedir2())
+  });
   process.exitCode = exitCode;
 }

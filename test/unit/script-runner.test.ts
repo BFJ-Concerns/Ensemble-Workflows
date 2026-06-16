@@ -13,7 +13,8 @@ const runtime: WorkflowRuntime = {
   worktrees: [],
   async agent(prompt: string) {
     return `agent:${prompt}`;
-  }
+  },
+  notePhase: () => {}
 };
 
 test("runs a script with hooks as globals and captures its return value", async () => {

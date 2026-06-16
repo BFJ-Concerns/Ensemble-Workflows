@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import {
   AppServerBackpressureError,
@@ -5,6 +7,7 @@ import {
   MissingEngineError,
   UnknownEngineError
 } from "./errors.js";
+import { RunProgress } from "./progress.js";
 import {
   ClaudeEngineAdapter,
   CodexEngineAdapter,
@@ -34,6 +37,8 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
+  /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
+  readonly progress: RunProgress;
 
   #engines: EngineRegistry;
   #defaultTurnTimeoutMs: number;
@@ -49,8 +54,15 @@ export class EnsembleRuntime {
     defaultTurnTimeoutMs: number;
     defaultMaxAttempts: number;
     worktreeManager?: WorktreeIsolationManager;
+    runId?: string;
+    now?: () => number;
   }) {
     this.budget = new TokenBudget(options.budgetCeilings);
+    this.progress = new RunProgress({
+      runId: options.runId ?? randomUUID(),
+      budget: this.budget,
+      ...(options.now !== undefined ? { now: options.now } : {})
+    });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     this.#engines =
@@ -67,6 +79,7 @@ export class EnsembleRuntime {
           ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {})
         })
       ]);
+    this.#registerEngineCaps();
   }
 
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
@@ -112,11 +125,18 @@ export class EnsembleRuntime {
     };
   }
 
+  /** Sets the run's current phase. Driven by the script's `phase()` hook. */
+  notePhase(title: string): void {
+    this.progress.setPhase(title);
+  }
+
   handleEngineEvent(engine: EngineName, event: RuntimeEvent): void {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
       if (usageEvent !== null) {
         this.budget.record(engine, usageEvent);
+        // Refresh the live view so its spend figures track each turn's usage.
+        this.progress.markChanged();
       }
     }
 
@@ -135,7 +155,23 @@ export class EnsembleRuntime {
     }
 
     const engine = this.#engineFor(options.engine);
-    return engine.schedule(() => this.#runAgent(engine, prompt, options));
+    const agentId = this.progress.queueAgent({
+      engine: engine.name,
+      label: options.label ?? null,
+      phase: options.phase ?? null
+    });
+    return engine.schedule(async () => {
+      this.progress.startAgent(agentId);
+      try {
+        const result = await this.#runAgent(engine, prompt, options, agentId);
+        // A schema agent that exhausts its retries returns null: a graceful failure.
+        this.progress.settleAgent(agentId, result === null ? "failed" : "done");
+        return result;
+      } catch (error) {
+        this.progress.settleAgent(agentId, "failed");
+        throw error;
+      }
+    });
   }
 
   async close(): Promise<void> {
@@ -143,24 +179,35 @@ export class EnsembleRuntime {
     await this.#engines.close();
   }
 
-  async #runAgent(engine: EngineAdapter, prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
+  async #runAgent(
+    engine: EngineAdapter,
+    prompt: string,
+    options: Partial<AgentOptions>,
+    agentId: number
+  ): Promise<string | unknown | null> {
     const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
     try {
       if (options.schema !== undefined) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema });
+        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId);
       }
-      return await this.#runTextAgent(engine.name, invocation, options);
+      return await this.#runTextAgent(engine.name, invocation, options, agentId);
     } finally {
       await invocation.close?.();
     }
   }
 
-  async #runTextAgent(engine: EngineName, invocation: EngineInvocation, options: Partial<AgentOptions>): Promise<string> {
+  async #runTextAgent(
+    engine: EngineName,
+    invocation: EngineInvocation,
+    options: Partial<AgentOptions>,
+    agentId: number
+  ): Promise<string> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError: Error | null = null;
     let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
@@ -190,12 +237,14 @@ export class EnsembleRuntime {
   async #runSchemaAgent(
     engine: EngineName,
     invocation: EngineInvocation,
-    options: Partial<AgentOptions> & { schema: JsonSchema }
+    options: Partial<AgentOptions> & { schema: JsonSchema },
+    agentId: number
   ): Promise<unknown | null> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
@@ -232,6 +281,15 @@ export class EnsembleRuntime {
   #emitEvent(event: RuntimeEvent): void {
     for (const listener of this.#eventListeners) {
       listener(event);
+    }
+  }
+
+  #registerEngineCaps(): void {
+    for (const name of ["codex", "claude"] as const) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== undefined) {
+        this.progress.registerEngine(name, adapter.concurrency);
+      }
     }
   }
 

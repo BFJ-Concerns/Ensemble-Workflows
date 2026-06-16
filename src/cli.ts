@@ -4,7 +4,10 @@ import { parseArgs } from "node:util";
 
 import { createRuntime } from "./index.js";
 import { runWorkflowScript } from "./script-runner.js";
+import { StatusFileWriter } from "./status-file.js";
+import { readStatusLine } from "./status-line.js";
 
+import type { RunProgress } from "./progress.js";
 import type { EnsembleRuntime } from "./runtime.js";
 import type { EngineBudgetCeilings, EngineConcurrencyCaps, EngineName } from "./types.js";
 import type { Writable } from "node:stream";
@@ -15,12 +18,30 @@ export interface EnsembleCliOptions {
   stderr?: Writable;
   createRuntime?: typeof createRuntime;
   timeoutMs?: number;
+  /**
+   * Directory for the live status side-channel. A non-empty string enables
+   * writing the run's snapshot (and is the directory `--statusline` reads).
+   * `null`/`undefined` disables it. Resolved from the environment at the bin.
+   */
+  statusDir?: string | null;
+  /** Injectable clock for the `--statusline` reader; defaults to `Date.now`. */
+  now?: () => number;
 }
 
 export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
+
+  // Statusline mode: render the latest run's snapshot as one line and exit.
+  // This is what a Claude Code statusLine command invokes; it never starts a run.
+  if (argv.includes("--statusline")) {
+    const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
+    if (line !== null) {
+      stdout.write(`${line}\n`);
+    }
+    return 0;
+  }
 
   let invocation: ParsedInvocation;
   try {
@@ -37,6 +58,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   let runtime: EnsembleRuntime | null = null;
+  let progress: RunProgress | undefined;
+  let statusWriter: StatusFileWriter | null = null;
 
   try {
     const scriptPath = path.resolve(cwd, invocation.scriptArg);
@@ -46,6 +69,20 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
     });
+    // Injected test runtimes may not carry a progress model; read it defensively.
+    progress = (runtime as { progress?: RunProgress }).progress;
+
+    const statusDir = options.statusDir ?? null;
+    if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
+      statusWriter = new StatusFileWriter({
+        progress,
+        dir: statusDir,
+        onError: (error) => {
+          stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
+        }
+      });
+    }
+
     runtime.onEvent((event) => {
       if (event.method !== "worktree/finished" || event.params.changed !== true) {
         return;
@@ -61,7 +98,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       args: invocation.args,
       log: (message: string) => {
         stderr.write(`${message}\n`);
-      }
+      },
+      ...(progress !== undefined
+        ? { onMeta: (meta: unknown) => progress?.setWorkflow(workflowName(meta)) }
+        : {})
     };
     const { result } = await runWorkflowScript(
       options.timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs: options.timeoutMs }
@@ -73,10 +113,23 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
+    // Mark the run done and flush the final snapshot before tearing down.
+    progress?.finish();
+    if (statusWriter !== null) {
+      await statusWriter.close();
+    }
     if (runtime !== null) {
       await runtime.close();
     }
   }
+}
+
+function workflowName(meta: unknown): string | null {
+  if (typeof meta === "object" && meta !== null && "name" in meta) {
+    const name = (meta as { name?: unknown }).name;
+    return typeof name === "string" ? name : null;
+  }
+  return null;
 }
 
 interface ParsedInvocation {

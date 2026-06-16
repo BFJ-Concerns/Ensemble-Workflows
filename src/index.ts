@@ -34,7 +34,19 @@ export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter } from "./engin
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
+export { RunProgress } from "./progress.js";
+export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
+export { resolveStatusDir } from "./status-config.js";
+export { formatStatusLine, readStatusLine } from "./status-line.js";
 export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
+export type {
+  AgentState,
+  BudgetView,
+  EngineProgressSnapshot,
+  LiveAgentSnapshot,
+  ProgressSnapshot,
+  RunProgressOptions
+} from "./progress.js";
 export type {
   AgentOptions,
   Budget,

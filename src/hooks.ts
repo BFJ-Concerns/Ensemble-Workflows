@@ -6,6 +6,7 @@ export interface WorkflowRuntime {
   readonly budget: Budget;
   readonly worktrees: readonly IsolatedWorktreeRecord[];
   agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
+  notePhase: (title: string) => void;
 }
 
 export type WorkflowLogSink = (message: string) => void;
@@ -38,6 +39,7 @@ export function createWorkflowHooks(options: {
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
     phase: (title) => {
+      options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
     },
     log: (message) => {

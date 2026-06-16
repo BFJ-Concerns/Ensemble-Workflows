@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -12,8 +12,10 @@ import { EngineRegistry } from "../../src/engines.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
+import { formatStatusLine } from "../../src/status-line.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
+import type { ProgressSnapshot } from "../../src/progress.js";
 import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
 
 class CaptureStream extends Writable {
@@ -223,6 +225,92 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
     result.stderr,
     "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] <script.js> [args...]\n"
   );
+});
+
+test("CLI --statusline prints the latest run's snapshot as one line", async () => {
+  const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-"));
+  const snapshot: ProgressSnapshot = {
+    schema: 1,
+    runId: "run-z",
+    pid: 1,
+    workflow: "demo",
+    state: "running",
+    startedAt: 0,
+    updatedAt: 10_000,
+    finishedAt: null,
+    currentPhase: "collect",
+    totals: { active: 2, queued: 0, done: 0, failed: 0 },
+    engines: {
+      codex: { cap: 4, active: 2, queued: 0, done: 0, failed: 0, spent: 0, ceiling: null, remaining: null },
+      claude: { cap: 8, active: 0, queued: 0, done: 0, failed: 0, spent: 0, ceiling: null, remaining: null }
+    },
+    agents: []
+  };
+  await writeFile(path.join(statusDir, "latest.json"), `${JSON.stringify(snapshot)}\n`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--statusline"], { statusDir, stdout, stderr, now: () => 12_000 });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.text(), "");
+  assert.equal(stdout.text(), `${formatStatusLine(snapshot, 12_000)}\n`);
+});
+
+test("CLI --statusline prints nothing when no run is active", async () => {
+  const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-empty-"));
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--statusline"], { statusDir, stdout, stderr, now: () => 0 });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.text(), "");
+  assert.equal(stderr.text(), "");
+});
+
+test("CLI publishes a finished status snapshot to statusDir after a run", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-run-"));
+  const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-dir-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "status-run" };
+      phase("work");
+      await parallel([
+        () => agent("a", { engine: "codex" }),
+        () => agent("b", { engine: "codex" })
+      ]);
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    statusDir,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new ScheduledTextEngine("codex", 2), new ScheduledTextEngine("claude", 2)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const snapshot = JSON.parse(await readFile(path.join(statusDir, "latest.json"), "utf8")) as ProgressSnapshot;
+  assert.equal(snapshot.workflow, "status-run");
+  assert.equal(snapshot.state, "finished");
+  assert.equal(snapshot.currentPhase, "work");
+  assert.equal(snapshot.totals.done, 2);
+  assert.equal(snapshot.engines.codex.done, 2);
+  assert.equal(snapshot.engines.codex.cap, 2);
 });
 
 function fakeRuntime(): EnsembleRuntime {

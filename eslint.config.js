@@ -18,6 +18,7 @@ export default tseslint.config(
     }
   },
   {
-    ignores: ["dist/**", "node_modules/**"]
+    // Generated build output: the tsc dist tree and the esbuild skill bundle.
+    ignores: ["dist/**", "node_modules/**", "skills/**/bin/**"]
   }
 );

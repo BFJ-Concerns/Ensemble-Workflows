@@ -991,7 +991,7 @@ async function runScript(
   const transport = new ScriptedTransport(responses, directory);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 8,
+    concurrencyCaps: { codex: 8 },
     ...(runtimeOptions.budgetCeilings !== undefined ? { budgetCeilings: runtimeOptions.budgetCeilings } : {}),
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 3

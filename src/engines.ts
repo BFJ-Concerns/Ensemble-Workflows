@@ -15,6 +15,7 @@ import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type {
   EngineName,
+  EngineConcurrencyCaps,
   JsonSchema,
   RuntimeEvent,
   RuntimeTransport,
@@ -274,7 +275,7 @@ export interface CreateDefaultEngineRegistryOptions {
   requestTimeoutMs: number;
   clientName: string;
   clientVersion: string;
-  codexConcurrency?: number;
+  concurrencyCaps?: EngineConcurrencyCaps;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
@@ -295,12 +296,13 @@ export async function createDefaultEngineRegistry(
   return new EngineRegistry([
     new CodexEngineAdapter({
       transport,
-      concurrency: options.codexConcurrency ?? defaultCodexConcurrency(),
+      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
       onEvent: options.onEvent,
       onWorktreeFinished: options.onWorktreeFinished
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
+      ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
       onEvent: options.onClaudeEvent

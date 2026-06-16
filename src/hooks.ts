@@ -21,12 +21,12 @@ export interface WorkflowHooks {
   log: (message: string) => void;
   budget: Budget;
   worktrees: readonly IsolatedWorktreeRecord[];
-  args: string[];
+  args: unknown;
 }
 
 export function createWorkflowHooks(options: {
   runtime: WorkflowRuntime;
-  args: string[];
+  args: unknown;
   log: WorkflowLogSink;
 }): WorkflowHooks {
   const writeLog = (message: string): void => {
@@ -45,7 +45,7 @@ export function createWorkflowHooks(options: {
     },
     budget: options.runtime.budget,
     worktrees: options.runtime.worktrees,
-    args: [...options.args]
+    args: Array.isArray(options.args) ? [...options.args] : options.args
   };
 }
 

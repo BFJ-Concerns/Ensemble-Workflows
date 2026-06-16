@@ -6,6 +6,7 @@ export type IsolationMode = "worktree";
 export type SandboxMode = "read-only" | "workspace-write";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
+export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
 
 export interface AgentOptions {
   engine: EngineName;
@@ -24,7 +25,7 @@ export interface AgentOptions {
 export interface RuntimeOptions {
   cwd?: string;
   codexBin?: string;
-  concurrency?: number;
+  concurrencyCaps?: EngineConcurrencyCaps;
   budgetCeilings?: EngineBudgetCeilings;
   requestTimeoutMs?: number;
   defaultTurnTimeoutMs?: number;

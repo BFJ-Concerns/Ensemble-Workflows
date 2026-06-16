@@ -39,6 +39,7 @@ export type {
   AgentOptions,
   Budget,
   EngineBudgetCeilings,
+  EngineConcurrencyCaps,
   EngineName,
   IsolationMode,
   JsonObject,

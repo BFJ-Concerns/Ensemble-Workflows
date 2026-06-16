@@ -111,7 +111,7 @@ test("schema agents retry invalid output and return null after the bounded attem
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"no\"}")]);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 2
   });
@@ -126,7 +126,7 @@ test("schema agents return the validated object when a retry succeeds", async ()
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"yes\"}")]);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 3
   });
@@ -147,7 +147,7 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
   );
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 2
   });
@@ -168,7 +168,7 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     budgetCeilings: { codex: 5 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
@@ -210,7 +210,7 @@ test("default agents keep the read-only sandbox and base cwd", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
   });
@@ -225,7 +225,7 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
   const worktreeManager = new FakeWorktreeManager(true);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1,
     worktreeManager
@@ -261,7 +261,7 @@ test("agent requires an explicit engine", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
   });

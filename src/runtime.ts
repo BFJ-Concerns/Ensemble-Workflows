@@ -18,6 +18,7 @@ import type {
   AgentOptions,
   Budget,
   EngineBudgetCeilings,
+  EngineConcurrencyCaps,
   EngineName,
   JsonSchema,
   RuntimeEvent,
@@ -43,7 +44,7 @@ export class EnsembleRuntime {
   constructor(options: {
     engines?: EngineRegistry;
     transport?: RuntimeTransport;
-    concurrency?: number;
+    concurrencyCaps?: EngineConcurrencyCaps;
     budgetCeilings?: EngineBudgetCeilings;
     defaultTurnTimeoutMs: number;
     defaultMaxAttempts: number;
@@ -57,12 +58,14 @@ export class EnsembleRuntime {
       new EngineRegistry([
         new CodexEngineAdapter({
           transport: requireTransport(options.transport),
-          concurrency: options.concurrency ?? defaultCodexConcurrency(),
+          concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
           ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {}),
           onEvent: (event) => this.handleEngineEvent("codex", event),
           onWorktreeFinished: (record) => this.worktrees.push(record)
         }),
-        new ClaudeEngineAdapter()
+        new ClaudeEngineAdapter({
+          ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {})
+        })
       ]);
   }
 
@@ -88,7 +91,7 @@ export class EnsembleRuntime {
         }
         runtime.worktrees.push(record);
       },
-      ...(options.concurrency !== undefined ? { codexConcurrency: options.concurrency } : {})
+      ...(options.concurrencyCaps !== undefined ? { concurrencyCaps: options.concurrencyCaps } : {})
     });
 
     runtime = new EnsembleRuntime({

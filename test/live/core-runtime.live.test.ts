@@ -36,7 +36,7 @@ const nestedSchema = {
 };
 
 test("live text agent returns non-empty text", liveOptions, async () => {
-  const runtime = await createRuntime({ concurrency: 2, defaultTurnTimeoutMs: 120_000 });
+  const runtime = await createRuntime({ concurrencyCaps: { codex: 2 }, defaultTurnTimeoutMs: 120_000 });
   try {
     const text = await runtime.agent("Reply with a short sentence containing the exact token TEXT_PATH_OK.", {
       engine: "codex"
@@ -81,7 +81,7 @@ test("live outputSchema produces schema-conformant raw output under a conflictin
 });
 
 test("live schema agent returns a client-validated nested enum object", liveOptions, async () => {
-  const runtime = await createRuntime({ concurrency: 2, defaultTurnTimeoutMs: 120_000 });
+  const runtime = await createRuntime({ concurrencyCaps: { codex: 2 }, defaultTurnTimeoutMs: 120_000 });
   try {
     const result = await runtime.agent(
       "Return JSON for the provided schema. Use status schema_won, details.kind nested, and details.count 7.",
@@ -94,7 +94,7 @@ test("live schema agent returns a client-validated nested enum object", liveOpti
 });
 
 test("live one-process runtime runs at least eight turns concurrently", liveOptions, async () => {
-  const runtime = await createRuntime({ concurrency: 8, defaultTurnTimeoutMs: 180_000 });
+  const runtime = await createRuntime({ concurrencyCaps: { codex: 8 }, defaultTurnTimeoutMs: 180_000 });
   const events: RuntimeEvent[] = [];
   runtime.onEvent((event) => {
     if (event.method === "turn/started" || event.method === "turn/completed") {
@@ -154,7 +154,7 @@ test("live token usage exposes last deltas and cumulative totals across turns", 
 
 test("live budget blocks the next agent after the ceiling is reached", liveOptions, async () => {
   const runtime = await createRuntime({
-    concurrency: 1,
+    concurrencyCaps: { codex: 1 },
     budgetCeilings: { codex: 1 },
     defaultTurnTimeoutMs: 120_000
   });
@@ -180,7 +180,7 @@ test("live worktree isolation gives autonomous writable agents separate git work
 
   const runtime = await createRuntime({
     cwd: repo,
-    concurrency: 2,
+    concurrencyCaps: { codex: 2 },
     defaultTurnTimeoutMs: 180_000,
     defaultMaxAttempts: 1
   });

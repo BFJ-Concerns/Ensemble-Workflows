@@ -26,7 +26,7 @@ export interface RunWorkflowScriptOptions {
   source: string;
   filename: string;
   runtime: WorkflowRuntime;
-  args?: string[];
+  args?: unknown;
   timeoutMs?: number;
   log: WorkflowLogSink;
 }

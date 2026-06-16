@@ -5,6 +5,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerRequestError,
+  CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
 
@@ -26,7 +27,7 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
-interface RpcErrorPayload {
+export interface RpcErrorPayload {
   code: number | undefined;
   message: string | undefined;
   data?: unknown;
@@ -299,12 +300,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     clearTimeout(pending.timeout);
 
     if (message.error !== undefined) {
-      const errorPayload = asRpcError(message.error);
-      const error =
-        errorPayload.code === -32001
-          ? new AppServerBackpressureError(pending.method, errorPayload)
-          : new AppServerRequestError(pending.method, errorPayload);
-      pending.reject(error);
+      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
       return;
     }
 
@@ -460,6 +456,30 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#turns.clear();
   }
+}
+
+export function appServerErrorFromPayload(method: string, errorPayload: RpcErrorPayload): Error {
+  if (method === "turn/start" && payloadContainsInvalidJsonSchema(errorPayload)) {
+    return new CodexSchemaSubsetUnsupportedError(errorPayload);
+  }
+  if (errorPayload.code === -32001) {
+    return new AppServerBackpressureError(method, errorPayload);
+  }
+  return new AppServerRequestError(method, errorPayload);
+}
+
+function payloadContainsInvalidJsonSchema(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.includes("invalid_json_schema");
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsInvalidJsonSchema(item));
+  }
+  const object = asJsonObject(value);
+  if (object === null) {
+    return false;
+  }
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item));
 }
 
 function parseRpcMessage(line: string): RpcMessage | null {

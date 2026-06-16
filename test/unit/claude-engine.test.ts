@@ -5,7 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { ClaudeWorktreeIsolationUnsupportedError } from "../../src/errors.js";
+import {
+  ClaudeSandboxUnsupportedError,
+  ClaudeWebSearchUnsupportedError,
+  ClaudeWorktreeIsolationUnsupportedError
+} from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type {
@@ -411,6 +415,38 @@ test("isolation:'worktree' is rejected on the Claude engine with a clear error",
         ClaudeWorktreeIsolationUnsupportedError
       );
       // Rejected before any worker is spawned.
+      assert.equal(controlPlane.dispatchCount, 0);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("webSearch is rejected on the Claude engine with a clear error", async () => {
+  await withControlPlane([{ assistant: { text: "unused" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await assert.rejects(
+        () => runtime.agent("search", { engine: "claude", webSearch: true }),
+        ClaudeWebSearchUnsupportedError
+      );
+      // Rejected before any worker is spawned, just like the isolation guard.
+      assert.equal(controlPlane.dispatchCount, 0);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("sandbox is rejected on the Claude engine with a clear error", async () => {
+  await withControlPlane([{ assistant: { text: "unused" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await assert.rejects(
+        () => runtime.agent("write", { engine: "claude", sandbox: "workspace-write" }),
+        ClaudeSandboxUnsupportedError
+      );
+      // Rejected before any worker is spawned, just like the isolation guard.
       assert.equal(controlPlane.dispatchCount, 0);
     } finally {
       await runtime.close();

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
-import { BudgetExceededError, MissingEngineError } from "../../src/errors.js";
+import { BudgetExceededError, CodexSchemaSubsetUnsupportedError, MissingEngineError } from "../../src/errors.js";
 
 import type {
   AgentOptions,
@@ -38,6 +39,30 @@ class FakeTransport implements RuntimeTransport {
     const response = this.#responses.shift();
     assert.ok(response, "fake transport response was not configured");
     return response;
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class ErrorTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  openedThreads: ThreadStartOptions[] = [];
+
+  #error: Error;
+
+  constructor(error: Error) {
+    this.#error = error;
+  }
+
+  async openThread(options: ThreadStartOptions): Promise<string> {
+    this.openedThreads.push(options);
+    return "thread-1";
+  }
+
+  async runTurn(): Promise<TurnResult> {
+    throw this.#error;
   }
 
   async close(): Promise<void> {
@@ -110,6 +135,33 @@ test("schema agents return the validated object when a retry succeeds", async ()
 
   assert.deepEqual(result, { answer: "yes" });
   assert.equal(transport.turns.length, 2);
+});
+
+test("Codex invalid_json_schema becomes a distinguishing schema-subset error", async () => {
+  const transport = new ErrorTransport(
+    appServerErrorFromPayload("turn/start", {
+      code: -32602,
+      message: "invalid_json_schema",
+      data: { code: "invalid_json_schema", detail: "required key missing from properties" }
+    })
+  );
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrency: 1,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 2
+  });
+
+  await assert.rejects(
+    () => runtime.agent("return JSON", { engine: "codex", schema }),
+    (error: unknown) => {
+      assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+      assert.match(error.message, /outside Codex's accepted subset or malformed/);
+      assert.doesNotMatch(error.message, /turn\/start failed/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 1);
 });
 
 test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex calls", async () => {

@@ -20,6 +20,26 @@ export class AppServerRequestError extends EnsembleError {
 
 export class AppServerBackpressureError extends AppServerRequestError {}
 
+/**
+ * Codex validates `outputSchema` against its own accepted subset before
+ * generation. This is not the same failure as an agent returning JSON that does
+ * not satisfy the user's schema, so keep it loud and distinguishable.
+ */
+export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
+  readonly code: number | undefined;
+  readonly data?: unknown;
+
+  constructor(error: { code: number | undefined; message: string | undefined; data?: unknown }) {
+    super(
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " +
+        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",
+      { cause: error }
+    );
+    this.code = error.code;
+    this.data = error.data;
+  }
+}
+
 export class BudgetExceededError extends EnsembleError {
   constructor(engine: string, total: number, spent: number) {
     super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
@@ -76,6 +96,36 @@ export class ClaudeWorktreeIsolationUnsupportedError extends EnsembleError {
       "isolation:'worktree' is not supported on the Claude engine in v1: " +
         "Claude background sessions manage their own .claude/worktrees isolation. " +
         "Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
+    );
+  }
+}
+
+/**
+ * Thrown when a workflow asks for live web search on the Claude engine. Ensemble
+ * only wires `webSearch` through Codex's app-server config in v1; silently
+ * dropping it would make a script believe the worker searched when it did not.
+ */
+export class ClaudeWebSearchUnsupportedError extends EnsembleError {
+  constructor() {
+    super(
+      "webSearch:true is not supported on the Claude engine in v1: " +
+        "Ensemble only enables live web search through Codex's app-server config. " +
+        "Run the worker without webSearch, or use engine:'codex' for live web search."
+    );
+  }
+}
+
+/**
+ * Thrown when a workflow asks Claude to honour Ensemble's Codex app-server
+ * sandbox option. Claude background workers are not launched through that
+ * sandbox boundary, so the only honest v1 behaviour is to fail fast.
+ */
+export class ClaudeSandboxUnsupportedError extends EnsembleError {
+  constructor(sandbox: string) {
+    super(
+      `sandbox:${JSON.stringify(sandbox)} is not supported on the Claude engine in v1: ` +
+        "the sandbox option is a Codex app-server capability. " +
+        "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
     );
   }
 }

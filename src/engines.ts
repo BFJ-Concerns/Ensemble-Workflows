@@ -3,7 +3,11 @@ import { cpus } from "node:os";
 import { CodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
-import { ClaudeWorktreeIsolationUnsupportedError } from "./errors.js";
+import {
+  ClaudeSandboxUnsupportedError,
+  ClaudeWebSearchUnsupportedError,
+  ClaudeWorktreeIsolationUnsupportedError
+} from "./errors.js";
 import { Scheduler } from "./scheduler.js";
 import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
@@ -242,6 +246,12 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // Codex git-worktree manager does not map onto them. Reject rather than
       // half-wire a foreign mechanism (see report → isolation:'worktree' on Claude).
       throw new ClaudeWorktreeIsolationUnsupportedError();
+    }
+    if (options.webSearch) {
+      throw new ClaudeWebSearchUnsupportedError();
+    }
+    if (options.sandbox !== undefined) {
+      throw new ClaudeSandboxUnsupportedError(options.sandbox);
     }
     return new ClaudeEngineInvocation({
       prompt,

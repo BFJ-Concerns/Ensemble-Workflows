@@ -112,12 +112,12 @@ test("schema agents return the validated object when a retry succeeds", async ()
   assert.equal(transport.turns.length, 2);
 });
 
-test("budget records tokenUsage.last deltas and blocks later calls after exhaustion", async () => {
+test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex calls", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
     concurrency: 1,
-    budgetTotal: 5,
+    budgetCeilings: { codex: 5 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
   });
@@ -147,7 +147,10 @@ test("budget records tokenUsage.last deltas and blocks later calls after exhaust
     }
   });
 
-  assert.equal(runtime.budget.spent(), 5);
+  assert.equal(runtime.budget.spent("codex"), 5);
+  assert.equal(runtime.budget.spent("claude"), 0);
+  assert.equal(runtime.budget.remaining("codex"), 0);
+  assert.equal(runtime.budget.remaining("claude"), Number.POSITIVE_INFINITY);
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 

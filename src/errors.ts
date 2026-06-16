@@ -21,8 +21,8 @@ export class AppServerRequestError extends EnsembleError {
 export class AppServerBackpressureError extends AppServerRequestError {}
 
 export class BudgetExceededError extends EnsembleError {
-  constructor(total: number, spent: number) {
-    super(`Token budget exhausted: spent ${spent} of ${total} tokens`);
+  constructor(engine: string, total: number, spent: number) {
+    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
   }
 }
 

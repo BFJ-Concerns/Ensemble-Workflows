@@ -1,39 +1,54 @@
 import { BudgetExceededError } from "./errors.js";
 
-import type { Budget, JsonObject, TokenAccountingMode, TokenUsageEvent } from "./types.js";
+import type {
+  Budget,
+  EngineBudgetCeilings,
+  EngineName,
+  JsonObject,
+  TokenAccountingMode,
+  TokenUsageEvent
+} from "./types.js";
 
 export class TokenBudget implements Budget {
-  total: number | null;
+  readonly ceilings: Readonly<Record<EngineName, number | null>>;
 
   readonly accountingMode: TokenAccountingMode = "last-delta";
-  readonly events: TokenUsageEvent[] = [];
+  readonly events: Array<{ engine: EngineName; event: TokenUsageEvent }> = [];
 
-  #spent = 0;
+  #spent: Record<EngineName, number> = {
+    codex: 0,
+    claude: 0
+  };
 
-  constructor(total: number | null = null) {
-    this.total = total;
+  constructor(ceilings: EngineBudgetCeilings = {}) {
+    this.ceilings = {
+      codex: ceilings.codex ?? null,
+      claude: ceilings.claude ?? null
+    };
   }
 
-  spent(): number {
-    return this.#spent;
+  spent(engine: EngineName): number {
+    return this.#spent[engine];
   }
 
-  remaining(): number {
-    if (this.total === null) {
+  remaining(engine: EngineName): number {
+    const ceiling = this.ceilings[engine];
+    if (ceiling === null) {
       return Number.POSITIVE_INFINITY;
     }
-    return Math.max(0, this.total - this.#spent);
+    return Math.max(0, ceiling - this.#spent[engine]);
   }
 
-  assertCanStart(): void {
-    if (this.total !== null && this.#spent >= this.total) {
-      throw new BudgetExceededError(this.total, this.#spent);
+  assertCanStart(engine: EngineName): void {
+    const ceiling = this.ceilings[engine];
+    if (ceiling !== null && this.#spent[engine] >= ceiling) {
+      throw new BudgetExceededError(engine, ceiling, this.#spent[engine]);
     }
   }
 
-  record(event: TokenUsageEvent): void {
-    this.events.push(event);
-    this.#spent += event.last.totalTokens;
+  record(engine: EngineName, event: TokenUsageEvent): void {
+    this.events.push({ engine, event });
+    this.#spent[engine] += event.last.totalTokens;
   }
 }
 

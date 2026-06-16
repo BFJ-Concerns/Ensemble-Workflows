@@ -93,7 +93,6 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
 
 function fakeRuntime(): EnsembleRuntime {
   const budget: Budget = {
-    total: null,
     spent: () => 0,
     remaining: () => Number.POSITIVE_INFINITY
   };

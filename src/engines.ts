@@ -208,7 +208,7 @@ export interface ClaudeEngineAdapterOptions {
   cwd?: string;
   /** Injectable for tests; defaults to the real `claude`/`tmux` control plane. */
   controlPlane?: ClaudeControlPlane;
-  /** Routes best-effort transcript-derived token usage into the shared budget. */
+  /** Routes best-effort transcript-derived token usage into the runtime budget recorder. */
   onEvent?: (event: RuntimeEvent) => void;
   config?: ClaudeEngineConfig;
 }
@@ -266,6 +266,7 @@ export interface CreateDefaultEngineRegistryOptions {
   clientVersion: string;
   codexConcurrency?: number;
   onEvent: (event: RuntimeEvent) => void;
+  onClaudeEvent: (event: RuntimeEvent) => void;
   onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 }
 
@@ -290,9 +291,9 @@ export async function createDefaultEngineRegistry(
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
-      // Same event sink as Codex: the runtime's recorder turns the synthetic
-      // thread/tokenUsage/updated event into shared-budget spend.
-      onEvent: options.onEvent
+      // Claude deliberately emits the same usage event shape as Codex. Keep the
+      // adapter sink labelled so accounting never has to infer engine from payload.
+      onEvent: options.onClaudeEvent
     })
   ]);
 }

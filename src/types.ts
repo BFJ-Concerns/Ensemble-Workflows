@@ -5,6 +5,7 @@ export type EngineName = "codex" | "claude";
 export type IsolationMode = "worktree";
 export type SandboxMode = "read-only" | "workspace-write";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
+export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
 
 export interface AgentOptions {
   engine: EngineName;
@@ -24,7 +25,7 @@ export interface RuntimeOptions {
   cwd?: string;
   codexBin?: string;
   concurrency?: number;
-  budgetTotal?: number | null;
+  budgetCeilings?: EngineBudgetCeilings;
   requestTimeoutMs?: number;
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;
@@ -33,9 +34,8 @@ export interface RuntimeOptions {
 }
 
 export interface Budget {
-  total: number | null;
-  spent(): number;
-  remaining(): number;
+  spent(engine: EngineName): number;
+  remaining(engine: EngineName): number;
 }
 
 export interface RuntimeEvent {

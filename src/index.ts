@@ -38,6 +38,7 @@ export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js
 export type {
   AgentOptions,
   Budget,
+  EngineBudgetCeilings,
   EngineName,
   IsolationMode,
   JsonObject,

@@ -31,11 +31,10 @@ test(
     const adapter = new ClaudeEngineAdapter({
       cwd: process.cwd(),
       controlPlane: new ClaudeCliControlPlane(),
-      onEvent: (event) => runtime?.handleEngineEvent(event)
+      onEvent: (event) => runtime?.handleEngineEvent("claude", event)
     });
     runtime = new EnsembleRuntime({
       engines: new EngineRegistry([adapter]),
-      budgetTotal: null,
       defaultTurnTimeoutMs: 240_000,
       defaultMaxAttempts: 2
     });
@@ -48,8 +47,9 @@ test(
 
       assert.ok(result !== null, "expected a validated object, got null after retries");
       assert.equal(validateJsonSchema(result, liveSchema).ok, true);
-      // Best-effort transcript-derived usage fed the shared budget.
-      assert.ok(runtime.budget.spent() > 0, "expected Claude worker tokens to feed the budget");
+      // Best-effort transcript-derived usage feeds Claude's own budget ledger.
+      assert.ok(runtime.budget.spent("claude") > 0, "expected Claude worker tokens to feed the Claude budget");
+      assert.equal(runtime.budget.spent("codex"), 0);
     } finally {
       await runtime.close();
     }

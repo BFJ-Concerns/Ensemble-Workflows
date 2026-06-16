@@ -7,7 +7,6 @@ import type { WorkflowRuntime } from "../../src/hooks.js";
 
 const runtime: WorkflowRuntime = {
   budget: {
-    total: null,
     spent: () => 0,
     remaining: () => Number.POSITIVE_INFINITY
   },
@@ -34,7 +33,7 @@ test("runs a script with hooks as globals and captures its return value", async 
         () => agent("one", { engine: "codex" }),
         () => "plain"
       ]);
-      return { values, remaining: budget.remaining() };
+      return { values, remaining: budget.remaining("codex") };
     `
   });
 

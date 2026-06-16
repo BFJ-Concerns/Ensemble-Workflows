@@ -17,6 +17,8 @@ import { parseJsonFromText, validateJsonSchema } from "./schema.js";
 import type {
   AgentOptions,
   Budget,
+  EngineBudgetCeilings,
+  EngineName,
   JsonSchema,
   RuntimeEvent,
   RuntimeOptions,
@@ -42,12 +44,12 @@ export class EnsembleRuntime {
     engines?: EngineRegistry;
     transport?: RuntimeTransport;
     concurrency?: number;
-    budgetTotal?: number | null;
+    budgetCeilings?: EngineBudgetCeilings;
     defaultTurnTimeoutMs: number;
     defaultMaxAttempts: number;
     worktreeManager?: WorktreeIsolationManager;
   }) {
-    this.budget = new TokenBudget(options.budgetTotal ?? null);
+    this.budget = new TokenBudget(options.budgetCeilings);
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     this.#engines =
@@ -57,7 +59,7 @@ export class EnsembleRuntime {
           transport: requireTransport(options.transport),
           concurrency: options.concurrency ?? defaultCodexConcurrency(),
           ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {}),
-          onEvent: (event) => this.handleEngineEvent(event),
+          onEvent: (event) => this.handleEngineEvent("codex", event),
           onWorktreeFinished: (record) => this.worktrees.push(record)
         }),
         new ClaudeEngineAdapter()
@@ -74,7 +76,10 @@ export class EnsembleRuntime {
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
       onEvent: (event) => {
-        runtime?.handleEngineEvent(event);
+        runtime?.handleEngineEvent("codex", event);
+      },
+      onClaudeEvent: (event) => {
+        runtime?.handleEngineEvent("claude", event);
       },
       onWorktreeFinished: (record) => {
         if (runtime === null) {
@@ -88,7 +93,7 @@ export class EnsembleRuntime {
 
     runtime = new EnsembleRuntime({
       engines,
-      budgetTotal: options.budgetTotal ?? null,
+      ...(options.budgetCeilings !== undefined ? { budgetCeilings: options.budgetCeilings } : {}),
       defaultTurnTimeoutMs: options.defaultTurnTimeoutMs ?? 240_000,
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
@@ -104,11 +109,11 @@ export class EnsembleRuntime {
     };
   }
 
-  handleEngineEvent(event: RuntimeEvent): void {
+  handleEngineEvent(engine: EngineName, event: RuntimeEvent): void {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
       if (usageEvent !== null) {
-        this.budget.record(usageEvent);
+        this.budget.record(engine, usageEvent);
       }
     }
 
@@ -116,7 +121,7 @@ export class EnsembleRuntime {
   }
 
   handleTransportEvent(event: RuntimeEvent): void {
-    this.handleEngineEvent(event);
+    this.handleEngineEvent("codex", event);
   }
 
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
@@ -139,21 +144,21 @@ export class EnsembleRuntime {
     const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
     try {
       if (options.schema !== undefined) {
-        return await this.#runSchemaAgent(invocation, { ...options, schema: options.schema });
+        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema });
       }
-      return await this.#runTextAgent(invocation, options);
+      return await this.#runTextAgent(engine.name, invocation, options);
     } finally {
       await invocation.close?.();
     }
   }
 
-  async #runTextAgent(invocation: EngineInvocation, options: Partial<AgentOptions>): Promise<string> {
+  async #runTextAgent(engine: EngineName, invocation: EngineInvocation, options: Partial<AgentOptions>): Promise<string> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError: Error | null = null;
     let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      this.budget.assertCanStart();
+      this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
           attempt,
@@ -180,6 +185,7 @@ export class EnsembleRuntime {
   }
 
   async #runSchemaAgent(
+    engine: EngineName,
     invocation: EngineInvocation,
     options: Partial<AgentOptions> & { schema: JsonSchema }
   ): Promise<unknown | null> {
@@ -187,7 +193,7 @@ export class EnsembleRuntime {
     let previousFailure: EngineAttemptFailure | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      this.budget.assertCanStart();
+      this.budget.assertCanStart(engine);
       try {
         const result = await invocation.runAttempt({
           attempt,

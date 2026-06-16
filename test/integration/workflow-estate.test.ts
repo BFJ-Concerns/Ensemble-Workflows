@@ -747,7 +747,7 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
         () => agent("plain success", { engine: "codex" }),
         () => agent("worker throws", { engine: "codex" })
       ]);
-      const spentBeforeBlockedCall = budget.spent();
+      const spentBeforeBlockedCall = budget.spent("codex");
       let blockedMessage = null;
       try {
         await agent("should be blocked by budget", { engine: "codex" });
@@ -760,7 +760,7 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
         impossible,
         fanout,
         spentBeforeBlockedCall,
-        remaining: budget.remaining(),
+        remaining: budget.remaining("codex"),
         blockedMessage
       };
     `,
@@ -773,7 +773,7 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
       { throwError: new Error("transport failure"), tokenDelta: 7 }
     ],
     [],
-    { budgetTotal: 20 }
+    { budgetCeilings: { codex: 20 } }
   );
 
   assert.equal(exitCode, 0, stderr);
@@ -791,8 +791,90 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
   assert.deepEqual(result.fanout, ["plain", null]);
   assert.equal(result.spentBeforeBlockedCall, 27);
   assert.equal(result.remaining, 0);
-  assert.match(result.blockedMessage ?? "", /Token budget exhausted: spent 27 of 20 tokens/);
+  assert.match(result.blockedMessage ?? "", /Token budget exhausted for codex: spent 27 of 20 tokens/);
   assert.equal(transport.turns.length, 6);
+});
+
+test("Codex budget exhaustion leaves Claude unbounded and runnable", async () => {
+  const { exitCode, stdout, stderr } = await runScriptWithBudgetedEngines(
+    `
+      export const meta = { name: "codex-budget-independent" };
+
+      const firstCodex = await agent("spend codex", { engine: "codex" });
+      let codexBlockedMessage = null;
+      try {
+        await agent("blocked codex", { engine: "codex" });
+      } catch (error) {
+        codexBlockedMessage = error.message;
+      }
+      const claudeAfterCodexExhaustion = await agent("claude still runs", { engine: "claude" });
+
+      return {
+        firstCodex,
+        codexSpent: budget.spent("codex"),
+        codexRemaining: budget.remaining("codex"),
+        claudeSpent: budget.spent("claude"),
+        claudeUnbounded: budget.remaining("claude") === Infinity,
+        codexBlockedMessage,
+        claudeAfterCodexExhaustion
+      };
+    `,
+    [{ text: "codex-first", tokenDelta: 6 }],
+    [{ text: "claude-still-runs", tokenDelta: 3 }],
+    { codex: 5 }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    firstCodex: "codex-first",
+    codexSpent: 6,
+    codexRemaining: 0,
+    claudeSpent: 3,
+    claudeUnbounded: true,
+    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens",
+    claudeAfterCodexExhaustion: "claude-still-runs"
+  });
+});
+
+test("Claude budget exhaustion leaves Codex unbounded and runnable", async () => {
+  const { exitCode, stdout, stderr } = await runScriptWithBudgetedEngines(
+    `
+      export const meta = { name: "claude-budget-independent" };
+
+      const firstClaude = await agent("spend claude", { engine: "claude" });
+      let claudeBlockedMessage = null;
+      try {
+        await agent("blocked claude", { engine: "claude" });
+      } catch (error) {
+        claudeBlockedMessage = error.message;
+      }
+      const codexAfterClaudeExhaustion = await agent("codex still runs", { engine: "codex" });
+
+      return {
+        firstClaude,
+        claudeSpent: budget.spent("claude"),
+        claudeRemaining: budget.remaining("claude"),
+        codexSpent: budget.spent("codex"),
+        codexUnbounded: budget.remaining("codex") === Infinity,
+        claudeBlockedMessage,
+        codexAfterClaudeExhaustion
+      };
+    `,
+    [{ text: "codex-still-runs", tokenDelta: 4 }],
+    [{ text: "claude-first", tokenDelta: 7 }],
+    { claude: 5 }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    firstClaude: "claude-first",
+    claudeSpent: 7,
+    claudeRemaining: 0,
+    codexSpent: 4,
+    codexUnbounded: true,
+    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens",
+    codexAfterClaudeExhaustion: "codex-still-runs"
+  });
 });
 
 test("CLI workflow exposes changed isolated worktrees and removes the clean one", async () => {
@@ -898,7 +980,7 @@ async function runScript(
   source: string,
   responses: ScriptedTurn[],
   args: string[] = [],
-  runtimeOptions: { budgetTotal?: number; cwd?: string } = {}
+  runtimeOptions: { budgetCeilings?: Partial<Record<EngineName, number | null>>; cwd?: string } = {}
 ): Promise<{ exitCode: number; stdout: string; stderr: string; transport: ScriptedTransport }> {
   const directory = runtimeOptions.cwd ?? (await mkdtemp(path.join(tmpdir(), "ensemble-integration-")));
   const script = path.join(directory, "workflow.js");
@@ -910,7 +992,7 @@ async function runScript(
   const runtime = new EnsembleRuntime({
     transport,
     concurrency: 8,
-    budgetTotal: runtimeOptions.budgetTotal ?? null,
+    ...(runtimeOptions.budgetCeilings !== undefined ? { budgetCeilings: runtimeOptions.budgetCeilings } : {}),
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 3
   });
@@ -947,10 +1029,58 @@ async function runScriptWithEngines(
       createRuntime: async () =>
         new EnsembleRuntime({
           engines: new EngineRegistry([codex, claude]),
-          budgetTotal: null,
           defaultTurnTimeoutMs: 1_000,
           defaultMaxAttempts: 3
         })
+    });
+
+    return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function runScriptWithBudgetedEngines(
+  source: string,
+  codexResponses: ScriptedEngineTurn[],
+  claudeResponses: ScriptedEngineTurn[],
+  budgetCeilings: Partial<Record<EngineName, number | null>>
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-budgeted-engines-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, source);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  let runtime: EnsembleRuntime | null = null;
+  const codex = new ScriptedEngineAdapter({
+    name: "codex",
+    concurrency: 8,
+    responses: codexResponses,
+    onEvent: (event) => runtime?.handleEngineEvent("codex", event)
+  });
+  const claude = new ScriptedEngineAdapter({
+    name: "claude",
+    concurrency: 8,
+    responses: claudeResponses,
+    onEvent: (event) => runtime?.handleEngineEvent("claude", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    budgetCeilings,
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 3
+  });
+
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      createRuntime: async () => {
+        assert.ok(runtime);
+        return runtime;
+      }
     });
 
     return { exitCode, stdout: stdout.text(), stderr: stderr.text() };

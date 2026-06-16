@@ -166,14 +166,14 @@ const fastConfig = { pollIntervalMs: 1, receiptTimeoutMs: 200, blockedRecoveryBo
 
 function makeRuntime(
   controlPlane: ClaudeControlPlane,
-  options: { budgetTotal?: number; maxAttempts?: number; blockedRecoveryBound?: number; turnTimeoutMs?: number } = {}
+  options: { claudeBudget?: number; maxAttempts?: number; blockedRecoveryBound?: number; turnTimeoutMs?: number } = {}
 ): EnsembleRuntime {
   let runtime: EnsembleRuntime | null = null;
   const adapter = new ClaudeEngineAdapter({
     concurrency: 4,
     cwd: "/fake/cwd",
     controlPlane,
-    onEvent: (event) => runtime?.handleEngineEvent(event),
+    onEvent: (event) => runtime?.handleEngineEvent("claude", event),
     config: {
       ...fastConfig,
       ...(options.blockedRecoveryBound !== undefined ? { blockedRecoveryBound: options.blockedRecoveryBound } : {})
@@ -181,7 +181,7 @@ function makeRuntime(
   });
   runtime = new EnsembleRuntime({
     engines: new EngineRegistry([adapter]),
-    budgetTotal: options.budgetTotal ?? null,
+    ...(options.claudeBudget === undefined ? {} : { budgetCeilings: { claude: options.claudeBudget } }),
     defaultTurnTimeoutMs: options.turnTimeoutMs ?? 5_000,
     defaultMaxAttempts: options.maxAttempts ?? 3
   });
@@ -365,7 +365,7 @@ test("without the valve, correction degrades to a fresh re-dispatch", async () =
   );
 });
 
-test("Claude worker tokens feed the shared budget via the synthetic usage event", async () => {
+test("Claude worker tokens feed the Claude budget via the synthetic usage event", async () => {
   await withControlPlane(
     [{ assistant: { text: '{"ok":true}', input: 5, output: 10, cached: 2 } }],
     async (controlPlane) => {
@@ -373,7 +373,8 @@ test("Claude worker tokens feed the shared budget via the synthetic usage event"
       try {
         await runtime.agent("decide", { engine: "claude", schema: okSchema });
         // totalTokens = input(5) + cached(2) + output(10), recorded as last-delta.
-        assert.equal(runtime.budget.spent(), 17);
+        assert.equal(runtime.budget.spent("claude"), 17);
+        assert.equal(runtime.budget.spent("codex"), 0);
       } finally {
         await runtime.close();
       }
@@ -388,10 +389,11 @@ test("the budget ceiling blocks a later Claude agent once exhausted", async () =
       { assistant: { text: "second", output: 10 } }
     ],
     async (controlPlane) => {
-      const runtime = makeRuntime(controlPlane, { budgetTotal: 5 });
+      const runtime = makeRuntime(controlPlane, { claudeBudget: 5 });
       try {
         await runtime.agent("first", { engine: "claude" });
-        assert.ok(runtime.budget.spent() >= 5);
+        assert.ok(runtime.budget.spent("claude") >= 5);
+        assert.equal(runtime.budget.remaining("codex"), Number.POSITIVE_INFINITY);
         await assert.rejects(() => runtime.agent("second", { engine: "claude" }), /Token budget exhausted/);
       } finally {
         await runtime.close();

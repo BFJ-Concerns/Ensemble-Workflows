@@ -258,10 +258,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   }
 
   /**
-   * Feed best-effort transcript-derived usage into the shared budget by emitting
-   * the same `thread/tokenUsage/updated` event the Codex path emits — the runtime's
-   * existing recorder handles it, so no runtime change is needed (see report:
-   * cross-engine budget). One event per collected turn; zero usage is skipped.
+   * Feed best-effort transcript-derived usage through the same event shape Codex
+   * emits. The adapter registration labels it as Claude before the runtime records
+   * it, so budget accounting never has to infer engine from the payload.
    */
   #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
     if (this.#onEvent === undefined) {

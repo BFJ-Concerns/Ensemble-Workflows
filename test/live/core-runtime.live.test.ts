@@ -42,7 +42,7 @@ test("live text agent returns non-empty text", liveOptions, async () => {
       engine: "codex"
     });
     assert.match(text, /TEXT_PATH_OK/);
-    assert.ok(runtime.budget.spent() > 0);
+    assert.ok(runtime.budget.spent("codex") > 0);
   } finally {
     await runtime.close();
   }
@@ -155,12 +155,12 @@ test("live token usage exposes last deltas and cumulative totals across turns", 
 test("live budget blocks the next agent after the ceiling is reached", liveOptions, async () => {
   const runtime = await createRuntime({
     concurrency: 1,
-    budgetTotal: 1,
+    budgetCeilings: { codex: 1 },
     defaultTurnTimeoutMs: 120_000
   });
   try {
     await runtime.agent("Reply exactly BUDGET_FIRST.", { engine: "codex" });
-    assert.ok(runtime.budget.spent() >= 1);
+    assert.ok(runtime.budget.spent("codex") >= 1);
     await assert.rejects(() => runtime.agent("Reply exactly BUDGET_SECOND.", { engine: "codex" }), BudgetExceededError);
   } finally {
     await runtime.close();

@@ -8,7 +8,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
-import { EngineRegistry } from "../../src/engines.js";
+import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 
@@ -16,6 +17,7 @@ import type { EngineAdapter, EngineAttemptContext, EngineInvocation, EngineTurnO
 import type {
   EngineName,
   JsonObject,
+  RuntimeOptions,
   RuntimeEvent,
   RuntimeTransport,
   ThreadStartOptions,
@@ -672,6 +674,322 @@ test("cross-engine workflow lets Claude find and Codex verify through the real C
   assert.match(codex.invocations[0]?.prompt ?? "", /cap bleed/);
 });
 
+test("CLI budget flag enforces Codex ceiling without blocking Claude", async () => {
+  const { exitCode, stdout, stderr, codex, claude } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "cli-codex-budget-cross-unit" };
+
+      const codexFirst = await agent("spend codex over ceiling", { engine: "codex" });
+      let codexBlockedMessage = null;
+      try {
+        await agent("codex should be blocked by cli ceiling", { engine: "codex" });
+      } catch (error) {
+        codexBlockedMessage = error.message;
+      }
+      const claudeAfterCodexExhaustion = await agent("claude should still run", { engine: "claude" });
+
+      return {
+        codexFirst,
+        codexSpent: budget.spent("codex"),
+        codexRemaining: budget.remaining("codex"),
+        claudeSpent: budget.spent("claude"),
+        claudeUnbounded: budget.remaining("claude") === Infinity,
+        codexBlockedMessage,
+        claudeAfterCodexExhaustion
+      };
+    `,
+    {
+      cliArgs: ["--budget=codex=5"],
+      codexResponses: [{ text: "codex-first", tokenDelta: 6 }],
+      claudeResponses: [{ text: "claude-still-runs", tokenDelta: 3 }]
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    codexFirst: "codex-first",
+    codexSpent: 6,
+    codexRemaining: 0,
+    claudeSpent: 3,
+    claudeUnbounded: true,
+    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens",
+    claudeAfterCodexExhaustion: "claude-still-runs"
+  });
+  assert.deepEqual(codex.invocations.map((invocation) => invocation.contexts.length), [1, 0]);
+  assert.equal(claude.invocations.length, 1);
+});
+
+test("CLI budget flag enforces Claude ceiling without blocking Codex", async () => {
+  const { exitCode, stdout, stderr, codex, claude } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "cli-claude-budget-cross-unit" };
+
+      const claudeFirst = await agent("spend claude over ceiling", { engine: "claude" });
+      let claudeBlockedMessage = null;
+      try {
+        await agent("claude should be blocked by cli ceiling", { engine: "claude" });
+      } catch (error) {
+        claudeBlockedMessage = error.message;
+      }
+      const codexAfterClaudeExhaustion = await agent("codex should still run", { engine: "codex" });
+
+      return {
+        claudeFirst,
+        claudeSpent: budget.spent("claude"),
+        claudeRemaining: budget.remaining("claude"),
+        codexSpent: budget.spent("codex"),
+        codexUnbounded: budget.remaining("codex") === Infinity,
+        claudeBlockedMessage,
+        codexAfterClaudeExhaustion
+      };
+    `,
+    {
+      cliArgs: ["--budget=claude=5"],
+      codexResponses: [{ text: "codex-still-runs", tokenDelta: 4 }],
+      claudeResponses: [{ text: "claude-first", tokenDelta: 7 }]
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    claudeFirst: "claude-first",
+    claudeSpent: 7,
+    claudeRemaining: 0,
+    codexSpent: 4,
+    codexUnbounded: true,
+    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens",
+    codexAfterClaudeExhaustion: "codex-still-runs"
+  });
+  assert.equal(codex.invocations.length, 1);
+  assert.deepEqual(claude.invocations.map((invocation) => invocation.contexts.length), [1, 0]);
+});
+
+test("CLI json-args flag switches args from raw strings to parsed JSON", async () => {
+  const source = `
+    export const meta = { name: "cli-json-args-parity" };
+    return { args, isArray: Array.isArray(args) };
+  `;
+
+  const raw = await runScriptWithCliEngines(source, {
+    scriptArgs: ["alpha", "beta"],
+    codexResponses: [],
+    claudeResponses: []
+  });
+  const parsed = await runScriptWithCliEngines(source, {
+    cliArgs: [`--json-args={"items":["alpha","beta"],"count":2}`],
+    codexResponses: [],
+    claudeResponses: []
+  });
+
+  assert.equal(raw.exitCode, 0, raw.stderr);
+  assert.equal(parsed.exitCode, 0, parsed.stderr);
+  assert.deepEqual(JSON.parse(raw.stdout), { args: ["alpha", "beta"], isArray: true });
+  assert.deepEqual(JSON.parse(parsed.stdout), {
+    args: { items: ["alpha", "beta"], count: 2 },
+    isArray: false
+  });
+});
+
+test("CLI concurrency flag serialises only the named engine", async () => {
+  const { exitCode, stdout, stderr, codex, claude } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "cli-concurrency-cross-unit" };
+
+      const results = await parallel([
+        () => agent("codex slow", { engine: "codex" }),
+        () => agent("codex queued", { engine: "codex" }),
+        () => agent("claude slow", { engine: "claude" }),
+        () => agent("claude overlaps", { engine: "claude" })
+      ]);
+
+      return { results };
+    `,
+    {
+      cliArgs: ["--concurrency=codex=1"],
+      defaultConcurrency: 2,
+      codexResponses: [
+        { text: "codex-slow", delayMs: 80 },
+        { text: "codex-queued", delayMs: 1 }
+      ],
+      claudeResponses: [
+        { text: "claude-slow", delayMs: 80 },
+        { text: "claude-overlaps", delayMs: 1 }
+      ]
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    results: ["codex-slow", "codex-queued", "claude-slow", "claude-overlaps"]
+  });
+  assert.equal(codex.concurrency, 1);
+  assert.equal(claude.concurrency, 2);
+
+  const firstCodexFinish = codex.scheduleFinishes[0];
+  const secondCodexStart = codex.scheduleStarts[1];
+  const firstClaudeFinish = claude.scheduleFinishes[0];
+  const secondClaudeStart = claude.scheduleStarts[1];
+  assert.ok(firstCodexFinish !== undefined);
+  assert.ok(secondCodexStart !== undefined);
+  assert.ok(firstClaudeFinish !== undefined);
+  assert.ok(secondClaudeStart !== undefined);
+  assert.ok(firstCodexFinish <= secondCodexStart);
+  assert.ok(secondClaudeStart < firstClaudeFinish);
+});
+
+test("CLI concurrency flag serialises Claude without reducing Codex concurrency", async () => {
+  const { exitCode, stdout, stderr, codex, claude } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "cli-claude-concurrency-cross-unit" };
+
+      const results = await parallel([
+        () => agent("codex slow", { engine: "codex" }),
+        () => agent("codex overlaps", { engine: "codex" }),
+        () => agent("claude slow", { engine: "claude" }),
+        () => agent("claude queued", { engine: "claude" })
+      ]);
+
+      return { results };
+    `,
+    {
+      cliArgs: ["--concurrency=claude=1"],
+      defaultConcurrency: 2,
+      codexResponses: [
+        { text: "codex-slow", delayMs: 80 },
+        { text: "codex-overlaps", delayMs: 1 }
+      ],
+      claudeResponses: [
+        { text: "claude-slow", delayMs: 80 },
+        { text: "claude-queued", delayMs: 1 }
+      ]
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    results: ["codex-slow", "codex-overlaps", "claude-slow", "claude-queued"]
+  });
+  assert.equal(codex.concurrency, 2);
+  assert.equal(claude.concurrency, 1);
+
+  const firstCodexFinish = codex.scheduleFinishes[0];
+  const secondCodexStart = codex.scheduleStarts[1];
+  const firstClaudeFinish = claude.scheduleFinishes[0];
+  const secondClaudeStart = claude.scheduleStarts[1];
+  assert.ok(firstCodexFinish !== undefined);
+  assert.ok(secondCodexStart !== undefined);
+  assert.ok(firstClaudeFinish !== undefined);
+  assert.ok(secondClaudeStart !== undefined);
+  assert.ok(secondCodexStart < firstCodexFinish);
+  assert.ok(firstClaudeFinish <= secondClaudeStart);
+});
+
+test("Claude unsupported options fail loudly on the real agent path before spawning", async () => {
+  for (const scenario of [
+    {
+      name: "claude-web-search-fail-loud",
+      options: `{ engine: "claude", webSearch: true }`,
+      message: /ClaudeWebSearchUnsupportedError: webSearch:true is not supported on the Claude engine/
+    },
+    {
+      name: "claude-sandbox-fail-loud",
+      options: `{ engine: "claude", sandbox: "read-only" }`,
+      message: /ClaudeSandboxUnsupportedError: sandbox:"read-only" is not supported on the Claude engine/
+    },
+    {
+      name: "claude-worktree-fail-loud",
+      options: `{ engine: "claude", isolation: "worktree" }`,
+      message: /ClaudeWorktreeIsolationUnsupportedError: isolation:'worktree' is not supported on the Claude engine/
+    }
+  ]) {
+    const codex = new ScriptedEngineAdapter({ name: "codex", concurrency: 1, responses: [] });
+    const { exitCode, stdout, stderr } = await runScriptWithRuntimeFactory(
+      `
+        export const meta = { name: ${JSON.stringify(scenario.name)} };
+        await agent("must fail before Claude worker spawn", ${scenario.options});
+      `,
+      [],
+      async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([codex, new ClaudeEngineAdapter({ concurrency: 1 })]),
+          defaultTurnTimeoutMs: 1_000,
+          defaultMaxAttempts: 1
+        })
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout, "");
+    assert.match(stderr, scenario.message);
+    assert.equal(codex.invocations.length, 0);
+  }
+});
+
+test("Codex schema-subset rejection is distinct from ordinary schema validation failure through the CLI", async () => {
+  const unsupported = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "codex-schema-subset-fail-loud" };
+
+      await agent("schema rejected before generation", {
+        engine: "codex",
+        schema: {
+          type: "object",
+          required: ["answer"],
+          additionalProperties: false,
+          properties: {
+            answer: { type: "string" }
+          }
+        }
+      });
+    `,
+    {
+      codexResponses: [
+        {
+          throwError: new CodexSchemaSubsetUnsupportedError({
+            code: -32602,
+            message: "invalid_json_schema",
+            data: { code: "invalid_json_schema" }
+          })
+        }
+      ],
+      claudeResponses: []
+    }
+  );
+
+  assert.equal(unsupported.exitCode, 1);
+  assert.equal(unsupported.stdout, "");
+  assert.match(unsupported.stderr, /CodexSchemaSubsetUnsupportedError: Codex rejected outputSchema before generation/);
+  assert.doesNotMatch(unsupported.stderr, /verdict/);
+
+  const ordinaryValidation = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "codex-ordinary-validation-failure" };
+
+      const verdict = await agent("schema validates client-side after generation", {
+        engine: "codex",
+        maxAttempts: 1,
+        schema: {
+          type: "object",
+          required: ["answer"],
+          additionalProperties: false,
+          properties: {
+            answer: { type: "string", enum: ["yes"] }
+          }
+        }
+      });
+
+      return { verdict };
+    `,
+    {
+      codexResponses: [{ text: "{\"answer\":\"no\"}" }],
+      claudeResponses: []
+    }
+  );
+
+  assert.equal(ordinaryValidation.exitCode, 0, ordinaryValidation.stderr);
+  assert.deepEqual(JSON.parse(ordinaryValidation.stdout), { verdict: null });
+  assert.equal(ordinaryValidation.stderr, "");
+});
+
 test("pipeline workflow interleaves items and drops only the failing item", async () => {
   const { exitCode, stdout, stderr } = await runScript(
     `
@@ -1032,6 +1350,89 @@ async function runScriptWithEngines(
           defaultTurnTimeoutMs: 1_000,
           defaultMaxAttempts: 3
         })
+    });
+
+    return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function runScriptWithCliEngines(
+  source: string,
+  options: {
+    cliArgs?: string[];
+    scriptArgs?: string[];
+    codexResponses: ScriptedEngineTurn[];
+    claudeResponses: ScriptedEngineTurn[];
+    defaultConcurrency?: number;
+  }
+): Promise<{
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  codex: ScriptedEngineAdapter;
+  claude: ScriptedEngineAdapter;
+}> {
+  let runtime: EnsembleRuntime | null = null;
+  let codex: ScriptedEngineAdapter | null = null;
+  let claude: ScriptedEngineAdapter | null = null;
+  const defaultConcurrency = options.defaultConcurrency ?? 8;
+
+  const result = await runScriptWithRuntimeFactory(
+    source,
+    options.cliArgs ?? [],
+    async (runtimeOptions) => {
+      const runtimeOption = runtimeOptions ?? {};
+      const codexAdapter = new ScriptedEngineAdapter({
+        name: "codex",
+        concurrency: runtimeOption.concurrencyCaps?.codex ?? defaultConcurrency,
+        responses: options.codexResponses,
+        onEvent: (event) => runtime?.handleEngineEvent("codex", event)
+      });
+      const claudeAdapter = new ScriptedEngineAdapter({
+        name: "claude",
+        concurrency: runtimeOption.concurrencyCaps?.claude ?? defaultConcurrency,
+        responses: options.claudeResponses,
+        onEvent: (event) => runtime?.handleEngineEvent("claude", event)
+      });
+      codex = codexAdapter;
+      claude = claudeAdapter;
+      runtime = new EnsembleRuntime({
+        engines: new EngineRegistry([codexAdapter, claudeAdapter]),
+        ...(runtimeOption.budgetCeilings !== undefined ? { budgetCeilings: runtimeOption.budgetCeilings } : {}),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 3
+      });
+      return runtime;
+    },
+    options.scriptArgs ?? []
+  );
+
+  assert.ok(codex, "Codex scripted engine was not created");
+  assert.ok(claude, "Claude scripted engine was not created");
+  return { ...result, codex, claude };
+}
+
+async function runScriptWithRuntimeFactory(
+  source: string,
+  cliArgs: string[],
+  createRuntime: (options?: RuntimeOptions) => Promise<EnsembleRuntime>,
+  scriptArgs: string[] = []
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-integration-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, source);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  try {
+    const exitCode = await runEnsembleCli([...cliArgs, script, ...scriptArgs], {
+      cwd: directory,
+      stdout,
+      stderr,
+      createRuntime
     });
 
     return { exitCode, stdout: stdout.text(), stderr: stderr.text() };

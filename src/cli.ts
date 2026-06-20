@@ -69,6 +69,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
     });
+    // The CLI `--timeout` flag wins over a programmatically injected one; both
+    // feed the same whole-workflow ceiling in `runWorkflowScript`.
+    const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
 
@@ -104,7 +107,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         : {})
     };
     const { result } = await runWorkflowScript(
-      options.timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs: options.timeoutMs }
+      timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }
     );
 
     stdout.write(`${serialiseResult(result)}\n`);
@@ -137,6 +140,7 @@ interface ParsedInvocation {
   args: unknown;
   budgetCeilings?: EngineBudgetCeilings;
   concurrencyCaps?: EngineConcurrencyCaps;
+  timeoutMs?: number;
 }
 
 class CliUsageError extends Error {
@@ -153,7 +157,8 @@ function parseInvocation(argv: string[]): ParsedInvocation {
     options: {
       "json-args": { type: "string" },
       budget: { type: "string", multiple: true },
-      concurrency: { type: "string", multiple: true }
+      concurrency: { type: "string", multiple: true },
+      timeout: { type: "string" }
     },
     strict: true,
     allowPositionals: false
@@ -164,12 +169,14 @@ function parseInvocation(argv: string[]): ParsedInvocation {
   const args = jsonArgs === undefined ? positionalArgs : parseJsonArgs(jsonArgs);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
+  const timeoutMs = parseTimeoutMs(parsed.values.timeout);
 
   return {
     scriptArg: split.scriptArg,
     args,
     ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
-    ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {})
+    ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {})
   };
 }
 
@@ -220,11 +227,16 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
 }
 
 function isKnownOption(value: string): boolean {
-  return value === "--json-args" || value === "--budget" || value === "--concurrency";
+  return value === "--json-args" || value === "--budget" || value === "--concurrency" || value === "--timeout";
 }
 
 function isKnownInlineOption(value: string): boolean {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=");
+  return (
+    value.startsWith("--json-args=") ||
+    value.startsWith("--budget=") ||
+    value.startsWith("--concurrency=") ||
+    value.startsWith("--timeout=")
+  );
 }
 
 function parseJsonArgs(value: string): unknown {
@@ -284,8 +296,21 @@ function parseConcurrencyCap(value: string): number {
   return cap;
 }
 
+// Whole-workflow timeout in milliseconds (the `runWorkflowScript` ceiling),
+// distinct from the per-turn `agent()` timeoutMs set inside a script.
+function parseTimeoutMs(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const timeoutMs = Number(value);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
+  }
+  return timeoutMs;
+}
+
 function usage(): string {
-  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] <script.js> [args...]\n";
+  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n";
 }
 
 function serialiseResult(result: unknown): string {

@@ -185,6 +185,55 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
   assert.equal(stderr.text(), "");
 });
 
+test("CLI --timeout caps the whole-workflow run and times out a hanging script", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-"));
+  const script = path.join(directory, "workflow.js");
+  // The agent never resolves, so only the workflow timeout can end the run.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-timeout" };
+      await agent("hang", { engine: "codex" });
+      return "never reached";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([`--timeout=50`, script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => hangingRuntime()
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /Workflow timed out after 50ms/);
+});
+
+test("CLI rejects a non-numeric --timeout with the usage line and exit code 2", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-bad-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cli-timeout-bad" }; return "ok";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([`--timeout=soon`, script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /--timeout value must be a positive integer of milliseconds/);
+  assert.match(stderr.text(), /Usage: ensemble/);
+});
+
 test("CLI returns non-zero and writes errors to stderr when the script throws", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-"));
   const script = path.join(directory, "workflow.js");
@@ -223,7 +272,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] <script.js> [args...]\n"
+    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n"
   );
 });
 
@@ -324,6 +373,22 @@ function fakeRuntime(): EnsembleRuntime {
     worktrees: [],
     onEvent: () => () => {},
     agent: async (prompt: string) => prompt,
+    close: async () => {}
+  } as unknown as EnsembleRuntime;
+}
+
+function hangingRuntime(): EnsembleRuntime {
+  const budget: Budget = {
+    spent: () => 0,
+    remaining: () => Number.POSITIVE_INFINITY
+  };
+
+  return {
+    budget,
+    worktrees: [],
+    onEvent: () => () => {},
+    // Never resolves — the only way out is the workflow timeout.
+    agent: () => new Promise<string>(() => {}),
     close: async () => {}
   } as unknown as EnsembleRuntime;
 }

@@ -9027,6 +9027,7 @@ async function runEnsembleCli(argv, options = {}) {
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
     });
+    const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
     const statusDir = options.statusDir ?? null;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
@@ -9060,7 +9061,7 @@ async function runEnsembleCli(argv, options = {}) {
       ...progress !== void 0 ? { onMeta: (meta) => progress?.setWorkflow(workflowName(meta)) } : {}
     };
     const { result } = await runWorkflowScript(
-      options.timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs: options.timeoutMs }
+      timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }
     );
     stdout.write(`${serialiseResult(result)}
 `);
@@ -9099,7 +9100,8 @@ function parseInvocation(argv) {
     options: {
       "json-args": { type: "string" },
       budget: { type: "string", multiple: true },
-      concurrency: { type: "string", multiple: true }
+      concurrency: { type: "string", multiple: true },
+      timeout: { type: "string" }
     },
     strict: true,
     allowPositionals: false
@@ -9109,11 +9111,13 @@ function parseInvocation(argv) {
   const args = jsonArgs === void 0 ? positionalArgs : parseJsonArgs(jsonArgs);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
+  const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   return {
     scriptArg: split.scriptArg,
     args,
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
-    ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {}
+    ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
+    ...timeoutMs !== void 0 ? { timeoutMs } : {}
   };
 }
 function splitTuningFlags(argv) {
@@ -9155,10 +9159,10 @@ function splitTuningFlags(argv) {
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--concurrency";
+  return value === "--json-args" || value === "--budget" || value === "--concurrency" || value === "--timeout";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
 }
 function parseJsonArgs(value) {
   try {
@@ -9206,8 +9210,18 @@ function parseConcurrencyCap(value) {
   }
   return cap;
 }
+function parseTimeoutMs(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  const timeoutMs = Number(value);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
+  }
+  return timeoutMs;
+}
 function usage() {
-  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] <script.js> [args...]\n";
+  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n";
 }
 function serialiseResult(result) {
   const json = JSON.stringify(result);

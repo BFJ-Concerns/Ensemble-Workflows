@@ -34,6 +34,20 @@ import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktre
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
+/**
+ * A worker that finished successfully, recorded in completion order. The CLI
+ * emits these as a best-effort partial result when the whole-workflow timeout
+ * fires before the script returns — turning a deadline breach from total loss
+ * into recovered work.
+ */
+export interface CompletedAgentOutput {
+  id: number;
+  engine: EngineName;
+  label: string | null;
+  phase: string | null;
+  output: unknown;
+}
+
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
@@ -44,6 +58,7 @@ export class EnsembleRuntime {
   #defaultTurnTimeoutMs: number;
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
+  #completed: CompletedAgentOutput[] = [];
   #closed = false;
 
   constructor(options: {
@@ -165,13 +180,34 @@ export class EnsembleRuntime {
       try {
         const result = await this.#runAgent(engine, prompt, options, agentId);
         // A schema agent that exhausts its retries returns null: a graceful failure.
-        this.progress.settleAgent(agentId, result === null ? "failed" : "done");
+        const outcome = result === null ? "failed" : "done";
+        this.progress.settleAgent(agentId, outcome);
+        // Retain successful outputs so a timeout can surface completed work. A
+        // null result carries nothing recoverable, so it is not recorded.
+        if (outcome === "done") {
+          this.#completed.push({
+            id: agentId,
+            engine: engine.name,
+            label: options.label ?? null,
+            phase: options.phase ?? null,
+            output: result
+          });
+        }
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         throw error;
       }
     });
+  }
+
+  /**
+   * Outputs of every worker that finished successfully, in completion order.
+   * The CLI reads this to assemble a partial result if the whole-workflow
+   * timeout fires before the script returns.
+   */
+  completedOutputs(): readonly CompletedAgentOutput[] {
+    return this.#completed;
   }
 
   async close(): Promise<void> {

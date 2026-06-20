@@ -8287,6 +8287,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #defaultTurnTimeoutMs;
   #defaultMaxAttempts;
   #eventListeners = /* @__PURE__ */ new Set();
+  #completed = [];
   #closed = false;
   constructor(options) {
     this.budget = new TokenBudget(options.budgetCeilings);
@@ -8381,13 +8382,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.startAgent(agentId);
       try {
         const result = await this.#runAgent(engine, prompt, options, agentId);
-        this.progress.settleAgent(agentId, result === null ? "failed" : "done");
+        const outcome = result === null ? "failed" : "done";
+        this.progress.settleAgent(agentId, outcome);
+        if (outcome === "done") {
+          this.#completed.push({
+            id: agentId,
+            engine: engine.name,
+            label: options.label ?? null,
+            phase: options.phase ?? null,
+            output: result
+          });
+        }
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         throw error;
       }
     });
+  }
+  /**
+   * Outputs of every worker that finished successfully, in completion order.
+   * The CLI reads this to assemble a partial result if the whole-workflow
+   * timeout fires before the script returns.
+   */
+  completedOutputs() {
+    return this.#completed;
   }
   async close() {
     this.#closed = true;
@@ -8589,8 +8608,11 @@ var WorkflowScriptError = class extends Error {
   }
 };
 var WorkflowTimeoutError = class extends WorkflowScriptError {
+  /** The breached deadline, so callers can report it without re-parsing the message. */
+  timeoutMs;
   constructor(timeoutMs) {
     super(`Workflow timed out after ${timeoutMs}ms`);
+    this.timeoutMs = timeoutMs;
   }
 };
 var defaultTimeoutMs = 30 * 60 * 1e3;
@@ -9067,6 +9089,10 @@ async function runEnsembleCli(argv, options = {}) {
 `);
     return 0;
   } catch (error) {
+    if (error instanceof WorkflowTimeoutError) {
+      stdout.write(`${serialiseResult(partialResult(error, runtime))}
+`);
+    }
     stderr.write(`${formatError2(error)}
 `);
     return 1;
@@ -9079,6 +9105,10 @@ async function runEnsembleCli(argv, options = {}) {
       await runtime.close();
     }
   }
+}
+function partialResult(error, runtime) {
+  const completed = runtime?.completedOutputs?.() ?? [];
+  return { partial: true, reason: "timeout", timeoutMs: error.timeoutMs, completed };
 }
 function workflowName(meta) {
   if (typeof meta === "object" && meta !== null && "name" in meta) {

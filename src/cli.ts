@@ -3,12 +3,12 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { createRuntime } from "./index.js";
-import { runWorkflowScript } from "./script-runner.js";
+import { runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { readStatusLine } from "./status-line.js";
 
 import type { RunProgress } from "./progress.js";
-import type { EnsembleRuntime } from "./runtime.js";
+import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
 import type { EngineBudgetCeilings, EngineConcurrencyCaps, EngineName } from "./types.js";
 import type { Writable } from "node:stream";
 
@@ -113,6 +113,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stdout.write(`${serialiseResult(result)}\n`);
     return 0;
   } catch (error) {
+    // A whole-workflow timeout would otherwise discard every completed worker's
+    // output. Emit a best-effort partial envelope to stdout so the driver can
+    // recover the finished work; the error still goes to stderr and the exit
+    // code stays non-zero, so callers that gate on it are unaffected.
+    if (error instanceof WorkflowTimeoutError) {
+      stdout.write(`${serialiseResult(partialResult(error, runtime))}\n`);
+    }
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
@@ -125,6 +132,26 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       await runtime.close();
     }
   }
+}
+
+/**
+ * A timeout's recovered work, marked so a driver can tell it apart from a clean
+ * return. The `partial: true` flag plus the non-zero exit code distinguish it
+ * from a normal result (which is the script's raw return value).
+ */
+interface PartialResult {
+  partial: true;
+  reason: "timeout";
+  timeoutMs: number;
+  completed: readonly CompletedAgentOutput[];
+}
+
+function partialResult(error: WorkflowTimeoutError, runtime: EnsembleRuntime | null): PartialResult {
+  // Injected test runtimes may not carry the collector; read it defensively,
+  // mirroring how `progress` is read above.
+  const completed =
+    (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
+  return { partial: true, reason: "timeout", timeoutMs: error.timeoutMs, completed };
 }
 
 function workflowName(meta: unknown): string | null {

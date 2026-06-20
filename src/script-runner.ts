@@ -12,8 +12,12 @@ export class WorkflowScriptError extends Error {
 }
 
 export class WorkflowTimeoutError extends WorkflowScriptError {
+  /** The breached deadline, so callers can report it without re-parsing the message. */
+  readonly timeoutMs: number;
+
   constructor(timeoutMs: number) {
     super(`Workflow timed out after ${timeoutMs}ms`);
+    this.timeoutMs = timeoutMs;
   }
 }
 

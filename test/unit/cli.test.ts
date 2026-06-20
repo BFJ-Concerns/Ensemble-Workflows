@@ -209,8 +209,57 @@ test("CLI --timeout caps the whole-workflow run and times out a hanging script",
   });
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout.text(), "");
+  // No worker completed before the deadline, so the partial envelope is empty —
+  // but it is still emitted, marking the run as a timeout rather than total loss.
+  assert.equal(stdout.text(), `{"partial":true,"reason":"timeout","timeoutMs":50,"completed":[]}\n`);
   assert.match(stderr.text(), /Workflow timed out after 50ms/);
+});
+
+test("CLI --timeout emits completed worker outputs as a partial result", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-partial-"));
+  const script = path.join(directory, "workflow.js");
+  // The first worker finishes fast; the second hangs until the deadline. The
+  // completed one must survive in the partial envelope rather than being lost.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-partial" };
+      await agent("done-fast", { engine: "codex", label: "alpha" });
+      await agent("hang", { engine: "codex" });
+      return "never reached";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([`--timeout=120`, script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stdout.text()) as {
+    partial: boolean;
+    reason: string;
+    timeoutMs: number;
+    completed: Array<{ engine: string; label: string | null; output: unknown }>;
+  };
+  assert.equal(envelope.partial, true);
+  assert.equal(envelope.reason, "timeout");
+  assert.equal(envelope.timeoutMs, 120);
+  assert.equal(envelope.completed.length, 1);
+  assert.equal(envelope.completed[0]?.engine, "codex");
+  assert.equal(envelope.completed[0]?.label, "alpha");
+  assert.equal(envelope.completed[0]?.output, "codex:done-fast");
+  assert.match(stderr.text(), /Workflow timed out after 120ms/);
 });
 
 test("CLI rejects a non-numeric --timeout with the usage line and exit code 2", async () => {
@@ -440,6 +489,40 @@ class ScheduledTextEngine implements EngineAdapter {
         this.maxActive = Math.max(this.maxActive, this.active);
         await new Promise((resolve) => setTimeout(resolve, 20));
         this.active -= 1;
+        return turn(`${this.name}:${prompt}`);
+      }
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+// Resolves every turn immediately except for the "hang" prompt, which never
+// settles — so a run reaches the whole-workflow timeout with some workers done.
+class HangOnPromptEngine implements EngineAdapter {
+  readonly concurrency: number;
+  readonly scheduler: Scheduler;
+
+  constructor(
+    readonly name: EngineName,
+    concurrency: number
+  ) {
+    this.concurrency = concurrency;
+    this.scheduler = new Scheduler(concurrency);
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(prompt: string): EngineInvocation {
+    return {
+      runAttempt: async () => {
+        if (prompt === "hang") {
+          await new Promise<never>(() => {});
+        }
         return turn(`${this.name}:${prompt}`);
       }
     };

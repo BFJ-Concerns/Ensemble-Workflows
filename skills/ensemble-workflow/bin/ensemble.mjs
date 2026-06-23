@@ -7201,7 +7201,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     if (method === "error") {
       turn.reject(
-        new AppServerRequestError("turn notification", {
+        appServerErrorFromPayload("turn notification", {
           code: void 0,
           message: "received scoped error notification",
           data: params
@@ -7286,7 +7286,7 @@ ${this.#stderrTail.join("\n")}` : "";
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
-  if (method === "turn/start" && payloadContainsInvalidJsonSchema(errorPayload)) {
+  if (payloadContainsInvalidJsonSchema(errorPayload)) {
     return new CodexSchemaSubsetUnsupportedError(errorPayload);
   }
   if (errorPayload.code === -32001) {
@@ -7936,6 +7936,174 @@ var Scheduler = class {
   }
 };
 
+// src/schema.ts
+var import_ajv = __toESM(require_ajv(), 1);
+var ajv = new import_ajv.Ajv({
+  allErrors: true,
+  strict: false
+});
+function parseJsonFromText(text) {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const direct = tryParse(trimmed);
+  if (direct.ok) {
+    return { value: direct.value, source: "direct" };
+  }
+  const objectCandidate = extractBalancedJson(trimmed, "{", "}");
+  if (objectCandidate !== null) {
+    const parsed = tryParse(objectCandidate);
+    if (parsed.ok) {
+      return { value: parsed.value, source: "object-fallback" };
+    }
+  }
+  const arrayCandidate = extractBalancedJson(trimmed, "[", "]");
+  if (arrayCandidate !== null) {
+    const parsed = tryParse(arrayCandidate);
+    if (parsed.ok) {
+      return { value: parsed.value, source: "array-fallback" };
+    }
+  }
+  return null;
+}
+function validateJsonSchema(value, schema) {
+  const validate = compileSchema(schema);
+  const ok = validate(value);
+  return { ok, value, errors: validate.errors };
+}
+function normaliseForCodexOutputSchema(schema) {
+  return normaliseSchemaNode(schema);
+}
+function compileSchema(schema) {
+  return ajv.compile(schema);
+}
+function normaliseSchemaNode(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normaliseSchemaNode(item));
+  }
+  const object = asJsonObject2(value);
+  if (object === null) {
+    return value;
+  }
+  const normalised = {};
+  for (const [key, child] of Object.entries(object)) {
+    normalised[key] = cloneJsonNode(child);
+  }
+  const authoredProperties = asJsonObject2(object.properties);
+  if (authoredProperties !== null) {
+    const properties2 = {};
+    for (const [key, propertySchema] of Object.entries(authoredProperties)) {
+      properties2[key] = normaliseSchemaNode(propertySchema);
+    }
+    normalised.properties = properties2;
+  }
+  normaliseSchemaMapKeyword(object, normalised, "$defs");
+  normaliseSchemaMapKeyword(object, normalised, "definitions");
+  if (Object.hasOwn(object, "items")) {
+    normalised.items = Array.isArray(object.items) ? object.items.map((item) => normaliseSchemaNode(item)) : normaliseSchemaNode(object.items);
+  }
+  normaliseSchemaArrayKeyword(object, normalised, "anyOf");
+  normaliseSchemaArrayKeyword(object, normalised, "oneOf");
+  normaliseSchemaArrayKeyword(object, normalised, "allOf");
+  const properties = asJsonObject2(normalised.properties);
+  if (properties === null) {
+    return normalised;
+  }
+  promotePropertiesToRequired(normalised, properties);
+  return normalised;
+}
+function normaliseSchemaMapKeyword(source, target, key) {
+  const definitions = asJsonObject2(source[key]);
+  if (definitions === null) {
+    return;
+  }
+  const normalisedDefinitions = {};
+  for (const [name, schema] of Object.entries(definitions)) {
+    normalisedDefinitions[name] = normaliseSchemaNode(schema);
+  }
+  target[key] = normalisedDefinitions;
+}
+function normaliseSchemaArrayKeyword(source, target, key) {
+  if (Array.isArray(source[key])) {
+    target[key] = source[key].map((schema) => normaliseSchemaNode(schema));
+  }
+}
+function promotePropertiesToRequired(normalised, properties) {
+  if (!Object.hasOwn(normalised, "required")) {
+    normalised.required = Object.keys(properties);
+    return;
+  }
+  if (Array.isArray(normalised.required)) {
+    const required = [...normalised.required];
+    const seen = new Set(required);
+    for (const property of Object.keys(properties)) {
+      if (!seen.has(property)) {
+        required.push(property);
+        seen.add(property);
+      }
+    }
+    normalised.required = required;
+  }
+}
+function asJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function cloneJsonNode(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonNode(item));
+  }
+  const object = asJsonObject2(value);
+  if (object === null) {
+    return value;
+  }
+  const clone = {};
+  for (const [key, child] of Object.entries(object)) {
+    clone[key] = cloneJsonNode(child);
+  }
+  return clone;
+}
+function tryParse(source) {
+  try {
+    return { ok: true, value: JSON.parse(source) };
+  } catch {
+    return { ok: false };
+  }
+}
+function extractBalancedJson(source, open, close) {
+  const start = source.indexOf(open);
+  if (start === -1) {
+    return null;
+  }
+  let depth = 0;
+  let isInString = false;
+  let isEscaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (isInString) {
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (char === "\\") {
+        isEscaped = true;
+      } else if (char === '"') {
+        isInString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      isInString = true;
+    } else if (char === open) {
+      depth += 1;
+    } else if (char === close) {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+  return null;
+}
+
 // src/worktree-isolation.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
@@ -8106,7 +8274,7 @@ var CodexEngineInvocation = class {
     });
     return this.#transport.runTurn(threadId, this.#prompt, {
       timeoutMs: this.#options.timeoutMs,
-      ...this.#options.schema !== void 0 ? { schema: this.#options.schema } : {},
+      ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {}
     });
@@ -8195,86 +8363,6 @@ async function createDefaultEngineRegistry(options) {
 }
 function defaultCodexConcurrency() {
   return Math.max(1, Math.min(16, cpus().length - 2));
-}
-
-// src/schema.ts
-var import_ajv = __toESM(require_ajv(), 1);
-var ajv = new import_ajv.Ajv({
-  allErrors: true,
-  strict: false
-});
-function parseJsonFromText(text) {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-  const direct = tryParse(trimmed);
-  if (direct.ok) {
-    return { value: direct.value, source: "direct" };
-  }
-  const objectCandidate = extractBalancedJson(trimmed, "{", "}");
-  if (objectCandidate !== null) {
-    const parsed = tryParse(objectCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "object-fallback" };
-    }
-  }
-  const arrayCandidate = extractBalancedJson(trimmed, "[", "]");
-  if (arrayCandidate !== null) {
-    const parsed = tryParse(arrayCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "array-fallback" };
-    }
-  }
-  return null;
-}
-function validateJsonSchema(value, schema) {
-  const validate = compileSchema(schema);
-  const ok = validate(value);
-  return { ok, value, errors: validate.errors };
-}
-function compileSchema(schema) {
-  return ajv.compile(schema);
-}
-function tryParse(source) {
-  try {
-    return { ok: true, value: JSON.parse(source) };
-  } catch {
-    return { ok: false };
-  }
-}
-function extractBalancedJson(source, open, close) {
-  const start = source.indexOf(open);
-  if (start === -1) {
-    return null;
-  }
-  let depth = 0;
-  let isInString = false;
-  let isEscaped = false;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    if (isInString) {
-      if (isEscaped) {
-        isEscaped = false;
-      } else if (char === "\\") {
-        isEscaped = true;
-      } else if (char === '"') {
-        isInString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      isInString = true;
-    } else if (char === open) {
-      depth += 1;
-    } else if (char === close) {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(start, index + 1);
-      }
-    }
-  }
-  return null;
 }
 
 // src/runtime.ts

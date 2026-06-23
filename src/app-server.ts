@@ -367,7 +367,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     if (method === "error") {
       turn.reject(
-        new AppServerRequestError("turn notification", {
+        appServerErrorFromPayload("turn notification", {
           code: undefined,
           message: "received scoped error notification",
           data: params
@@ -459,7 +459,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 }
 
 export function appServerErrorFromPayload(method: string, errorPayload: RpcErrorPayload): Error {
-  if (method === "turn/start" && payloadContainsInvalidJsonSchema(errorPayload)) {
+  if (payloadContainsInvalidJsonSchema(errorPayload)) {
     return new CodexSchemaSubsetUnsupportedError(errorPayload);
   }
   if (errorPayload.code === -32001) {

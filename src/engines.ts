@@ -9,6 +9,7 @@ import {
   ClaudeWorktreeIsolationUnsupportedError
 } from "./errors.js";
 import { Scheduler } from "./scheduler.js";
+import { normaliseForCodexOutputSchema } from "./schema.js";
 import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
@@ -184,7 +185,7 @@ class CodexEngineInvocation implements EngineInvocation {
 
     return this.#transport.runTurn(threadId, this.#prompt, {
       timeoutMs: this.#options.timeoutMs,
-      ...(this.#options.schema !== undefined ? { schema: this.#options.schema } : {}),
+      ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {})
     });

@@ -148,11 +148,13 @@ class ScriptedEngineAdapter implements EngineAdapter {
   readonly invocations: ScriptedEngineInvocation[] = [];
   readonly scheduleStarts: number[] = [];
   readonly scheduleFinishes: number[] = [];
+  maxActive = 0;
 
   #responses: ScriptedEngineTurn[];
   #scheduler: Scheduler;
   #closed = false;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #active = 0;
 
   constructor(options: {
     name: EngineName;
@@ -170,9 +172,12 @@ class ScriptedEngineAdapter implements EngineAdapter {
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.#scheduler.schedule(async () => {
       this.scheduleStarts.push(Date.now());
+      this.#active += 1;
+      this.maxActive = Math.max(this.maxActive, this.#active);
       try {
         return await task();
       } finally {
+        this.#active -= 1;
         this.scheduleFinishes.push(Date.now());
       }
     });
@@ -825,16 +830,8 @@ test("CLI concurrency flag serialises only the named engine", async () => {
   assert.equal(codex.concurrency, 1);
   assert.equal(claude.concurrency, 2);
 
-  const firstCodexFinish = codex.scheduleFinishes[0];
-  const secondCodexStart = codex.scheduleStarts[1];
-  const firstClaudeFinish = claude.scheduleFinishes[0];
-  const secondClaudeStart = claude.scheduleStarts[1];
-  assert.ok(firstCodexFinish !== undefined);
-  assert.ok(secondCodexStart !== undefined);
-  assert.ok(firstClaudeFinish !== undefined);
-  assert.ok(secondClaudeStart !== undefined);
-  assert.ok(firstCodexFinish <= secondCodexStart);
-  assert.ok(secondClaudeStart < firstClaudeFinish);
+  assert.equal(codex.maxActive, 1);
+  assert.equal(claude.maxActive, 2);
 });
 
 test("CLI concurrency flag serialises Claude without reducing Codex concurrency", async () => {

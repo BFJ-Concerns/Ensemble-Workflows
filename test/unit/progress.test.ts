@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { RunProgress } from "../../src/progress.js";
@@ -22,6 +23,42 @@ class StubBudget implements BudgetView {
 
 function progressAt(clock: () => number, budget: BudgetView = new StubBudget()): RunProgress {
   return new RunProgress({ runId: "run-1", budget, now: clock, pid: 4242 });
+}
+
+function documentedStatusSchemaSection(): string {
+  const readme = readFileSync("README.md", "utf8");
+  const start = readme.indexOf("### `ensemble.local.json` schema");
+  const end = readme.indexOf("Example:", start);
+  assert.notEqual(start, -1, "README must document the ensemble.local.json schema");
+  assert.notEqual(end, -1, "README schema section must end before the example");
+  return readme.slice(start, end);
+}
+
+function documentedTopLevelFields(section: string): string[] {
+  return [...section.matchAll(/^- `([^`]+)`:/gm)].map((match) => fieldName(match));
+}
+
+function documentedBullet(section: string, field: string): string {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = section.match(new RegExp(`^- \`${escaped}\`:[\\s\\S]*?(?=\\n- \`|\\n\\n)`, "m"));
+  assert.ok(match !== null, `README must document ${field}`);
+  return match[0];
+}
+
+function documentedNestedFields(section: string, field: string): string[] {
+  return [...documentedBullet(section, field).matchAll(/`([^`]+)`/g)]
+    .map((match) => fieldName(match))
+    .filter((name) => name !== field);
+}
+
+function fieldName(match: RegExpMatchArray): string {
+  const value = match[1];
+  assert.ok(value !== undefined);
+  return value.replace(/^"|"$/g, "");
+}
+
+function sortedKeys(value: object): string[] {
+  return Object.keys(value).sort();
 }
 
 test("queue → start → settle tracks per-engine and total counts", () => {
@@ -52,6 +89,41 @@ test("queue → start → settle tracks per-engine and total counts", () => {
   assert.equal(snapshot.engines.codex.done, 1);
   assert.equal(snapshot.totals.done, 1);
   assert.equal(snapshot.agents.length, 0);
+});
+
+test("README ensemble.local.json schema stays in sync with progress snapshots", () => {
+  const clock = 1_000;
+  const budget = new StubBudget();
+  budget.ceilings.codex = 100;
+  budget.spentByEngine.codex = 25;
+  const progress = progressAt(() => clock, budget);
+  progress.registerEngine("codex", 4);
+  progress.registerEngine("claude", 8);
+  progress.setWorkflow("doc-sync");
+  progress.setPhase("Verify");
+  const id = progress.queueAgent({ engine: "codex", label: "scan", phase: null });
+  progress.startAgent(id);
+
+  const snapshot = progress.snapshot();
+  const section = documentedStatusSchemaSection();
+
+  assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
+  assert.deepEqual(documentedNestedFields(section, "totals").sort(), sortedKeys(snapshot.totals));
+  assert.deepEqual(["claude", "codex"], sortedKeys(snapshot.engines));
+  assert.deepEqual(
+    documentedNestedFields(section, "engines")
+      .filter((field) => !["codex", "claude"].includes(field))
+      .filter((field) => field !== "null")
+      .sort(),
+    sortedKeys(snapshot.engines.codex)
+  );
+  assert.deepEqual(
+    documentedNestedFields(section, "agents")
+      .filter((field) => !["codex", "claude", "queued", "running"].includes(field))
+      .filter((field) => field !== "null")
+      .sort(),
+    sortedKeys(snapshot.agents[0] ?? {})
+  );
 });
 
 test("phase is captured at queue time, with an explicit phase overriding the current one", () => {

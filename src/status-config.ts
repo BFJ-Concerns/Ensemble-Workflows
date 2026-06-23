@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 
 // Values of ENSEMBLE_STATUS that switch the side-channel off. Anything else
@@ -13,13 +14,13 @@ const DISABLED_VALUES = new Set(["0", "off", "false", "no"]);
  *
  * - `ENSEMBLE_STATUS=off` (or `0`/`false`/`no`) disables it entirely.
  * - `ENSEMBLE_STATUS_DIR` overrides the directory.
- * - Otherwise it defaults under `XDG_STATE_HOME` (or `~/.local/state`).
+ * - Otherwise it uses the run cwd's `.claude` directory, if already present.
  *
  * Returns the directory, or `null` when disabled. Resolving at the process edge
  * (the bin) keeps the same directory in view for both the run that writes the
  * snapshot and the statusline command that reads it.
  */
-export function resolveStatusDir(env: NodeJS.ProcessEnv, homedir: string): string | null {
+export function resolveStatusDir(env: NodeJS.ProcessEnv, cwd: string): string | null {
   const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
   if (DISABLED_VALUES.has(toggle)) {
     return null;
@@ -30,7 +31,10 @@ export function resolveStatusDir(env: NodeJS.ProcessEnv, homedir: string): strin
     return explicit;
   }
 
-  const stateHome = env.XDG_STATE_HOME?.trim();
-  const base = stateHome !== undefined && stateHome.length > 0 ? stateHome : path.join(homedir, ".local", "state");
-  return path.join(base, "ensemble", "status");
+  const localClaudeDir = path.join(cwd, ".claude");
+  try {
+    return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
+  } catch {
+    return null;
+  }
 }

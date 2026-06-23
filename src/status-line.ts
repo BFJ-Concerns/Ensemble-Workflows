@@ -49,8 +49,8 @@ export function formatStatusLine(snapshot: ProgressSnapshot, nowMs: number): str
 
 /**
  * Reads the published snapshot from `dir` and renders its status line. Returns
- * `null` — print nothing — when the side-channel is off, the file is
- * absent/corrupt, the run has finished, or the snapshot is stale.
+ * `null` — print nothing — when the side-channel is off, the live file is
+ * absent/corrupt, or the snapshot is stale.
  */
 export async function readStatusLine(dir: string | null, now: () => number): Promise<string | null> {
   if (dir === null || dir.length === 0) {
@@ -75,6 +75,8 @@ export async function readStatusLine(dir: string | null, now: () => number): Pro
   }
 
   const nowMs = now();
+  // Finished snapshots should not be present after normal completion, but keep
+  // the guard so stale files from older versions or interrupted writes stay quiet.
   if (snapshot.state === "finished") {
     return null;
   }

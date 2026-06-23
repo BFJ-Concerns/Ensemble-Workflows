@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path8) {
-      let input = path8;
+    function removeDotSegments(path9) {
+      let input = path9;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path8, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path8 && path8 !== "/" ? path8 : void 0;
+        const [path9, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6570,9 +6570,8 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import path7 from "node:path";
-import { fileURLToPath } from "node:url";
+import path8 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile3 } from "node:fs/promises";
@@ -7540,12 +7539,12 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscript(path8) {
+async function readTranscript(path9) {
   let text;
   try {
-    text = await readFile(path8, "utf8");
+    text = await readFile(path9, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path8}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path9}`, { cause: error });
   }
   return parseTranscriptText(text);
 }
@@ -7790,11 +7789,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path8 = await this.#controlPlane.transcriptPath(handle);
-    if (path8 === null) {
+    const path9 = await this.#controlPlane.transcriptPath(handle);
+    if (path9 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscript(path8);
+    return readTranscript(path9);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -8817,9 +8816,9 @@ function skipBlockComment(source, start) {
 }
 
 // src/status-file.ts
-import { mkdir as mkdir2, rename, writeFile } from "node:fs/promises";
+import { mkdir as mkdir2, rename, unlink, writeFile } from "node:fs/promises";
 import path3 from "node:path";
-var STATUS_FILENAME = "latest.json";
+var STATUS_FILENAME = "ensemble.local.json";
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -8837,15 +8836,14 @@ var StatusFileWriter = class {
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#request();
   }
-  /** Flushes the final (typically `finished`) snapshot and stops listening. */
+  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
   async close() {
     this.#closed = true;
     this.#unsubscribe();
-    this.#dirty = true;
-    this.#drain();
     while (this.#writing !== null) {
       await this.#writing;
     }
+    await this.#removeSnapshot();
   }
   #request() {
     if (this.#closed) {
@@ -8882,12 +8880,26 @@ var StatusFileWriter = class {
 `, "utf8");
     await rename(tmp, target);
   }
+  async #removeSnapshot() {
+    try {
+      await unlink(path3.join(this.#dir, STATUS_FILENAME));
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#onError?.(error);
+    }
+  }
 };
+function isNodeError(error) {
+  return typeof error === "object" && error !== null && "code" in error;
+}
 
 // src/status-config.ts
+import { statSync } from "node:fs";
 import path4 from "node:path";
 var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
-function resolveStatusDir(env, homedir3) {
+function resolveStatusDir(env, cwd) {
   const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
   if (DISABLED_VALUES.has(toggle)) {
     return null;
@@ -8896,9 +8908,12 @@ function resolveStatusDir(env, homedir3) {
   if (explicit !== void 0 && explicit.length > 0) {
     return explicit;
   }
-  const stateHome = env.XDG_STATE_HOME?.trim();
-  const base = stateHome !== void 0 && stateHome.length > 0 ? stateHome : path4.join(homedir3, ".local", "state");
-  return path4.join(base, "ensemble", "status");
+  const localClaudeDir = path4.join(cwd, ".claude");
+  try {
+    return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
+  } catch {
+    return null;
+  }
 }
 
 // src/status-line.ts
@@ -9264,11 +9279,90 @@ function formatError2(error) {
   return String(error);
 }
 
+// src/node-version.ts
+import { readFileSync } from "node:fs";
+import path7 from "node:path";
+import { fileURLToPath } from "node:url";
+function requiredNodeRange(fromUrl = import.meta.url) {
+  const metadata = readPackageMetadata(fromUrl);
+  const range = metadata.engines?.node;
+  if (typeof range !== "string" || range.trim().length === 0) {
+    throw new Error("package.json is missing engines.node");
+  }
+  return range.trim();
+}
+function nodeVersionError(version = process.versions.node, range = requiredNodeRange()) {
+  return satisfiesNodeRange(version, range) ? null : `Ensemble requires Node ${range}; detected Node ${version}.`;
+}
+function satisfiesNodeRange(version, range) {
+  const minimum = parseMinimumRange(range);
+  const actual = parseVersion(version);
+  if (minimum === null || actual === null) {
+    throw new Error(`Unsupported Node version range: ${range}`);
+  }
+  if (actual.major !== minimum.major) {
+    return actual.major > minimum.major;
+  }
+  if (actual.minor !== minimum.minor) {
+    return actual.minor > minimum.minor;
+  }
+  return actual.patch >= minimum.patch;
+}
+function parseMinimumRange(range) {
+  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0)
+  };
+}
+function parseVersion(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function readPackageMetadata(fromUrl) {
+  let current = path7.dirname(fileURLToPath(fromUrl));
+  while (true) {
+    const candidate = path7.join(current, "package.json");
+    try {
+      const metadata = JSON.parse(readFileSync(candidate, "utf8"));
+      if (metadata.name === "ensemble-workflows") {
+        return metadata;
+      }
+    } catch {
+    }
+    const parent = path7.dirname(current);
+    if (parent === current) {
+      throw new Error("Could not locate ensemble-workflows package.json");
+    }
+    current = parent;
+  }
+}
+
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path7.resolve(process.argv[1])) === fileURLToPath(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path8.resolve(process.argv[1])) === fileURLToPath2(import.meta.url);
 if (isMain) {
-  const exitCode = await runEnsembleCli(process.argv.slice(2), {
-    statusDir: resolveStatusDir(process.env, homedir2())
-  });
-  process.exitCode = exitCode;
+  const versionError = nodeVersionError();
+  if (versionError !== null) {
+    process.stderr.write(`${versionError}
+`);
+    process.exitCode = 1;
+  } else {
+    const cwd = process.cwd();
+    const exitCode = await runEnsembleCli(process.argv.slice(2), {
+      cwd,
+      statusDir: resolveStatusDir(process.env, cwd)
+    });
+    process.exitCode = exitCode;
+  }
 }

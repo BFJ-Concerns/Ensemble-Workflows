@@ -1,10 +1,10 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
 
 /** Filename the writer publishes to and the statusline reader consumes. */
-export const STATUS_FILENAME = "latest.json";
+export const STATUS_FILENAME = "ensemble.local.json";
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
@@ -15,7 +15,7 @@ export interface StatusFileWriterOptions {
 }
 
 /**
- * Serialises a {@link RunProgress} model to a single `latest.json` on every
+ * Serialises a {@link RunProgress} model to a single `ensemble.local.json` on every
  * change, so a statusline command can render what the run is doing.
  *
  * Two guarantees matter:
@@ -50,15 +50,14 @@ export class StatusFileWriter {
     this.#request();
   }
 
-  /** Flushes the final (typically `finished`) snapshot and stops listening. */
+  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
   async close(): Promise<void> {
     this.#closed = true;
     this.#unsubscribe();
-    this.#dirty = true;
-    this.#drain();
     while (this.#writing !== null) {
       await this.#writing;
     }
+    await this.#removeSnapshot();
   }
 
   #request(): void {
@@ -101,4 +100,19 @@ export class StatusFileWriter {
     await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
     await rename(tmp, target);
   }
+
+  async #removeSnapshot(): Promise<void> {
+    try {
+      await unlink(path.join(this.#dir, STATUS_FILENAME));
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#onError?.(error);
+    }
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error;
 }

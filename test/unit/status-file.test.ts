@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,14 +36,39 @@ async function waitForFile(file: string): Promise<string> {
   throw new Error(`status file never appeared: ${file}`);
 }
 
-test("StatusFileWriter publishes an initial snapshot and a final finished one", async () => {
+async function waitForSnapshot(file: string, predicate: (snapshot: ProgressSnapshot) => boolean): Promise<ProgressSnapshot> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const snapshot = JSON.parse(await readFile(file, "utf8")) as ProgressSnapshot;
+      if (predicate(snapshot)) {
+        return snapshot;
+      }
+    } catch {
+      // The atomic rename may not have happened yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`status file never matched expectation: ${file}`);
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("StatusFileWriter publishes a live snapshot and removes it on close", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
   progress.registerEngine("codex", 4);
   const writer = new StatusFileWriter({ progress, dir });
 
   // The initial publish happens without close, so a watcher sees the run start.
-  const initial = JSON.parse(await waitForFile(path.join(dir, STATUS_FILENAME))) as ProgressSnapshot;
+  const initial = JSON.parse(await waitForFile(file)) as ProgressSnapshot;
   assert.equal(initial.runId, "run-x");
   assert.equal(initial.state, "running");
   assert.equal(initial.engines.codex.cap, 4);
@@ -51,19 +76,18 @@ test("StatusFileWriter publishes an initial snapshot and a final finished one", 
   const id = progress.queueAgent({ engine: "codex", label: "x", phase: null });
   progress.startAgent(id);
   progress.settleAgent(id, "done");
-  progress.finish();
+  const latest = await waitForSnapshot(file, (snapshot) => snapshot.totals.done === 1);
+  assert.equal(latest.engines.codex.done, 1);
+  assert.equal(latest.totals.done, 1);
+
   await writer.close();
 
-  const raw = await readFile(path.join(dir, STATUS_FILENAME), "utf8");
-  assert.ok(raw.endsWith("\n"), "snapshot file should be newline-terminated");
-  const snapshot = JSON.parse(raw) as ProgressSnapshot;
-  assert.equal(snapshot.state, "finished");
-  assert.equal(snapshot.engines.codex.done, 1);
-  assert.equal(snapshot.totals.done, 1);
+  assert.equal(await exists(file), false);
 });
 
 test("StatusFileWriter coalesces a burst of changes into the latest published state", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
   const writer = new StatusFileWriter({ progress, dir });
 
@@ -73,11 +97,13 @@ test("StatusFileWriter coalesces a burst of changes into the latest published st
     progress.startAgent(id);
     progress.settleAgent(id, "done");
   }
-  await writer.close();
 
-  const snapshot = JSON.parse(await readFile(path.join(dir, STATUS_FILENAME), "utf8")) as ProgressSnapshot;
+  const snapshot = await waitForSnapshot(file, (candidate) => candidate.totals.done === 200);
   assert.equal(snapshot.engines.claude.done, 200);
   assert.equal(snapshot.totals.done, 200);
+
+  await writer.close();
+  assert.equal(await exists(file), false);
 });
 
 test("StatusFileWriter routes write failures to onError and still closes", async () => {

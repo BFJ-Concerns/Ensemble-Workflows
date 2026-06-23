@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -13,6 +13,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { formatStatusLine } from "../../src/status-line.js";
+import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
 import type { ProgressSnapshot } from "../../src/progress.js";
@@ -344,7 +345,7 @@ test("CLI --statusline prints the latest run's snapshot as one line", async () =
     },
     agents: []
   };
-  await writeFile(path.join(statusDir, "latest.json"), `${JSON.stringify(snapshot)}\n`);
+  await writeFile(path.join(statusDir, STATUS_FILENAME), `${JSON.stringify(snapshot)}\n`);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -368,7 +369,7 @@ test("CLI --statusline prints nothing when no run is active", async () => {
   assert.equal(stderr.text(), "");
 });
 
-test("CLI publishes a finished status snapshot to statusDir after a run", async () => {
+test("CLI removes the live status snapshot after a run", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-run-"));
   const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-dir-"));
   const script = path.join(directory, "workflow.js");
@@ -402,13 +403,7 @@ test("CLI publishes a finished status snapshot to statusDir after a run", async 
   });
 
   assert.equal(exitCode, 0, stderr.text());
-  const snapshot = JSON.parse(await readFile(path.join(statusDir, "latest.json"), "utf8")) as ProgressSnapshot;
-  assert.equal(snapshot.workflow, "status-run");
-  assert.equal(snapshot.state, "finished");
-  assert.equal(snapshot.currentPhase, "work");
-  assert.equal(snapshot.totals.done, 2);
-  assert.equal(snapshot.engines.codex.done, 2);
-  assert.equal(snapshot.engines.codex.cap, 2);
+  await assert.rejects(access(path.join(statusDir, STATUS_FILENAME)));
 });
 
 function fakeRuntime(): EnsembleRuntime {

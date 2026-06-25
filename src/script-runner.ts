@@ -42,10 +42,7 @@ interface ExtractedWorkflow {
   bodySource: string;
 }
 
-const defaultTimeoutMs = 30 * 60 * 1_000;
-
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
   const extracted = extractWorkflowSource(options.source);
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -57,13 +54,24 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     filename: options.filename
   });
 
-  const runResult = script.runInContext(context, { timeout: timeoutMs }) as unknown;
+  let runResult: unknown;
+  try {
+    runResult =
+      options.timeoutMs === undefined
+        ? (script.runInContext(context) as unknown)
+        : (script.runInContext(context, { timeout: options.timeoutMs }) as unknown);
+  } catch (error) {
+    if (options.timeoutMs !== undefined && isVmTimeoutError(error)) {
+      throw new WorkflowTimeoutError(options.timeoutMs);
+    }
+    throw error;
+  }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
   // Meta is known the moment the script evaluates — surface it before awaiting
   // the body so a live status view can name the run from the start.
   options.onMeta?.(meta);
-  const result = await withTimeout(resultRecord.promise, timeoutMs);
+  const result = await withTimeout(resultRecord.promise, options.timeoutMs);
   return {
     meta,
     result: normaliseVmValue(result)
@@ -153,7 +161,20 @@ function normaliseVmValue(value: unknown): unknown {
   }
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function isVmTimeoutError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  const message = (error as { message?: unknown }).message;
+  return code === "ERR_SCRIPT_EXECUTION_TIMEOUT" || (typeof message === "string" && /Script execution timed out/.test(message));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) {
+    return promise;
+  }
+
   let timeout: NodeJS.Timeout | null = null;
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
     timeout = setTimeout(() => {

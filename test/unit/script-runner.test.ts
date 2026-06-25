@@ -152,6 +152,28 @@ test("times out runaway async scripts", async () => {
   );
 });
 
+test("does not impose a default timeout when no timeout is configured", async () => {
+  const delayedRuntime: WorkflowRuntime = {
+    ...runtime,
+    async agent(prompt: string) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return `agent:${prompt}`;
+    }
+  };
+
+  const result = await runWorkflowScript({
+    filename: "no-default-timeout.js",
+    runtime: delayedRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "no-default-timeout" };
+      return await agent("slow-but-finite", { engine: "codex" });
+    `
+  });
+
+  assert.equal(result.result, "agent:slow-but-finite");
+});
+
 test("times out runaway synchronous scripts", async () => {
   await assert.rejects(
     () =>
@@ -165,6 +187,6 @@ test("times out runaway synchronous scripts", async () => {
           while (true) {}
         `
       }),
-    /Script execution timed out|Workflow timed out/
+    WorkflowTimeoutError
   );
 });

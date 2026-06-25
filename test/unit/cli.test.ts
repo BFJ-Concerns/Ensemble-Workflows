@@ -211,8 +211,8 @@ test("CLI --timeout caps the whole-workflow run and times out a hanging script",
 
   assert.equal(exitCode, 1);
   // No worker completed before the deadline, so the partial envelope is empty —
-  // but it is still emitted, marking the run as a timeout rather than total loss.
-  assert.equal(stdout.text(), `{"partial":true,"reason":"timeout","timeoutMs":50,"completed":[]}\n`);
+  // but it is still emitted, marking the stopped run rather than total loss.
+  assert.equal(stdout.text(), `{"partial":true,"reason":"interrupted","completed":[]}\n`);
   assert.match(stderr.text(), /Workflow timed out after 50ms/);
 });
 
@@ -250,17 +250,66 @@ test("CLI --timeout emits completed worker outputs as a partial result", async (
   const envelope = JSON.parse(stdout.text()) as {
     partial: boolean;
     reason: string;
-    timeoutMs: number;
     completed: Array<{ engine: string; label: string | null; output: unknown }>;
   };
   assert.equal(envelope.partial, true);
-  assert.equal(envelope.reason, "timeout");
-  assert.equal(envelope.timeoutMs, 120);
+  assert.equal(envelope.reason, "interrupted");
   assert.equal(envelope.completed.length, 1);
   assert.equal(envelope.completed[0]?.engine, "codex");
   assert.equal(envelope.completed[0]?.label, "alpha");
   assert.equal(envelope.completed[0]?.output, "codex:done-fast");
   assert.match(stderr.text(), /Workflow timed out after 120ms/);
+});
+
+test("CLI emits completed worker outputs when interrupted by SIGINT", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-interrupt-"));
+  const script = path.join(directory, "workflow.js");
+  // The first worker finishes fast; the second hangs until the interrupt. The
+  // completed one must survive in the partial envelope rather than being lost.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-interrupt" };
+      await agent("done-fast", { engine: "codex", label: "alpha" });
+      await agent("hang", { engine: "codex" });
+      return "never reached";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const interrupt = setTimeout(() => process.emit("SIGINT"), 50);
+
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
+          defaultTurnTimeoutMs: 1_000,
+          defaultMaxAttempts: 1
+        })
+    });
+
+    assert.equal(exitCode, 1);
+  } finally {
+    clearTimeout(interrupt);
+  }
+
+  const envelope = JSON.parse(stdout.text()) as {
+    partial: boolean;
+    reason: string;
+    completed: Array<{ engine: string; label: string | null; output: unknown }>;
+  };
+  assert.equal(envelope.partial, true);
+  assert.equal(envelope.reason, "interrupted");
+  assert.equal(envelope.completed.length, 1);
+  assert.equal(envelope.completed[0]?.engine, "codex");
+  assert.equal(envelope.completed[0]?.label, "alpha");
+  assert.equal(envelope.completed[0]?.output, "codex:done-fast");
+  assert.match(stderr.text(), /Workflow interrupted by SIGINT/);
 });
 
 test("CLI rejects a non-numeric --timeout with the usage line and exit code 2", async () => {
@@ -495,7 +544,7 @@ class ScheduledTextEngine implements EngineAdapter {
 }
 
 // Resolves every turn immediately except for the "hang" prompt, which never
-// settles — so a run reaches the whole-workflow timeout with some workers done.
+// settles — so a stopped run has some workers done and one still in flight.
 class HangOnPromptEngine implements EngineAdapter {
   readonly concurrency: number;
   readonly scheduler: Scheduler;

@@ -12,6 +12,8 @@ import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
 import type { EngineBudgetCeilings, EngineConcurrencyCaps, EngineName } from "./types.js";
 import type { Writable } from "node:stream";
 
+type InterruptSignal = "SIGINT" | "SIGTERM";
+
 export interface EnsembleCliOptions {
   cwd?: string;
   stdout?: Writable;
@@ -106,19 +108,25 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? { onMeta: (meta: unknown) => progress?.setWorkflow(workflowName(meta)) }
         : {})
     };
-    const { result } = await runWorkflowScript(
-      timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }
-    );
+    const interrupt = watchWorkflowInterrupts();
+    try {
+      const { result } = await Promise.race([
+        runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
+        interrupt.promise
+      ]);
 
-    stdout.write(`${serialiseResult(result)}\n`);
-    return 0;
+      stdout.write(`${serialiseResult(result)}\n`);
+      return 0;
+    } finally {
+      interrupt.dispose();
+    }
   } catch (error) {
-    // A whole-workflow timeout would otherwise discard every completed worker's
+    // A stopped workflow would otherwise discard every completed worker's
     // output. Emit a best-effort partial envelope to stdout so the driver can
     // recover the finished work; the error still goes to stderr and the exit
     // code stays non-zero, so callers that gate on it are unaffected.
-    if (error instanceof WorkflowTimeoutError) {
-      stdout.write(`${serialiseResult(partialResult(error, runtime))}\n`);
+    if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
+      stdout.write(`${serialiseResult(partialResult(runtime))}\n`);
     }
     stderr.write(`${formatError(error)}\n`);
     return 1;
@@ -135,23 +143,22 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 }
 
 /**
- * A timeout's recovered work, marked so a driver can tell it apart from a clean
+ * A stopped run's recovered work, marked so a driver can tell it apart from a clean
  * return. The `partial: true` flag plus the non-zero exit code distinguish it
  * from a normal result (which is the script's raw return value).
  */
 interface PartialResult {
   partial: true;
-  reason: "timeout";
-  timeoutMs: number;
+  reason: "interrupted";
   completed: readonly CompletedAgentOutput[];
 }
 
-function partialResult(error: WorkflowTimeoutError, runtime: EnsembleRuntime | null): PartialResult {
+function partialResult(runtime: EnsembleRuntime | null): PartialResult {
   // Injected test runtimes may not carry the collector; read it defensively,
   // mirroring how `progress` is read above.
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
-  return { partial: true, reason: "timeout", timeoutMs: error.timeoutMs, completed };
+  return { partial: true, reason: "interrupted", completed };
 }
 
 function workflowName(meta: unknown): string | null {
@@ -175,6 +182,42 @@ class CliUsageError extends Error {
     super(message);
     this.name = new.target.name;
   }
+}
+
+class WorkflowInterruptedError extends Error {
+  constructor(readonly signal: InterruptSignal) {
+    super(`Workflow interrupted by ${signal}`);
+    this.name = new.target.name;
+  }
+}
+
+function watchWorkflowInterrupts(): { promise: Promise<never>; dispose: () => void } {
+  const signals: readonly InterruptSignal[] = ["SIGINT", "SIGTERM"];
+  const handlers = new Map<InterruptSignal, () => void>();
+
+  const promise = new Promise<never>((_resolve, reject) => {
+    for (const signal of signals) {
+      const handler = () => {
+        for (const [registeredSignal, registeredHandler] of handlers) {
+          process.off(registeredSignal, registeredHandler);
+        }
+        handlers.clear();
+        reject(new WorkflowInterruptedError(signal));
+      };
+      handlers.set(signal, handler);
+      process.once(signal, handler);
+    }
+  });
+
+  return {
+    promise,
+    dispose: () => {
+      for (const [signal, handler] of handlers) {
+        process.off(signal, handler);
+      }
+      handlers.clear();
+    }
+  };
 }
 
 function parseInvocation(argv: string[]): ParsedInvocation {

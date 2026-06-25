@@ -36,9 +36,8 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
 /**
  * A worker that finished successfully, recorded in completion order. The CLI
- * emits these as a best-effort partial result when the whole-workflow timeout
- * fires before the script returns — turning a deadline breach from total loss
- * into recovered work.
+ * emits these as a best-effort partial result when a stopped run exits before
+ * the script returns — turning interruption from total loss into recovered work.
  */
 export interface CompletedAgentOutput {
   id: number;

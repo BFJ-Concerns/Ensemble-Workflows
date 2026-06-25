@@ -8702,9 +8702,7 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
     this.timeoutMs = timeoutMs;
   }
 };
-var defaultTimeoutMs = 30 * 60 * 1e3;
 async function runWorkflowScript(options) {
-  const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
   const extracted = extractWorkflowSource(options.source);
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -8715,11 +8713,19 @@ async function runWorkflowScript(options) {
   const script = new vm.Script(buildWrappedSource(extracted), {
     filename: options.filename
   });
-  const runResult = script.runInContext(context, { timeout: timeoutMs });
+  let runResult;
+  try {
+    runResult = options.timeoutMs === void 0 ? script.runInContext(context) : script.runInContext(context, { timeout: options.timeoutMs });
+  } catch (error) {
+    if (options.timeoutMs !== void 0 && isVmTimeoutError(error)) {
+      throw new WorkflowTimeoutError(options.timeoutMs);
+    }
+    throw error;
+  }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
   options.onMeta?.(meta);
-  const result = await withTimeout(resultRecord.promise, timeoutMs);
+  const result = await withTimeout(resultRecord.promise, options.timeoutMs);
   return {
     meta,
     result: normaliseVmValue(result)
@@ -8794,7 +8800,18 @@ function normaliseVmValue(value) {
     return value;
   }
 }
+function isVmTimeoutError(error) {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const code = error.code;
+  const message = error.message;
+  return code === "ERR_SCRIPT_EXECUTION_TIMEOUT" || typeof message === "string" && /Script execution timed out/.test(message);
+}
 async function withTimeout(promise, timeoutMs) {
+  if (timeoutMs === void 0) {
+    return promise;
+  }
   let timeout = null;
   const timeoutPromise = new Promise((_resolve, reject) => {
     timeout = setTimeout(() => {
@@ -9185,15 +9202,21 @@ async function runEnsembleCli(argv, options = {}) {
       },
       ...progress !== void 0 ? { onMeta: (meta) => progress?.setWorkflow(workflowName(meta)) } : {}
     };
-    const { result } = await runWorkflowScript(
-      timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }
-    );
-    stdout.write(`${serialiseResult(result)}
+    const interrupt = watchWorkflowInterrupts();
+    try {
+      const { result } = await Promise.race([
+        runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
+        interrupt.promise
+      ]);
+      stdout.write(`${serialiseResult(result)}
 `);
-    return 0;
+      return 0;
+    } finally {
+      interrupt.dispose();
+    }
   } catch (error) {
-    if (error instanceof WorkflowTimeoutError) {
-      stdout.write(`${serialiseResult(partialResult(error, runtime))}
+    if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
+      stdout.write(`${serialiseResult(partialResult(runtime))}
 `);
     }
     stderr.write(`${formatError2(error)}
@@ -9209,9 +9232,9 @@ async function runEnsembleCli(argv, options = {}) {
     }
   }
 }
-function partialResult(error, runtime) {
+function partialResult(runtime) {
   const completed = runtime?.completedOutputs?.() ?? [];
-  return { partial: true, reason: "timeout", timeoutMs: error.timeoutMs, completed };
+  return { partial: true, reason: "interrupted", completed };
 }
 function workflowName(meta) {
   if (typeof meta === "object" && meta !== null && "name" in meta) {
@@ -9226,6 +9249,40 @@ var CliUsageError = class extends Error {
     this.name = new.target.name;
   }
 };
+var WorkflowInterruptedError = class extends Error {
+  constructor(signal) {
+    super(`Workflow interrupted by ${signal}`);
+    this.signal = signal;
+    this.name = new.target.name;
+  }
+  signal;
+};
+function watchWorkflowInterrupts() {
+  const signals = ["SIGINT", "SIGTERM"];
+  const handlers = /* @__PURE__ */ new Map();
+  const promise = new Promise((_resolve, reject) => {
+    for (const signal of signals) {
+      const handler = () => {
+        for (const [registeredSignal, registeredHandler] of handlers) {
+          process.off(registeredSignal, registeredHandler);
+        }
+        handlers.clear();
+        reject(new WorkflowInterruptedError(signal));
+      };
+      handlers.set(signal, handler);
+      process.once(signal, handler);
+    }
+  });
+  return {
+    promise,
+    dispose: () => {
+      for (const [signal, handler] of handlers) {
+        process.off(signal, handler);
+      }
+      handlers.clear();
+    }
+  };
+}
 function parseInvocation(argv) {
   const split = splitTuningFlags(argv);
   const parsed = parseArgs({

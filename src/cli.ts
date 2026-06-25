@@ -6,6 +6,7 @@ import { createRuntime } from "./index.js";
 import { runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { readStatusLine } from "./status-line.js";
+import { RunRecordWriter } from "./run-record.js";
 
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
@@ -26,6 +27,11 @@ export interface EnsembleCliOptions {
    * `null`/`undefined` disables it. Resolved from the environment at the bin.
    */
   statusDir?: string | null;
+  /**
+   * Directory for the durable run archive. A non-empty string enables recording;
+   * null/undefined disables it. The bin resolves the default-on environment policy.
+   */
+  runRecordDir?: string | null;
   /** Injectable clock for the `--statusline` reader; defaults to `Date.now`. */
   now?: () => number;
 }
@@ -62,6 +68,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let runtime: EnsembleRuntime | null = null;
   let progress: RunProgress | undefined;
   let statusWriter: StatusFileWriter | null = null;
+  let runRecordWriter: RunRecordWriter | null = null;
+  let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
 
   try {
     const scriptPath = path.resolve(cwd, invocation.scriptArg);
@@ -76,6 +84,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
+
+    const runRecordDir = options.runRecordDir ?? null;
+    const runtimeRunId = progress?.runId ?? "unknown-run";
+    if (runRecordDir !== null && runRecordDir.length > 0) {
+      runRecordWriter = await RunRecordWriter.start({
+        storeDir: runRecordDir,
+        cwd,
+        runUuid: runtimeRunId,
+        workflowPath: scriptPath,
+        workflowSource: source,
+        args: invocation.args,
+        cliFlags: cliFlags(invocation)
+      });
+      (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
+    }
 
     const statusDir = options.statusDir ?? null;
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
@@ -104,9 +127,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       log: (message: string) => {
         stderr.write(`${message}\n`);
       },
-      ...(progress !== undefined
-        ? { onMeta: (meta: unknown) => progress?.setWorkflow(workflowName(meta)) }
-        : {})
+      onMeta: async (meta: unknown) => {
+        progress?.setWorkflow(workflowName(meta));
+        await runRecordWriter?.noteMeta(meta);
+      }
     };
     const interrupt = watchWorkflowInterrupts();
     try {
@@ -116,6 +140,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       ]);
 
       stdout.write(`${serialiseResult(result)}\n`);
+      finalRecord = { status: "complete", exitCode: 0, result };
       return 0;
     } finally {
       interrupt.dispose();
@@ -126,7 +151,15 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // recover the finished work; the error still goes to stderr and the exit
     // code stays non-zero, so callers that gate on it are unaffected.
     if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
-      stdout.write(`${serialiseResult(partialResult(runtime))}\n`);
+      const partial = partialResult(runtime);
+      stdout.write(`${serialiseResult(partial)}\n`);
+      finalRecord = {
+        status: error instanceof WorkflowTimeoutError ? "timed-out" : "interrupted",
+        exitCode: 1,
+        result: partial
+      };
+    } else {
+      finalRecord = { status: "failed", exitCode: 1, result: null };
     }
     stderr.write(`${formatError(error)}\n`);
     return 1;
@@ -135,6 +168,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     progress?.finish();
     if (statusWriter !== null) {
       await statusWriter.close();
+    }
+    if (runRecordWriter !== null) {
+      await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
     }
     if (runtime !== null) {
       await runtime.close();
@@ -175,6 +211,20 @@ interface ParsedInvocation {
   budgetCeilings?: EngineBudgetCeilings;
   concurrencyCaps?: EngineConcurrencyCaps;
   timeoutMs?: number;
+}
+
+function cliFlags(invocation: ParsedInvocation): {
+  budget?: Record<string, number | null>;
+  concurrency?: Record<string, number>;
+  timeoutMs?: number;
+  jsonArgs: boolean;
+} {
+  return {
+    ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
+    ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
+    ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
+    jsonArgs: !Array.isArray(invocation.args)
+  };
 }
 
 class CliUsageError extends Error {

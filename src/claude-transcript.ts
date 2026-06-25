@@ -21,6 +21,12 @@ export interface TranscriptEntry {
   message?: TranscriptMessage;
 }
 
+export interface TranscriptFile {
+  path: string;
+  text: string;
+  entries: TranscriptEntry[];
+}
+
 interface TranscriptMessage {
   role?: string;
   content?: unknown;
@@ -45,13 +51,18 @@ export function parseTranscriptText(text: string): TranscriptEntry[] {
 
 /** Read and parse a transcript file. Missing/unreadable file → a worker error. */
 export async function readTranscript(path: string): Promise<TranscriptEntry[]> {
+  return (await readTranscriptFile(path)).entries;
+}
+
+/** Read a transcript with its raw JSONL text, used by the durable archive. */
+export async function readTranscriptFile(path: string): Promise<TranscriptFile> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
     throw new ClaudeTranscriptError(`could not read Claude transcript at ${path}`, { cause: error });
   }
-  return parseTranscriptText(text);
+  return { path, text, entries: parseTranscriptText(text) };
 }
 
 /**

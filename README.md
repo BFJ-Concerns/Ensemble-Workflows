@@ -141,3 +141,94 @@ Example:
   ]
 }
 ```
+
+## Durable run record
+
+Every run also writes a permanent archive of what happened. This is separate
+from `.claude/ensemble.local.json`: the status file is live-only and removed at
+the end; the run record is archival and kept for audit and for tools that
+evaluate runs after the fact.
+
+The archive is an ambient, machine-level data store, configured by environment:
+
+- Default: `$XDG_DATA_HOME/ensemble/`, or `~/.local/share/ensemble/` when
+  `XDG_DATA_HOME` is unset.
+- `ENSEMBLE_RUN_RECORD=off` (or `0`/`false`/`no`) disables recording.
+- `ENSEMBLE_RUN_RECORD_DIR` relocates the store. If this variable is unset, the
+  default data-home path is still used; unset never means disabled.
+
+Runs are stored under:
+
+```text
+$STORE/runs/cwd/<namespace-sha256>/<run-uuid>/
+```
+
+The public `run_id` is `cwd:<namespace-sha256-prefix>:<run-uuid>`. The namespace
+material is `realpath(git root)` when the run cwd is inside a git repository,
+otherwise `realpath(cwd)`. This keeps one machine-level store safe across
+projects. It is distinct from `meta.task`: namespace identifies where the run
+came from, while `meta.task` is an opaque benchmark grouping key copied verbatim
+from the workflow meta block when present.
+
+The archive is written incrementally. `manifest.json` starts as
+`status: "in-progress"`, each completed agent flushes its own directory with
+atomic temp-then-rename writes, and the final manifest records `complete`,
+`failed`, `timed-out`, or `interrupted`. A stopped run therefore leaves a usable
+partial archive.
+
+### Run record schema
+
+Every JSON artefact carries:
+
+- `schema_version`: currently `1`.
+- `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
+
+The manifest is `manifest.json`. Its top-level fields are:
+
+- `schema_version`: `1`.
+- `kind`: `"run_manifest"`.
+- `run_id`: namespaced run id.
+- `run_uuid`: the runtime UUID before namespacing.
+- `namespace`: namespace strategy, id, hash, and local material.
+- `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`, or
+  `"interrupted"`.
+- `started_at` / `ended_at`: ISO timestamps; `ended_at` is `null` until final.
+- `workflow`: original path, archived `workflow.js`, and SHA-256.
+- `args`: archived `args.json` and SHA-256 of canonical args JSON.
+- `meta`: raw workflow meta and `task` copied verbatim, or `null`.
+- `cli_flags`: parsed run-tuning flags.
+- `git`: start/end HEAD, dirty flag, and archived diff path when dirty.
+- `environment`: OS, Node, and available tool versions.
+- `harness`: package name/version and git commit of the harness checkout.
+- `result`: archived `result.json` path and exit code once final.
+- `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Models
+  omitted by a worker are grouped as `"default"`. Cost entries carry
+  `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
+  runtime only has token data, amount/currency are `null` and source is
+  `estimated`.
+- `files`: integrity table for archived artefacts, each with `path`, `size`, and
+  `sha256`. `manifest.json` is excluded to avoid self-hashing recursion.
+
+Agent records live at `agents/<zero-padded-id>/agent.json`:
+
+- `schema_version`: `1`.
+- `kind`: `"agent_record"`.
+- `id`, `creation_order`, `concurrency_group`.
+- `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
+- `label`, `phase`, and `status`.
+- `schema`: requested JSON Schema for schema agents, otherwise `null`.
+- `raw_output`: final raw model text, or the latest raw failed output.
+- `validated_output`: validated object/text result, or `null` on failure.
+- `attempts`: per-attempt status, structured failure, raw/validated output,
+  timing, and token usage events.
+- `transcripts`: archived transcript files for the attempts.
+
+Codex transcripts are captured from the app-server stream because threads are
+ephemeral: the archive records the prompt-bearing `turn/start` request and every
+scoped app-server notification through completion. Claude transcripts are copied
+from the background session JSONL before the session is removed. The prompt lives
+in the transcript, not in a duplicated field.
+
+The record contains only run and audit data. It does not score outputs, infer
+verifier relationships, or record evaluation concepts; those belong to the
+tools that consume it.

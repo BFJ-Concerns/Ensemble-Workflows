@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path9) {
-      let input = path9;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path9, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
+        const [path11, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6570,12 +6570,12 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path8 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import path10 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile3 } from "node:fs/promises";
-import path6 from "node:path";
+import { readFile as readFile4 } from "node:fs/promises";
+import path8 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/runtime.ts
@@ -6674,35 +6674,34 @@ var TokenBudget = class {
   ceilings;
   accountingMode = "last-delta";
   events = [];
-  #spent = {
-    codex: 0,
-    claude: 0
-  };
+  #spent = {};
   constructor(ceilings = {}) {
     this.ceilings = {
       codex: ceilings.codex ?? null,
-      claude: ceilings.claude ?? null
+      claude: ceilings.claude ?? null,
+      ...ceilings
     };
   }
   spent(engine) {
-    return this.#spent[engine];
+    return this.#spent[engine] ?? 0;
   }
   remaining(engine) {
-    const ceiling = this.ceilings[engine];
+    const ceiling = this.ceilings[engine] ?? null;
     if (ceiling === null) {
       return Number.POSITIVE_INFINITY;
     }
-    return Math.max(0, ceiling - this.#spent[engine]);
+    return Math.max(0, ceiling - this.spent(engine));
   }
   assertCanStart(engine) {
-    const ceiling = this.ceilings[engine];
-    if (ceiling !== null && this.#spent[engine] >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, this.#spent[engine]);
+    const ceiling = this.ceilings[engine] ?? null;
+    const spent = this.spent(engine);
+    if (ceiling !== null && spent >= ceiling) {
+      throw new BudgetExceededError(engine, ceiling, spent);
     }
   }
   record(engine, event) {
     this.events.push({ engine, event });
-    this.#spent[engine] += event.last.totalTokens;
+    this.#spent[engine] = this.spent(engine) + event.last.totalTokens;
   }
 };
 function tokenUsageEventFromParams(params) {
@@ -6946,6 +6945,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
+  #transcripts = /* @__PURE__ */ new Map();
   #stderrTail = [];
   #hasExited = false;
   #onEvent;
@@ -6971,22 +6971,37 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   async openThread(options) {
     const config = options.webSearch ? { web_search: "live" } : {};
-    const result = await this.#request("thread/start", {
+    const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: options.sandbox,
       ephemeral: true,
       config
-    });
+    };
+    const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
     const directThreadId = resultObject?.threadId;
     const nestedThread = asJsonObject(resultObject?.thread);
     const nestedThreadId = nestedThread?.id;
-    if (typeof directThreadId === "string") {
-      return directThreadId;
-    }
-    if (typeof nestedThreadId === "string") {
-      return nestedThreadId;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      this.#transcripts.set(threadId, {
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ]
+      });
+      return threadId;
     }
     throw new AppServerRequestError("thread/start", {
       code: void 0,
@@ -7011,6 +7026,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (options.effort !== void 0) {
         params.effort = options.effort;
       }
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
       await this.#request("turn/start", params);
       return await state.promise;
     } catch (error) {
@@ -7155,6 +7176,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (typeof threadId !== "string") {
       return;
     }
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
     const turn = this.#turns.get(threadId);
     if (turn === void 0) {
       return;
@@ -7220,12 +7247,36 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
       items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
     };
     if (turn.itemText !== void 0) {
       result.itemText = turn.itemText;
     }
     turn.resolve(result);
+  }
+  #appendTranscript(threadId, event) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return;
+    }
+    transcript.events.push(event);
+  }
+  #transcriptText(threadId) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
+`;
   }
   #createTurnState(threadId, timeoutMs) {
     let resolveTurn = () => void 0;
@@ -7539,14 +7590,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscript(path9) {
+async function readTranscriptFile(path11) {
   let text;
   try {
-    text = await readFile(path9, "utf8");
+    text = await readFile(path11, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path9}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path11}`, { cause: error });
   }
-  return parseTranscriptText(text);
+  return { path: path11, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -7700,18 +7751,18 @@ var ClaudeEngineInvocation = class {
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {}
     });
     this.#handle = handle;
-    const entries = await this.#runToCompletion(handle, 0);
-    return this.#buildResult(handle, entries, 0);
+    const transcript = await this.#runToCompletion(handle, 0);
+    return this.#buildResult(handle, transcript, 0);
   }
   async #correctInSession(handle, previousFailure) {
-    const mark = (await this.#readTranscript(handle)).length;
+    const mark = (await this.#readTranscript(handle)).entries.length;
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
       throw new ClaudeValveError("reply valve failed to inject the correction");
     }
     await this.#awaitReceipt(handle, mark);
-    const entries = await this.#runToCompletion(handle, mark);
-    return this.#buildResult(handle, entries, mark);
+    const transcript = await this.#runToCompletion(handle, mark);
+    return this.#buildResult(handle, transcript, mark);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
   async #awaitReceipt(handle, mark) {
@@ -7721,8 +7772,8 @@ var ClaudeEngineInvocation = class {
       if (status.status === "busy") {
         return;
       }
-      const entries = await this.#tryReadTranscript(handle);
-      if (entries !== null && entries.length > mark) {
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
       if (Date.now() >= deadline) {
@@ -7765,9 +7816,9 @@ var ClaudeEngineInvocation = class {
         continue;
       }
       if (status.status !== "busy") {
-        const entries = await this.#tryReadTranscript(handle);
-        if (entries !== null && turnComplete(entries, fromIndex)) {
-          return entries;
+        const transcript = await this.#tryReadTranscript(handle);
+        if (transcript !== null && turnComplete(transcript.entries, fromIndex)) {
+          return transcript;
         }
       }
       if (Date.now() >= deadline) {
@@ -7776,24 +7827,34 @@ var ClaudeEngineInvocation = class {
       await delay2(this.#pollIntervalMs);
     }
   }
-  #buildResult(handle, entries, fromIndex) {
+  #buildResult(handle, transcript, fromIndex) {
+    const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
-    this.#feedBudget(handle, entries, fromIndex);
+    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
     return {
       text,
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: []
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: handle.sessionId,
+          content: transcript.text
+        }
+      ]
     };
   }
   async #readTranscript(handle) {
-    const path9 = await this.#controlPlane.transcriptPath(handle);
-    if (path9 === null) {
+    const path11 = await this.#controlPlane.transcriptPath(handle);
+    if (path11 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscript(path9);
+    return readTranscriptFile(path11);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -7813,22 +7874,30 @@ var ClaudeEngineInvocation = class {
    */
   #feedBudget(handle, entries, fromIndex) {
     if (this.#onEvent === void 0) {
-      return;
+      return null;
     }
     const breakdown = usageSince(entries, fromIndex);
     if (breakdown.totalTokens === 0) {
-      return;
+      return null;
     }
     this.#budgetEventCounter += 1;
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: {
+    const event = {
+      threadId: handle.sessionId,
+      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+      last: breakdown,
+      total: breakdown,
+      raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
         tokenUsage: { last: breakdown, total: breakdown }
-      },
+      }
+    };
+    this.#onEvent({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
       receivedAt: Date.now()
     });
+    return event;
   }
   async #teardown() {
     const handle = this.#handle;
@@ -8194,6 +8263,9 @@ var EngineRegistry = class {
   get(name) {
     return this.#engines.get(name);
   }
+  names() {
+    return [...this.#engines.keys()];
+  }
   async close() {
     await Promise.all([...this.#engines.values()].map((engine) => engine.close()));
   }
@@ -8375,6 +8447,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #defaultMaxAttempts;
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
+  #runRecorder = null;
   #closed = false;
   constructor(options) {
     this.budget = new TokenBudget(options.budgetCeilings);
@@ -8438,6 +8511,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.#eventListeners.delete(listener);
     };
   }
+  setRunRecorder(recorder) {
+    this.#runRecorder = recorder;
+  }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
     this.progress.setPhase(title);
@@ -8465,12 +8541,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
       try {
-        const result = await this.#runAgent(engine, prompt, options, agentId);
+        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
         const outcome = result === null ? "failed" : "done";
         this.progress.settleAgent(agentId, outcome);
+        agentRecord.status = outcome === "done" ? "complete" : "failed";
+        agentRecord.rawOutput = lastRawOutput(agentRecord);
+        agentRecord.validatedOutput = result;
         if (outcome === "done") {
           this.#completed.push({
             id: agentId,
@@ -8480,9 +8560,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
             output: result
           });
         }
+        await this.#runRecorder?.recordAgent(agentRecord);
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
+        agentRecord.status = "failed";
+        agentRecord.rawOutput = lastRawOutput(agentRecord);
+        agentRecord.validatedOutput = null;
+        await this.#runRecorder?.recordAgent(agentRecord);
         throw error;
       }
     });
@@ -8499,24 +8584,25 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#closed = true;
     await this.#engines.close();
   }
-  async #runAgent(engine, prompt, options, agentId) {
+  async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
     try {
       if (options.schema !== void 0) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId);
+        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
       }
-      return await this.#runTextAgent(engine.name, invocation, options, agentId);
+      return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
     } finally {
       await invocation.close?.();
     }
   }
-  async #runTextAgent(engine, invocation, options, agentId) {
+  async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError = null;
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
+      const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
           attempt,
@@ -8524,14 +8610,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
         const text = result.text.trim();
         if (text.length > 0) {
+          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
           return text;
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
+        const failure = failureFromError(error);
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -8540,12 +8630,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
   }
-  async #runSchemaAgent(engine, invocation, options, agentId) {
+  async #runSchemaAgent(engine, invocation, options, agentId, agentRecord) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
+      const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
           attempt,
@@ -8557,17 +8648,22 @@ var EnsembleRuntime = class _EnsembleRuntime {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
+          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
         const validation = validateJsonSchema(parsed.value, options.schema);
         if (validation.ok) {
+          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, parsed.value, startedAt, result));
           return parsed.value;
         }
         previousFailure = {
           kind: "schema-validation",
           message: JSON.stringify(validation.errors ?? [])
         };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
+        const failure = failureFromError(error);
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -8581,7 +8677,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
   }
   #registerEngineCaps() {
-    for (const name of ["codex", "claude"]) {
+    for (const name of this.#engines.names()) {
       const adapter = this.#engines.get(name);
       if (adapter !== void 0) {
         this.progress.registerEngine(name, adapter.concurrency);
@@ -8592,7 +8688,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (engine === void 0) {
       throw new MissingEngineError();
     }
-    if (engine !== "codex" && engine !== "claude") {
+    if (typeof engine !== "string") {
       throw new UnknownEngineError(engine);
     }
     const adapter = this.#engines.get(engine);
@@ -8612,6 +8708,24 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {}
     };
   }
+  #newAgentRecord(id, engine, options) {
+    return {
+      id,
+      engine,
+      model: typeof options.model === "string" ? options.model : null,
+      effort: typeof options.effort === "string" ? options.effort : null,
+      resolvedModel: null,
+      label: options.label ?? null,
+      phase: options.phase ?? null,
+      status: "in-progress",
+      creationOrder: id,
+      concurrencyGroup: engine,
+      schema: options.schema ?? null,
+      rawOutput: null,
+      validatedOutput: null,
+      attempts: []
+    };
+  }
 };
 async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
@@ -8624,6 +8738,36 @@ function requireTransport(transport) {
     throw new Error("EnsembleRuntime requires either engines or a Codex transport");
   }
   return transport;
+}
+function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result) {
+  return {
+    attempt,
+    status,
+    failure,
+    rawOutput,
+    validatedOutput,
+    startedAt: new Date(startedAtMs).toISOString(),
+    endedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    durationMs: result?.durationMs ?? null,
+    firstDeltaMs: result?.firstDeltaMs ?? null,
+    tokenUsageEvents: result?.tokenUsageEvents ?? [],
+    transcripts: result?.transcripts ?? []
+  };
+}
+function failureFromError(error) {
+  if (error instanceof Error) {
+    return { kind: error.name, message: error.message };
+  }
+  return { kind: "error", message: String(error) };
+}
+function lastRawOutput(record) {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const rawOutput = record.attempts[index]?.rawOutput;
+    if (rawOutput !== void 0 && rawOutput !== null) {
+      return rawOutput;
+    }
+  }
+  return null;
 }
 
 // src/hooks.ts
@@ -8724,7 +8868,7 @@ async function runWorkflowScript(options) {
   }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
-  options.onMeta?.(meta);
+  await options.onMeta?.(meta);
   const result = await withTimeout(resultRecord.promise, options.timeoutMs);
   return {
     meta,
@@ -8920,9 +9064,398 @@ function skipBlockComment(source, start) {
   return end + 2;
 }
 
-// src/status-file.ts
-import { mkdir as mkdir2, rename, unlink, writeFile } from "node:fs/promises";
+// src/run-record.ts
+import { createHash } from "node:crypto";
+import { mkdir as mkdir2, readFile as readFile2, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import os from "node:os";
 import path3 from "node:path";
+import { execFile as execFile3 } from "node:child_process";
+import { promisify as promisify2 } from "node:util";
+import { fileURLToPath } from "node:url";
+var execFileAsync2 = promisify2(execFile3);
+var SCHEMA_VERSION = 1;
+var MANIFEST_PATH = "manifest.json";
+var RunRecordWriter = class _RunRecordWriter {
+  archiveDir;
+  manifest;
+  #cwd;
+  #files = /* @__PURE__ */ new Map();
+  #agents = /* @__PURE__ */ new Map();
+  constructor(archiveDir, cwd, manifest) {
+    this.archiveDir = archiveDir;
+    this.#cwd = cwd;
+    this.manifest = manifest;
+  }
+  static async start(options) {
+    const namespace = await deriveNamespace(options.cwd);
+    const runId = `${namespace.id}:${options.runUuid}`;
+    const archiveDir = path3.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
+    await mkdir2(archiveDir, { recursive: true });
+    const harnessRoot = await findHarnessRoot() ?? options.cwd;
+    const packageInfo = await readPackageInfo(harnessRoot);
+    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_manifest",
+      run_id: runId,
+      run_uuid: options.runUuid,
+      namespace,
+      status: "in-progress",
+      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ended_at: null,
+      workflow: {
+        path: options.workflowPath,
+        archive_path: "workflow.js",
+        sha256: sha256(options.workflowSource)
+      },
+      args: {
+        archive_path: "args.json",
+        sha256: sha256(canonicalJson(options.args))
+      },
+      meta: {
+        task: null,
+        raw: null
+      },
+      cli_flags: options.cliFlags,
+      git: {
+        start: gitStart,
+        end: null
+      },
+      environment: {
+        os: {
+          platform: os.platform(),
+          release: os.release(),
+          arch: os.arch()
+        },
+        node: process.version,
+        tools: await toolVersions()
+      },
+      harness: {
+        package_name: packageInfo.name,
+        package_version: packageInfo.version,
+        commit: await git2(["rev-parse", "HEAD"], harnessRoot)
+      },
+      result: {
+        archive_path: null,
+        exit_code: null
+      },
+      cost_rollup: {},
+      files: []
+    });
+    await writer.#writeText("workflow.js", options.workflowSource);
+    await writer.#writeJson("args.json", {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_args",
+      value: options.args
+    });
+    if (gitStart.diffPath !== null) {
+      await writer.#trackFile(gitStart.diffPath);
+    }
+    await writer.#writeManifest();
+    return writer;
+  }
+  async noteMeta(meta) {
+    this.manifest.meta = {
+      task: extractTask(meta),
+      raw: meta
+    };
+    await this.#writeManifest();
+  }
+  async recordAgent(record) {
+    this.#agents.set(record.id, record);
+    const agentDir = `agents/${padId(record.id)}`;
+    const transcriptRefs = [];
+    for (const attempt of record.attempts) {
+      let index = 0;
+      for (const transcript of attempt.transcripts) {
+        index += 1;
+        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
+        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        await this.#writeText(relativePath, transcript.content);
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: relativePath,
+          format: transcript.format,
+          source: transcript.source,
+          thread_id: transcript.threadId ?? null,
+          session_id: transcript.sessionId ?? null
+        });
+      }
+    }
+    const agentJsonPath = `${agentDir}/agent.json`;
+    await this.#writeJson(agentJsonPath, {
+      schema_version: SCHEMA_VERSION,
+      kind: "agent_record",
+      id: record.id,
+      engine: record.engine,
+      model: record.model,
+      effort: record.effort,
+      resolved_model: record.resolvedModel,
+      label: record.label,
+      phase: record.phase,
+      status: record.status,
+      creation_order: record.creationOrder,
+      concurrency_group: record.concurrencyGroup,
+      schema: record.schema,
+      raw_output: record.rawOutput,
+      validated_output: record.validatedOutput,
+      attempts: record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        status: attempt.status,
+        failure: attempt.failure,
+        raw_output: attempt.rawOutput,
+        validated_output: attempt.validatedOutput,
+        started_at: attempt.startedAt,
+        ended_at: attempt.endedAt,
+        duration_ms: attempt.durationMs,
+        first_delta_ms: attempt.firstDeltaMs,
+        token_usage_events: attempt.tokenUsageEvents
+      })),
+      transcripts: transcriptRefs
+    });
+    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    await this.#writeManifest();
+  }
+  async finish(options) {
+    this.manifest.status = options.status;
+    this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+    this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+    if (this.manifest.git.end.diffPath !== null) {
+      await this.#trackFile(this.manifest.git.end.diffPath);
+    }
+    this.manifest.result = {
+      archive_path: "result.json",
+      exit_code: options.exitCode
+    };
+    await this.#writeJson("result.json", {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_result",
+      status: options.status,
+      exit_code: options.exitCode,
+      value: options.result
+    });
+    await this.#writeManifest();
+  }
+  async #writeJson(relativePath, value) {
+    await this.#writeText(relativePath, `${canonicalJson(value)}
+`);
+  }
+  async #writeText(relativePath, content) {
+    const destination = path3.join(this.archiveDir, relativePath);
+    await mkdir2(path3.dirname(destination), { recursive: true });
+    const temporary = path3.join(path3.dirname(destination), `.${path3.basename(destination)}.${process.pid}.${Date.now()}.tmp`);
+    await writeFile(temporary, content, "utf8");
+    await rename(temporary, destination);
+    await this.#trackFile(relativePath);
+  }
+  async #writeManifest() {
+    this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    const destination = path3.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path3.join(this.archiveDir, `.manifest.${process.pid}.${Date.now()}.tmp`);
+    await writeFile(temporary, `${canonicalJson(this.manifest)}
+`, "utf8");
+    await rename(temporary, destination);
+  }
+  async #trackFile(relativePath) {
+    const absolute = path3.join(this.archiveDir, relativePath);
+    const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
+    this.#files.set(relativePath, {
+      path: relativePath,
+      size: metadata.size,
+      sha256: contentHash
+    });
+  }
+};
+function buildCostRollup(records) {
+  const rollup = {};
+  for (const record of records) {
+    const engine = record.engine;
+    const model = record.model ?? "default";
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= {
+      tokens: zeroUsage2(),
+      cost: { amount: null, currency: null, source: "estimated" }
+    };
+    const bucket = rollup[engine][model];
+    for (const attempt of record.attempts) {
+      for (const event of attempt.tokenUsageEvents) {
+        addUsage(bucket.tokens, event.last);
+      }
+    }
+  }
+  return rollup;
+}
+function addUsage(target, delta) {
+  target.cachedInputTokens += delta.cachedInputTokens;
+  target.inputTokens += delta.inputTokens;
+  target.outputTokens += delta.outputTokens;
+  target.reasoningOutputTokens += delta.reasoningOutputTokens;
+  target.totalTokens += delta.totalTokens;
+}
+function zeroUsage2() {
+  return {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+}
+async function deriveNamespace(cwd) {
+  const gitRoot = await git2(["rev-parse", "--show-toplevel"], cwd);
+  const material = await realpath(gitRoot ?? cwd);
+  const hash = sha256(material);
+  return {
+    strategy: "git-root-realpath-sha256",
+    id: `cwd:${hash.slice(0, 24)}`,
+    material,
+    hash
+  };
+}
+async function readGitState(cwd, diffPath, archiveDir) {
+  const root = await git2(["rev-parse", "--show-toplevel"], cwd);
+  const head = await git2(["rev-parse", "HEAD"], cwd);
+  const porcelain = await git2(["status", "--porcelain"], cwd);
+  const dirty = porcelain === null ? null : porcelain.length > 0;
+  let archivedDiffPath = null;
+  if (dirty === true) {
+    const diff = await git2(["diff", "--binary"], cwd);
+    if (diff !== null && diff.length > 0) {
+      await writeStandaloneText(path3.join(archiveDir, diffPath), diff);
+      archivedDiffPath = diffPath;
+    }
+  }
+  return { root, head, dirty, diffPath: archivedDiffPath };
+}
+async function readPackageInfo(cwd) {
+  try {
+    const text = await readFile2(path3.join(cwd, "package.json"), "utf8");
+    const parsed = JSON.parse(text);
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
+      version: typeof parsed.version === "string" ? parsed.version : "0.0.0"
+    };
+  } catch {
+    return { name: "ensemble-workflows", version: "0.0.0" };
+  }
+}
+async function findHarnessRoot() {
+  let current = path3.dirname(fileURLToPath(import.meta.url));
+  for (; ; ) {
+    try {
+      const text = await readFile2(path3.join(current, "package.json"), "utf8");
+      const parsed = JSON.parse(text);
+      if (parsed.name === "ensemble-workflows") {
+        return current;
+      }
+    } catch {
+    }
+    const parent = path3.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+async function toolVersions() {
+  const [gitVersion, codexVersion, claudeVersion] = await Promise.all([
+    commandVersion("git", ["--version"]),
+    commandVersion("codex", ["--version"]),
+    commandVersion("claude", ["--version"])
+  ]);
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion };
+}
+async function commandVersion(command, args) {
+  try {
+    const { stdout, stderr } = await execFileAsync2(command, args, { timeout: 5e3 });
+    return (stdout || stderr).trim() || null;
+  } catch {
+    return null;
+  }
+}
+async function git2(args, cwd) {
+  try {
+    const { stdout } = await execFileAsync2("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+function extractTask(meta) {
+  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
+    return null;
+  }
+  return meta.task ?? null;
+}
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+async function hashFile(filePath) {
+  const text = await readFile2(filePath);
+  return createHash("sha256").update(text).digest("hex");
+}
+async function writeStandaloneText(destination, content) {
+  await mkdir2(path3.dirname(destination), { recursive: true });
+  const temporary = path3.join(tmpdir(), `ensemble-run-record-${process.pid}-${Date.now()}.tmp`);
+  await writeFile(temporary, content, "utf8");
+  try {
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+function padId(id) {
+  return String(id).padStart(6, "0");
+}
+function padAttempt(attempt) {
+  return String(attempt).padStart(3, "0");
+}
+function safeName(filename, suffix) {
+  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
+}
+
+// src/run-record-config.ts
+import { homedir as homedir2 } from "node:os";
+import path4 from "node:path";
+var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
+var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+function resolveRunRecordDir(env) {
+  if (isOff(env[RUN_RECORD_ENV])) {
+    return null;
+  }
+  const explicit = env[RUN_RECORD_DIR_ENV];
+  if (explicit !== void 0 && explicit.length > 0) {
+    return explicit;
+  }
+  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path4.join(homedir2(), ".local", "share");
+  return path4.join(dataHome, "ensemble");
+}
+function isOff(value) {
+  if (value === void 0) {
+    return false;
+  }
+  return ["off", "0", "false", "no"].includes(value.toLowerCase());
+}
+
+// src/status-file.ts
+import { mkdir as mkdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import path5 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var StatusFileWriter = class {
   #progress;
@@ -8976,18 +9509,18 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     if (!this.#ensuredDir) {
-      await mkdir2(this.#dir, { recursive: true });
+      await mkdir3(this.#dir, { recursive: true });
       this.#ensuredDir = true;
     }
-    const target = path3.join(this.#dir, STATUS_FILENAME);
+    const target = path5.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(snapshot)}
+    await writeFile2(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
-    await rename(tmp, target);
+    await rename2(tmp, target);
   }
   async #removeSnapshot() {
     try {
-      await unlink(path3.join(this.#dir, STATUS_FILENAME));
+      await unlink(path5.join(this.#dir, STATUS_FILENAME));
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;
@@ -9002,7 +9535,7 @@ function isNodeError(error) {
 
 // src/status-config.ts
 import { statSync } from "node:fs";
-import path4 from "node:path";
+import path6 from "node:path";
 var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
 function resolveStatusDir(env, cwd) {
   const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
@@ -9013,7 +9546,7 @@ function resolveStatusDir(env, cwd) {
   if (explicit !== void 0 && explicit.length > 0) {
     return explicit;
   }
-  const localClaudeDir = path4.join(cwd, ".claude");
+  const localClaudeDir = path6.join(cwd, ".claude");
   try {
     return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
   } catch {
@@ -9022,8 +9555,8 @@ function resolveStatusDir(env, cwd) {
 }
 
 // src/status-line.ts
-import { readFile as readFile2 } from "node:fs/promises";
-import path5 from "node:path";
+import { readFile as readFile3 } from "node:fs/promises";
+import path7 from "node:path";
 var STALE_MS = 3e4;
 var ENGINE_NAMES2 = ["codex", "claude"];
 function formatStatusLine(snapshot, nowMs) {
@@ -9052,7 +9585,7 @@ async function readStatusLine(dir, now) {
   }
   let raw;
   try {
-    raw = await readFile2(path5.join(dir, STATUS_FILENAME), "utf8");
+    raw = await readFile3(path7.join(dir, STATUS_FILENAME), "utf8");
   } catch {
     return null;
   }
@@ -9161,9 +9694,11 @@ async function runEnsembleCli(argv, options = {}) {
   let runtime = null;
   let progress;
   let statusWriter = null;
+  let runRecordWriter = null;
+  let finalRecord = null;
   try {
-    const scriptPath = path6.resolve(cwd, invocation.scriptArg);
-    const source = await readFile3(scriptPath, "utf8");
+    const scriptPath = path8.resolve(cwd, invocation.scriptArg);
+    const source = await readFile4(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
@@ -9171,6 +9706,20 @@ async function runEnsembleCli(argv, options = {}) {
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
+    const runRecordDir = options.runRecordDir ?? null;
+    const runtimeRunId = progress?.runId ?? "unknown-run";
+    if (runRecordDir !== null && runRecordDir.length > 0) {
+      runRecordWriter = await RunRecordWriter.start({
+        storeDir: runRecordDir,
+        cwd,
+        runUuid: runtimeRunId,
+        workflowPath: scriptPath,
+        workflowSource: source,
+        args: invocation.args,
+        cliFlags: cliFlags(invocation)
+      });
+      runtime.setRunRecorder?.(runRecordWriter);
+    }
     const statusDir = options.statusDir ?? null;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
@@ -9200,7 +9749,10 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`${message}
 `);
       },
-      ...progress !== void 0 ? { onMeta: (meta) => progress?.setWorkflow(workflowName(meta)) } : {}
+      onMeta: async (meta) => {
+        progress?.setWorkflow(workflowName(meta));
+        await runRecordWriter?.noteMeta(meta);
+      }
     };
     const interrupt = watchWorkflowInterrupts();
     try {
@@ -9210,14 +9762,23 @@ async function runEnsembleCli(argv, options = {}) {
       ]);
       stdout.write(`${serialiseResult(result)}
 `);
+      finalRecord = { status: "complete", exitCode: 0, result };
       return 0;
     } finally {
       interrupt.dispose();
     }
   } catch (error) {
     if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
-      stdout.write(`${serialiseResult(partialResult(runtime))}
+      const partial = partialResult(runtime);
+      stdout.write(`${serialiseResult(partial)}
 `);
+      finalRecord = {
+        status: error instanceof WorkflowTimeoutError ? "timed-out" : "interrupted",
+        exitCode: 1,
+        result: partial
+      };
+    } else {
+      finalRecord = { status: "failed", exitCode: 1, result: null };
     }
     stderr.write(`${formatError2(error)}
 `);
@@ -9226,6 +9787,9 @@ async function runEnsembleCli(argv, options = {}) {
     progress?.finish();
     if (statusWriter !== null) {
       await statusWriter.close();
+    }
+    if (runRecordWriter !== null) {
+      await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
     }
     if (runtime !== null) {
       await runtime.close();
@@ -9242,6 +9806,14 @@ function workflowName(meta) {
     return typeof name === "string" ? name : null;
   }
   return null;
+}
+function cliFlags(invocation) {
+  return {
+    ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
+    ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
+    ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
+    jsonArgs: !Array.isArray(invocation.args)
+  };
 }
 var CliUsageError = class extends Error {
   constructor(message) {
@@ -9426,8 +9998,8 @@ function formatError2(error) {
 
 // src/node-version.ts
 import { readFileSync } from "node:fs";
-import path7 from "node:path";
-import { fileURLToPath } from "node:url";
+import path9 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
   const metadata = readPackageMetadata(fromUrl);
   const range = metadata.engines?.node;
@@ -9476,9 +10048,9 @@ function parseVersion(version) {
   };
 }
 function readPackageMetadata(fromUrl) {
-  let current = path7.dirname(fileURLToPath(fromUrl));
+  let current = path9.dirname(fileURLToPath2(fromUrl));
   while (true) {
-    const candidate = path7.join(current, "package.json");
+    const candidate = path9.join(current, "package.json");
     try {
       const metadata = JSON.parse(readFileSync(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
@@ -9486,7 +10058,7 @@ function readPackageMetadata(fromUrl) {
       }
     } catch {
     }
-    const parent = path7.dirname(current);
+    const parent = path9.dirname(current);
     if (parent === current) {
       throw new Error("Could not locate ensemble-workflows package.json");
     }
@@ -9495,7 +10067,7 @@ function readPackageMetadata(fromUrl) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path8.resolve(process.argv[1])) === fileURLToPath2(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path10.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {
@@ -9506,7 +10078,8 @@ if (isMain) {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
       cwd,
-      statusDir: resolveStatusDir(process.env, cwd)
+      statusDir: resolveStatusDir(process.env, cwd),
+      runRecordDir: resolveRunRecordDir(process.env)
     });
     process.exitCode = exitCode;
   }

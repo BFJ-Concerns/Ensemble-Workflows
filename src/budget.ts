@@ -15,40 +15,39 @@ export class TokenBudget implements Budget {
   readonly accountingMode: TokenAccountingMode = "last-delta";
   readonly events: Array<{ engine: EngineName; event: TokenUsageEvent }> = [];
 
-  #spent: Record<EngineName, number> = {
-    codex: 0,
-    claude: 0
-  };
+  #spent: Record<string, number> = {};
 
   constructor(ceilings: EngineBudgetCeilings = {}) {
     this.ceilings = {
       codex: ceilings.codex ?? null,
-      claude: ceilings.claude ?? null
+      claude: ceilings.claude ?? null,
+      ...ceilings
     };
   }
 
   spent(engine: EngineName): number {
-    return this.#spent[engine];
+    return this.#spent[engine] ?? 0;
   }
 
   remaining(engine: EngineName): number {
-    const ceiling = this.ceilings[engine];
+    const ceiling = this.ceilings[engine] ?? null;
     if (ceiling === null) {
       return Number.POSITIVE_INFINITY;
     }
-    return Math.max(0, ceiling - this.#spent[engine]);
+    return Math.max(0, ceiling - this.spent(engine));
   }
 
   assertCanStart(engine: EngineName): void {
-    const ceiling = this.ceilings[engine];
-    if (ceiling !== null && this.#spent[engine] >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, this.#spent[engine]);
+    const ceiling = this.ceilings[engine] ?? null;
+    const spent = this.spent(engine);
+    if (ceiling !== null && spent >= ceiling) {
+      throw new BudgetExceededError(engine, ceiling, spent);
     }
   }
 
   record(engine: EngineName, event: TokenUsageEvent): void {
     this.events.push({ engine, event });
-    this.#spent[engine] += event.last.totalTokens;
+    this.#spent[engine] = this.spent(engine) + event.last.totalTokens;
   }
 }
 

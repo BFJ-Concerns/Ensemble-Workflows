@@ -34,7 +34,7 @@ export interface RunWorkflowScriptOptions {
   timeoutMs?: number;
   log: WorkflowLogSink;
   /** Called with the parsed `meta` as soon as the script evaluates, before its body resolves. */
-  onMeta?: (meta: unknown) => void;
+  onMeta?: (meta: unknown) => void | Promise<void>;
 }
 
 interface ExtractedWorkflow {
@@ -70,7 +70,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   const meta = normaliseVmValue(resultRecord.meta);
   // Meta is known the moment the script evaluates — surface it before awaiting
   // the body so a live status view can name the run from the start.
-  options.onMeta?.(meta);
+  await options.onMeta?.(meta);
   const result = await withTimeout(resultRecord.promise, options.timeoutMs);
   return {
     meta,

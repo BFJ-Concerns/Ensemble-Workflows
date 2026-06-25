@@ -30,6 +30,7 @@ import type {
   TokenUsageEvent
 } from "./types.js";
 import type { EngineAdapter, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
@@ -58,6 +59,7 @@ export class EnsembleRuntime {
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
+  #runRecorder: RunRecordWriter | null = null;
   #closed = false;
 
   constructor(options: {
@@ -139,6 +141,10 @@ export class EnsembleRuntime {
     };
   }
 
+  setRunRecorder(recorder: RunRecordWriter | null): void {
+    this.#runRecorder = recorder;
+  }
+
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title: string): void {
     this.progress.setPhase(title);
@@ -174,13 +180,17 @@ export class EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
       try {
-        const result = await this.#runAgent(engine, prompt, options, agentId);
+        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
         // A schema agent that exhausts its retries returns null: a graceful failure.
         const outcome = result === null ? "failed" : "done";
         this.progress.settleAgent(agentId, outcome);
+        agentRecord.status = outcome === "done" ? "complete" : "failed";
+        agentRecord.rawOutput = lastRawOutput(agentRecord);
+        agentRecord.validatedOutput = result;
         // Retain successful outputs so a timeout can surface completed work. A
         // null result carries nothing recoverable, so it is not recorded.
         if (outcome === "done") {
@@ -192,9 +202,14 @@ export class EnsembleRuntime {
             output: result
           });
         }
+        await this.#runRecorder?.recordAgent(agentRecord);
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
+        agentRecord.status = "failed";
+        agentRecord.rawOutput = lastRawOutput(agentRecord);
+        agentRecord.validatedOutput = null;
+        await this.#runRecorder?.recordAgent(agentRecord);
         throw error;
       }
     });
@@ -218,14 +233,15 @@ export class EnsembleRuntime {
     engine: EngineAdapter,
     prompt: string,
     options: Partial<AgentOptions>,
-    agentId: number
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
   ): Promise<string | unknown | null> {
     const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
     try {
       if (options.schema !== undefined) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId);
+        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
       }
-      return await this.#runTextAgent(engine.name, invocation, options, agentId);
+      return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
     } finally {
       await invocation.close?.();
     }
@@ -235,7 +251,8 @@ export class EnsembleRuntime {
     engine: EngineName,
     invocation: EngineInvocation,
     options: Partial<AgentOptions>,
-    agentId: number
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
   ): Promise<string> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let lastError: Error | null = null;
@@ -244,6 +261,7 @@ export class EnsembleRuntime {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
+      const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
           attempt,
@@ -251,14 +269,18 @@ export class EnsembleRuntime {
         });
         const text = result.text.trim();
         if (text.length > 0) {
+          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
           return text;
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
+        const failure = failureFromError(error);
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -273,7 +295,8 @@ export class EnsembleRuntime {
     engine: EngineName,
     invocation: EngineInvocation,
     options: Partial<AgentOptions> & { schema: JsonSchema },
-    agentId: number
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
   ): Promise<unknown | null> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let previousFailure: EngineAttemptFailure | undefined;
@@ -281,6 +304,7 @@ export class EnsembleRuntime {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
       this.budget.assertCanStart(engine);
+      const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
           attempt,
@@ -292,18 +316,23 @@ export class EnsembleRuntime {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
+          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
 
         const validation = validateJsonSchema(parsed.value, options.schema);
         if (validation.ok) {
+          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, parsed.value, startedAt, result));
           return parsed.value;
         }
         previousFailure = {
           kind: "schema-validation",
           message: JSON.stringify(validation.errors ?? [])
         };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
+        const failure = failureFromError(error);
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -320,7 +349,7 @@ export class EnsembleRuntime {
   }
 
   #registerEngineCaps(): void {
-    for (const name of ["codex", "claude"] as const) {
+    for (const name of this.#engines.names()) {
       const adapter = this.#engines.get(name);
       if (adapter !== undefined) {
         this.progress.registerEngine(name, adapter.concurrency);
@@ -332,10 +361,10 @@ export class EnsembleRuntime {
     if (engine === undefined) {
       throw new MissingEngineError();
     }
-    if (engine !== "codex" && engine !== "claude") {
+    if (typeof engine !== "string") {
       throw new UnknownEngineError(engine);
     }
-    const adapter = this.#engines.get(engine);
+    const adapter = this.#engines.get(engine as EngineName);
     if (adapter === undefined) {
       throw new UnknownEngineError(engine);
     }
@@ -351,6 +380,25 @@ export class EnsembleRuntime {
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
       ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {})
+    };
+  }
+
+  #newAgentRecord(id: number, engine: EngineName, options: Partial<AgentOptions>): RuntimeAgentRecord {
+    return {
+      id,
+      engine,
+      model: typeof options.model === "string" ? options.model : null,
+      effort: typeof options.effort === "string" ? options.effort : null,
+      resolvedModel: null,
+      label: options.label ?? null,
+      phase: options.phase ?? null,
+      status: "in-progress",
+      creationOrder: id,
+      concurrencyGroup: engine,
+      schema: options.schema ?? null,
+      rawOutput: null,
+      validatedOutput: null,
+      attempts: []
     };
   }
 }
@@ -374,4 +422,45 @@ function requireTransport(transport: RuntimeTransport | undefined): RuntimeTrans
     throw new Error("EnsembleRuntime requires either engines or a Codex transport");
   }
   return transport;
+}
+
+function attemptRecord(
+  attempt: number,
+  status: "complete" | "failed",
+  failure: { kind: string; message: string } | null,
+  rawOutput: string | null,
+  validatedOutput: unknown,
+  startedAtMs: number,
+  result: { durationMs: number | null; firstDeltaMs: number | null; tokenUsageEvents: TokenUsageEvent[]; transcripts?: RuntimeAgentAttemptRecord["transcripts"] } | null
+): RuntimeAgentAttemptRecord {
+  return {
+    attempt,
+    status,
+    failure,
+    rawOutput,
+    validatedOutput,
+    startedAt: new Date(startedAtMs).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: result?.durationMs ?? null,
+    firstDeltaMs: result?.firstDeltaMs ?? null,
+    tokenUsageEvents: result?.tokenUsageEvents ?? [],
+    transcripts: result?.transcripts ?? []
+  };
+}
+
+function failureFromError(error: unknown): { kind: string; message: string } {
+  if (error instanceof Error) {
+    return { kind: error.name, message: error.message };
+  }
+  return { kind: "error", message: String(error) };
+}
+
+function lastRawOutput(record: RuntimeAgentRecord): string | null {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const rawOutput = record.attempts[index]?.rawOutput;
+    if (rawOutput !== undefined && rawOutput !== null) {
+      return rawOutput;
+    }
+  }
+  return null;
 }

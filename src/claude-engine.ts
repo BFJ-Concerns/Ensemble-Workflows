@@ -7,10 +7,10 @@ import {
   ClaudeValveError,
   ClaudeWorkerError
 } from "./errors.js";
-import { finalAssistantText, readTranscript, turnComplete, usageSince } from "./claude-transcript.js";
+import { finalAssistantText, readTranscriptFile, turnComplete, usageSince } from "./claude-transcript.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
-import type { TranscriptEntry } from "./claude-transcript.js";
+import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
 import type { RuntimeEvent, TurnResult } from "./types.js";
 
@@ -133,14 +133,14 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     });
     this.#handle = handle;
 
-    const entries = await this.#runToCompletion(handle, 0);
-    return this.#buildResult(handle, entries, 0);
+    const transcript = await this.#runToCompletion(handle, 0);
+    return this.#buildResult(handle, transcript, 0);
   }
 
   async #correctInSession(handle: ClaudeSessionHandle, previousFailure: EngineAttemptFailure): Promise<TurnResult> {
     // Mark the transcript so we read only what the correction produces, never the
     // stale pre-correction answer.
-    const mark = (await this.#readTranscript(handle)).length;
+    const mark = (await this.#readTranscript(handle)).entries.length;
 
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
@@ -148,8 +148,8 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
 
     await this.#awaitReceipt(handle, mark);
-    const entries = await this.#runToCompletion(handle, mark);
-    return this.#buildResult(handle, entries, mark);
+    const transcript = await this.#runToCompletion(handle, mark);
+    return this.#buildResult(handle, transcript, mark);
   }
 
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
@@ -160,8 +160,8 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (status.status === "busy") {
         return;
       }
-      const entries = await this.#tryReadTranscript(handle);
-      if (entries !== null && entries.length > mark) {
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
       if (Date.now() >= deadline) {
@@ -179,7 +179,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * only after `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not
    * kill a live worker.
    */
-  async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptEntry[]> {
+  async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptFile> {
     const deadline = Date.now() + this.#options.timeoutMs;
     let nudges = 0;
     let absences = 0;
@@ -211,9 +211,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       // Not actively generating: the turn may be complete. The transcript is the
       // authoritative signal — confirm the latest assistant message has settled.
       if (status.status !== "busy") {
-        const entries = await this.#tryReadTranscript(handle);
-        if (entries !== null && turnComplete(entries, fromIndex)) {
-          return entries;
+        const transcript = await this.#tryReadTranscript(handle);
+        if (transcript !== null && turnComplete(transcript.entries, fromIndex)) {
+          return transcript;
         }
       }
 
@@ -224,29 +224,39 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
   }
 
-  #buildResult(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult {
+  #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
+    const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
-    this.#feedBudget(handle, entries, fromIndex);
+    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
     return {
       text,
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: []
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: handle.sessionId,
+          content: transcript.text
+        }
+      ]
     };
   }
 
-  async #readTranscript(handle: ClaudeSessionHandle): Promise<TranscriptEntry[]> {
+  async #readTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile> {
     const path = await this.#controlPlane.transcriptPath(handle);
     if (path === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscript(path);
+    return readTranscriptFile(path);
   }
 
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle: ClaudeSessionHandle): Promise<TranscriptEntry[] | null> {
+  async #tryReadTranscript(handle: ClaudeSessionHandle): Promise<TranscriptFile | null> {
     try {
       return await this.#readTranscript(handle);
     } catch (error) {
@@ -262,24 +272,32 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    */
-  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult["tokenUsageEvents"][number] | null {
     if (this.#onEvent === undefined) {
-      return;
+      return null;
     }
     const breakdown = usageSince(entries, fromIndex);
     if (breakdown.totalTokens === 0) {
-      return;
+      return null;
     }
     this.#budgetEventCounter += 1;
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: {
+    const event = {
+      threadId: handle.sessionId,
+      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+      last: breakdown,
+      total: breakdown,
+      raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
         tokenUsage: { last: breakdown, total: breakdown }
-      },
+      }
+    };
+    this.#onEvent({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
       receivedAt: Date.now()
     });
+    return event;
   }
 
   async #teardown(): Promise<void> {

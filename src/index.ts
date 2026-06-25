@@ -35,6 +35,8 @@ export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
+export { RunRecordWriter } from "./run-record.js";
+export { resolveRunRecordDir, RUN_RECORD_ENV, RUN_RECORD_DIR_ENV } from "./run-record-config.js";
 export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
 export { resolveStatusDir } from "./status-config.js";
 export { formatStatusLine, readStatusLine } from "./status-line.js";

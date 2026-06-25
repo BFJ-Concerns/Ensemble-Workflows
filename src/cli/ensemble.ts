@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { runEnsembleCli } from "../cli.js";
 import { nodeVersionError } from "../node-version.js";
+import { resolveRunRecordDir } from "../run-record-config.js";
 import { resolveStatusDir } from "../status-config.js";
 
 const isMain =
@@ -22,7 +23,8 @@ if (isMain) {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
       cwd,
-      statusDir: resolveStatusDir(process.env, cwd)
+      statusDir: resolveStatusDir(process.env, cwd),
+      runRecordDir: resolveRunRecordDir(process.env)
     });
     process.exitCode = exitCode;
   }

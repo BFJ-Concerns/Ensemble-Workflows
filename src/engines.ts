@@ -75,6 +75,10 @@ export class EngineRegistry {
     return this.#engines.get(name);
   }
 
+  names(): EngineName[] {
+    return [...this.#engines.keys()];
+  }
+
   async close(): Promise<void> {
     await Promise.all([...this.#engines.values()].map((engine) => engine.close()));
   }

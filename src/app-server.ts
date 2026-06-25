@@ -56,6 +56,10 @@ interface TurnState {
   timeout: NodeJS.Timeout;
 }
 
+interface ThreadTranscript {
+  events: JsonObject[];
+}
+
 export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
@@ -73,6 +77,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
+  #transcripts = new Map<string, ThreadTranscript>();
   #stderrTail: string[] = [];
   #hasExited = false;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
@@ -102,24 +107,39 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   async openThread(options: ThreadStartOptions): Promise<string> {
     const config = options.webSearch ? { web_search: "live" } : {};
-    const result = await this.#request("thread/start", {
+    const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: options.sandbox,
       ephemeral: true,
       config
-    });
+    };
+    const result = await this.#request("thread/start", requestParams);
 
     const resultObject = asJsonObject(result);
     const directThreadId = resultObject?.threadId;
     const nestedThread = asJsonObject(resultObject?.thread);
     const nestedThreadId = nestedThread?.id;
 
-    if (typeof directThreadId === "string") {
-      return directThreadId;
-    }
-    if (typeof nestedThreadId === "string") {
-      return nestedThreadId;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      this.#transcripts.set(threadId, {
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: new Date().toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: new Date().toISOString()
+          }
+        ]
+      });
+      return threadId;
     }
     throw new AppServerRequestError("thread/start", {
       code: undefined,
@@ -147,6 +167,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
         params.effort = options.effort;
       }
 
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: new Date().toISOString()
+      });
       await this.#request("turn/start", params);
       return await state.promise;
     } catch (error) {
@@ -315,6 +341,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
 
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: new Date().toISOString()
+    });
+
     const turn = this.#turns.get(threadId);
     if (turn === undefined) {
       return;
@@ -388,12 +421,37 @@ export class CodexAppServerTransport implements RuntimeTransport {
       durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
       items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
     };
     if (turn.itemText !== undefined) {
       result.itemText = turn.itemText;
     }
     turn.resolve(result);
+  }
+
+  #appendTranscript(threadId: string, event: JsonObject): void {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === undefined) {
+      return;
+    }
+    transcript.events.push(event);
+  }
+
+  #transcriptText(threadId: string): string {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === undefined) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   }
 
   #createTurnState(threadId: string, timeoutMs: number): TurnState {

@@ -1,0 +1,19 @@
+[
+  "attempts",
+  "concurrency_group",
+  "creation_order",
+  "effort",
+  "engine",
+  "id",
+  "kind",
+  "label",
+  "model",
+  "phase",
+  "raw_output",
+  "resolved_model",
+  "schema",
+  "schema_version",
+  "status",
+  "transcripts",
+  "validated_output"
+]

@@ -61,6 +61,15 @@ export interface TokenUsageEvent {
   raw: JsonObject;
 }
 
+export interface EngineTranscriptArtifact {
+  filename: string;
+  format: "jsonl" | "text";
+  source: string;
+  content: string;
+  threadId?: string;
+  sessionId?: string;
+}
+
 export interface TurnResult {
   text: string;
   itemText?: string;
@@ -69,6 +78,7 @@ export interface TurnResult {
   firstDeltaMs: number | null;
   items: Record<string, number>;
   tokenUsageEvents: TokenUsageEvent[];
+  transcripts?: EngineTranscriptArtifact[];
 }
 
 export interface TurnStartOptions {

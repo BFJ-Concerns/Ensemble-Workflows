@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
@@ -9,6 +12,7 @@ import {
   OpenCodeWebSearchUnsupportedError,
   OpenCodeWorktreeIsolationUnsupportedError
 } from "../../src/errors.js";
+import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { OpenCodeRunOptions, OpenCodeRunResult, OpenCodeRunner } from "../../src/opencode-engine.js";
@@ -103,6 +107,7 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   const result = await invocation.runAttempt({ attempt: 1 });
 
   assert.equal(result.text, "final answer");
+  assert.equal(result.resolvedModel, "openrouter/z-ai/glm-5.2");
   assert.equal(result.durationMs, 12);
   assert.equal(runner.runs[0]?.providerModel, "openrouter/z-ai/glm-5.2");
   assert.equal(runner.runs[0]?.variant, "minimal");
@@ -111,6 +116,55 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.deepEqual(events, ["thread/tokenUsage/updated"]);
   assert.equal(result.transcripts?.[0]?.filename, "transcript.opencode.jsonl");
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
+});
+
+test("opencode durable agent record stores authored and resolved models", async () => {
+  let runtime: EnsembleRuntime | null = null;
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-record-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-record-store-"));
+  const runner = new FakeOpenCodeRunner({
+    exportText: exportText(JSON.stringify({ status: "ok" }), tokens(4, 3, 0))
+  });
+  const adapter = new OpenCodeEngineAdapter({
+    cwd,
+    runner,
+    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-resolved-model",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-record' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  await runtime.agent("return JSON", {
+    engine: "opencode",
+    model: "glm-5.2",
+    schema: {
+      type: "object",
+      required: ["status"],
+      additionalProperties: false,
+      properties: {
+        status: { type: "string", enum: ["ok"] }
+      }
+    }
+  });
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    model: unknown;
+    resolved_model: unknown;
+  };
+  assert.equal(agent.model, "glm-5.2");
+  assert.equal(agent.resolved_model, "openrouter/z-ai/glm-5.2");
 });
 
 test("opencode reaches the shared schema validation and budget path", async () => {

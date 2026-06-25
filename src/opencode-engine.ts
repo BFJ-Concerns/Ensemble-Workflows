@@ -140,6 +140,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 
     return {
       text,
+      resolvedModel: this.#providerModel,
       deltaText: text,
       durationMs: run.durationMs,
       firstDeltaMs: null,

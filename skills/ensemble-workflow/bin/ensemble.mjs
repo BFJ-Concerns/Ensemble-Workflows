@@ -8078,6 +8078,7 @@ var OpenCodeEngineInvocation = class {
     }
     return {
       text,
+      resolvedModel: this.#providerModel,
       deltaText: text,
       durationMs: run.durationMs,
       firstDeltaMs: null,
@@ -9063,6 +9064,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        recordResolvedModel(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -9097,6 +9099,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        recordResolvedModel(agentRecord, result);
         const parsed = parseJsonFromText(result.text);
         if (parsed === null) {
           previousFailure = {
@@ -9208,6 +9211,11 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? []
   };
+}
+function recordResolvedModel(record, result) {
+  if (result.resolvedModel !== void 0) {
+    record.resolvedModel = result.resolvedModel;
+  }
 }
 function failureFromError(error) {
   if (error instanceof Error) {

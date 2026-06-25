@@ -28,6 +28,7 @@ import type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
+  TurnResult,
   TokenUsageEvent
 } from "./types.js";
 import type { EngineAdapter, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
@@ -274,6 +275,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        recordResolvedModel(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -317,6 +319,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        recordResolvedModel(agentRecord, result);
         const parsed = parseJsonFromText(result.text);
         if (parsed === null) {
           previousFailure = {
@@ -438,7 +441,7 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: { durationMs: number | null; firstDeltaMs: number | null; tokenUsageEvents: TokenUsageEvent[]; transcripts?: RuntimeAgentAttemptRecord["transcripts"] } | null
+  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts"> | null
 ): RuntimeAgentAttemptRecord {
   return {
     attempt,
@@ -453,6 +456,12 @@ function attemptRecord(
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? []
   };
+}
+
+function recordResolvedModel(record: RuntimeAgentRecord, result: TurnResult): void {
+  if (result.resolvedModel !== undefined) {
+    record.resolvedModel = result.resolvedModel;
+  }
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {

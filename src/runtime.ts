@@ -12,6 +12,7 @@ import {
   ClaudeEngineAdapter,
   CodexEngineAdapter,
   EngineRegistry,
+  OpenCodeEngineAdapter,
   createDefaultEngineRegistry,
   defaultCodexConcurrency
 } from "./engines.js";
@@ -93,6 +94,9 @@ export class EnsembleRuntime {
         }),
         new ClaudeEngineAdapter({
           ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {})
+        }),
+        new OpenCodeEngineAdapter({
+          ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {})
         })
       ]);
     this.#registerEngineCaps();
@@ -112,6 +116,9 @@ export class EnsembleRuntime {
       },
       onClaudeEvent: (event) => {
         runtime?.handleEngineEvent("claude", event);
+      },
+      onOpenCodeEvent: (event) => {
+        runtime?.handleEngineEvent("opencode", event);
       },
       onWorktreeFinished: (record) => {
         if (runtime === null) {

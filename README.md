@@ -3,22 +3,25 @@
 A deterministic multi-agent orchestration harness for multiple LLM engines,
 mirroring Claude Code's `Workflow` tool. An LLM (most often Claude) authors a
 JavaScript workflow and runs it through a CLI that fans many agents out over a
-task — each on a chosen engine, **Codex or Claude** — and fans their structured
+task — each on a chosen engine, **Codex, Claude, or opencode** — and fans their structured
 results back in, with schema-validated output, retry/verify, per-engine token
 budgets, and worktree isolation. Its distinctive capability is **cross-engine verification**:
 one model family checks another within a single run, so an answer that survives
 both is stronger than either family could vouch for alone.
 
 **Status:** feature-complete v1, landed and tested. The harness runs
-`agent()` calls on either engine — Codex over a `codex app-server`, Claude as
-`claude --bg` background sessions — with schema-validated structured output and
+`agent()` calls on any registered engine — Codex over a `codex app-server`, Claude as
+`claude --bg` background sessions, and opencode through `opencode run` with
+curated models — with schema-validated structured output and
 bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, a `node:vm` restricted-globals sandbox, and
 `isolation:'worktree'` for writable parallel Codex agents — driven by the
 `ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
-non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'` or
-`'claude'`): there is no default and neither engine is privileged.
+non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
+`'claude'`, or `'opencode'`): there is no default and no engine is privileged.
+opencode also requires a curated `model`; v1 ships `model: "glm-5.2"`, resolved
+to `openrouter/z-ai/glm-5.2` with `vision:false` and pay-as-you-go billing.
 
 ```bash
 ensemble my-workflow.js > result.json 2> run.log
@@ -52,7 +55,7 @@ for Claude Code's `statusLine`, so a run kicked off through the Bash tool shows
 its progress where you are already looking:
 
 ```
-ensemble · ▸ Verify · codex ⚡3⏳2 48k/100k · claude ⚡1 · ✓12 ✗1 · 2m14s
+ensemble · ▸ Verify · codex ⚡3⏳2 48k/100k · claude ⚡1 · opencode 2.4k/20k · ✓12 ✗1 · 2m14s
 ```
 
 ```json
@@ -85,13 +88,14 @@ JSON object with these fields:
   finished.
 - `currentPhase`: string or `null`.
 - `totals`: object with numeric `active`, `queued`, `done`, and `failed` counts.
-- `engines`: object with `codex` and `claude` entries. Each entry has numeric
-  `active`, `queued`, `done`, `failed`, and `spent`; `cap`, `ceiling`, and
-  `remaining` are numbers or `null`. Spend and ceilings are per-engine and are
-  never summed.
+- `engines`: object keyed by registered engine name (`codex`, `claude`, and
+  `opencode` in v1). Each entry has numeric `active`, `queued`, `done`,
+  `failed`, and `spent`; `cap`, `ceiling`, and `remaining` are numbers or
+  `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of live worker objects, capped for file size. Each object has
-  numeric `id` and `attempt`, `engine` (`"codex"` or `"claude"`), `state`
-  (`"queued"` or `"running"`), and nullable string `label` and `phase`.
+  numeric `id` and `attempt`, `engine` (`"codex"`, `"claude"`, or
+  `"opencode"`), `state` (`"queued"` or `"running"`), and nullable string
+  `label` and `phase`.
 
 Example:
 
@@ -127,6 +131,16 @@ Example:
       "spent": 6500,
       "ceiling": null,
       "remaining": null
+    },
+    "opencode": {
+      "cap": 2,
+      "active": 0,
+      "queued": 0,
+      "done": 0,
+      "failed": 0,
+      "spent": 2400,
+      "ceiling": 20000,
+      "remaining": 17600
     }
   },
   "agents": [
@@ -226,8 +240,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every
 scoped app-server notification through completion. Claude transcripts are copied
-from the background session JSONL before the session is removed. The prompt lives
-in the transcript, not in a duplicated field.
+from the background session JSONL before the session is removed. opencode
+transcripts preserve the `opencode run --format json` event stream plus the
+session export when available. The prompt lives in the transcript, not in a
+duplicated field.
 
 The record contains only run and audit data. It does not score outputs, infer
 verifier relationships, or record evaluation concepts; those belong to the

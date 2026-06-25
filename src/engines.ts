@@ -6,14 +6,20 @@ import { ClaudeEngineInvocation } from "./claude-engine.js";
 import {
   ClaudeSandboxUnsupportedError,
   ClaudeWebSearchUnsupportedError,
-  ClaudeWorktreeIsolationUnsupportedError
+  ClaudeWorktreeIsolationUnsupportedError,
+  OpenCodeModelNotRegisteredError,
+  OpenCodeModelRequiredError
 } from "./errors.js";
+import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
+import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
 import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
+import type { OpenCodeRunner } from "./opencode-engine.js";
+import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type {
   EngineName,
   EngineConcurrencyCaps,
@@ -274,15 +280,78 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   }
 }
 
+export interface OpenCodeEngineAdapterOptions {
+  /** Defaults to 2: opencode v1's curated model is pay-as-you-go through OpenRouter. */
+  concurrency?: number;
+  /** Base working directory workers are dispatched from. Defaults to `process.cwd()`. */
+  cwd?: string;
+  /** CLI binary. Defaults to `opencode`; tests can inject a runner instead. */
+  bin?: string;
+  runner?: OpenCodeRunner;
+  modelRegistry?: OpenCodeModelRegistry;
+  /** Routes export-derived token usage into the runtime budget recorder. */
+  onEvent?: (event: RuntimeEvent) => void;
+}
+
+export class OpenCodeEngineAdapter implements EngineAdapter {
+  readonly name = "opencode" satisfies EngineName;
+  readonly concurrency: number;
+
+  #scheduler: Scheduler;
+  #cwd: string;
+  #runner: OpenCodeRunner;
+  #modelRegistry: OpenCodeModelRegistry;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+
+  constructor(options: OpenCodeEngineAdapterOptions = {}) {
+    this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#runner = options.runner ?? new OpenCodeCliRunner(options.bin);
+    this.#modelRegistry = options.modelRegistry ?? defaultOpenCodeModelRegistry;
+    this.#onEvent = options.onEvent;
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.#scheduler.schedule(task);
+  }
+
+  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    rejectUnsupportedOpenCodeOptions(options);
+    if (options.model === undefined) {
+      throw new OpenCodeModelRequiredError();
+    }
+    const model = this.#modelRegistry.get(options.model);
+    if (model === undefined) {
+      throw new OpenCodeModelNotRegisteredError(options.model, this.#modelRegistry.names());
+    }
+    return new OpenCodeEngineInvocation({
+      prompt,
+      cwd: this.#cwd,
+      providerModel: model.providerModel,
+      modelKey: model.key,
+      options,
+      runner: this.#runner,
+      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {})
+    });
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 export interface CreateDefaultEngineRegistryOptions {
   cwd: string;
   codexBin: string;
+  openCodeBin?: string;
   requestTimeoutMs: number;
   clientName: string;
   clientVersion: string;
   concurrencyCaps?: EngineConcurrencyCaps;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
+  onOpenCodeEvent: (event: RuntimeEvent) => void;
   onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 }
 
@@ -311,10 +380,20 @@ export async function createDefaultEngineRegistry(
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
       onEvent: options.onClaudeEvent
+    }),
+    new OpenCodeEngineAdapter({
+      cwd: options.cwd,
+      ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
+      ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
+      onEvent: options.onOpenCodeEvent
     })
   ]);
 }
 
 export function defaultCodexConcurrency(): number {
   return Math.max(1, Math.min(16, cpus().length - 2));
+}
+
+export function defaultOpenCodeConcurrency(): number {
+  return 2;
 }

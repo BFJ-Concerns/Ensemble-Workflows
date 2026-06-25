@@ -11,7 +11,7 @@ import type { BudgetView, ProgressSnapshot } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
-  ceilings: Record<EngineName, number | null> = { codex: null, claude: null };
+  ceilings: Partial<Record<EngineName, number | null>> = { codex: null, claude: null, opencode: null };
   spent(): number {
     return 0;
   }
@@ -22,7 +22,11 @@ class StubBudget implements BudgetView {
 
 function newProgress(): RunProgress {
   let clock = 1_000;
-  return new RunProgress({ runId: "run-x", budget: new StubBudget(), now: () => (clock += 1) });
+  const progress = new RunProgress({ runId: "run-x", budget: new StubBudget(), now: () => (clock += 1) });
+  progress.registerEngine("codex", 4);
+  progress.registerEngine("claude", 8);
+  progress.registerEngine("opencode", 2);
+  return progress;
 }
 
 async function waitForFile(file: string): Promise<string> {
@@ -64,20 +68,19 @@ test("StatusFileWriter publishes a live snapshot and removes it on close", async
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
   const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
-  progress.registerEngine("codex", 4);
   const writer = new StatusFileWriter({ progress, dir });
 
   // The initial publish happens without close, so a watcher sees the run start.
   const initial = JSON.parse(await waitForFile(file)) as ProgressSnapshot;
   assert.equal(initial.runId, "run-x");
   assert.equal(initial.state, "running");
-  assert.equal(initial.engines.codex.cap, 4);
+  assert.equal(initial.engines.codex?.cap, 4);
 
   const id = progress.queueAgent({ engine: "codex", label: "x", phase: null });
   progress.startAgent(id);
   progress.settleAgent(id, "done");
   const latest = await waitForSnapshot(file, (snapshot) => snapshot.totals.done === 1);
-  assert.equal(latest.engines.codex.done, 1);
+  assert.equal(latest.engines.codex?.done, 1);
   assert.equal(latest.totals.done, 1);
 
   await writer.close();
@@ -99,7 +102,7 @@ test("StatusFileWriter coalesces a burst of changes into the latest published st
   }
 
   const snapshot = await waitForSnapshot(file, (candidate) => candidate.totals.done === 200);
-  assert.equal(snapshot.engines.claude.done, 200);
+  assert.equal(snapshot.engines.claude?.done, 200);
   assert.equal(snapshot.totals.done, 200);
 
   await writer.close();

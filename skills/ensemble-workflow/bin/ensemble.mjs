@@ -6620,12 +6620,12 @@ var BudgetExceededError = class extends EnsembleError {
 };
 var MissingEngineError = class extends EnsembleError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex' or engine: 'claude'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
   }
 };
 var UnknownEngineError = class extends EnsembleError {
   constructor(engine) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex' or 'claude'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
 };
 var EmptyAgentOutputError = class extends EnsembleError {
@@ -6663,6 +6663,46 @@ var ClaudeSandboxUnsupportedError = class extends EnsembleError {
     );
   }
 };
+var OpenCodeModelRequiredError = class extends EnsembleError {
+  constructor() {
+    super("agent({ engine:'opencode' }) requires a model from the curated opencode registry; use model:'glm-5.2'");
+  }
+};
+var OpenCodeModelNotRegisteredError = class extends EnsembleError {
+  constructor(model, registered) {
+    super(
+      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+var OpenCodeWorkerError = class extends EnsembleError {
+};
+var OpenCodeRunError = class extends OpenCodeWorkerError {
+  constructor(message) {
+    super(message);
+  }
+};
+var OpenCodeWorktreeIsolationUnsupportedError = class extends EnsembleError {
+  constructor() {
+    super(
+      "isolation:'worktree' is not supported on the opencode engine in v1: Ensemble only manages git-worktree isolation for Codex workers. Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
+    );
+  }
+};
+var OpenCodeWebSearchUnsupportedError = class extends EnsembleError {
+  constructor() {
+    super(
+      "webSearch:true is not supported on the opencode engine in v1: the opencode subprocess transport does not expose an Ensemble-controlled live-search switch. Run the worker without webSearch, or use engine:'codex' for live web search."
+    );
+  }
+};
+var OpenCodeSandboxUnsupportedError = class extends EnsembleError {
+  constructor(sandbox) {
+    super(
+      `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
+    );
+  }
+};
 var TurnTimeoutError = class extends EnsembleError {
   constructor(message) {
     super(message);
@@ -6679,6 +6719,7 @@ var TokenBudget = class {
     this.ceilings = {
       codex: ceilings.codex ?? null,
       claude: ceilings.claude ?? null,
+      opencode: ceilings.opencode ?? null,
       ...ceilings
     };
   }
@@ -6741,7 +6782,6 @@ function isJsonObject(value) {
 }
 
 // src/progress.ts
-var ENGINE_NAMES = ["codex", "claude"];
 var MAX_AGENTS_IN_SNAPSHOT = 64;
 var RunProgress = class {
   runId;
@@ -6765,9 +6805,6 @@ var RunProgress = class {
     this.#pid = options.pid ?? process.pid;
     this.#startedAt = this.#now();
     this.#updatedAt = this.#startedAt;
-    for (const engine of ENGINE_NAMES) {
-      this.#engines.set(engine, { cap: null, active: 0, queued: 0, done: 0, failed: 0 });
-    }
   }
   /** Records an engine's concurrency cap so the snapshot can show saturation. */
   registerEngine(engine, cap) {
@@ -6867,7 +6904,7 @@ var RunProgress = class {
   snapshot() {
     const engines = {};
     const totals = { active: 0, queued: 0, done: 0, failed: 0 };
-    for (const engine of ENGINE_NAMES) {
+    for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
       engines[engine] = {
@@ -6877,7 +6914,7 @@ var RunProgress = class {
         done: counters.done,
         failed: counters.failed,
         spent: this.#budget.spent(engine),
-        ceiling: this.#budget.ceilings[engine],
+        ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
       };
       totals.active += counters.active;
@@ -7963,6 +8000,367 @@ function delay2(ms) {
   });
 }
 
+// src/opencode-engine.ts
+import { spawn as spawn2 } from "node:child_process";
+var OpenCodeCliRunner = class {
+  #bin;
+  constructor(bin = "opencode") {
+    this.#bin = bin;
+  }
+  async run(options) {
+    const args = [
+      "run",
+      "--format",
+      "json",
+      "--model",
+      options.providerModel,
+      "--dir",
+      options.cwd,
+      "--title",
+      "ensemble-worker"
+    ];
+    if (options.variant !== void 0) {
+      args.push("--variant", options.variant);
+    }
+    args.push(options.prompt);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs);
+  }
+  async exportSession(sessionId, cwd) {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4);
+    if (result.exitCode !== 0) {
+      return null;
+    }
+    return result.stdout;
+  }
+};
+var OpenCodeEngineInvocation = class {
+  #prompt;
+  #cwd;
+  #providerModel;
+  #modelKey;
+  #options;
+  #runner;
+  #onEvent;
+  #budgetEventCounter = 0;
+  constructor(options) {
+    this.#prompt = options.prompt;
+    this.#cwd = options.cwd;
+    this.#providerModel = options.providerModel;
+    this.#modelKey = options.modelKey;
+    this.#options = options.options;
+    this.#runner = options.runner ?? new OpenCodeCliRunner();
+    this.#onEvent = options.onEvent;
+  }
+  async runAttempt(context) {
+    const run = await this.#runner.run({
+      prompt: this.#buildPrompt(context.previousFailure),
+      cwd: this.#cwd,
+      providerModel: this.#providerModel,
+      timeoutMs: this.#options.timeoutMs,
+      ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {}
+    });
+    const parsedRun = parseRunEvents(run.stdout);
+    const exportText = parsedRun.sessionId === null ? null : await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
+    const exportData = exportText === null ? null : parseExport(exportText);
+    const text = exportData === null ? fallbackText(parsedRun.events) : finalAssistantText2(exportData);
+    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const transcripts = [
+      {
+        filename: "transcript.opencode.jsonl",
+        format: "jsonl",
+        source: "opencode run --format json",
+        content: transcriptContent(run.stdout, exportData),
+        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+      }
+    ];
+    if (run.exitCode !== 0) {
+      throw new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events));
+    }
+    return {
+      text,
+      deltaText: text,
+      durationMs: run.durationMs,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts
+    };
+  }
+  #usageEvent(sessionId, exportData) {
+    const breakdown = usageFromExport(exportData.info?.tokens);
+    if (breakdown === null || breakdown.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const turnId = `${sessionId}:opencode-${this.#budgetEventCounter}`;
+    const event = {
+      threadId: sessionId,
+      turnId,
+      last: breakdown,
+      total: breakdown,
+      raw: {
+        threadId: sessionId,
+        turnId,
+        model: this.#modelKey,
+        providerModel: this.#providerModel,
+        tokenUsage: { last: breakdown, total: breakdown },
+        cost: exportData.info?.cost ?? null
+      }
+    };
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+    return event;
+  }
+  #buildPrompt(previousFailure) {
+    const lines = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
+    ];
+    if (this.#options.schema !== void 0) {
+      lines.push(
+        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#options.schema)
+      );
+    }
+    if (previousFailure !== void 0) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#prompt);
+    return lines.join("\n");
+  }
+};
+function rejectUnsupportedOpenCodeOptions(options) {
+  if (options.isolation === "worktree") {
+    throw new OpenCodeWorktreeIsolationUnsupportedError();
+  }
+  if (options.webSearch) {
+    throw new OpenCodeWebSearchUnsupportedError();
+  }
+  if (options.sandbox !== void 0) {
+    throw new OpenCodeSandboxUnsupportedError(options.sandbox);
+  }
+}
+function runProcess(command, args, cwd, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn2(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        exitCode,
+        signal,
+        stdout: stdout.join(""),
+        stderr: stderr.join(""),
+        durationMs: Date.now() - startedAt
+      });
+    });
+  });
+}
+function parseRunEvents(stdout) {
+  const events = [];
+  let sessionId = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(trimmed);
+      events.push(event);
+      const candidate = sessionIdFromEvent(event);
+      if (candidate !== null) {
+        sessionId = candidate;
+      }
+    } catch {
+      events.push({ type: "raw", text: line });
+    }
+  }
+  return { events, sessionId };
+}
+function sessionIdFromEvent(event) {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const direct = event.sessionID ?? event.sessionId;
+  if (typeof direct === "string") {
+    return direct;
+  }
+  const nested = event.session;
+  if (isRecord(nested) && typeof nested.id === "string") {
+    return nested.id;
+  }
+  return null;
+}
+function parseExport(output) {
+  const start = output.indexOf("{");
+  if (start < 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(output.slice(start));
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function finalAssistantText2(exportData) {
+  if (!Array.isArray(exportData.messages)) {
+    return "";
+  }
+  for (let index = exportData.messages.length - 1; index >= 0; index -= 1) {
+    const message = exportData.messages[index];
+    if (!isRecord(message) || !isRecord(message.info) || message.info.role !== "assistant") {
+      continue;
+    }
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const text = parts.map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "").join("");
+    if (text.trim().length > 0) {
+      return text;
+    }
+  }
+  return "";
+}
+function fallbackText(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isRecord(event)) {
+      continue;
+    }
+    if (typeof event.text === "string") {
+      return event.text;
+    }
+    if (typeof event.message === "string") {
+      return event.message;
+    }
+  }
+  return "";
+}
+function usageFromExport(tokens) {
+  if (!isRecord(tokens)) {
+    return null;
+  }
+  const inputTokens = numberField(tokens, "input") ?? 0;
+  const outputTokens = numberField(tokens, "output") ?? 0;
+  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
+  const cache = tokens.cache;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
+  };
+}
+function transcriptContent(stdout, exportData) {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (exportData !== null) {
+    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
+  }
+  return `${lines.join("\n")}
+`;
+}
+function openCodeFailureMessage(run, events) {
+  const eventError = events.map(errorFromEvent).find((message) => message !== null);
+  if (eventError !== void 0 && eventError !== null) {
+    return `opencode run failed: ${eventError}`;
+  }
+  const stderr = run.stderr.trim();
+  if (stderr.length > 0) {
+    return `opencode run failed: ${stderr}`;
+  }
+  return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
+}
+function errorFromEvent(event) {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const error = event.error;
+  if (typeof error === "string") {
+    return error;
+  }
+  if (isRecord(error)) {
+    const data = error.data;
+    if (isRecord(data) && typeof data.message === "string") {
+      return data.message;
+    }
+    if (typeof error.message === "string") {
+      return error.message;
+    }
+    if (typeof error.name === "string") {
+      return error.name;
+    }
+  }
+  return null;
+}
+function numberField(record, key) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/opencode-model-registry.ts
+var MODELS = [
+  {
+    key: "glm-5.2",
+    providerModel: "openrouter/z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    provider: "openrouter",
+    family: "glm",
+    capabilities: {
+      vision: false
+    },
+    billing: {
+      mode: "pay-as-you-go"
+    }
+  }
+];
+var StaticOpenCodeModelRegistry = class {
+  #models = /* @__PURE__ */ new Map();
+  constructor(models) {
+    for (const model of models) {
+      this.#models.set(model.key, model);
+    }
+  }
+  get(model) {
+    return this.#models.get(model);
+  }
+  names() {
+    return [...this.#models.keys()];
+  }
+};
+var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+
 // src/scheduler.ts
 var Scheduler = class {
   concurrency;
@@ -8407,6 +8805,48 @@ var ClaudeEngineAdapter = class {
     return Promise.resolve();
   }
 };
+var OpenCodeEngineAdapter = class {
+  name = "opencode";
+  concurrency;
+  #scheduler;
+  #cwd;
+  #runner;
+  #modelRegistry;
+  #onEvent;
+  constructor(options = {}) {
+    this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#runner = options.runner ?? new OpenCodeCliRunner(options.bin);
+    this.#modelRegistry = options.modelRegistry ?? defaultOpenCodeModelRegistry;
+    this.#onEvent = options.onEvent;
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  createInvocation(prompt, options) {
+    rejectUnsupportedOpenCodeOptions(options);
+    if (options.model === void 0) {
+      throw new OpenCodeModelRequiredError();
+    }
+    const model = this.#modelRegistry.get(options.model);
+    if (model === void 0) {
+      throw new OpenCodeModelNotRegisteredError(options.model, this.#modelRegistry.names());
+    }
+    return new OpenCodeEngineInvocation({
+      prompt,
+      cwd: this.#cwd,
+      providerModel: model.providerModel,
+      modelKey: model.key,
+      options,
+      runner: this.#runner,
+      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {}
+    });
+  }
+  async close() {
+    return Promise.resolve();
+  }
+};
 async function createDefaultEngineRegistry(options) {
   const transport = await CodexAppServerTransport.start({
     cwd: options.cwd,
@@ -8429,11 +8869,20 @@ async function createDefaultEngineRegistry(options) {
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
       onEvent: options.onClaudeEvent
+    }),
+    new OpenCodeEngineAdapter({
+      cwd: options.cwd,
+      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+      onEvent: options.onOpenCodeEvent
     })
   ]);
 }
 function defaultCodexConcurrency() {
   return Math.max(1, Math.min(16, cpus().length - 2));
+}
+function defaultOpenCodeConcurrency() {
+  return 2;
 }
 
 // src/runtime.ts
@@ -8468,6 +8917,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }),
       new ClaudeEngineAdapter({
         ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {}
+      }),
+      new OpenCodeEngineAdapter({
+        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
       })
     ]);
     this.#registerEngineCaps();
@@ -8486,6 +8938,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       },
       onClaudeEvent: (event) => {
         runtime?.handleEngineEvent("claude", event);
+      },
+      onOpenCodeEvent: (event) => {
+        runtime?.handleEngineEvent("opencode", event);
       },
       onWorktreeFinished: (record) => {
         if (runtime === null) {
@@ -9281,10 +9736,23 @@ function buildCostRollup(records) {
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
         addUsage(bucket.tokens, event.last);
+        addProviderCost(bucket.cost, event);
       }
     }
   }
   return rollup;
+}
+function addProviderCost(target, event) {
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  target.amount = (target.amount ?? 0) + cost;
+  target.source = "provider-reported";
+  const currency = event.raw.currency;
+  if (typeof currency === "string" && (target.currency === null || target.currency === currency)) {
+    target.currency = currency;
+  }
 }
 function addUsage(target, delta) {
   target.cachedInputTokens += delta.cachedInputTokens;
@@ -9359,12 +9827,13 @@ async function findHarnessRoot() {
   }
 }
 async function toolVersions() {
-  const [gitVersion, codexVersion, claudeVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"])
+    commandVersion("claude", ["--version"]),
+    commandVersion("opencode", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
 async function commandVersion(command, args) {
   try {
@@ -9558,15 +10027,14 @@ function resolveStatusDir(env, cwd) {
 import { readFile as readFile3 } from "node:fs/promises";
 import path7 from "node:path";
 var STALE_MS = 3e4;
-var ENGINE_NAMES2 = ["codex", "claude"];
 function formatStatusLine(snapshot, nowMs) {
   const parts = ["ensemble"];
   const head = snapshot.currentPhase ?? snapshot.workflow;
   if (head !== null && head.length > 0) {
     parts.push(`\u25B8 ${head}`);
   }
-  for (const engine of ENGINE_NAMES2) {
-    const segment = engineSegment(engine, snapshot.engines[engine]);
+  for (const [engine, progress] of Object.entries(snapshot.engines)) {
+    const segment = engineSegment(engine, progress);
     if (segment !== null) {
       parts.push(segment);
     }
@@ -9953,10 +10421,10 @@ function parseEngineMap(values, parseValue, flagName) {
   return result;
 }
 function parseEngineName(value, flagName) {
-  if (value === "codex" || value === "claude") {
+  if (value === "codex" || value === "claude" || value === "opencode") {
     return value;
   }
-  throw new CliUsageError(`${flagName} engine must be codex or claude, got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
 }
 function parseBudgetCeiling(value) {
   const ceiling = Number(value);

@@ -1,0 +1,412 @@
+import { spawn } from "node:child_process";
+
+import {
+  OpenCodeRunError,
+  OpenCodeSandboxUnsupportedError,
+  OpenCodeWebSearchUnsupportedError,
+  OpenCodeWorktreeIsolationUnsupportedError
+} from "./errors.js";
+
+import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
+
+export interface OpenCodeRunner {
+  run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
+  exportSession(sessionId: string, cwd: string): Promise<string | null>;
+}
+
+export interface OpenCodeRunOptions {
+  prompt: string;
+  cwd: string;
+  providerModel: string;
+  timeoutMs: number;
+  variant?: string;
+}
+
+export interface OpenCodeRunResult {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+}
+
+export interface OpenCodeEngineInvocationOptions {
+  prompt: string;
+  cwd: string;
+  providerModel: string;
+  modelKey: string;
+  options: EngineTurnOptions;
+  runner?: OpenCodeRunner;
+  onEvent?: (event: RuntimeEvent) => void;
+}
+
+interface OpenCodeExport {
+  info?: {
+    id?: unknown;
+    tokens?: unknown;
+    cost?: unknown;
+    model?: unknown;
+  };
+  messages?: unknown;
+}
+
+interface ParsedRunEvents {
+  events: unknown[];
+  sessionId: string | null;
+}
+
+export class OpenCodeCliRunner implements OpenCodeRunner {
+  #bin: string;
+
+  constructor(bin = "opencode") {
+    this.#bin = bin;
+  }
+
+  async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
+    const args = [
+      "run",
+      "--format",
+      "json",
+      "--model",
+      options.providerModel,
+      "--dir",
+      options.cwd,
+      "--title",
+      "ensemble-worker"
+    ];
+    if (options.variant !== undefined) {
+      args.push("--variant", options.variant);
+    }
+    args.push(options.prompt);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs);
+  }
+
+  async exportSession(sessionId: string, cwd: string): Promise<string | null> {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000);
+    if (result.exitCode !== 0) {
+      return null;
+    }
+    return result.stdout;
+  }
+}
+
+export class OpenCodeEngineInvocation implements EngineInvocation {
+  #prompt: string;
+  #cwd: string;
+  #providerModel: string;
+  #modelKey: string;
+  #options: EngineTurnOptions;
+  #runner: OpenCodeRunner;
+  #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #budgetEventCounter = 0;
+
+  constructor(options: OpenCodeEngineInvocationOptions) {
+    this.#prompt = options.prompt;
+    this.#cwd = options.cwd;
+    this.#providerModel = options.providerModel;
+    this.#modelKey = options.modelKey;
+    this.#options = options.options;
+    this.#runner = options.runner ?? new OpenCodeCliRunner();
+    this.#onEvent = options.onEvent;
+  }
+
+  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+    const run = await this.#runner.run({
+      prompt: this.#buildPrompt(context.previousFailure),
+      cwd: this.#cwd,
+      providerModel: this.#providerModel,
+      timeoutMs: this.#options.timeoutMs,
+      ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {})
+    });
+    const parsedRun = parseRunEvents(run.stdout);
+    const exportText = parsedRun.sessionId === null ? null : await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
+    const exportData = exportText === null ? null : parseExport(exportText);
+    const text = exportData === null ? fallbackText(parsedRun.events) : finalAssistantText(exportData);
+    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const transcripts = [
+      {
+        filename: "transcript.opencode.jsonl",
+        format: "jsonl" as const,
+        source: "opencode run --format json",
+        content: transcriptContent(run.stdout, exportData),
+        ...(parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {})
+      }
+    ];
+
+    if (run.exitCode !== 0) {
+      throw new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events));
+    }
+
+    return {
+      text,
+      deltaText: text,
+      durationMs: run.durationMs,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts
+    };
+  }
+
+  #usageEvent(sessionId: string, exportData: OpenCodeExport): TokenUsageEvent | null {
+    const breakdown = usageFromExport(exportData.info?.tokens);
+    if (breakdown === null || breakdown.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const turnId = `${sessionId}:opencode-${this.#budgetEventCounter}`;
+    const event = {
+      threadId: sessionId,
+      turnId,
+      last: breakdown,
+      total: breakdown,
+      raw: {
+        threadId: sessionId,
+        turnId,
+        model: this.#modelKey,
+        providerModel: this.#providerModel,
+        tokenUsage: { last: breakdown, total: breakdown },
+        cost: exportData.info?.cost ?? null
+      }
+    };
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+    return event;
+  }
+
+  #buildPrompt(previousFailure: EngineAttemptFailure | undefined): string {
+    const lines: string[] = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
+    ];
+    if (this.#options.schema !== undefined) {
+      lines.push(
+        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#options.schema)
+      );
+    }
+    if (previousFailure !== undefined) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#prompt);
+    return lines.join("\n");
+  }
+}
+
+export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): void {
+  if (options.isolation === "worktree") {
+    throw new OpenCodeWorktreeIsolationUnsupportedError();
+  }
+  if (options.webSearch) {
+    throw new OpenCodeWebSearchUnsupportedError();
+  }
+  if (options.sandbox !== undefined) {
+    throw new OpenCodeSandboxUnsupportedError(options.sandbox);
+  }
+}
+
+function runProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<OpenCodeRunResult> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, timeoutMs);
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        exitCode,
+        signal,
+        stdout: stdout.join(""),
+        stderr: stderr.join(""),
+        durationMs: Date.now() - startedAt
+      });
+    });
+  });
+}
+
+function parseRunEvents(stdout: string): ParsedRunEvents {
+  const events: unknown[] = [];
+  let sessionId: string | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(trimmed) as unknown;
+      events.push(event);
+      const candidate = sessionIdFromEvent(event);
+      if (candidate !== null) {
+        sessionId = candidate;
+      }
+    } catch {
+      events.push({ type: "raw", text: line });
+    }
+  }
+  return { events, sessionId };
+}
+
+function sessionIdFromEvent(event: unknown): string | null {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const direct = event.sessionID ?? event.sessionId;
+  if (typeof direct === "string") {
+    return direct;
+  }
+  const nested = event.session;
+  if (isRecord(nested) && typeof nested.id === "string") {
+    return nested.id;
+  }
+  return null;
+}
+
+function parseExport(output: string): OpenCodeExport | null {
+  const start = output.indexOf("{");
+  if (start < 0) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(output.slice(start)) as unknown;
+    return isRecord(value) ? (value as OpenCodeExport) : null;
+  } catch {
+    return null;
+  }
+}
+
+function finalAssistantText(exportData: OpenCodeExport): string {
+  if (!Array.isArray(exportData.messages)) {
+    return "";
+  }
+  for (let index = exportData.messages.length - 1; index >= 0; index -= 1) {
+    const message = exportData.messages[index];
+    if (!isRecord(message) || !isRecord(message.info) || message.info.role !== "assistant") {
+      continue;
+    }
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const text = parts
+      .map((part) => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+      .join("");
+    if (text.trim().length > 0) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function fallbackText(events: unknown[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isRecord(event)) {
+      continue;
+    }
+    if (typeof event.text === "string") {
+      return event.text;
+    }
+    if (typeof event.message === "string") {
+      return event.message;
+    }
+  }
+  return "";
+}
+
+function usageFromExport(tokens: unknown): TokenUsageBreakdown | null {
+  if (!isRecord(tokens)) {
+    return null;
+  }
+  const inputTokens = numberField(tokens, "input") ?? 0;
+  const outputTokens = numberField(tokens, "output") ?? 0;
+  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
+  const cache = tokens.cache;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
+  };
+}
+
+function transcriptContent(stdout: string, exportData: OpenCodeExport | null): string {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (exportData !== null) {
+    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function openCodeFailureMessage(run: OpenCodeRunResult, events: unknown[]): string {
+  const eventError = events.map(errorFromEvent).find((message) => message !== null);
+  if (eventError !== undefined && eventError !== null) {
+    return `opencode run failed: ${eventError}`;
+  }
+  const stderr = run.stderr.trim();
+  if (stderr.length > 0) {
+    return `opencode run failed: ${stderr}`;
+  }
+  return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
+}
+
+function errorFromEvent(event: unknown): string | null {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const error = event.error;
+  if (typeof error === "string") {
+    return error;
+  }
+  if (isRecord(error)) {
+    const data = error.data;
+    if (isRecord(data) && typeof data.message === "string") {
+      return data.message;
+    }
+    if (typeof error.message === "string") {
+      return error.message;
+    }
+    if (typeof error.name === "string") {
+      return error.name;
+    }
+  }
+  return null;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

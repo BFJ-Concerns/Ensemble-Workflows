@@ -33,7 +33,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   });
   await writer.noteMeta({ task: { id: "task-one", family: "demo" } });
   await writer.recordAgent(agentRecord(1, "codex", null, 3));
-  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 7));
+  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002));
   await writer.finish({ status: "complete", exitCode: 0, result: { ok: true } });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
@@ -62,12 +62,15 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
     cliFlags: { jsonArgs: false }
   });
   await writer.recordAgent(agentRecord(1, "codex", null, 3));
-  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 7));
+  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002));
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     files: Array<{ path: string; size: number; sha256: string }>;
-    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown }>>;
+    cost_rollup: Record<
+      string,
+      Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; source: string } }>
+    >;
   };
   const transcriptEntry = manifest.files.find((entry) => entry.path.startsWith("agents/000001/") && entry.path.endsWith(".jsonl"));
   assert.ok(transcriptEntry);
@@ -75,6 +78,8 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
   assert.equal(transcriptEntry.sha256, sha256(await readFile(transcriptPath)));
   assert.equal(manifest.cost_rollup.codex?.default?.tokens.totalTokens, 3);
   assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.tokens.totalTokens, 7);
+  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.amount, 0.002);
+  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.source, "provider-reported");
   assert.equal("total" in manifest.cost_rollup, false);
 });
 
@@ -122,7 +127,7 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
   assert.equal(manifest.result.archive_path, "result.json");
 });
 
-function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number) {
+function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number, cost?: number) {
   return {
     id,
     engine,
@@ -148,7 +153,7 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,
         firstDeltaMs: 1,
-        tokenUsageEvents: [tokenUsageEvent(tokens)],
+        tokenUsageEvents: [tokenUsageEvent(tokens, cost)],
         transcripts: [
           {
             filename: `${engine}.jsonl`,
@@ -226,7 +231,7 @@ function turn(text: string, tokens: number): TurnResult {
   };
 }
 
-function tokenUsageEvent(totalTokens: number) {
+function tokenUsageEvent(totalTokens: number, cost?: number) {
   const usage = {
     cachedInputTokens: 0,
     inputTokens: 0,
@@ -239,7 +244,7 @@ function tokenUsageEvent(totalTokens: number) {
     turnId: "turn",
     last: usage,
     total: usage,
-    raw: {}
+    raw: cost === undefined ? {} : { cost }
   };
 }
 

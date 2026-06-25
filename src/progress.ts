@@ -1,9 +1,5 @@
 import type { EngineName } from "./types.js";
 
-// The engines the progress model tracks. Mirrors the engine registry's closed
-// set; a new engine slots in here alongside its registry entry.
-const ENGINE_NAMES: readonly EngineName[] = ["codex", "claude"];
-
 // Live agents are bounded in the serialised snapshot so a thousand-wide fan-out
 // doesn't produce a thousand-entry file on every change. Running agents are
 // favoured over merely-queued ones; the true counts always live in `totals`.
@@ -16,7 +12,7 @@ export type AgentState = "queued" | "running";
 export interface BudgetView {
   spent(engine: EngineName): number;
   remaining(engine: EngineName): number;
-  readonly ceilings: Readonly<Record<EngineName, number | null>>;
+  readonly ceilings: Readonly<Partial<Record<EngineName, number | null>>>;
 }
 
 export interface LiveAgentSnapshot {
@@ -55,7 +51,7 @@ export interface ProgressSnapshot {
   finishedAt: number | null;
   currentPhase: string | null;
   totals: { active: number; queued: number; done: number; failed: number };
-  engines: Record<EngineName, EngineProgressSnapshot>;
+  engines: Record<string, EngineProgressSnapshot>;
   agents: LiveAgentSnapshot[];
 }
 
@@ -123,9 +119,6 @@ export class RunProgress {
     this.#pid = options.pid ?? process.pid;
     this.#startedAt = this.#now();
     this.#updatedAt = this.#startedAt;
-    for (const engine of ENGINE_NAMES) {
-      this.#engines.set(engine, { cap: null, active: 0, queued: 0, done: 0, failed: 0 });
-    }
   }
 
   /** Records an engine's concurrency cap so the snapshot can show saturation. */
@@ -234,9 +227,9 @@ export class RunProgress {
   }
 
   snapshot(): ProgressSnapshot {
-    const engines = {} as Record<EngineName, EngineProgressSnapshot>;
+    const engines: Record<string, EngineProgressSnapshot> = {};
     const totals = { active: 0, queued: 0, done: 0, failed: 0 };
-    for (const engine of ENGINE_NAMES) {
+    for (const engine of this.#engines.keys()) {
       const counters = this.#counters(engine);
       const remaining = this.#budget.remaining(engine);
       engines[engine] = {
@@ -246,7 +239,7 @@ export class RunProgress {
         done: counters.done,
         failed: counters.failed,
         spent: this.#budget.spent(engine),
-        ceiling: this.#budget.ceilings[engine],
+        ceiling: this.#budget.ceilings[engine] ?? null,
         remaining: Number.isFinite(remaining) ? remaining : null
       };
       totals.active += counters.active;

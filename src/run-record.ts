@@ -375,10 +375,24 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
         addUsage(bucket.tokens, event.last);
+        addProviderCost(bucket.cost, event);
       }
     }
   }
   return rollup;
+}
+
+function addProviderCost(target: UsageRollup["cost"], event: TokenUsageEvent): void {
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  target.amount = (target.amount ?? 0) + cost;
+  target.source = "provider-reported";
+  const currency = event.raw.currency;
+  if (typeof currency === "string" && (target.currency === null || target.currency === currency)) {
+    target.currency = currency;
+  }
 }
 
 function addUsage(target: TokenUsageBreakdown, delta: TokenUsageBreakdown): void {
@@ -461,12 +475,13 @@ async function findHarnessRoot(): Promise<string | null> {
 }
 
 async function toolVersions(): Promise<Record<string, string | null>> {
-  const [gitVersion, codexVersion, claudeVersion] = await Promise.all([
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
     commandVersion("git", ["--version"]),
     commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"])
+    commandVersion("claude", ["--version"]),
+    commandVersion("opencode", ["--version"])
   ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion };
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
 }
 
 async function commandVersion(command: string, args: string[]): Promise<string | null> {

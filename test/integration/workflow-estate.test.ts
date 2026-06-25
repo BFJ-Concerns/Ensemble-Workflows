@@ -366,7 +366,10 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
 
   assert.equal(missingExitCode, 1);
   assert.equal(missingStdout, "");
-  assert.match(missingStderr, /agent\(\) requires an engine field: use engine: 'codex' or engine: 'claude'/);
+  assert.match(
+    missingStderr,
+    /agent\(\) requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'/
+  );
 
   const { exitCode: unknownExitCode, stdout: unknownStdout, stderr: unknownStderr } = await runScriptWithEngines(
     `
@@ -379,7 +382,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
 
   assert.equal(unknownExitCode, 1);
   assert.equal(unknownStdout, "");
-  assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex' or 'claude'/);
+  assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex', 'claude', or 'opencode'/);
 });
 
 test("registry routes each engine and keeps per-engine concurrency caps independent", async () => {

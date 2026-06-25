@@ -394,10 +394,10 @@ function parseEngineMap<T>(
 }
 
 function parseEngineName(value: string, flagName: string): EngineName {
-  if (value === "codex" || value === "claude") {
+  if (value === "codex" || value === "claude" || value === "opencode") {
     return value;
   }
-  throw new CliUsageError(`${flagName} engine must be codex or claude, got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
 }
 
 function parseBudgetCeiling(value: string): number {

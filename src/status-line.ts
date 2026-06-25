@@ -10,13 +10,11 @@ import type { EngineName } from "./types.js";
 // abandoned run — the renderer shows nothing rather than a frozen line.
 const STALE_MS = 30_000;
 
-const ENGINE_NAMES: readonly EngineName[] = ["codex", "claude"];
-
 /**
  * Renders one compact line from a progress snapshot — a faithful one-line
  * compression of Claude Code's `/workflows` tree:
  *
- *   ensemble ▸ Verify · codex ⚡3⏳2 48k/100k · claude ⚡1 · ✓12 ✗1 · 2m14s
+ *   ensemble ▸ Verify · codex ⚡3⏳2 48k/100k · claude ⚡1 · opencode 2.4k/20k · ✓12 ✗1 · 2m14s
  *
  * Per-engine spend is kept separate, never summed: the engines denominate
  * different, non-comparable cost models (Codex per-token, Claude allowance).
@@ -29,8 +27,8 @@ export function formatStatusLine(snapshot: ProgressSnapshot, nowMs: number): str
     parts.push(`▸ ${head}`);
   }
 
-  for (const engine of ENGINE_NAMES) {
-    const segment = engineSegment(engine, snapshot.engines[engine]);
+  for (const [engine, progress] of Object.entries(snapshot.engines)) {
+    const segment = engineSegment(engine as EngineName, progress);
     if (segment !== null) {
       parts.push(segment);
     }

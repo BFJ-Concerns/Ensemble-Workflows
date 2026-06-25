@@ -8,21 +8,25 @@ import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 class StubBudget implements BudgetView {
-  spentByEngine: Record<EngineName, number> = { codex: 0, claude: 0 };
-  ceilings: Record<EngineName, number | null> = { codex: null, claude: null };
+  spentByEngine: Partial<Record<EngineName, number>> = { codex: 0, claude: 0, opencode: 0 };
+  ceilings: Partial<Record<EngineName, number | null>> = { codex: null, claude: null, opencode: null };
 
   spent(engine: EngineName): number {
-    return this.spentByEngine[engine];
+    return this.spentByEngine[engine] ?? 0;
   }
 
   remaining(engine: EngineName): number {
-    const ceiling = this.ceilings[engine];
-    return ceiling === null ? Number.POSITIVE_INFINITY : Math.max(0, ceiling - this.spentByEngine[engine]);
+    const ceiling = this.ceilings[engine] ?? null;
+    return ceiling === null ? Number.POSITIVE_INFINITY : Math.max(0, ceiling - this.spent(engine));
   }
 }
 
 function progressAt(clock: () => number, budget: BudgetView = new StubBudget()): RunProgress {
-  return new RunProgress({ runId: "run-1", budget, now: clock, pid: 4242 });
+  const progress = new RunProgress({ runId: "run-1", budget, now: clock, pid: 4242 });
+  progress.registerEngine("codex", 4);
+  progress.registerEngine("claude", 8);
+  progress.registerEngine("opencode", 2);
+  return progress;
 }
 
 function documentedStatusSchemaSection(): string {
@@ -64,29 +68,26 @@ function sortedKeys(value: object): string[] {
 test("queue → start → settle tracks per-engine and total counts", () => {
   const clock = 1_000;
   const progress = progressAt(() => clock);
-  progress.registerEngine("codex", 4);
-  progress.registerEngine("claude", 8);
-
   const id = progress.queueAgent({ engine: "codex", label: "find", phase: null });
   let snapshot = progress.snapshot();
-  assert.equal(snapshot.engines.codex.queued, 1);
-  assert.equal(snapshot.engines.codex.active, 0);
+  assert.equal(snapshot.engines.codex?.queued, 1);
+  assert.equal(snapshot.engines.codex?.active, 0);
   assert.equal(snapshot.totals.queued, 1);
   assert.equal(snapshot.agents.length, 1);
   assert.equal(snapshot.agents[0]?.state, "queued");
-  assert.equal(snapshot.engines.codex.cap, 4);
+  assert.equal(snapshot.engines.codex?.cap, 4);
   assert.equal(snapshot.pid, 4242);
 
   progress.startAgent(id);
   snapshot = progress.snapshot();
-  assert.equal(snapshot.engines.codex.queued, 0);
-  assert.equal(snapshot.engines.codex.active, 1);
+  assert.equal(snapshot.engines.codex?.queued, 0);
+  assert.equal(snapshot.engines.codex?.active, 1);
   assert.equal(snapshot.agents[0]?.state, "running");
 
   progress.settleAgent(id, "done");
   snapshot = progress.snapshot();
-  assert.equal(snapshot.engines.codex.active, 0);
-  assert.equal(snapshot.engines.codex.done, 1);
+  assert.equal(snapshot.engines.codex?.active, 0);
+  assert.equal(snapshot.engines.codex?.done, 1);
   assert.equal(snapshot.totals.done, 1);
   assert.equal(snapshot.agents.length, 0);
 });
@@ -97,8 +98,6 @@ test("README ensemble.local.json schema stays in sync with progress snapshots", 
   budget.ceilings.codex = 100;
   budget.spentByEngine.codex = 25;
   const progress = progressAt(() => clock, budget);
-  progress.registerEngine("codex", 4);
-  progress.registerEngine("claude", 8);
   progress.setWorkflow("doc-sync");
   progress.setPhase("Verify");
   const id = progress.queueAgent({ engine: "codex", label: "scan", phase: null });
@@ -109,17 +108,17 @@ test("README ensemble.local.json schema stays in sync with progress snapshots", 
 
   assert.deepEqual(documentedTopLevelFields(section).sort(), sortedKeys(snapshot));
   assert.deepEqual(documentedNestedFields(section, "totals").sort(), sortedKeys(snapshot.totals));
-  assert.deepEqual(["claude", "codex"], sortedKeys(snapshot.engines));
+  assert.deepEqual(["claude", "codex", "opencode"], sortedKeys(snapshot.engines));
   assert.deepEqual(
     documentedNestedFields(section, "engines")
-      .filter((field) => !["codex", "claude"].includes(field))
+      .filter((field) => !["codex", "claude", "opencode"].includes(field))
       .filter((field) => field !== "null")
       .sort(),
-    sortedKeys(snapshot.engines.codex)
+    sortedKeys(snapshot.engines.codex ?? {})
   );
   assert.deepEqual(
     documentedNestedFields(section, "agents")
-      .filter((field) => !["codex", "claude", "queued", "running"].includes(field))
+      .filter((field) => !["codex", "claude", "opencode", "queued", "running"].includes(field))
       .filter((field) => field !== "null")
       .sort(),
     sortedKeys(snapshot.agents[0] ?? {})
@@ -149,8 +148,8 @@ test("settling a running agent as failed tallies failed and frees the slot", () 
   progress.settleAgent(id, "failed");
 
   const snapshot = progress.snapshot();
-  assert.equal(snapshot.engines.claude.failed, 1);
-  assert.equal(snapshot.engines.claude.active, 0);
+  assert.equal(snapshot.engines.claude?.failed, 1);
+  assert.equal(snapshot.engines.claude?.active, 0);
   assert.equal(snapshot.totals.failed, 1);
 });
 
@@ -162,12 +161,12 @@ test("snapshot reflects per-engine budget spend, ceiling, and remaining without 
   const progress = progressAt(() => clock, budget);
 
   const snapshot = progress.snapshot();
-  assert.equal(snapshot.engines.codex.spent, 30);
-  assert.equal(snapshot.engines.codex.ceiling, 100);
-  assert.equal(snapshot.engines.codex.remaining, 70);
+  assert.equal(snapshot.engines.codex?.spent, 30);
+  assert.equal(snapshot.engines.codex?.ceiling, 100);
+  assert.equal(snapshot.engines.codex?.remaining, 70);
   // Claude is unbounded: ceiling and remaining both serialise as null, not Infinity.
-  assert.equal(snapshot.engines.claude.ceiling, null);
-  assert.equal(snapshot.engines.claude.remaining, null);
+  assert.equal(snapshot.engines.claude?.ceiling, null);
+  assert.equal(snapshot.engines.claude?.remaining, null);
 });
 
 test("noteAttempt updates the live agent's attempt number", () => {

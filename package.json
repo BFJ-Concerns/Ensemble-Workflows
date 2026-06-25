@@ -1,7 +1,7 @@
 {
   "name": "ensemble-workflows",
   "version": "0.0.0",
-  "description": "Deterministic multi-engine orchestration harness for Codex, Claude, and cross-engine verification.",
+  "description": "Deterministic multi-engine orchestration harness for Codex, Claude, opencode, and cross-engine verification.",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

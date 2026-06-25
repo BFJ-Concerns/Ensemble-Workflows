@@ -48,13 +48,13 @@ export class BudgetExceededError extends EnsembleError {
 
 export class MissingEngineError extends EnsembleError {
   constructor() {
-    super("agent() requires an engine field: use engine: 'codex' or engine: 'claude'");
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
   }
 }
 
 export class UnknownEngineError extends EnsembleError {
   constructor(engine: unknown) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex' or 'claude'`);
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
 }
 
@@ -124,6 +124,58 @@ export class ClaudeSandboxUnsupportedError extends EnsembleError {
   constructor(sandbox: string) {
     super(
       `sandbox:${JSON.stringify(sandbox)} is not supported on the Claude engine in v1: ` +
+        "the sandbox option is a Codex app-server capability. " +
+        "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
+    );
+  }
+}
+
+export class OpenCodeModelRequiredError extends EnsembleError {
+  constructor() {
+    super("agent({ engine:'opencode' }) requires a model from the curated opencode registry; use model:'glm-5.2'");
+  }
+}
+
+export class OpenCodeModelNotRegisteredError extends EnsembleError {
+  constructor(model: string, registered: readonly string[]) {
+    super(
+      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+}
+
+export class OpenCodeWorkerError extends EnsembleError {}
+
+export class OpenCodeRunError extends OpenCodeWorkerError {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export class OpenCodeWorktreeIsolationUnsupportedError extends EnsembleError {
+  constructor() {
+    super(
+      "isolation:'worktree' is not supported on the opencode engine in v1: " +
+        "Ensemble only manages git-worktree isolation for Codex workers. " +
+        "Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
+    );
+  }
+}
+
+export class OpenCodeWebSearchUnsupportedError extends EnsembleError {
+  constructor() {
+    super(
+      "webSearch:true is not supported on the opencode engine in v1: " +
+        "the opencode subprocess transport does not expose an Ensemble-controlled live-search switch. " +
+        "Run the worker without webSearch, or use engine:'codex' for live web search."
+    );
+  }
+}
+
+export class OpenCodeSandboxUnsupportedError extends EnsembleError {
+  constructor(sandbox: string) {
+    super(
+      `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: ` +
         "the sandbox option is a Codex app-server capability. " +
         "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
     );

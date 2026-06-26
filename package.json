@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run build:skill",
-    "build:skill": "esbuild src/cli/ensemble.ts --bundle --platform=node --format=esm --target=node24 --outfile=skills/ensemble-workflow/bin/ensemble.mjs",
+    "build:skill": "node scripts/build-skill.mjs",
     "sync:skill": "npm run build:skill && cp -R skills/ensemble-workflow/. \"$HOME/.claude/skills/ensemble-workflow/\"",
     "lint": "eslint .",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",

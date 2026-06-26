@@ -14,13 +14,32 @@ interface SemanticVersion {
 }
 
 /**
- * Reads the package's declared Node floor from `engines.node`.
+ * The Node floor, inlined at bundle time by `scripts/build-skill.mjs` via an
+ * esbuild `define`. Genuinely undeclared in unbundled `dist/` and source runs,
+ * where `requiredNodeRange` falls back to reading `engines.node` from
+ * package.json instead.
  *
- * The CLI guard should fail with the same requirement npm advertises; walking
- * upward keeps the lookup working from source, compiled `dist/`, and the
- * bundled skill launcher.
+ * The skill ships as a standalone esbuild bundle with no package.json beside it,
+ * so the bundle must carry its own floor rather than read one off disk at
+ * startup — otherwise the version guard throws before the CLI does anything.
+ */
+declare const __ENSEMBLE_NODE_RANGE__: string | undefined;
+
+/**
+ * Resolves the package's declared Node floor (`engines.node`).
+ *
+ * The CLI guard should fail with the same requirement npm advertises. In the
+ * bundle that requirement is the build-time-injected constant; everywhere else
+ * (source, compiled `dist/`, an npm-installed `bin`) it's read from package.json,
+ * walking upward so the lookup survives the differing directory depths.
  */
 export function requiredNodeRange(fromUrl: string = import.meta.url): string {
+  // `typeof` guard rather than a truthiness check: the identifier is genuinely
+  // undeclared in unbundled builds, and a bare `typeof` is the one reference
+  // that probes an undeclared name without a ReferenceError.
+  if (typeof __ENSEMBLE_NODE_RANGE__ === "string" && __ENSEMBLE_NODE_RANGE__.trim().length > 0) {
+    return __ENSEMBLE_NODE_RANGE__.trim();
+  }
   const metadata = readPackageMetadata(fromUrl);
   const range = metadata.engines?.node;
   if (typeof range !== "string" || range.trim().length === 0) {

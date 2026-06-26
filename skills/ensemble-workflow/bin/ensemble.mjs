@@ -10477,6 +10477,9 @@ import { readFileSync } from "node:fs";
 import path9 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
+  if (">=24.14.0".trim().length > 0) {
+    return ">=24.14.0".trim();
+  }
   const metadata = readPackageMetadata(fromUrl);
   const range = metadata.engines?.node;
   if (typeof range !== "string" || range.trim().length === 0) {

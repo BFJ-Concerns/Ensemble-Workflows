@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -371,8 +371,51 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n"
+    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "       ensemble workflows\n"
   );
+});
+
+test("CLI workflows lists saved workflows and notes unparseable files without crashing", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-workflows-"));
+  const userData = await mkdtemp(path.join(tmpdir(), "ensemble-cli-workflows-user-"));
+  const projectRegistry = path.join(directory, ".claude", "ensemble", "workflows");
+  const userRegistry = path.join(userData, "ensemble", "workflows");
+  await mkdir(projectRegistry, { recursive: true });
+  await mkdir(userRegistry, { recursive: true });
+  await writeFile(
+    path.join(projectRegistry, "summarise.js"),
+    `
+      export const meta = { name: "summarise", description: "Summarise findings" };
+      return "ok";
+    `
+  );
+  await writeFile(path.join(projectRegistry, "broken.js"), `return "not a workflow";`);
+  await writeFile(
+    path.join(userRegistry, "verify.js"),
+    `
+      export const meta = { name: "verify", description: "Verify a claim" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["workflows"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    env: { XDG_DATA_HOME: userData }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(
+    stdout.text(),
+    `summarise\tSummarise findings\tproject\t${path.join(projectRegistry, "summarise.js")}\n` +
+      `verify\tVerify a claim\tuser\t${path.join(userRegistry, "verify.js")}\n`
+  );
+  assert.match(stderr.text(), /\[workflows\] skipped .*broken\.js: Workflow script must begin with `export const meta = \{ \.\.\. \}`/);
 });
 
 test("CLI --statusline prints the latest run's snapshot as one line", async () => {

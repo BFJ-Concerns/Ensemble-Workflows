@@ -13,6 +13,7 @@ export type WorkflowLogSink = (message: string) => void;
 
 export interface WorkflowHooks {
   agent: WorkflowRuntime["agent"];
+  workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
   parallel: <T>(thunks: Array<() => T | Promise<T>>) => Promise<Array<Awaited<T> | null>>;
   pipeline: <Item>(
     items: Item[],
@@ -29,6 +30,7 @@ export function createWorkflowHooks(options: {
   runtime: WorkflowRuntime;
   args: unknown;
   log: WorkflowLogSink;
+  workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
 }): WorkflowHooks {
   const writeLog = (message: string): void => {
     options.log(message);
@@ -36,6 +38,7 @@ export function createWorkflowHooks(options: {
 
   return {
     agent: options.runtime.agent.bind(options.runtime) as WorkflowRuntime["agent"],
+    workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
     phase: (title) => {

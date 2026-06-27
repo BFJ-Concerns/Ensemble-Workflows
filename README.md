@@ -16,7 +16,7 @@ curated models — with schema-validated structured output and
 bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, a `node:vm` restricted-globals sandbox, and
-`isolation:'worktree'` for writable parallel Codex agents — driven by the
+`workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel Codex agents — driven by the
 `ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
 non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
 `'claude'`, or `'opencode'`): there is no default and no engine is privileged.
@@ -26,6 +26,46 @@ to `openrouter/z-ai/glm-5.2` with `vision:false` and pay-as-you-go billing.
 ```bash
 ensemble my-workflow.js > result.json 2> run.log
 ```
+
+## Script surface
+
+Workflow scripts begin with an `export const meta = { name, description, ... }`
+object literal, then run ordinary async JavaScript inside a restricted-globals
+sandbox. The sandbox has no filesystem, shell, network, `process`, `require`, or
+Node module access; the host-provided hooks are the way out.
+
+- `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
+  or `"opencode"`). With `opts.schema`, it returns a schema-validated object or
+  `null` after bounded retry; without a schema, it returns final text. Unsupported
+  engine options throw rather than silently doing less than requested.
+- `parallel(thunks)` runs all thunks concurrently and returns all results. A
+  failed thunk becomes `null` in the returned array and is still logged.
+- `pipeline(items, ...stages)` runs each item through each stage independently,
+  with no cross-item barrier between stages.
+- `workflow(nameOrRef, args)` runs a saved workflow inline and returns the
+  child's result. `nameOrRef` is either a workflow name string or
+  `{ scriptPath }`. Names resolve project-first from
+  `.claude/ensemble/workflows/`, then from
+  `${XDG_DATA_HOME:-~/.local/share}/ensemble/workflows/`; resolution reads the
+  saved workflow's `meta.name`, so filenames are just storage. `{ scriptPath }`
+  resolves like the top-level CLI script path, relative to the run cwd unless
+  absolute. Child workflows share the parent's `EnsembleRuntime`: the same
+  per-engine concurrency caps, budget ledgers, worktrees, and durable run record.
+  Nesting is one level only; `workflow()` called inside a child throws. The
+  registry ships empty, and project-level saved workflows are durable,
+  committable source files, not live-status artefacts.
+- `phase(title)` and `log(message)` write to the run log; `phase()` also updates
+  the live progress snapshot when enabled.
+- `budget.spent(engine)` / `budget.remaining(engine)` expose per-engine token
+  accounting, matching the names used by `agent()`.
+- `worktrees` exposes changed Codex worktrees left by `isolation: "worktree"`.
+- `args` is the raw CLI string arguments, or the parsed JSON value from
+  `--json-args`.
+
+`ensemble workflows` lists saved workflows in the project and user registries,
+printing each workflow's `meta.name` and `meta.description`. Files whose metadata
+cannot be parsed are noted on stderr and skipped, so one bad saved workflow does
+not hide the rest.
 
 The agent skill teaching the hooks API and the invoke pattern is maintained
 outside this repository; any shell-capable orchestrator runs the same CLI

@@ -3,10 +3,11 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { createRuntime } from "./index.js";
-import { runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
+import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { readStatusLine } from "./status-line.js";
 import { RunRecordWriter } from "./run-record.js";
+import { listSavedWorkflows } from "./workflow-registry.js";
 
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
@@ -34,12 +35,15 @@ export interface EnsembleCliOptions {
   runRecordDir?: string | null;
   /** Injectable clock for the `--statusline` reader; defaults to `Date.now`. */
   now?: () => number;
+  /** Injectable environment for registry resolution; defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions = {}): Promise<number> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
 
   // Statusline mode: render the latest run's snapshot as one line and exit.
   // This is what a Claude Code statusLine command invokes; it never starts a run.
@@ -47,6 +51,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
     if (line !== null) {
       stdout.write(`${line}\n`);
+    }
+    return 0;
+  }
+
+  if (argv[0] === "workflows") {
+    if (argv.length > 1) {
+      stderr.write("Usage: ensemble workflows\n");
+      return 2;
+    }
+    const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
+    for (const entry of listing.entries) {
+      stdout.write(`${entry.name}\t${entry.description}\t${entry.scope}\t${entry.scriptPath}\n`);
+    }
+    for (const note of listing.notes) {
+      stderr.write(`[workflows] skipped ${note.scriptPath}: ${note.message}\n`);
     }
     return 0;
   }
@@ -122,8 +141,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const runnerOptions = {
       source,
       filename: scriptPath,
+      cwd,
       runtime,
       args: invocation.args,
+      env,
       log: (message: string) => {
         stderr.write(`${message}\n`);
       },
@@ -430,7 +451,11 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 }
 
 function usage(): string {
-  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n";
+  return [
+    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "       ensemble workflows",
+    ""
+  ].join("\n");
 }
 
 function serialiseResult(result: unknown): string {

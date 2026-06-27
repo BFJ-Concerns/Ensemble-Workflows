@@ -41,6 +41,13 @@ export { resolveRunRecordDir, RUN_RECORD_ENV, RUN_RECORD_DIR_ENV } from "./run-r
 export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
 export { resolveStatusDir } from "./status-config.js";
 export { formatStatusLine, readStatusLine } from "./status-line.js";
+export {
+  NestedWorkflowError,
+  WorkflowResolutionError,
+  defaultWorkflowRegistryDirs,
+  listSavedWorkflows,
+  resolveWorkflowReference
+} from "./workflow-registry.js";
 export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
 export type {
   AgentState,
@@ -78,6 +85,14 @@ export type {
   EngineTurnOptions
 } from "./engines.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+export type {
+  SavedWorkflowEntry,
+  SavedWorkflowMeta,
+  WorkflowReference,
+  WorkflowRegistryDirs,
+  WorkflowRegistryListing,
+  WorkflowRegistryNote
+} from "./workflow-registry.js";
 
 async function getDefaultRuntime(): Promise<EnsembleRuntime> {
   defaultRuntime ??= createRuntimeInstance();

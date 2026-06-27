@@ -127,6 +127,72 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
   assert.equal(manifest.result.archive_path, "result.json");
 });
 
+test("child workflow agents are recorded in the parent's single durable run record", async () => {
+  const cwd = await gitRepo("ensemble-record-child-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  await writeFile(
+    path.join(cwd, "child.js"),
+    `
+      export const meta = { name: "record-child" };
+      return await agent("child-agent", { engine: "codex", label: "child" });
+    `
+  );
+  const parent = path.join(cwd, "workflow.js");
+  await writeFile(
+    parent,
+    `
+      export const meta = { name: "record-parent" };
+      const child = await workflow({ scriptPath: "./child.js" }, []);
+      const parent = await agent("parent-agent", { engine: "codex", label: "parent" });
+      return { child, parent };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([parent], {
+    cwd,
+    stdout,
+    stderr,
+    runRecordDir: store,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 2)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), "{\"child\":\"codex:child-agent\",\"parent\":\"codex:parent-agent\"}\n");
+  const manifests = await findManifests(store);
+  assert.equal(manifests.length, 1);
+  const manifest = JSON.parse(await readFile(manifests[0] ?? "", "utf8")) as {
+    status: string;
+    files: Array<{ path: string }>;
+  };
+  assert.equal(manifest.status, "complete");
+  assert.ok(manifest.files.some((entry) => entry.path === "agents/000001/agent.json"));
+  assert.ok(manifest.files.some((entry) => entry.path === "agents/000002/agent.json"));
+
+  const archiveDir = path.dirname(manifests[0] ?? "");
+  const childAgent = JSON.parse(await readFile(path.join(archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    label: string | null;
+    validated_output: unknown;
+  };
+  const parentAgent = JSON.parse(await readFile(path.join(archiveDir, "agents/000002/agent.json"), "utf8")) as {
+    label: string | null;
+    validated_output: unknown;
+  };
+  assert.deepEqual(
+    [childAgent, parentAgent].map((agent) => [agent.label, agent.validated_output]),
+    [
+      ["child", "codex:child-agent"],
+      ["parent", "codex:parent-agent"]
+    ]
+  );
+});
+
 function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number, cost?: number) {
   return {
     id,
@@ -260,10 +326,17 @@ async function gitRepo(prefix: string): Promise<string> {
 }
 
 async function findManifest(store: string): Promise<string> {
-  const entries = await readdir(store, { recursive: true, withFileTypes: true });
-  const manifest = entries.find((entry) => entry.isFile() && entry.name === "manifest.json");
+  const manifests = await findManifests(store);
+  const manifest = manifests[0];
   assert.ok(manifest);
-  return path.join(manifest.parentPath, manifest.name);
+  return manifest;
+}
+
+async function findManifests(store: string): Promise<string[]> {
+  const entries = await readdir(store, { recursive: true, withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name === "manifest.json")
+    .map((entry) => path.join(entry.parentPath, entry.name));
 }
 
 function sha256(content: Buffer): string {

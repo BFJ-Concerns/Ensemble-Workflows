@@ -406,11 +406,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants);
+          this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -427,10 +427,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -491,8 +491,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants) {
-        this.code = optimizeExpr(this.code, names, constants);
+      optimizeNames(names, constants2) {
+        this.code = optimizeExpr(this.code, names, constants2);
         return this;
       }
       get names() {
@@ -521,12 +521,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants))
+          if (n.optimizeNames(names, constants2))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -579,12 +579,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a;
-        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants);
-        if (!(super.optimizeNames(names, constants) || this.else))
+        this.else = (_a = this.else) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants2);
+        if (!(super.optimizeNames(names, constants2) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants);
+        this.condition = optimizeExpr(this.condition, names, constants2);
         return this;
       }
       get names() {
@@ -607,10 +607,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants);
+        this.iteration = optimizeExpr(this.iteration, names, constants2);
         return this;
       }
       get names() {
@@ -646,10 +646,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants);
+        this.iterable = optimizeExpr(this.iterable, names, constants2);
         return this;
       }
       get names() {
@@ -691,11 +691,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a, _b;
-        super.optimizeNames(names, constants);
-        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants);
+        super.optimizeNames(names, constants2);
+        (_a = this.catch) === null || _a === void 0 ? void 0 : _a.optimizeNames(names, constants2);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
         return this;
       }
       get names() {
@@ -996,7 +996,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants) {
+    function optimizeExpr(expr, names, constants2) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1011,14 +1011,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants[n.str];
+        const c = constants2[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path11) {
-      let input = path11;
+    function removeDotSegments(path13) {
+      let input = path13;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path11, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
+        const [path13, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6570,12 +6570,12 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path10 from "node:path";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile4 } from "node:fs/promises";
-import path8 from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import path10 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/runtime.ts
@@ -7627,14 +7627,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path11) {
+async function readTranscriptFile(path13) {
   let text;
   try {
-    text = await readFile(path11, "utf8");
+    text = await readFile(path13, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path11}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path13}`, { cause: error });
   }
-  return { path: path11, text, entries: parseTranscriptText(text) };
+  return { path: path13, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -7887,11 +7887,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path11 = await this.#controlPlane.transcriptPath(handle);
-    if (path11 === null) {
+    const path13 = await this.#controlPlane.transcriptPath(handle);
+    if (path13 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path11);
+    return readTranscriptFile(path13);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -9240,6 +9240,7 @@ function createWorkflowHooks(options) {
   };
   return {
     agent: options.runtime.agent.bind(options.runtime),
+    workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
     phase: (title) => {
@@ -9295,6 +9296,153 @@ function formatError(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
+import { readFile as readFile3 } from "node:fs/promises";
+import path4 from "node:path";
+
+// src/workflow-registry.ts
+import { constants } from "node:fs";
+import { access as access2, readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import path3 from "node:path";
+var WorkflowResolutionError = class extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+};
+var NestedWorkflowError = class extends WorkflowResolutionError {
+  constructor() {
+    super("workflow() cannot be called from inside a child workflow; nesting is limited to one level");
+  }
+};
+function defaultWorkflowRegistryDirs(cwd, env = process.env) {
+  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path3.join(homedir2(), ".local", "share");
+  return {
+    project: path3.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path3.join(dataHome, "ensemble", "workflows")
+  };
+}
+async function resolveWorkflowReference(nameOrRef, options) {
+  if (typeof nameOrRef === "string") {
+    return resolveWorkflowName(nameOrRef, options);
+  }
+  if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
+    throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
+  }
+  const scriptPath = path3.resolve(options.cwd, nameOrRef.scriptPath);
+  try {
+    await access2(scriptPath, constants.R_OK);
+  } catch (error) {
+    throw new WorkflowResolutionError(`workflow({ scriptPath }) could not read ${scriptPath}`, { cause: error });
+  }
+  return scriptPath;
+}
+async function listSavedWorkflows(options) {
+  const dirs = defaultWorkflowRegistryDirs(options.cwd, options.env);
+  const [project, user] = await Promise.all([
+    listRegistryDir(dirs.project, "project", options.readMeta),
+    listRegistryDir(dirs.user, "user", options.readMeta)
+  ]);
+  return {
+    entries: [...project.entries, ...user.entries].sort(compareEntries),
+    notes: [...project.notes, ...user.notes]
+  };
+}
+async function resolveWorkflowName(name, options) {
+  if (name.trim().length === 0) {
+    throw new WorkflowResolutionError("workflow() name must not be empty");
+  }
+  const dirs = defaultWorkflowRegistryDirs(options.cwd, options.env);
+  for (const [scope, dir] of [
+    ["project", dirs.project],
+    ["user", dirs.user]
+  ]) {
+    const listing = await listRegistryDir(dir, scope, options.readMeta);
+    const matches = listing.entries.filter((entry) => entry.name === name);
+    if (matches.length === 1) {
+      const [match] = matches;
+      if (match !== void 0) {
+        return match.scriptPath;
+      }
+    }
+    if (matches.length > 1) {
+      throw new WorkflowResolutionError(`workflow(${JSON.stringify(name)}) is ambiguous in ${dir}`);
+    }
+  }
+  throw new WorkflowResolutionError(
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}`
+  );
+}
+async function listRegistryDir(dir, scope, readMeta) {
+  let directoryEntries;
+  try {
+    directoryEntries = await readdir2(dir, { withFileTypes: true });
+  } catch (error) {
+    if (isMissingDirectory(error)) {
+      return { entries: [], notes: [] };
+    }
+    return {
+      entries: [],
+      notes: [{ scriptPath: dir, message: `could not read registry directory: ${formatError2(error)}` }]
+    };
+  }
+  const entries = [];
+  const notes = [];
+  for (const entry of directoryEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isFile() || !isWorkflowScript(entry.name)) {
+      continue;
+    }
+    const scriptPath = path3.join(dir, entry.name);
+    try {
+      const source = await readFile2(scriptPath, "utf8");
+      const meta = savedWorkflowMeta(readMeta(source, scriptPath));
+      if (meta === null) {
+        notes.push({ scriptPath, message: "meta.name must be a string" });
+        continue;
+      }
+      entries.push({ ...meta, scriptPath, scope });
+    } catch (error) {
+      notes.push({ scriptPath, message: formatError2(error) });
+    }
+  }
+  return { entries, notes };
+}
+function savedWorkflowMeta(meta) {
+  if (typeof meta !== "object" || meta === null) {
+    return null;
+  }
+  const name = meta.name;
+  if (typeof name !== "string" || name.trim().length === 0) {
+    return null;
+  }
+  const description = meta.description;
+  return {
+    name,
+    description: typeof description === "string" ? description : ""
+  };
+}
+function isWorkflowScript(name) {
+  return name.endsWith(".js") || name.endsWith(".mjs");
+}
+function compareEntries(left, right) {
+  const scopeRank = { project: 0, user: 1 };
+  const scopeOrder = scopeRank[left.scope] - scopeRank[right.scope];
+  if (scopeOrder !== 0) {
+    return scopeOrder;
+  }
+  return left.name.localeCompare(right.name) || left.scriptPath.localeCompare(right.scriptPath);
+}
+function isMissingDirectory(error) {
+  return typeof error === "object" && error !== null && error.code === "ENOENT";
+}
+function formatError2(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
+// src/script-runner.ts
 var WorkflowScriptError = class extends Error {
   constructor(message, options) {
     super(message, options);
@@ -9311,10 +9459,34 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 };
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
+  const cwd = options.cwd ?? path4.dirname(path4.resolve(options.filename));
+  const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
     args: options.args ?? [],
-    log: options.log
+    log: options.log,
+    workflow: workflowDepth === 0 ? async (nameOrRef, args) => {
+      const scriptPath = await resolveWorkflowReference(asWorkflowReference(nameOrRef), {
+        cwd,
+        ...options.env !== void 0 ? { env: options.env } : {},
+        readMeta: readWorkflowMeta
+      });
+      const source = await readFile3(scriptPath, "utf8");
+      const child = await runWorkflowScript({
+        source,
+        filename: scriptPath,
+        cwd,
+        runtime: options.runtime,
+        args: args ?? [],
+        ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+        ...options.env !== void 0 ? { env: options.env } : {},
+        workflowDepth: workflowDepth + 1,
+        log: options.log
+      });
+      return child.result;
+    } : async () => {
+      throw new NestedWorkflowError();
+    }
   });
   const context = createSandboxContext(hooks);
   const script = new vm.Script(buildWrappedSource(extracted), {
@@ -9337,6 +9509,11 @@ async function runWorkflowScript(options) {
     meta,
     result: normaliseVmValue(result)
   };
+}
+function readWorkflowMeta(source, filename = "workflow.js") {
+  const extracted = extractWorkflowSource(source);
+  const script = new vm.Script(`(${extracted.metaSource});`, { filename });
+  return normaliseVmValue(script.runInNewContext(void 0, { timeout: 100 }));
 }
 function extractWorkflowSource(source) {
   const withoutBom = source.startsWith("\uFEFF") ? source.slice(1) : source;
@@ -9370,6 +9547,7 @@ function createSandboxContext(hooks) {
   return vm.createContext(
     {
       agent: hooks.agent,
+      workflow: hooks.workflow,
       parallel: hooks.parallel,
       pipeline: hooks.pipeline,
       phase: hooks.phase,
@@ -9386,6 +9564,15 @@ function createSandboxContext(hooks) {
       }
     }
   );
+}
+function asWorkflowReference(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "object" && value !== null && "scriptPath" in value && typeof value.scriptPath === "string") {
+    return { scriptPath: value.scriptPath };
+  }
+  throw new WorkflowScriptError("workflow() expects a workflow name string or { scriptPath: string }");
 }
 function asResultRecord(value) {
   if (typeof value !== "object" || value === null || !("promise" in value)) {
@@ -9529,10 +9716,10 @@ function skipBlockComment(source, start) {
 
 // src/run-record.ts
 import { createHash } from "node:crypto";
-import { mkdir as mkdir2, readFile as readFile2, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile4, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import os from "node:os";
-import path3 from "node:path";
+import path5 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -9553,7 +9740,7 @@ var RunRecordWriter = class _RunRecordWriter {
   static async start(options) {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = path3.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
+    const archiveDir = path5.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
     await mkdir2(archiveDir, { recursive: true });
     const harnessRoot = await findHarnessRoot() ?? options.cwd;
     const packageInfo = await readPackageInfo(harnessRoot);
@@ -9705,23 +9892,23 @@ var RunRecordWriter = class _RunRecordWriter {
 `);
   }
   async #writeText(relativePath, content) {
-    const destination = path3.join(this.archiveDir, relativePath);
-    await mkdir2(path3.dirname(destination), { recursive: true });
-    const temporary = path3.join(path3.dirname(destination), `.${path3.basename(destination)}.${process.pid}.${Date.now()}.tmp`);
+    const destination = path5.join(this.archiveDir, relativePath);
+    await mkdir2(path5.dirname(destination), { recursive: true });
+    const temporary = path5.join(path5.dirname(destination), `.${path5.basename(destination)}.${process.pid}.${Date.now()}.tmp`);
     await writeFile(temporary, content, "utf8");
     await rename(temporary, destination);
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
-    const destination = path3.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path3.join(this.archiveDir, `.manifest.${process.pid}.${Date.now()}.tmp`);
+    const destination = path5.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path5.join(this.archiveDir, `.manifest.${process.pid}.${Date.now()}.tmp`);
     await writeFile(temporary, `${canonicalJson(this.manifest)}
 `, "utf8");
     await rename(temporary, destination);
   }
   async #trackFile(relativePath) {
-    const absolute = path3.join(this.archiveDir, relativePath);
+    const absolute = path5.join(this.archiveDir, relativePath);
     const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
     this.#files.set(relativePath, {
       path: relativePath,
@@ -9798,7 +9985,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
   if (dirty === true) {
     const diff = await git2(["diff", "--binary"], cwd);
     if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path3.join(archiveDir, diffPath), diff);
+      await writeStandaloneText(path5.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
     }
   }
@@ -9806,7 +9993,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
 }
 async function readPackageInfo(cwd) {
   try {
-    const text = await readFile2(path3.join(cwd, "package.json"), "utf8");
+    const text = await readFile4(path5.join(cwd, "package.json"), "utf8");
     const parsed = JSON.parse(text);
     return {
       name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
@@ -9817,17 +10004,17 @@ async function readPackageInfo(cwd) {
   }
 }
 async function findHarnessRoot() {
-  let current = path3.dirname(fileURLToPath(import.meta.url));
+  let current = path5.dirname(fileURLToPath(import.meta.url));
   for (; ; ) {
     try {
-      const text = await readFile2(path3.join(current, "package.json"), "utf8");
+      const text = await readFile4(path5.join(current, "package.json"), "utf8");
       const parsed = JSON.parse(text);
       if (parsed.name === "ensemble-workflows") {
         return current;
       }
     } catch {
     }
-    const parent = path3.dirname(current);
+    const parent = path5.dirname(current);
     if (parent === current) {
       return null;
     }
@@ -9882,12 +10069,12 @@ function sha256(text) {
   return createHash("sha256").update(text).digest("hex");
 }
 async function hashFile(filePath) {
-  const text = await readFile2(filePath);
+  const text = await readFile4(filePath);
   return createHash("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir2(path3.dirname(destination), { recursive: true });
-  const temporary = path3.join(tmpdir(), `ensemble-run-record-${process.pid}-${Date.now()}.tmp`);
+  await mkdir2(path5.dirname(destination), { recursive: true });
+  const temporary = path5.join(tmpdir(), `ensemble-run-record-${process.pid}-${Date.now()}.tmp`);
   await writeFile(temporary, content, "utf8");
   try {
     await rename(temporary, destination);
@@ -9908,8 +10095,8 @@ function safeName(filename, suffix) {
 }
 
 // src/run-record-config.ts
-import { homedir as homedir2 } from "node:os";
-import path4 from "node:path";
+import { homedir as homedir3 } from "node:os";
+import path6 from "node:path";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 function resolveRunRecordDir(env) {
@@ -9920,8 +10107,8 @@ function resolveRunRecordDir(env) {
   if (explicit !== void 0 && explicit.length > 0) {
     return explicit;
   }
-  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path4.join(homedir2(), ".local", "share");
-  return path4.join(dataHome, "ensemble");
+  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir3(), ".local", "share");
+  return path6.join(dataHome, "ensemble");
 }
 function isOff(value) {
   if (value === void 0) {
@@ -9932,7 +10119,7 @@ function isOff(value) {
 
 // src/status-file.ts
 import { mkdir as mkdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
-import path5 from "node:path";
+import path7 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var StatusFileWriter = class {
   #progress;
@@ -9989,7 +10176,7 @@ var StatusFileWriter = class {
       await mkdir3(this.#dir, { recursive: true });
       this.#ensuredDir = true;
     }
-    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const target = path7.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     await writeFile2(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
@@ -9997,7 +10184,7 @@ var StatusFileWriter = class {
   }
   async #removeSnapshot() {
     try {
-      await unlink(path5.join(this.#dir, STATUS_FILENAME));
+      await unlink(path7.join(this.#dir, STATUS_FILENAME));
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;
@@ -10012,7 +10199,7 @@ function isNodeError(error) {
 
 // src/status-config.ts
 import { statSync } from "node:fs";
-import path6 from "node:path";
+import path8 from "node:path";
 var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
 function resolveStatusDir(env, cwd) {
   const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
@@ -10023,7 +10210,7 @@ function resolveStatusDir(env, cwd) {
   if (explicit !== void 0 && explicit.length > 0) {
     return explicit;
   }
-  const localClaudeDir = path6.join(cwd, ".claude");
+  const localClaudeDir = path8.join(cwd, ".claude");
   try {
     return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
   } catch {
@@ -10032,8 +10219,8 @@ function resolveStatusDir(env, cwd) {
 }
 
 // src/status-line.ts
-import { readFile as readFile3 } from "node:fs/promises";
-import path7 from "node:path";
+import { readFile as readFile5 } from "node:fs/promises";
+import path9 from "node:path";
 var STALE_MS = 3e4;
 function formatStatusLine(snapshot, nowMs) {
   const parts = ["ensemble"];
@@ -10061,7 +10248,7 @@ async function readStatusLine(dir, now) {
   }
   let raw;
   try {
-    raw = await readFile3(path7.join(dir, STATUS_FILENAME), "utf8");
+    raw = await readFile5(path9.join(dir, STATUS_FILENAME), "utf8");
   } catch {
     return null;
   }
@@ -10146,6 +10333,7 @@ async function runEnsembleCli(argv, options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? process.env;
   if (argv.includes("--statusline")) {
     const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
     if (line !== null) {
@@ -10154,11 +10342,27 @@ async function runEnsembleCli(argv, options = {}) {
     }
     return 0;
   }
+  if (argv[0] === "workflows") {
+    if (argv.length > 1) {
+      stderr.write("Usage: ensemble workflows\n");
+      return 2;
+    }
+    const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
+    for (const entry of listing.entries) {
+      stdout.write(`${entry.name}	${entry.description}	${entry.scope}	${entry.scriptPath}
+`);
+    }
+    for (const note of listing.notes) {
+      stderr.write(`[workflows] skipped ${note.scriptPath}: ${note.message}
+`);
+    }
+    return 0;
+  }
   let invocation;
   try {
     invocation = parseInvocation(argv);
   } catch (error) {
-    stderr.write(`${formatError2(error)}
+    stderr.write(`${formatError3(error)}
 `);
     stderr.write(usage());
     return 2;
@@ -10173,8 +10377,8 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   try {
-    const scriptPath = path8.resolve(cwd, invocation.scriptArg);
-    const source = await readFile4(scriptPath, "utf8");
+    const scriptPath = path10.resolve(cwd, invocation.scriptArg);
+    const source = await readFile6(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
@@ -10202,7 +10406,7 @@ async function runEnsembleCli(argv, options = {}) {
         progress,
         dir: statusDir,
         onError: (error) => {
-          stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
+          stderr.write(`[status] failed to write progress snapshot: ${formatError3(error)}
 `);
         }
       });
@@ -10219,8 +10423,10 @@ async function runEnsembleCli(argv, options = {}) {
     const runnerOptions = {
       source,
       filename: scriptPath,
+      cwd,
       runtime,
       args: invocation.args,
+      env,
       log: (message) => {
         stderr.write(`${message}
 `);
@@ -10256,7 +10462,7 @@ async function runEnsembleCli(argv, options = {}) {
     } else {
       finalRecord = { status: "failed", exitCode: 1, result: null };
     }
-    stderr.write(`${formatError2(error)}
+    stderr.write(`${formatError3(error)}
 `);
     return 1;
   } finally {
@@ -10459,13 +10665,17 @@ function parseTimeoutMs(value) {
   return timeoutMs;
 }
 function usage() {
-  return "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n";
+  return [
+    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "       ensemble workflows",
+    ""
+  ].join("\n");
 }
 function serialiseResult(result) {
   const json = JSON.stringify(result);
   return json === void 0 ? "null" : json;
 }
-function formatError2(error) {
+function formatError3(error) {
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }
@@ -10474,7 +10684,7 @@ function formatError2(error) {
 
 // src/node-version.ts
 import { readFileSync } from "node:fs";
-import path9 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
   if (">=24.14.0".trim().length > 0) {
@@ -10527,9 +10737,9 @@ function parseVersion(version) {
   };
 }
 function readPackageMetadata(fromUrl) {
-  let current = path9.dirname(fileURLToPath2(fromUrl));
+  let current = path11.dirname(fileURLToPath2(fromUrl));
   while (true) {
-    const candidate = path9.join(current, "package.json");
+    const candidate = path11.join(current, "package.json");
     try {
       const metadata = JSON.parse(readFileSync(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
@@ -10537,7 +10747,7 @@ function readPackageMetadata(fromUrl) {
       }
     } catch {
     }
-    const parent = path9.dirname(current);
+    const parent = path11.dirname(current);
     if (parent === current) {
       throw new Error("Could not locate ensemble-workflows package.json");
     }
@@ -10546,7 +10756,7 @@ function readPackageMetadata(fromUrl) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path10.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {

@@ -1,8 +1,15 @@
 import vm from "node:vm";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import { createWorkflowHooks } from "./hooks.js";
+import {
+  NestedWorkflowError,
+  resolveWorkflowReference
+} from "./workflow-registry.js";
 
 import type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
+import type { WorkflowReference } from "./workflow-registry.js";
 
 export class WorkflowScriptError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -29,9 +36,13 @@ export interface WorkflowScriptResult {
 export interface RunWorkflowScriptOptions {
   source: string;
   filename: string;
+  /** The run cwd used for resolving child workflow registry and script-path references. */
+  cwd?: string;
   runtime: WorkflowRuntime;
   args?: unknown;
   timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  workflowDepth?: number;
   log: WorkflowLogSink;
   /** Called with the parsed `meta` as soon as the script evaluates, before its body resolves. */
   onMeta?: (meta: unknown) => void | Promise<void>;
@@ -44,10 +55,37 @@ interface ExtractedWorkflow {
 
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
   const extracted = extractWorkflowSource(options.source);
+  const cwd = options.cwd ?? path.dirname(path.resolve(options.filename));
+  const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
     args: options.args ?? [],
-    log: options.log
+    log: options.log,
+    workflow:
+      workflowDepth === 0
+        ? async (nameOrRef, args) => {
+            const scriptPath = await resolveWorkflowReference(asWorkflowReference(nameOrRef), {
+              cwd,
+              ...(options.env !== undefined ? { env: options.env } : {}),
+              readMeta: readWorkflowMeta
+            });
+            const source = await readFile(scriptPath, "utf8");
+            const child = await runWorkflowScript({
+              source,
+              filename: scriptPath,
+              cwd,
+              runtime: options.runtime,
+              args: args ?? [],
+              ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+              ...(options.env !== undefined ? { env: options.env } : {}),
+              workflowDepth: workflowDepth + 1,
+              log: options.log
+            });
+            return child.result;
+          }
+        : async () => {
+            throw new NestedWorkflowError();
+          }
   });
   const context = createSandboxContext(hooks);
   const script = new vm.Script(buildWrappedSource(extracted), {
@@ -76,6 +114,12 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     meta,
     result: normaliseVmValue(result)
   };
+}
+
+export function readWorkflowMeta(source: string, filename: string = "workflow.js"): unknown {
+  const extracted = extractWorkflowSource(source);
+  const script = new vm.Script(`(${extracted.metaSource});`, { filename });
+  return normaliseVmValue(script.runInNewContext(undefined, { timeout: 100 }));
 }
 
 export function extractWorkflowSource(source: string): ExtractedWorkflow {
@@ -115,6 +159,7 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
   return vm.createContext(
     {
       agent: hooks.agent,
+      workflow: hooks.workflow,
       parallel: hooks.parallel,
       pipeline: hooks.pipeline,
       phase: hooks.phase,
@@ -131,6 +176,21 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
       }
     }
   );
+}
+
+function asWorkflowReference(value: unknown): WorkflowReference {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "scriptPath" in value &&
+    typeof (value as { scriptPath?: unknown }).scriptPath === "string"
+  ) {
+    return { scriptPath: (value as { scriptPath: string }).scriptPath };
+  }
+  throw new WorkflowScriptError("workflow() expects a workflow name string or { scriptPath: string }");
 }
 
 function asResultRecord(value: unknown): { meta: unknown; promise: Promise<unknown> } {

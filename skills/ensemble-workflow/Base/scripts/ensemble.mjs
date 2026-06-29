@@ -7333,7 +7333,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
-      timeout: setTimeout(() => {
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
         this.#turns.delete(threadId);
         state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
       }, timeoutMs)
@@ -7828,7 +7830,7 @@ var ClaudeEngineInvocation = class {
    * kill a live worker.
    */
   async #runToCompletion(handle, fromIndex) {
-    const deadline = Date.now() + this.#options.timeoutMs;
+    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
     let nudges = 0;
     let absences = 0;
     for (; ; ) {
@@ -8056,7 +8058,7 @@ var OpenCodeEngineInvocation = class {
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
-      timeoutMs: this.#options.timeoutMs,
+      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {}
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -8154,7 +8156,7 @@ function runProcess(command, args, cwd, timeoutMs) {
     const stdout = [];
     const stderr = [];
     let settled = false;
-    const timeout = setTimeout(() => {
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
       child.kill("SIGTERM");
     }, timeoutMs);
     child.stdout.setEncoding("utf8");
@@ -8743,7 +8745,7 @@ var CodexEngineInvocation = class {
       ...location.cwd !== void 0 ? { cwd: location.cwd } : {}
     });
     return this.#transport.runTurn(threadId, this.#prompt, {
-      timeoutMs: this.#options.timeoutMs,
+      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {}
@@ -8955,7 +8957,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     runtime = new _EnsembleRuntime({
       engines,
       ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
-      defaultTurnTimeoutMs: options.defaultTurnTimeoutMs ?? 24e4,
+      ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
     runtime.worktrees.push(...worktrees);
@@ -9156,9 +9158,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return adapter;
   }
   #engineTurnOptions(options) {
+    const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
       webSearch: options.webSearch ?? false,
-      timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs,
+      ...resolvedTimeoutMs !== void 0 ? { timeoutMs: resolvedTimeoutMs } : {},
       ...options.schema !== void 0 ? { schema: options.schema } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},

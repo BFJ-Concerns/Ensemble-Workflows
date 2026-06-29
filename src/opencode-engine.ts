@@ -19,7 +19,8 @@ export interface OpenCodeRunOptions {
   prompt: string;
   cwd: string;
   providerModel: string;
-  timeoutMs: number;
+  // Omitted → the run subprocess is not killed on a deadline (unbounded).
+  timeoutMs?: number;
   variant?: string;
 }
 
@@ -116,7 +117,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
-      timeoutMs: this.#options.timeoutMs,
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {})
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -210,7 +211,7 @@ export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): vo
   }
 }
 
-function runProcess(command: string, args: string[], cwd: string, timeoutMs: number): Promise<OpenCodeRunResult> {
+function runProcess(command: string, args: string[], cwd: string, timeoutMs: number | undefined): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn(command, args, {
@@ -220,9 +221,13 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
-    const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
-    }, timeoutMs);
+    // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
+    const timeout =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            child.kill("SIGTERM");
+          }, timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => stdout.push(chunk));

@@ -86,7 +86,9 @@ export interface TurnStartOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
-  timeoutMs: number;
+  // Omitted → no per-turn deadline (unbounded). There is no default; a backstop
+  // is the orchestrator's choice (see the skill's backstop section).
+  timeoutMs?: number;
 }
 
 export interface ThreadStartOptions {

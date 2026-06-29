@@ -53,7 +53,7 @@ interface TurnState {
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
-  timeout: NodeJS.Timeout;
+  timeout: NodeJS.Timeout | undefined;
 }
 
 interface ThreadTranscript {
@@ -454,7 +454,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   }
 
-  #createTurnState(threadId: string, timeoutMs: number): TurnState {
+  #createTurnState(threadId: string, timeoutMs: number | undefined): TurnState {
     let resolveTurn: (result: TurnResult) => void = () => undefined;
     let rejectTurn: (reason: Error) => void = () => undefined;
     const promise = new Promise<TurnResult>((resolve, reject) => {
@@ -473,10 +473,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
-      timeout: setTimeout(() => {
-        this.#turns.delete(threadId);
-        state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
-      }, timeoutMs)
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout:
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              this.#turns.delete(threadId);
+              state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
+            }, timeoutMs)
     };
     return state;
   }

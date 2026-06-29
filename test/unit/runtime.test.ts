@@ -272,6 +272,48 @@ test("agent requires an explicit engine", async () => {
   assert.equal(transport.turns.length, 0);
 });
 
+test("per-turn timeout is unbounded when neither a default nor a per-call timeout is set", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  await runtime.agent("read", { engine: "codex" });
+
+  assert.equal(transport.turns.length, 1);
+  // No timeoutMs reaches the engine → the turn runs unbounded (no per-turn deadline).
+  assert.equal(transport.turns[0]?.options.timeoutMs, undefined);
+});
+
+test("an explicit per-call timeoutMs is passed through to the engine turn", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  await runtime.agent("read", { engine: "codex", timeoutMs: 1_234 });
+
+  assert.equal(transport.turns[0]?.options.timeoutMs, 1_234);
+});
+
+test("defaultTurnTimeoutMs applies as the per-turn timeout when no per-call timeout is set", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 5_000,
+    defaultMaxAttempts: 1
+  });
+
+  await runtime.agent("read", { engine: "codex" });
+
+  assert.equal(transport.turns[0]?.options.timeoutMs, 5_000);
+});
+
 // The Claude engine is now implemented; it is driven through the runtime with a
 // fake control plane in test/unit/claude-engine.test.ts. Routing to it (and the
 // isolation:'worktree' rejection) is covered there.

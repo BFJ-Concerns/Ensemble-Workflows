@@ -42,7 +42,8 @@ export interface EngineTurnOptions {
   webSearch: boolean;
   isolation?: "worktree";
   sandbox?: SandboxMode;
-  timeoutMs: number;
+  // Omitted → unbounded per turn. No default; see the runtime's resolution below.
+  timeoutMs?: number;
 }
 
 export interface EngineAttemptFailure {
@@ -194,7 +195,7 @@ class CodexEngineInvocation implements EngineInvocation {
     });
 
     return this.#transport.runTurn(threadId, this.#prompt, {
-      timeoutMs: this.#options.timeoutMs,
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {})

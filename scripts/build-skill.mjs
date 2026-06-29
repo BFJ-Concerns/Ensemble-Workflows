@@ -1,11 +1,12 @@
 // Bundles the CLI into the standalone skill launcher
-// (skills/ensemble-workflow/bin/ensemble.mjs).
+// (skills/ensemble-workflow/Base/scripts/ensemble.mjs).
 //
-// The skill dir ships only bin/, with no package.json beside the
-// bundle. The version guard needs the Node floor at startup, so we read
-// `engines.node` here at build time and inline it via an esbuild `define`,
-// leaving the bundle self-contained. package.json stays the single source of
-// truth; only the moment of reading it moves from runtime to build time.
+// The bundle lives at Base/scripts/ where skill installs expect it — no
+// package.json beside the bundle. The version guard needs the Node floor at
+// startup, so we read `engines.node` here at build time and inline it via an
+// esbuild `define`, leaving the bundle self-contained. package.json stays the
+// single source of truth; only the moment of reading it moves from runtime to
+// build time.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -28,7 +29,7 @@ await build({
   platform: "node",
   format: "esm",
   target: "node24",
-  outfile: path.join(repoRoot, "skills/ensemble-workflow/bin/ensemble.mjs"),
+  outfile: path.join(repoRoot, "skills/ensemble-workflow/Base/scripts/ensemble.mjs"),
   define: {
     // JSON.stringify yields a quoted literal, e.g. `">=24.14.0"` — the source
     // text esbuild substitutes for every `__ENSEMBLE_NODE_RANGE__` reference.

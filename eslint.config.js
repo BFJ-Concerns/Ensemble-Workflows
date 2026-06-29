@@ -18,7 +18,16 @@ export default tseslint.config(
     }
   },
   {
-    // Generated build output: the tsc dist tree and the esbuild skill bundle.
-    ignores: ["dist/**", "node_modules/**", "skills/**/bin/**"]
+    // Not repo source: generated build output (the tsc dist tree and the esbuild
+    // skill bundle, now at the unit's Base/scripts/), and installed coding-tool
+    // configs — installed skill bundles carry their own runtime globals.
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "skills/**/Base/scripts/**",
+      ".claude/**",
+      ".agents/**",
+      ".opencode/**"
+    ]
   }
 );

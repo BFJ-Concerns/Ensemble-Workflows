@@ -180,7 +180,8 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * kill a live worker.
    */
   async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptFile> {
-    const deadline = Date.now() + this.#options.timeoutMs;
+    // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
+    const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
     let nudges = 0;
     let absences = 0;
 

@@ -57,7 +57,7 @@ export class EnsembleRuntime {
   readonly progress: RunProgress;
 
   #engines: EngineRegistry;
-  #defaultTurnTimeoutMs: number;
+  #defaultTurnTimeoutMs: number | undefined;
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
@@ -69,7 +69,7 @@ export class EnsembleRuntime {
     transport?: RuntimeTransport;
     concurrencyCaps?: EngineConcurrencyCaps;
     budgetCeilings?: EngineBudgetCeilings;
-    defaultTurnTimeoutMs: number;
+    defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
@@ -134,7 +134,7 @@ export class EnsembleRuntime {
     runtime = new EnsembleRuntime({
       engines,
       ...(options.budgetCeilings !== undefined ? { budgetCeilings: options.budgetCeilings } : {}),
-      defaultTurnTimeoutMs: options.defaultTurnTimeoutMs ?? 240_000,
+      ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
     runtime.worktrees.push(...worktrees);
@@ -382,9 +382,10 @@ export class EnsembleRuntime {
   }
 
   #engineTurnOptions(options: Partial<AgentOptions>): EngineTurnOptions {
+    const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
       webSearch: options.webSearch ?? false,
-      timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs,
+      ...(resolvedTimeoutMs !== undefined ? { timeoutMs: resolvedTimeoutMs } : {}),
       ...(options.schema !== undefined ? { schema: options.schema } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),

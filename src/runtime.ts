@@ -110,6 +110,7 @@ export class EnsembleRuntime {
       cwd: options.cwd ?? process.cwd(),
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+      startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
       onEvent: (event) => {

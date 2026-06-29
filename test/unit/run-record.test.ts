@@ -83,6 +83,35 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
   assert.equal("total" in manifest.cost_rollup, false);
 });
 
+test("standalone git diff write stages beside its destination and succeeds", async () => {
+  const source = await readFile("src/run-record.ts", "utf8");
+  const standaloneWrite = source.match(/async function writeStandaloneText[\s\S]*?\n}/)?.[0] ?? "";
+  assert.match(standaloneWrite, /path\.join\(path\.dirname\(destination\),/);
+  assert.doesNotMatch(standaloneWrite, /tmpdir\(\)/);
+
+  const cwd = await gitRepo("ensemble-record-dirty-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  await writeFile(path.join(cwd, "package.json"), JSON.stringify({ name: "ensemble-workflows", version: "0.0.1" }));
+
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-dirty",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'dirty' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    git: { start: { diffPath: string | null } };
+    files: Array<{ path: string }>;
+  };
+  assert.equal(manifest.git.start.diffPath, "git/start.diff");
+  assert.ok(manifest.files.some((entry) => entry.path === "git/start.diff"));
+  assert.match(await readFile(path.join(writer.archiveDir, "git/start.diff"), "utf8"), /0\.0\.1/);
+});
+
 test("CLI timeout leaves a usable partial archive with meta.task", async () => {
   const cwd = await gitRepo("ensemble-record-cli-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));

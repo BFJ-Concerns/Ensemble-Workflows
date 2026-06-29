@@ -20,6 +20,12 @@ export class AppServerRequestError extends EnsembleError {
 
 export class AppServerBackpressureError extends AppServerRequestError {}
 
+export class AppServerStartupTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
+  }
+}
+
 /**
  * Codex validates `outputSchema` against its own accepted subset before
  * generation. This is not the same failure as an agent returning JSON that does

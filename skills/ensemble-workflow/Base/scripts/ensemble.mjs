@@ -6601,6 +6601,11 @@ var AppServerRequestError = class extends EnsembleError {
 };
 var AppServerBackpressureError = class extends AppServerRequestError {
 };
+var AppServerStartupTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
+  }
+};
 var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   code;
   data;
@@ -6979,6 +6984,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   cwd;
   #process;
   #requestTimeoutMs;
+  #startupHandshakeTimeoutMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
@@ -6989,6 +6995,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   constructor(options) {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -7003,7 +7010,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   static async start(options) {
     const transport = new _CodexAppServerTransport(options);
-    await transport.#handshake(options.clientName, options.clientVersion);
+    try {
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
     return transport;
   }
   async openThread(options) {
@@ -7106,12 +7118,23 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
   }
   async #handshake(clientName, clientVersion) {
-    await this.#request("initialize", {
-      clientInfo: {
-        name: clientName,
-        version: clientVersion
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
       }
-    });
+      throw error;
+    }
     this.#sendNotification("initialized", {});
   }
   #request(method, params, timeoutMs = this.#requestTimeoutMs) {
@@ -8855,6 +8878,7 @@ async function createDefaultEngineRegistry(options) {
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,
+    startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
     onEvent: options.onEvent
@@ -8934,6 +8958,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd: options.cwd ?? process.cwd(),
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
+      startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
       onEvent: (event) => {
@@ -9720,7 +9745,6 @@ function skipBlockComment(source, start) {
 // src/run-record.ts
 import { createHash } from "node:crypto";
 import { mkdir as mkdir2, readFile as readFile4, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import os from "node:os";
 import path5 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
@@ -10077,7 +10101,7 @@ async function hashFile(filePath) {
 }
 async function writeStandaloneText(destination, content) {
   await mkdir2(path5.dirname(destination), { recursive: true });
-  const temporary = path5.join(tmpdir(), `ensemble-run-record-${process.pid}-${Date.now()}.tmp`);
+  const temporary = path5.join(path5.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeFile(temporary, content, "utf8");
   try {
     await rename(temporary, destination);

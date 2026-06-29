@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -535,7 +534,7 @@ async function hashFile(filePath: string): Promise<string> {
 
 async function writeStandaloneText(destination: string, content: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
-  const temporary = path.join(tmpdir(), `ensemble-run-record-${process.pid}-${Date.now()}.tmp`);
+  const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeFile(temporary, content, "utf8");
   try {
     await rename(temporary, destination);

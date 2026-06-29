@@ -28,6 +28,7 @@ export interface RuntimeOptions {
   concurrencyCaps?: EngineConcurrencyCaps;
   budgetCeilings?: EngineBudgetCeilings;
   requestTimeoutMs?: number;
+  startupHandshakeTimeoutMs?: number;
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;
   clientName?: string;

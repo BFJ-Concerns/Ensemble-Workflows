@@ -347,6 +347,7 @@ export interface CreateDefaultEngineRegistryOptions {
   codexBin: string;
   openCodeBin?: string;
   requestTimeoutMs: number;
+  startupHandshakeTimeoutMs: number;
   clientName: string;
   clientVersion: string;
   concurrencyCaps?: EngineConcurrencyCaps;
@@ -363,6 +364,7 @@ export async function createDefaultEngineRegistry(
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,
+    startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
     onEvent: options.onEvent

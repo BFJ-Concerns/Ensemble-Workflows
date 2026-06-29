@@ -5,6 +5,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerRequestError,
+  AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
@@ -64,6 +65,7 @@ export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
   requestTimeoutMs: number;
+  startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
   onEvent?: (event: RuntimeEvent) => void;
@@ -74,6 +76,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
+  #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
@@ -85,6 +88,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   private constructor(options: CodexAppServerTransportOptions) {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -101,7 +105,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   static async start(options: CodexAppServerTransportOptions): Promise<CodexAppServerTransport> {
     const transport = new CodexAppServerTransport(options);
-    await transport.#handshake(options.clientName, options.clientVersion);
+    try {
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
     return transport;
   }
 
@@ -214,12 +223,23 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async #handshake(clientName: string, clientVersion: string): Promise<void> {
-    await this.#request("initialize", {
-      clientInfo: {
-        name: clientName,
-        version: clientVersion
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
       }
-    });
+      throw error;
+    }
     this.#sendNotification("initialized", {});
   }
 

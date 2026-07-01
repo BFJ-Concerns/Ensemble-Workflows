@@ -37,7 +37,12 @@ Node module access; the host-provided hooks are the way out.
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or
   `null` after bounded retry; without a schema, it returns final text. Unsupported
-  engine options throw rather than silently doing less than requested.
+  engine options throw rather than silently doing less than requested. A Claude
+  call with no `model` pin is flagged on stderr, and `fallbackModel` (Claude
+  only) declares degradation when a pinned tier is unavailable.
+- `export const defaults = { … }` — an optional second export after `meta` —
+  sets per-engine `model`/`effort`/`fallbackModel` that every `agent()` call
+  inherits and call-site options override.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged.
 - `pipeline(items, ...stages)` runs each item through each stage independently,

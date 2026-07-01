@@ -35,6 +35,8 @@ export interface ClaudeDispatchOptions {
   cwd: string;
   model?: string;
   effort?: string;
+  /** Declared degradation: passed as `--fallback-model` when the pinned model is unavailable. */
+  fallbackModel?: string;
 }
 
 export interface ClaudeSessionHandle {
@@ -110,6 +112,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (options.effort !== undefined) {
       args.push("--effort", options.effort);
+    }
+    if (options.fallbackModel !== undefined) {
+      args.push("--fallback-model", options.fallbackModel);
     }
     args.push(options.prompt);
 

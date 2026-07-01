@@ -59,6 +59,7 @@ export interface RuntimeAgentRecord {
   engine: EngineName;
   model: string | null;
   effort: string | null;
+  fallbackModel: string | null;
   resolvedModel: string | null;
   label: string | null;
   phase: string | null;
@@ -163,11 +164,26 @@ export class RunRecordWriter {
   #cwd: string;
   #files = new Map<string, FileEntry>();
   #agents = new Map<number, RuntimeAgentRecord>();
+  #tmpSeq = 0;
+  #writeChain: Promise<unknown> = Promise.resolve();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
     this.manifest = manifest;
+  }
+
+  /**
+   * Concurrent agents settle independently, but the manifest is one shared
+   * read-modify-write document: interleaved writes would race each other (and
+   * previously collided on same-millisecond temp names). Every mutating public
+   * operation runs through this chain, so each snapshot on disk reflects all
+   * operations before it. One failed write must not poison later ones.
+   */
+  #serialise<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.#writeChain.then(task, task);
+    this.#writeChain = next.catch(() => undefined);
+    return next;
   }
 
   static async start(options: RunRecordStartOptions): Promise<RunRecordWriter> {
@@ -242,14 +258,20 @@ export class RunRecordWriter {
   }
 
   async noteMeta(meta: unknown): Promise<void> {
-    this.manifest.meta = {
-      task: extractTask(meta),
-      raw: meta
-    };
-    await this.#writeManifest();
+    await this.#serialise(async () => {
+      this.manifest.meta = {
+        task: extractTask(meta),
+        raw: meta
+      };
+      await this.#writeManifest();
+    });
   }
 
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
+    await this.#serialise(() => this.#recordAgent(record));
+  }
+
+  async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
     this.#agents.set(record.id, record);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
@@ -280,6 +302,7 @@ export class RunRecordWriter {
       engine: record.engine,
       model: record.model,
       effort: record.effort,
+      fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
       label: record.label,
       phase: record.phase,
@@ -308,24 +331,26 @@ export class RunRecordWriter {
   }
 
   async finish(options: RunRecordFinishOptions): Promise<void> {
-    this.manifest.status = options.status;
-    this.manifest.ended_at = options.endedAt ?? new Date().toISOString();
-    this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
-    if (this.manifest.git.end.diffPath !== null) {
-      await this.#trackFile(this.manifest.git.end.diffPath);
-    }
-    this.manifest.result = {
-      archive_path: "result.json",
-      exit_code: options.exitCode
-    };
-    await this.#writeJson("result.json", {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_result",
-      status: options.status,
-      exit_code: options.exitCode,
-      value: options.result
+    await this.#serialise(async () => {
+      this.manifest.status = options.status;
+      this.manifest.ended_at = options.endedAt ?? new Date().toISOString();
+      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+      if (this.manifest.git.end.diffPath !== null) {
+        await this.#trackFile(this.manifest.git.end.diffPath);
+      }
+      this.manifest.result = {
+        archive_path: "result.json",
+        exit_code: options.exitCode
+      };
+      await this.#writeJson("result.json", {
+        schema_version: SCHEMA_VERSION,
+        kind: "run_result",
+        status: options.status,
+        exit_code: options.exitCode,
+        value: options.result
+      });
+      await this.#writeManifest();
     });
-    await this.#writeManifest();
   }
 
   async #writeJson(relativePath: string, value: unknown): Promise<void> {
@@ -335,18 +360,23 @@ export class RunRecordWriter {
   async #writeText(relativePath: string, content: string): Promise<void> {
     const destination = path.join(this.archiveDir, relativePath);
     await mkdir(path.dirname(destination), { recursive: true });
-    const temporary = path.join(path.dirname(destination), `.${path.basename(destination)}.${process.pid}.${Date.now()}.tmp`);
-    await writeFile(temporary, content, "utf8");
-    await rename(temporary, destination);
+    const temporary = path.join(path.dirname(destination), `.${path.basename(destination)}${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
   }
 
   async #writeManifest(): Promise<void> {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path.join(this.archiveDir, `.manifest.${process.pid}.${Date.now()}.tmp`);
-    await writeFile(temporary, `${canonicalJson(this.manifest)}\n`, "utf8");
-    await rename(temporary, destination);
+    const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
+  }
+
+  // pid + sequence keeps names unique within the process; Date.now() alone
+  // collided when two agents settled in the same millisecond.
+  #tmpSuffix(): string {
+    this.#tmpSeq += 1;
+    return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
 
   async #trackFile(relativePath: string): Promise<void> {
@@ -362,6 +392,7 @@ export class RunRecordWriter {
 
 function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<string, UsageRollup>> {
   const rollup: Record<string, Record<string, UsageRollup>> = {};
+  const unlikeCurrencies = new Set<UsageRollup["cost"]>();
   for (const record of records) {
     const engine = record.engine;
     const model = record.model ?? "default";
@@ -374,22 +405,38 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
         addUsage(bucket.tokens, event.last);
-        addProviderCost(bucket.cost, event);
+        addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
   }
   return rollup;
 }
 
-function addProviderCost(target: UsageRollup["cost"], event: TokenUsageEvent): void {
+function addProviderCost(
+  target: UsageRollup["cost"],
+  event: TokenUsageEvent,
+  unlikeCurrencies: Set<UsageRollup["cost"]>
+): void {
+  if (unlikeCurrencies.has(target)) {
+    return;
+  }
   const cost = event.raw.cost;
   if (typeof cost !== "number" || !Number.isFinite(cost)) {
     return;
   }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  // Unlike currencies cannot be summed; an explicit unknown beats a silent
+  // cross-currency total, so the bucket degrades to token-only accounting.
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    unlikeCurrencies.add(target);
+    target.amount = null;
+    target.currency = null;
+    target.source = "estimated";
+    return;
+  }
   target.amount = (target.amount ?? 0) + cost;
   target.source = "provider-reported";
-  const currency = event.raw.currency;
-  if (typeof currency === "string" && (target.currency === null || target.currency === currency)) {
+  if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
 }
@@ -431,7 +478,9 @@ async function readGitState(cwd: string, diffPath: string, archiveDir: string): 
   const dirty = porcelain === null ? null : porcelain.length > 0;
   let archivedDiffPath: string | null = null;
   if (dirty === true) {
-    const diff = await git(["diff", "--binary"], cwd);
+    // `diff HEAD` captures staged and unstaged changes — `status` counts both as
+    // dirty, so the archived diff must too. Plain `diff` covers an unborn HEAD.
+    const diff = (await git(["diff", "HEAD", "--binary"], cwd)) ?? (await git(["diff", "--binary"], cwd));
     if (diff !== null && diff.length > 0) {
       await writeStandaloneText(path.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
@@ -535,8 +584,13 @@ async function hashFile(filePath: string): Promise<string> {
 async function writeStandaloneText(destination: string, content: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
   const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeFile(temporary, content, "utf8");
+  await writeAndRename(temporary, destination, content);
+}
+
+/** Atomic temp-then-rename write; a failed write never leaves its temp file behind. */
+async function writeAndRename(temporary: string, destination: string, content: string): Promise<void> {
   try {
+    await writeFile(temporary, content, "utf8");
     await rename(temporary, destination);
   } catch (error) {
     await rm(temporary, { force: true });

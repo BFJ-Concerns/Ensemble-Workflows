@@ -9,6 +9,8 @@ const execFileAsync = promisify(execFile);
 export interface IsolatedWorktree {
   path: string;
   branch: string;
+  /** The commit the worktree branched from — the reference point for "did the worker commit anything?". */
+  baseCommit: string;
 }
 
 export interface IsolatedWorktreeRecord extends IsolatedWorktree {
@@ -39,16 +41,21 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
 
     await mkdir(path.dirname(worktreePath), { recursive: true });
     await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
 
     return {
       path: worktreePath,
-      branch
+      branch,
+      baseCommit
     };
   }
 
   async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
     const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const changed = status.trim().length > 0;
+    // A worker that commits its work leaves a clean status but moves the branch
+    // tip; both count as changed, or `branch -D` below would orphan the commits.
+    const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
 
     if (changed) {
       return {

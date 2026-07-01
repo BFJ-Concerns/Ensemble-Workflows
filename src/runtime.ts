@@ -16,7 +16,7 @@ import {
   createDefaultEngineRegistry,
   defaultCodexConcurrency
 } from "./engines.js";
-import { parseJsonFromText, validateJsonSchema } from "./schema.js";
+import { assertCompilableSchema, parseJsonFromText, validateJsonSchema } from "./schema.js";
 
 import type {
   AgentOptions,
@@ -182,6 +182,10 @@ export class EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    if (options.schema !== undefined) {
+      // A malformed schema would otherwise surface only after the first paid turn.
+      assertCompilableSchema(options.schema);
+    }
 
     const engine = this.#engineFor(options.engine);
     const agentId = this.progress.queueAgent({
@@ -189,6 +193,14 @@ export class EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    if (engine.name === "claude" && options.model === undefined) {
+      // Unpinned Claude burns the ambient default model silently; make it visible.
+      this.#emitEvent({
+        method: "claude/unpinnedModel",
+        params: { agentId, label: options.label ?? null },
+        receivedAt: Date.now()
+      });
+    }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
@@ -211,17 +223,37 @@ export class EnsembleRuntime {
             output: result
           });
         }
-        await this.#runRecorder?.recordAgent(agentRecord);
+        await this.#recordAgentSafely(agentRecord);
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         agentRecord.status = "failed";
         agentRecord.rawOutput = lastRawOutput(agentRecord);
         agentRecord.validatedOutput = null;
-        await this.#runRecorder?.recordAgent(agentRecord);
+        await this.#recordAgentSafely(agentRecord);
         throw error;
       }
     });
+  }
+
+  /**
+   * The archive is observability: a bookkeeping failure must not reject (or,
+   * on the success path, falsify) the agent whose work it records. Failures
+   * surface as an event the CLI logs to stderr.
+   */
+  async #recordAgentSafely(record: RuntimeAgentRecord): Promise<void> {
+    try {
+      await this.#runRecorder?.recordAgent(record);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: {
+          agentId: record.id,
+          message: error instanceof Error ? error.message : String(error)
+        },
+        receivedAt: Date.now()
+      });
+    }
   }
 
   /**
@@ -390,6 +422,7 @@ export class EnsembleRuntime {
       ...(options.schema !== undefined ? { schema: options.schema } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
+      ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
       ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
       ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {})
     };
@@ -401,6 +434,7 @@ export class EnsembleRuntime {
       engine,
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
+      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
       label: options.label ?? null,
       phase: options.phase ?? null,

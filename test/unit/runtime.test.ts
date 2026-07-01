@@ -3,7 +3,15 @@ import test from "node:test";
 
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
-import { BudgetExceededError, CodexSchemaSubsetUnsupportedError, MissingEngineError } from "../../src/errors.js";
+import {
+  BudgetExceededError,
+  CodexSchemaSubsetUnsupportedError,
+  FallbackModelUnsupportedError,
+  InvalidAgentSchemaError,
+  MissingEngineError
+} from "../../src/errors.js";
+
+import type { RunRecordWriter } from "../../src/run-record.js";
 
 import type {
   AgentOptions,
@@ -84,7 +92,8 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
     this.#next += 1;
     return {
       path: `/fake/worktree-${this.#next}`,
-      branch: `ensemble-workflows/fake-${this.#next}`
+      branch: `ensemble-workflows/fake-${this.#next}`,
+      baseCommit: `fake-base-${this.#next}`
     };
   }
 
@@ -249,11 +258,14 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
     {
       path: "/fake/worktree-1",
       branch: "ensemble-workflows/fake-1",
+      baseCommit: "fake-base-1",
       changed: true,
       removed: false
     }
   ]);
-  assert.deepEqual(worktreeManager.finished, [{ path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1" }]);
+  assert.deepEqual(worktreeManager.finished, [
+    { path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1", baseCommit: "fake-base-1" }
+  ]);
   assert.deepEqual(events, ["worktree/finished"]);
 });
 
@@ -314,6 +326,71 @@ test("defaultTurnTimeoutMs applies as the per-turn timeout when no per-call time
   assert.equal(transport.turns[0]?.options.timeoutMs, 5_000);
 });
 
+test("Codex retries carry the previous failure back to the worker", async () => {
+  const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"yes\"}")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 2
+  });
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
+
+  assert.deepEqual(result, { answer: "yes" });
+  assert.equal(transport.turns.length, 2);
+  assert.equal(transport.turns[0]?.prompt, "return JSON");
+  assert.match(transport.turns[1]?.prompt ?? "", /A previous attempt failed \(invalid-json\)/);
+});
+
+test("a schema that does not compile fails before any worker spawns", async () => {
+  const transport = new FakeTransport([turn("never reached")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  await assert.rejects(
+    () =>
+      runtime.agent("return JSON", {
+        engine: "codex",
+        schema: { type: "object", properties: { a: { type: "not-a-type" } } }
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentSchemaError);
+      assert.match(error.message, /does not compile/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+});
+
+test("a run-record write failure surfaces as an event and never fails the agent", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async () => {
+      throw new Error("disk full");
+    }
+  } as unknown as RunRecordWriter);
+  const events: Array<{ method: string; message: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "runRecord/writeFailed") {
+      events.push({ method: event.method, message: event.params.message });
+    }
+  });
+
+  const result = await runtime.agent("read", { engine: "codex" });
+
+  assert.equal(result, "ok");
+  assert.deepEqual(events, [{ method: "runRecord/writeFailed", message: "disk full" }]);
+});
+
 // The Claude engine is now implemented; it is driven through the runtime with a
 // fake control plane in test/unit/claude-engine.test.ts. Routing to it (and the
 // isolation:'worktree' rejection) is covered there.
@@ -338,3 +415,22 @@ function usage(totalTokens: number) {
     totalTokens
   };
 }
+
+test("fallbackModel is rejected on the Codex engine before any worker spawns", async () => {
+  const transport = new FakeTransport([turn("never reached")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  await assert.rejects(
+    () => runtime.agent("read", { engine: "codex", fallbackModel: "sonnet" }),
+    (error: unknown) => {
+      assert.ok(error instanceof FallbackModelUnsupportedError);
+      assert.match(error.message, /not supported on the codex engine/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+});

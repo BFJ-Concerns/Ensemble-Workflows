@@ -47,7 +47,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   // Statusline mode: render the latest run's snapshot as one line and exit.
   // This is what a Claude Code statusLine command invokes; it never starts a run.
-  if (argv.includes("--statusline")) {
+  // Only recognised as the first token — after a script path it is script args.
+  if (argv[0] === "--statusline") {
     const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
     if (line !== null) {
       stdout.write(`${line}\n`);
@@ -131,6 +132,17 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "claude/unpinnedModel") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model: set, the ambient default applies\n`);
+        return;
+      }
+      if (event.method === "runRecord/writeFailed") {
+        const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
+        stderr.write(`[run-record] failed to archive an agent record: ${message}\n`);
+        return;
+      }
       if (event.method !== "worktree/finished" || event.params.changed !== true) {
         return;
       }
@@ -167,21 +179,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       interrupt.dispose();
     }
   } catch (error) {
-    // A stopped workflow would otherwise discard every completed worker's
-    // output. Emit a best-effort partial envelope to stdout so the driver can
-    // recover the finished work; the error still goes to stderr and the exit
-    // code stays non-zero, so callers that gate on it are unaffected.
-    if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
-      const partial = partialResult(runtime);
-      stdout.write(`${serialiseResult(partial)}\n`);
-      finalRecord = {
-        status: error instanceof WorkflowTimeoutError ? "timed-out" : "interrupted",
-        exitCode: 1,
-        result: partial
-      };
-    } else {
-      finalRecord = { status: "failed", exitCode: 1, result: null };
-    }
+    // A failed workflow would otherwise discard every completed worker's
+    // output — whether it was stopped, timed out, or threw (a transport hiccup
+    // an hour in counts). Emit a best-effort partial envelope to stdout so the
+    // driver can recover the finished work; the error still goes to stderr and
+    // the exit code stays non-zero, so callers that gate on it are unaffected.
+    const status =
+      error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
+    const partial = partialResult(runtime, status);
+    stdout.write(`${serialiseResult(partial)}\n`);
+    finalRecord = { status, exitCode: 1, result: partial };
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
@@ -200,22 +207,23 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 }
 
 /**
- * A stopped run's recovered work, marked so a driver can tell it apart from a clean
+ * A failed run's recovered work, marked so a driver can tell it apart from a clean
  * return. The `partial: true` flag plus the non-zero exit code distinguish it
- * from a normal result (which is the script's raw return value).
+ * from a normal result (which is the script's raw return value); `reason` says
+ * how the run ended.
  */
 interface PartialResult {
   partial: true;
-  reason: "interrupted";
+  reason: "interrupted" | "timed-out" | "failed";
   completed: readonly CompletedAgentOutput[];
 }
 
-function partialResult(runtime: EnsembleRuntime | null): PartialResult {
+function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["reason"]): PartialResult {
   // Injected test runtimes may not carry the collector; read it defensively,
   // mirroring how `progress` is read above.
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
-  return { partial: true, reason: "interrupted", completed };
+  return { partial: true, reason, completed };
 }
 
 function workflowName(meta: unknown): string | null {
@@ -459,8 +467,15 @@ function usage(): string {
 }
 
 function serialiseResult(result: unknown): string {
-  const json = JSON.stringify(result);
-  return json === undefined ? "null" : json;
+  // The documented contract: a return value that cannot be serialised prints as
+  // null. JSON.stringify returns undefined for functions/symbols but *throws*
+  // on circular structures and BigInt — both collapse to null, not a failed run.
+  try {
+    const json = JSON.stringify(result);
+    return json === undefined ? "null" : json;
+  } catch {
+    return "null";
+  }
 }
 
 function formatError(error: unknown): string {

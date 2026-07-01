@@ -112,6 +112,89 @@ test("standalone git diff write stages beside its destination and succeeds", asy
   assert.match(await readFile(path.join(writer.archiveDir, "git/start.diff"), "utf8"), /0\.0\.1/);
 });
 
+test("concurrent agent settles serialise cleanly and leave no temp litter", async () => {
+  const cwd = await gitRepo("ensemble-record-concurrent-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-concurrent",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const ids = Array.from({ length: 12 }, (_, index) => index + 1);
+  // Same-tick settles previously collided on Date.now()-based temp names and
+  // raced the shared manifest; all writes must land and none may reject.
+  await Promise.all(ids.map((id) => writer.recordAgent(agentRecord(id, "codex", null, id))));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    files: Array<{ path: string }>;
+  };
+  for (const id of ids) {
+    assert.ok(
+      manifest.files.some((entry) => entry.path === `agents/${String(id).padStart(6, "0")}/agent.json`),
+      `agent ${id} missing from manifest files`
+    );
+  }
+  const litter = (await readdir(writer.archiveDir, { recursive: true })).filter((name) => name.endsWith(".tmp"));
+  assert.deepEqual(litter, []);
+});
+
+test("archived dirty diff captures staged changes", async () => {
+  const cwd = await gitRepo("ensemble-record-staged-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  await writeFile(path.join(cwd, "package.json"), JSON.stringify({ name: "ensemble-workflows", version: "9.9.9" }));
+  await execFileAsync("git", ["add", "package.json"], { cwd });
+
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-staged",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'staged' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    git: { start: { dirty: boolean | null; diffPath: string | null } };
+  };
+  assert.equal(manifest.git.start.dirty, true);
+  assert.equal(manifest.git.start.diffPath, "git/start.diff");
+  assert.match(await readFile(path.join(writer.archiveDir, "git/start.diff"), "utf8"), /9\.9\.9/);
+});
+
+test("cost roll-up degrades to token-only accounting on unlike currencies", async () => {
+  const cwd = await gitRepo("ensemble-record-currency-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-currency",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.recordAgent(agentRecord(1, "opencode" as EngineName, "glm-5.2", 3, 0.002, "USD"));
+  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 4, 0.005, "EUR"));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; currency: string | null; source: string } }>>;
+  };
+  const bucket = manifest.cost_rollup.opencode?.["glm-5.2"];
+  assert.ok(bucket);
+  assert.equal(bucket.tokens.totalTokens, 7);
+  assert.equal(bucket.cost.amount, null);
+  assert.equal(bucket.cost.currency, null);
+  assert.equal(bucket.cost.source, "estimated");
+});
+
 test("CLI timeout leaves a usable partial archive with meta.task", async () => {
   const cwd = await gitRepo("ensemble-record-cli-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
@@ -222,12 +305,13 @@ test("child workflow agents are recorded in the parent's single durable run reco
   );
 });
 
-function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number, cost?: number) {
+function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number, cost?: number, currency?: string) {
   return {
     id,
     engine,
     model,
     effort: null,
+    fallbackModel: null,
     resolvedModel: null,
     label: null,
     phase: null,
@@ -248,7 +332,7 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,
         firstDeltaMs: 1,
-        tokenUsageEvents: [tokenUsageEvent(tokens, cost)],
+        tokenUsageEvents: [tokenUsageEvent(tokens, cost, currency)],
         transcripts: [
           {
             filename: `${engine}.jsonl`,
@@ -326,7 +410,7 @@ function turn(text: string, tokens: number): TurnResult {
   };
 }
 
-function tokenUsageEvent(totalTokens: number, cost?: number) {
+function tokenUsageEvent(totalTokens: number, cost?: number, currency?: string) {
   const usage = {
     cachedInputTokens: 0,
     inputTokens: 0,
@@ -339,7 +423,10 @@ function tokenUsageEvent(totalTokens: number, cost?: number) {
     turnId: "turn",
     last: usage,
     total: usage,
-    raw: cost === undefined ? {} : { cost }
+    raw: {
+      ...(cost === undefined ? {} : { cost }),
+      ...(currency === undefined ? {} : { currency })
+    }
   };
 }
 

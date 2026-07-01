@@ -8,7 +8,7 @@ import {
   resolveWorkflowReference
 } from "./workflow-registry.js";
 
-import type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
+import type { WorkflowDefaults, WorkflowEngineDefaults, WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
 import type { WorkflowReference } from "./workflow-registry.js";
 
 export class WorkflowScriptError extends Error {
@@ -50,17 +50,21 @@ export interface RunWorkflowScriptOptions {
 
 interface ExtractedWorkflow {
   metaSource: string;
+  /** Source of the optional `export const defaults = { … }` block, or null. */
+  defaultsSource: string | null;
   bodySource: string;
 }
 
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
   const extracted = extractWorkflowSource(options.source);
+  const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
   const cwd = options.cwd ?? path.dirname(path.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    ...(defaults !== undefined ? { defaults } : {}),
     workflow:
       workflowDepth === 0
         ? async (nameOrRef, args) => {
@@ -140,10 +144,72 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
     bodyStart += 1;
   }
 
+  // Optional second export: `export const defaults = { \u2026 }` directly after meta.
+  let defaultsSource: string | null = null;
+  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
+  if (defaultsMatch !== null) {
+    const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
+    if (withoutBom[defaultsStart] !== "{") {
+      throw new WorkflowScriptError("Workflow defaults must be an object literal");
+    }
+    const defaultsEnd = findBalancedObjectEnd(withoutBom, defaultsStart);
+    defaultsSource = withoutBom.slice(defaultsStart, defaultsEnd + 1);
+    bodyStart = skipWhitespace(withoutBom, defaultsEnd + 1);
+    if (withoutBom[bodyStart] === ";") {
+      bodyStart += 1;
+    }
+  }
+
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
+    defaultsSource,
     bodySource: withoutBom.slice(bodyStart)
   };
+}
+
+/** Evaluate and shape-check a script's `export const defaults` block. */
+export function readWorkflowDefaults(
+  defaultsSource: string | null,
+  filename: string = "workflow.js"
+): WorkflowDefaults | undefined {
+  if (defaultsSource === null) {
+    return undefined;
+  }
+  const script = new vm.Script(`(${defaultsSource});`, { filename });
+  const value = normaliseVmValue(script.runInNewContext(undefined, { timeout: 100 }));
+  return validateWorkflowDefaults(value);
+}
+
+function validateWorkflowDefaults(value: unknown): WorkflowDefaults {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowScriptError("Workflow defaults must be an object keyed by engine name");
+  }
+  const defaults: WorkflowDefaults = {};
+  for (const [engine, engineValue] of Object.entries(value)) {
+    if (engine !== "codex" && engine !== "claude" && engine !== "opencode") {
+      throw new WorkflowScriptError(
+        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, or opencode`
+      );
+    }
+    if (typeof engineValue !== "object" || engineValue === null || Array.isArray(engineValue)) {
+      throw new WorkflowScriptError(`Workflow defaults.${engine} must be an object of agent options`);
+    }
+    const engineDefaults: WorkflowEngineDefaults = {};
+    for (const [option, optionValue] of Object.entries(engineValue as Record<string, unknown>)) {
+      if (option !== "model" && option !== "effort" && option !== "fallbackModel") {
+        throw new WorkflowScriptError(
+          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallbackModel`
+        );
+      }
+      if (typeof optionValue !== "string" || optionValue.length === 0) {
+        throw new WorkflowScriptError(`Workflow defaults.${engine}.${option} must be a non-empty string`);
+      }
+      engineDefaults[option] = optionValue;
+    }
+    defaults[engine] = engineDefaults;
+  }
+  return defaults;
 }
 
 function buildWrappedSource(workflow: ExtractedWorkflow): string {

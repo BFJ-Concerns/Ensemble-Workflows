@@ -145,9 +145,9 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
         () => agent("c1", { engine: "codex" }),
         () => agent("c2", { engine: "codex" }),
         () => agent("c3", { engine: "codex" }),
-        () => agent("h1", { engine: "claude" }),
-        () => agent("h2", { engine: "claude" }),
-        () => agent("h3", { engine: "claude" })
+        () => agent("h1", { engine: "claude", model: "test-model" }),
+        () => agent("h2", { engine: "claude", model: "test-model" }),
+        () => agent("h3", { engine: "claude", model: "test-model" })
       ]);
       return "done";
     `
@@ -212,7 +212,7 @@ test("CLI --timeout caps the whole-workflow run and times out a hanging script",
   assert.equal(exitCode, 1);
   // No worker completed before the deadline, so the partial envelope is empty —
   // but it is still emitted, marking the stopped run rather than total loss.
-  assert.equal(stdout.text(), `{"partial":true,"reason":"interrupted","completed":[]}\n`);
+  assert.equal(stdout.text(), `{"partial":true,"reason":"timed-out","completed":[]}\n`);
   assert.match(stderr.text(), /Workflow timed out after 50ms/);
 });
 
@@ -253,7 +253,7 @@ test("CLI --timeout emits completed worker outputs as a partial result", async (
     completed: Array<{ engine: string; label: string | null; output: unknown }>;
   };
   assert.equal(envelope.partial, true);
-  assert.equal(envelope.reason, "interrupted");
+  assert.equal(envelope.reason, "timed-out");
   assert.equal(envelope.completed.length, 1);
   assert.equal(envelope.completed[0]?.engine, "codex");
   assert.equal(envelope.completed[0]?.label, "alpha");
@@ -355,8 +355,102 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
   });
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout.text(), "");
+  assert.equal(stdout.text(), `{"partial":true,"reason":"failed","completed":[]}\n`);
   assert.match(stderr.text(), /Error: bad workflow/);
+});
+
+test("CLI emits completed worker outputs when the script throws mid-run", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-failed-salvage-"));
+  const script = path.join(directory, "workflow.js");
+  // One worker finishes before the script blows up; its output must survive in
+  // the salvage envelope — a late failure is not total loss.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-failed-salvage" };
+      await agent("done-fast", { engine: "codex", label: "alpha" });
+      throw new Error("reduce stage exploded");
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new HangOnPromptEngine("codex", 4)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 1);
+  const envelope = JSON.parse(stdout.text()) as {
+    partial: boolean;
+    reason: string;
+    completed: Array<{ label: string | null; output: unknown }>;
+  };
+  assert.equal(envelope.partial, true);
+  assert.equal(envelope.reason, "failed");
+  assert.equal(envelope.completed.length, 1);
+  assert.equal(envelope.completed[0]?.output, "codex:done-fast");
+  assert.match(stderr.text(), /reduce stage exploded/);
+});
+
+test("CLI treats --statusline after the script path as a script arg", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-arg-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "statusline-arg" };
+      return { args };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([script, "--statusline"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.text(), "{\"args\":[\"--statusline\"]}\n");
+});
+
+test("CLI prints null for a return value JSON.stringify cannot serialise", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-circular-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-circular" };
+      const value = { name: "loop" };
+      value.self = value;
+      return value;
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.text(), "null\n");
 });
 
 test("CLI entrypoint runs when invoked through a symlinked binary", async () => {
@@ -647,3 +741,53 @@ function tokenUsageEvent(totalTokens: number): Parameters<TokenBudget["record"]>
     raw: {}
   };
 }
+
+test("CLI warns on unpinned Claude calls and stays quiet when defaults pin the model", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-unpinned-"));
+  const unpinnedScript = path.join(directory, "unpinned.js");
+  await writeFile(
+    unpinnedScript,
+    `
+      export const meta = { name: "unpinned" };
+      return await agent("no model set", { engine: "claude", label: "loose" });
+    `
+  );
+  const pinnedScript = path.join(directory, "pinned.js");
+  await writeFile(
+    pinnedScript,
+    `
+      export const meta = { name: "pinned" };
+      export const defaults = { claude: { model: "opus" } };
+      return await agent("model from defaults", { engine: "claude" });
+    `
+  );
+
+  const makeRuntime = async () =>
+    new EnsembleRuntime({
+      engines: new EngineRegistry([new ScheduledTextEngine("claude", 2)]),
+      defaultTurnTimeoutMs: 1_000,
+      defaultMaxAttempts: 1
+    });
+
+  const unpinnedStderr = new CaptureStream();
+  const unpinnedExit = await runEnsembleCli([unpinnedScript], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: unpinnedStderr,
+    createRuntime: makeRuntime
+  });
+  assert.equal(unpinnedExit, 0);
+  assert.match(unpinnedStderr.text(), /\[claude\] agent 1 \(loose\) runs unpinned — no model: set/);
+
+  const pinnedStderr = new CaptureStream();
+  const pinnedStdout = new CaptureStream();
+  const pinnedExit = await runEnsembleCli([pinnedScript], {
+    cwd: directory,
+    stdout: pinnedStdout,
+    stderr: pinnedStderr,
+    createRuntime: makeRuntime
+  });
+  assert.equal(pinnedExit, 0);
+  assert.doesNotMatch(pinnedStderr.text(), /runs unpinned/);
+  assert.equal(pinnedStdout.text(), "\"claude:model from defaults\"\n");
+});

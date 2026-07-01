@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import {
+  FallbackModelUnsupportedError,
   OpenCodeRunError,
   OpenCodeSandboxUnsupportedError,
   OpenCodeWebSearchUnsupportedError,
@@ -59,9 +60,11 @@ interface ParsedRunEvents {
 
 export class OpenCodeCliRunner implements OpenCodeRunner {
   #bin: string;
+  #killGraceMs: number;
 
-  constructor(bin = "opencode") {
+  constructor(bin = "opencode", options: { killGraceMs?: number } = {}) {
     this.#bin = bin;
+    this.#killGraceMs = options.killGraceMs ?? 5_000;
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
@@ -80,11 +83,11 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs);
   }
 
   async exportSession(sessionId: string, cwd: string): Promise<string | null> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000);
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000, this.#killGraceMs);
     if (result.exitCode !== 0) {
       return null;
     }
@@ -209,9 +212,18 @@ export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): vo
   if (options.sandbox !== undefined) {
     throw new OpenCodeSandboxUnsupportedError(options.sandbox);
   }
+  if (options.fallbackModel !== undefined) {
+    throw new FallbackModelUnsupportedError("opencode");
+  }
 }
 
-function runProcess(command: string, args: string[], cwd: string, timeoutMs: number | undefined): Promise<OpenCodeRunResult> {
+function runProcess(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number | undefined,
+  killGraceMs = 5_000
+): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn(command, args, {
@@ -221,12 +233,19 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
+    let killEscalation: NodeJS.Timeout | undefined;
     // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
     const timeout =
       timeoutMs === undefined
         ? undefined
         : setTimeout(() => {
             child.kill("SIGTERM");
+            // A worker that ignores SIGTERM would hang the turn despite the
+            // deadline; escalate after a grace period.
+            killEscalation = setTimeout(() => {
+              child.kill("SIGKILL");
+            }, killGraceMs);
+            killEscalation.unref();
           }, timeoutMs);
 
     child.stdout.setEncoding("utf8");
@@ -239,6 +258,7 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
       }
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killEscalation);
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
@@ -247,6 +267,7 @@ function runProcess(command: string, args: string[], cwd: string, timeoutMs: num
       }
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killEscalation);
       resolve({
         exitCode,
         signal,

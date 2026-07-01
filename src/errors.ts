@@ -193,3 +193,29 @@ export class TurnTimeoutError extends EnsembleError {
     super(message);
   }
 }
+
+/**
+ * Thrown when a workflow asks a non-Claude engine to honour `fallbackModel`.
+ * Only the Claude CLI exposes a fallback-model switch; silently dropping the
+ * option would let a script believe its degradation policy was in force.
+ */
+export class FallbackModelUnsupportedError extends EnsembleError {
+  constructor(engine: string) {
+    super(
+      `fallbackModel is not supported on the ${engine} engine in v1: ` +
+        "only the Claude engine exposes a fallback-model switch. " +
+        "Remove fallbackModel, or use engine:'claude' for declared degradation."
+    );
+  }
+}
+
+/**
+ * Thrown by `agent()` before any worker spawns when the requested schema does
+ * not compile as JSON Schema. Failing fast here beats paying for a full turn
+ * only to discover the schema at validation time.
+ */
+export class InvalidAgentSchemaError extends EnsembleError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  }
+}

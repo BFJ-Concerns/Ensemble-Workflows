@@ -1,4 +1,4 @@
-import type { Budget } from "./types.js";
+import type { AgentOptions, Budget, EngineName } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 
@@ -8,6 +8,15 @@ export interface WorkflowRuntime {
   agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
   notePhase: (title: string) => void;
 }
+
+/** The per-engine policy knobs a script's `export const defaults` may set. */
+export interface WorkflowEngineDefaults {
+  model?: string;
+  effort?: string;
+  fallbackModel?: string;
+}
+
+export type WorkflowDefaults = Partial<Record<EngineName, WorkflowEngineDefaults>>;
 
 export type WorkflowLogSink = (message: string) => void;
 
@@ -31,13 +40,18 @@ export function createWorkflowHooks(options: {
   args: unknown;
   log: WorkflowLogSink;
   workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
+  /** Script-level `export const defaults`; per-call options override it. */
+  defaults?: WorkflowDefaults;
 }): WorkflowHooks {
   const writeLog = (message: string): void => {
     options.log(message);
   };
+  const runtimeAgent = options.runtime.agent.bind(options.runtime) as WorkflowRuntime["agent"];
+  const defaults = options.defaults ?? {};
 
   return {
-    agent: options.runtime.agent.bind(options.runtime) as WorkflowRuntime["agent"],
+    agent: ((prompt: string, agentOptions?: Partial<AgentOptions>) =>
+      runtimeAgent(prompt, mergeAgentDefaults(defaults, agentOptions) as never)) as WorkflowRuntime["agent"],
     workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
@@ -48,7 +62,12 @@ export function createWorkflowHooks(options: {
     log: (message) => {
       writeLog(message);
     },
-    budget: options.runtime.budget,
+    // A read-only facade: handing the live TokenBudget into the sandbox would
+    // expose record() and the events array to script mutation.
+    budget: {
+      spent: (engine) => options.runtime.budget.spent(engine),
+      remaining: (engine) => options.runtime.budget.remaining(engine)
+    },
     worktrees: options.runtime.worktrees,
     args: Array.isArray(options.args) ? [...options.args] : options.args
   };
@@ -96,6 +115,29 @@ export async function pipeline<Item>(
       return previous;
     })
   );
+}
+
+/**
+ * Call-site options win over the script's per-engine defaults. Only *defined*
+ * call-site values override — a conditional spread that leaves `model:
+ * undefined` must not erase the default it was meant to fall back to.
+ */
+function mergeAgentDefaults(
+  defaults: WorkflowDefaults,
+  agentOptions: Partial<AgentOptions> | undefined
+): Partial<AgentOptions> {
+  const engine = agentOptions?.engine;
+  const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
+  if (engineDefaults === undefined) {
+    return agentOptions ?? {};
+  }
+  const merged: Record<string, unknown> = { ...engineDefaults };
+  for (const [key, value] of Object.entries(agentOptions ?? {})) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged as Partial<AgentOptions>;
 }
 
 function formatError(error: unknown): string {

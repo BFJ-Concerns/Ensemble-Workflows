@@ -20,5 +20,6 @@ function isOff(value: string | undefined): boolean {
   if (value === undefined) {
     return false;
   }
-  return ["off", "0", "false", "no"].includes(value.toLowerCase());
+  // Trimmed to parse like ENSEMBLE_STATUS: a stray shell space must not silently re-enable recording.
+  return ["off", "0", "false", "no"].includes(value.trim().toLowerCase());
 }

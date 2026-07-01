@@ -1,6 +1,8 @@
 import { Ajv } from "ajv/dist/ajv.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 
+import { InvalidAgentSchemaError } from "./errors.js";
+
 import type { JsonSchema } from "./types.js";
 
 const ajv = new Ajv({
@@ -53,6 +55,15 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema): Validati
   const validate = compileSchema(schema);
   const ok = validate(value);
   return { ok, value, errors: validate.errors };
+}
+
+/** Compile-check a schema up front so a malformed one fails before a worker spawns, not after a paid turn. */
+export function assertCompilableSchema(schema: JsonSchema): void {
+  try {
+    compileSchema(schema);
+  } catch (error) {
+    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
 }
 
 export function normaliseForCodexOutputSchema(schema: JsonSchema): JsonSchema {

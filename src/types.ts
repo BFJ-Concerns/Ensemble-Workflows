@@ -13,6 +13,8 @@ export interface AgentOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
+  /** Claude only: declared degradation when the pinned model tier is unavailable. */
+  fallbackModel?: string;
   webSearch?: boolean;
   isolation?: IsolationMode;
   sandbox?: SandboxMode;

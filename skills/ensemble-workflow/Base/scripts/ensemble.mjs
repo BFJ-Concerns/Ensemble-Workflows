@@ -6574,7 +6574,7 @@ import path12 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 import path10 from "node:path";
 import { parseArgs } from "node:util";
 
@@ -6711,6 +6711,18 @@ var OpenCodeSandboxUnsupportedError = class extends EnsembleError {
 var TurnTimeoutError = class extends EnsembleError {
   constructor(message) {
     super(message);
+  }
+};
+var FallbackModelUnsupportedError = class extends EnsembleError {
+  constructor(engine) {
+    super(
+      `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
+    );
+  }
+};
+var InvalidAgentSchemaError = class extends EnsembleError {
+  constructor(message, options) {
+    super(`agent schema does not compile as JSON Schema: ${message}`, options);
   }
 };
 
@@ -7007,6 +7019,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#process.once("exit", (code, signal) => {
       this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
     });
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
   }
   static async start(options) {
     const transport = new _CodexAppServerTransport(options);
@@ -7085,9 +7100,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return await state.promise;
     } catch (error) {
       this.#turns.delete(threadId);
+      this.#transcripts.delete(threadId);
       clearTimeout(state.timeout);
       throw error;
     }
+  }
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts() {
+    return this.#transcripts.size;
   }
   async close() {
     if (this.#hasExited) {
@@ -7104,6 +7124,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       turn.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#turns.clear();
+    this.#transcripts.clear();
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -7294,6 +7315,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         })
       );
       this.#turns.delete(threadId);
+      this.#transcripts.delete(threadId);
       clearTimeout(turn.timeout);
     }
   }
@@ -7321,6 +7343,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (turn.itemText !== void 0) {
       result.itemText = turn.itemText;
     }
+    this.#transcripts.delete(threadId);
     turn.resolve(result);
   }
   #appendTranscript(threadId, event) {
@@ -7395,6 +7418,7 @@ ${this.#stderrTail.join("\n")}` : "";
       turn.reject(wrapped);
     }
     this.#turns.clear();
+    this.#transcripts.clear();
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
@@ -7479,6 +7503,9 @@ var ClaudeCliControlPlane = class {
     }
     if (options.effort !== void 0) {
       args.push("--effort", options.effort);
+    }
+    if (options.fallbackModel !== void 0) {
+      args.push("--fallback-model", options.fallbackModel);
     }
     args.push(options.prompt);
     const dispatch = await this.#run(this.#claudeBin, args, options.cwd);
@@ -7810,7 +7837,8 @@ var ClaudeEngineInvocation = class {
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {}
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {}
     });
     this.#handle = handle;
     const transcript = await this.#runToCompletion(handle, 0);
@@ -8029,8 +8057,10 @@ function delay2(ms) {
 import { spawn as spawn2 } from "node:child_process";
 var OpenCodeCliRunner = class {
   #bin;
-  constructor(bin = "opencode") {
+  #killGraceMs;
+  constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
+    this.#killGraceMs = options.killGraceMs ?? 5e3;
   }
   async run(options) {
     const args = [
@@ -8048,10 +8078,10 @@ var OpenCodeCliRunner = class {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs);
   }
   async exportSession(sessionId, cwd) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4);
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4, this.#killGraceMs);
     if (result.exitCode !== 0) {
       return null;
     }
@@ -8168,8 +8198,11 @@ function rejectUnsupportedOpenCodeOptions(options) {
   if (options.sandbox !== void 0) {
     throw new OpenCodeSandboxUnsupportedError(options.sandbox);
   }
+  if (options.fallbackModel !== void 0) {
+    throw new FallbackModelUnsupportedError("opencode");
+  }
 }
-function runProcess(command, args, cwd, timeoutMs) {
+function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn2(command, args, {
@@ -8179,8 +8212,13 @@ function runProcess(command, args, cwd, timeoutMs) {
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let killEscalation;
     const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
       child.kill("SIGTERM");
+      killEscalation = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, killGraceMs);
+      killEscalation.unref();
     }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => stdout.push(chunk));
@@ -8192,6 +8230,7 @@ function runProcess(command, args, cwd, timeoutMs) {
       }
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killEscalation);
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
@@ -8200,6 +8239,7 @@ function runProcess(command, args, cwd, timeoutMs) {
       }
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killEscalation);
       resolve({
         exitCode,
         signal,
@@ -8464,6 +8504,13 @@ function validateJsonSchema(value, schema) {
   const ok = validate(value);
   return { ok, value, errors: validate.errors };
 }
+function assertCompilableSchema(schema) {
+  try {
+    compileSchema(schema);
+  } catch (error) {
+    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
+}
 function normaliseForCodexOutputSchema(schema) {
   return normaliseSchemaNode(schema);
 }
@@ -8617,14 +8664,17 @@ var GitWorktreeIsolationManager = class {
     const worktreePath = path2.join(path2.dirname(repoRoot), `${path2.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
     await mkdir(path2.dirname(worktreePath), { recursive: true });
     await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
     return {
       path: worktreePath,
-      branch
+      branch,
+      baseCommit
     };
   }
   async finish(worktree) {
     const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const changed = status.trim().length > 0;
+    const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
     if (changed) {
       return {
         ...worktree,
@@ -8714,6 +8764,9 @@ var CodexEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
+    if (options.fallbackModel !== void 0) {
+      throw new FallbackModelUnsupportedError(this.name);
+    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -8742,18 +8795,19 @@ var CodexEngineInvocation = class {
     this.#onEvent = options.onEvent;
     this.#onWorktreeFinished = options.onWorktreeFinished;
   }
-  async runAttempt() {
+  async runAttempt(context) {
+    const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
     if (this.#options.isolation === "worktree") {
-      return this.#runIsolatedWorktreeTurn();
+      return this.#runIsolatedWorktreeTurn(prompt);
     }
-    return this.#runTurnInCwd({
+    return this.#runTurnInCwd(prompt, {
       sandbox: this.#options.sandbox ?? "read-only"
     });
   }
-  async #runIsolatedWorktreeTurn() {
+  async #runIsolatedWorktreeTurn(prompt) {
     const worktree = await this.#worktreeManager.create();
     try {
-      return await this.#runTurnInCwd({
+      return await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
         sandbox: "workspace-write"
       });
@@ -8761,13 +8815,13 @@ var CodexEngineInvocation = class {
       await this.#finishWorktree(worktree);
     }
   }
-  async #runTurnInCwd(location) {
+  async #runTurnInCwd(prompt, location) {
     const threadId = await this.#transport.openThread({
       webSearch: this.#options.webSearch,
       sandbox: location.sandbox,
       ...location.cwd !== void 0 ? { cwd: location.cwd } : {}
     });
-    return this.#transport.runTurn(threadId, this.#prompt, {
+    return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -8905,6 +8959,14 @@ async function createDefaultEngineRegistry(options) {
     })
   ]);
 }
+function promptWithFailureFeedback(prompt, failure) {
+  if (failure === void 0) {
+    return prompt;
+  }
+  return `${prompt}
+
+A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+}
 function defaultCodexConcurrency() {
   return Math.max(1, Math.min(16, cpus().length - 2));
 }
@@ -9018,12 +9080,22 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    if (options.schema !== void 0) {
+      assertCompilableSchema(options.schema);
+    }
     const engine = this.#engineFor(options.engine);
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    if (engine.name === "claude" && options.model === void 0) {
+      this.#emitEvent({
+        method: "claude/unpinnedModel",
+        params: { agentId, label: options.label ?? null },
+        receivedAt: Date.now()
+      });
+    }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
@@ -9043,17 +9115,36 @@ var EnsembleRuntime = class _EnsembleRuntime {
             output: result
           });
         }
-        await this.#runRecorder?.recordAgent(agentRecord);
+        await this.#recordAgentSafely(agentRecord);
         return result;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         agentRecord.status = "failed";
         agentRecord.rawOutput = lastRawOutput(agentRecord);
         agentRecord.validatedOutput = null;
-        await this.#runRecorder?.recordAgent(agentRecord);
+        await this.#recordAgentSafely(agentRecord);
         throw error;
       }
     });
+  }
+  /**
+   * The archive is observability: a bookkeeping failure must not reject (or,
+   * on the success path, falsify) the agent whose work it records. Failures
+   * surface as an event the CLI logs to stderr.
+   */
+  async #recordAgentSafely(record) {
+    try {
+      await this.#runRecorder?.recordAgent(record);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: {
+          agentId: record.id,
+          message: error instanceof Error ? error.message : String(error)
+        },
+        receivedAt: Date.now()
+      });
+    }
   }
   /**
    * Outputs of every worker that finished successfully, in completion order.
@@ -9190,6 +9281,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.schema !== void 0 ? { schema: options.schema } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
+      ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
       ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
       ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {}
     };
@@ -9200,6 +9292,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       engine,
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
+      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
@@ -9266,8 +9359,10 @@ function createWorkflowHooks(options) {
   const writeLog = (message) => {
     options.log(message);
   };
+  const runtimeAgent = options.runtime.agent.bind(options.runtime);
+  const defaults = options.defaults ?? {};
   return {
-    agent: options.runtime.agent.bind(options.runtime),
+    agent: ((prompt, agentOptions) => runtimeAgent(prompt, mergeAgentDefaults(defaults, agentOptions))),
     workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
@@ -9278,7 +9373,12 @@ function createWorkflowHooks(options) {
     log: (message) => {
       writeLog(message);
     },
-    budget: options.runtime.budget,
+    // A read-only facade: handing the live TokenBudget into the sandbox would
+    // expose record() and the events array to script mutation.
+    budget: {
+      spent: (engine) => options.runtime.budget.spent(engine),
+      remaining: (engine) => options.runtime.budget.remaining(engine)
+    },
     worktrees: options.runtime.worktrees,
     args: Array.isArray(options.args) ? [...options.args] : options.args
   };
@@ -9314,6 +9414,20 @@ async function pipeline(items, stages, log) {
       return previous;
     })
   );
+}
+function mergeAgentDefaults(defaults, agentOptions) {
+  const engine = agentOptions?.engine;
+  const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
+  if (engineDefaults === void 0) {
+    return agentOptions ?? {};
+  }
+  const merged = { ...engineDefaults };
+  for (const [key, value] of Object.entries(agentOptions ?? {})) {
+    if (value !== void 0) {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 function formatError(error) {
   if (error instanceof Error) {
@@ -9381,11 +9495,13 @@ async function resolveWorkflowName(name, options) {
     throw new WorkflowResolutionError("workflow() name must not be empty");
   }
   const dirs = defaultWorkflowRegistryDirs(options.cwd, options.env);
+  const skipped = [];
   for (const [scope, dir] of [
     ["project", dirs.project],
     ["user", dirs.user]
   ]) {
     const listing = await listRegistryDir(dir, scope, options.readMeta);
+    skipped.push(...listing.notes);
     const matches = listing.entries.filter((entry) => entry.name === name);
     if (matches.length === 1) {
       const [match] = matches;
@@ -9397,8 +9513,9 @@ async function resolveWorkflowName(name, options) {
       throw new WorkflowResolutionError(`workflow(${JSON.stringify(name)}) is ambiguous in ${dir}`);
     }
   }
+  const skippedSuffix = skipped.length === 0 ? "" : `; skipped unreadable saved workflows: ${skipped.map((note) => `${note.scriptPath} (${note.message})`).join(", ")}`;
   throw new WorkflowResolutionError(
-    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}`
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${skippedSuffix}`
   );
 }
 async function listRegistryDir(dir, scope, readMeta) {
@@ -9487,12 +9604,14 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 };
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
+  const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
   const cwd = options.cwd ?? path4.dirname(path4.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    ...defaults !== void 0 ? { defaults } : {},
     workflow: workflowDepth === 0 ? async (nameOrRef, args) => {
       const scriptPath = await resolveWorkflowReference(asWorkflowReference(nameOrRef), {
         cwd,
@@ -9558,10 +9677,64 @@ function extractWorkflowSource(source) {
   if (withoutBom[bodyStart] === ";") {
     bodyStart += 1;
   }
+  let defaultsSource = null;
+  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
+  if (defaultsMatch !== null) {
+    const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
+    if (withoutBom[defaultsStart] !== "{") {
+      throw new WorkflowScriptError("Workflow defaults must be an object literal");
+    }
+    const defaultsEnd = findBalancedObjectEnd(withoutBom, defaultsStart);
+    defaultsSource = withoutBom.slice(defaultsStart, defaultsEnd + 1);
+    bodyStart = skipWhitespace(withoutBom, defaultsEnd + 1);
+    if (withoutBom[bodyStart] === ";") {
+      bodyStart += 1;
+    }
+  }
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
+    defaultsSource,
     bodySource: withoutBom.slice(bodyStart)
   };
+}
+function readWorkflowDefaults(defaultsSource, filename = "workflow.js") {
+  if (defaultsSource === null) {
+    return void 0;
+  }
+  const script = new vm.Script(`(${defaultsSource});`, { filename });
+  const value = normaliseVmValue(script.runInNewContext(void 0, { timeout: 100 }));
+  return validateWorkflowDefaults(value);
+}
+function validateWorkflowDefaults(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new WorkflowScriptError("Workflow defaults must be an object keyed by engine name");
+  }
+  const defaults = {};
+  for (const [engine, engineValue] of Object.entries(value)) {
+    if (engine !== "codex" && engine !== "claude" && engine !== "opencode") {
+      throw new WorkflowScriptError(
+        `Workflow defaults key ${JSON.stringify(engine)} is not an engine; expected codex, claude, or opencode`
+      );
+    }
+    if (typeof engineValue !== "object" || engineValue === null || Array.isArray(engineValue)) {
+      throw new WorkflowScriptError(`Workflow defaults.${engine} must be an object of agent options`);
+    }
+    const engineDefaults = {};
+    for (const [option, optionValue] of Object.entries(engineValue)) {
+      if (option !== "model" && option !== "effort" && option !== "fallbackModel") {
+        throw new WorkflowScriptError(
+          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallbackModel`
+        );
+      }
+      if (typeof optionValue !== "string" || optionValue.length === 0) {
+        throw new WorkflowScriptError(`Workflow defaults.${engine}.${option} must be a non-empty string`);
+      }
+      engineDefaults[option] = optionValue;
+    }
+    defaults[engine] = engineDefaults;
+  }
+  return defaults;
 }
 function buildWrappedSource(workflow) {
   return `"use strict";
@@ -9759,10 +9932,24 @@ var RunRecordWriter = class _RunRecordWriter {
   #cwd;
   #files = /* @__PURE__ */ new Map();
   #agents = /* @__PURE__ */ new Map();
+  #tmpSeq = 0;
+  #writeChain = Promise.resolve();
   constructor(archiveDir, cwd, manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
     this.manifest = manifest;
+  }
+  /**
+   * Concurrent agents settle independently, but the manifest is one shared
+   * read-modify-write document: interleaved writes would race each other (and
+   * previously collided on same-millisecond temp names). Every mutating public
+   * operation runs through this chain, so each snapshot on disk reflects all
+   * operations before it. One failed write must not poison later ones.
+   */
+  #serialise(task) {
+    const next = this.#writeChain.then(task, task);
+    this.#writeChain = next.catch(() => void 0);
+    return next;
   }
   static async start(options) {
     const namespace = await deriveNamespace(options.cwd);
@@ -9833,13 +10020,18 @@ var RunRecordWriter = class _RunRecordWriter {
     return writer;
   }
   async noteMeta(meta) {
-    this.manifest.meta = {
-      task: extractTask(meta),
-      raw: meta
-    };
-    await this.#writeManifest();
+    await this.#serialise(async () => {
+      this.manifest.meta = {
+        task: extractTask(meta),
+        raw: meta
+      };
+      await this.#writeManifest();
+    });
   }
   async recordAgent(record) {
+    await this.#serialise(() => this.#recordAgent(record));
+  }
+  async #recordAgent(record) {
     this.#agents.set(record.id, record);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
@@ -9868,6 +10060,7 @@ var RunRecordWriter = class _RunRecordWriter {
       engine: record.engine,
       model: record.model,
       effort: record.effort,
+      fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
       label: record.label,
       phase: record.phase,
@@ -9895,24 +10088,26 @@ var RunRecordWriter = class _RunRecordWriter {
     await this.#writeManifest();
   }
   async finish(options) {
-    this.manifest.status = options.status;
-    this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
-    this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
-    if (this.manifest.git.end.diffPath !== null) {
-      await this.#trackFile(this.manifest.git.end.diffPath);
-    }
-    this.manifest.result = {
-      archive_path: "result.json",
-      exit_code: options.exitCode
-    };
-    await this.#writeJson("result.json", {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_result",
-      status: options.status,
-      exit_code: options.exitCode,
-      value: options.result
+    await this.#serialise(async () => {
+      this.manifest.status = options.status;
+      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+      if (this.manifest.git.end.diffPath !== null) {
+        await this.#trackFile(this.manifest.git.end.diffPath);
+      }
+      this.manifest.result = {
+        archive_path: "result.json",
+        exit_code: options.exitCode
+      };
+      await this.#writeJson("result.json", {
+        schema_version: SCHEMA_VERSION,
+        kind: "run_result",
+        status: options.status,
+        exit_code: options.exitCode,
+        value: options.result
+      });
+      await this.#writeManifest();
     });
-    await this.#writeManifest();
   }
   async #writeJson(relativePath, value) {
     await this.#writeText(relativePath, `${canonicalJson(value)}
@@ -9921,18 +10116,22 @@ var RunRecordWriter = class _RunRecordWriter {
   async #writeText(relativePath, content) {
     const destination = path5.join(this.archiveDir, relativePath);
     await mkdir2(path5.dirname(destination), { recursive: true });
-    const temporary = path5.join(path5.dirname(destination), `.${path5.basename(destination)}.${process.pid}.${Date.now()}.tmp`);
-    await writeFile(temporary, content, "utf8");
-    await rename(temporary, destination);
+    const temporary = path5.join(path5.dirname(destination), `.${path5.basename(destination)}${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
     const destination = path5.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path5.join(this.archiveDir, `.manifest.${process.pid}.${Date.now()}.tmp`);
-    await writeFile(temporary, `${canonicalJson(this.manifest)}
-`, "utf8");
-    await rename(temporary, destination);
+    const temporary = path5.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
+`);
+  }
+  // pid + sequence keeps names unique within the process; Date.now() alone
+  // collided when two agents settled in the same millisecond.
+  #tmpSuffix() {
+    this.#tmpSeq += 1;
+    return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
   async #trackFile(relativePath) {
     const absolute = path5.join(this.archiveDir, relativePath);
@@ -9946,6 +10145,7 @@ var RunRecordWriter = class _RunRecordWriter {
 };
 function buildCostRollup(records) {
   const rollup = {};
+  const unlikeCurrencies = /* @__PURE__ */ new Set();
   for (const record of records) {
     const engine = record.engine;
     const model = record.model ?? "default";
@@ -9958,21 +10158,31 @@ function buildCostRollup(records) {
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
         addUsage(bucket.tokens, event.last);
-        addProviderCost(bucket.cost, event);
+        addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
   }
   return rollup;
 }
-function addProviderCost(target, event) {
+function addProviderCost(target, event, unlikeCurrencies) {
+  if (unlikeCurrencies.has(target)) {
+    return;
+  }
   const cost = event.raw.cost;
   if (typeof cost !== "number" || !Number.isFinite(cost)) {
     return;
   }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    unlikeCurrencies.add(target);
+    target.amount = null;
+    target.currency = null;
+    target.source = "estimated";
+    return;
+  }
   target.amount = (target.amount ?? 0) + cost;
   target.source = "provider-reported";
-  const currency = event.raw.currency;
-  if (typeof currency === "string" && (target.currency === null || target.currency === currency)) {
+  if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
 }
@@ -10010,7 +10220,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
   const dirty = porcelain === null ? null : porcelain.length > 0;
   let archivedDiffPath = null;
   if (dirty === true) {
-    const diff = await git2(["diff", "--binary"], cwd);
+    const diff = await git2(["diff", "HEAD", "--binary"], cwd) ?? await git2(["diff", "--binary"], cwd);
     if (diff !== null && diff.length > 0) {
       await writeStandaloneText(path5.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
@@ -10102,8 +10312,11 @@ async function hashFile(filePath) {
 async function writeStandaloneText(destination, content) {
   await mkdir2(path5.dirname(destination), { recursive: true });
   const temporary = path5.join(path5.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeFile(temporary, content, "utf8");
+  await writeAndRename(temporary, destination, content);
+}
+async function writeAndRename(temporary, destination, content) {
   try {
+    await writeFile(temporary, content, "utf8");
     await rename(temporary, destination);
   } catch (error) {
     await rm(temporary, { force: true });
@@ -10141,13 +10354,14 @@ function isOff(value) {
   if (value === void 0) {
     return false;
   }
-  return ["off", "0", "false", "no"].includes(value.toLowerCase());
+  return ["off", "0", "false", "no"].includes(value.trim().toLowerCase());
 }
 
 // src/status-file.ts
-import { mkdir as mkdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir3, readFile as readFile5, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
 import path7 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
+var DEFAULT_HEARTBEAT_MS = 1e4;
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -10158,16 +10372,20 @@ var StatusFileWriter = class {
   #closed = false;
   #ensuredDir = false;
   #tmpSeq = 0;
+  #heartbeat;
   constructor(options) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+    this.#heartbeat.unref();
     this.#request();
   }
   /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
   async close() {
     this.#closed = true;
+    clearInterval(this.#heartbeat);
     this.#unsubscribe();
     while (this.#writing !== null) {
       await this.#writing;
@@ -10210,8 +10428,16 @@ var StatusFileWriter = class {
     await rename2(tmp, target);
   }
   async #removeSnapshot() {
+    const target = path7.join(this.#dir, STATUS_FILENAME);
     try {
-      await unlink(path7.join(this.#dir, STATUS_FILENAME));
+      const current = JSON.parse(await readFile5(target, "utf8"));
+      if (typeof current.runId === "string" && current.runId !== this.#progress.runId) {
+        return;
+      }
+    } catch {
+    }
+    try {
+      await unlink(target);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;
@@ -10246,7 +10472,7 @@ function resolveStatusDir(env, cwd) {
 }
 
 // src/status-line.ts
-import { readFile as readFile5 } from "node:fs/promises";
+import { readFile as readFile6 } from "node:fs/promises";
 import path9 from "node:path";
 var STALE_MS = 3e4;
 function formatStatusLine(snapshot, nowMs) {
@@ -10275,7 +10501,7 @@ async function readStatusLine(dir, now) {
   }
   let raw;
   try {
-    raw = await readFile5(path9.join(dir, STATUS_FILENAME), "utf8");
+    raw = await readFile6(path9.join(dir, STATUS_FILENAME), "utf8");
   } catch {
     return null;
   }
@@ -10361,7 +10587,7 @@ async function runEnsembleCli(argv, options = {}) {
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  if (argv.includes("--statusline")) {
+  if (argv[0] === "--statusline") {
     const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
     if (line !== null) {
       stdout.write(`${line}
@@ -10405,7 +10631,7 @@ async function runEnsembleCli(argv, options = {}) {
   let finalRecord = null;
   try {
     const scriptPath = path10.resolve(cwd, invocation.scriptArg);
-    const source = await readFile6(scriptPath, "utf8");
+    const source = await readFile7(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
@@ -10439,6 +10665,19 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
     runtime.onEvent((event) => {
+      if (event.method === "claude/unpinnedModel") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned \u2014 no model: set, the ambient default applies
+`);
+        return;
+      }
+      if (event.method === "runRecord/writeFailed") {
+        const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
+        stderr.write(`[run-record] failed to archive an agent record: ${message}
+`);
+        return;
+      }
       if (event.method !== "worktree/finished" || event.params.changed !== true) {
         return;
       }
@@ -10477,18 +10716,11 @@ async function runEnsembleCli(argv, options = {}) {
       interrupt.dispose();
     }
   } catch (error) {
-    if (error instanceof WorkflowTimeoutError || error instanceof WorkflowInterruptedError) {
-      const partial = partialResult(runtime);
-      stdout.write(`${serialiseResult(partial)}
+    const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
+    const partial = partialResult(runtime, status);
+    stdout.write(`${serialiseResult(partial)}
 `);
-      finalRecord = {
-        status: error instanceof WorkflowTimeoutError ? "timed-out" : "interrupted",
-        exitCode: 1,
-        result: partial
-      };
-    } else {
-      finalRecord = { status: "failed", exitCode: 1, result: null };
-    }
+    finalRecord = { status, exitCode: 1, result: partial };
     stderr.write(`${formatError3(error)}
 `);
     return 1;
@@ -10505,9 +10737,9 @@ async function runEnsembleCli(argv, options = {}) {
     }
   }
 }
-function partialResult(runtime) {
+function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
-  return { partial: true, reason: "interrupted", completed };
+  return { partial: true, reason, completed };
 }
 function workflowName(meta) {
   if (typeof meta === "object" && meta !== null && "name" in meta) {
@@ -10699,8 +10931,12 @@ function usage() {
   ].join("\n");
 }
 function serialiseResult(result) {
-  const json = JSON.stringify(result);
-  return json === void 0 ? "null" : json;
+  try {
+    const json = JSON.stringify(result);
+    return json === void 0 ? "null" : json;
+  } catch {
+    return "null";
+  }
 }
 function formatError3(error) {
   if (error instanceof Error) {

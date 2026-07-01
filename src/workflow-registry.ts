@@ -116,11 +116,13 @@ async function resolveWorkflowName(
   }
 
   const dirs = defaultWorkflowRegistryDirs(options.cwd, options.env);
+  const skipped: WorkflowRegistryNote[] = [];
   for (const [scope, dir] of [
     ["project", dirs.project],
     ["user", dirs.user]
   ] as const) {
     const listing = await listRegistryDir(dir, scope, options.readMeta);
+    skipped.push(...listing.notes);
     const matches = listing.entries.filter((entry) => entry.name === name);
     if (matches.length === 1) {
       const [match] = matches;
@@ -133,8 +135,14 @@ async function resolveWorkflowName(
     }
   }
 
+  // A "not found" that silently ignored an unparseable file would send the
+  // author hunting in the wrong place — name what was skipped and why.
+  const skippedSuffix =
+    skipped.length === 0
+      ? ""
+      : `; skipped unreadable saved workflows: ${skipped.map((note) => `${note.scriptPath} (${note.message})`).join(", ")}`;
   throw new WorkflowResolutionError(
-    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}`
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${skippedSuffix}`
   );
 }
 

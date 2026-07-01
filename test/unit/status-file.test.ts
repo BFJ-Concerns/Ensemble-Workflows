@@ -121,3 +121,34 @@ test("StatusFileWriter routes write failures to onError and still closes", async
 
   assert.ok(errors.length >= 1, "expected at least one write error");
 });
+
+test("StatusFileWriter heartbeat re-stamps a quiet run's snapshot", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir, heartbeatMs: 5 });
+
+  const first = JSON.parse(await waitForFile(file)) as ProgressSnapshot;
+  // No progress activity at all — only the heartbeat may advance the stamp.
+  const later = await waitForSnapshot(file, (candidate) => candidate.updatedAt > first.updatedAt);
+  assert.ok(later.updatedAt > first.updatedAt);
+
+  await writer.close();
+});
+
+test("StatusFileWriter close leaves another run's snapshot in place", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
+  const progress = newProgress();
+  const writer = new StatusFileWriter({ progress, dir });
+  await waitForFile(file);
+
+  // A second run in the same cwd has since published its own snapshot.
+  const other = { schema: 1, runId: "another-run", state: "running" };
+  await writeFile(file, `${JSON.stringify(other)}\n`);
+
+  await writer.close();
+
+  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
+  assert.equal(survivor.runId, "another-run");
+});

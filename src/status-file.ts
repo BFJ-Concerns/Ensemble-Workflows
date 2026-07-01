@@ -1,4 +1,4 @@
-import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
@@ -6,12 +6,21 @@ import type { ProgressSnapshot, RunProgress } from "./progress.js";
 /** Filename the writer publishes to and the statusline reader consumes. */
 export const STATUS_FILENAME = "ensemble.local.json";
 
+/**
+ * The statusline reader treats a snapshot as stale after 30s. Claude and
+ * opencode report usage once per turn, so a long quiet turn would otherwise
+ * blank the line mid-run; the heartbeat re-stamps well inside that window.
+ */
+const DEFAULT_HEARTBEAT_MS = 10_000;
+
 export interface StatusFileWriterOptions {
   progress: RunProgress;
   /** Directory to publish the snapshot into; created on first write. */
   dir: string;
   /** Notified on write failure. Defaults to swallowing — status never breaks a run. */
   onError?: (error: unknown) => void;
+  /** Interval for re-stamping a quiet run's snapshot. Tests inject a tiny value. */
+  heartbeatMs?: number;
 }
 
 /**
@@ -40,12 +49,17 @@ export class StatusFileWriter {
   #closed = false;
   #ensuredDir = false;
   #tmpSeq = 0;
+  #heartbeat: NodeJS.Timeout;
 
   constructor(options: StatusFileWriterOptions) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    // markChanged() re-stamps updatedAt and notifies subscribers (i.e. this
+    // writer), so a run with long quiet turns never reads as stale/absent.
+    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+    this.#heartbeat.unref();
     // Publish an initial snapshot so the run shows up before its first agent.
     this.#request();
   }
@@ -53,6 +67,7 @@ export class StatusFileWriter {
   /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
   async close(): Promise<void> {
     this.#closed = true;
+    clearInterval(this.#heartbeat);
     this.#unsubscribe();
     while (this.#writing !== null) {
       await this.#writing;
@@ -102,8 +117,19 @@ export class StatusFileWriter {
   }
 
   async #removeSnapshot(): Promise<void> {
+    const target = path.join(this.#dir, STATUS_FILENAME);
     try {
-      await unlink(path.join(this.#dir, STATUS_FILENAME));
+      // Two runs sharing a cwd share one snapshot path; whoever finishes first
+      // must not delete the other's live file. An unreadable file is removed.
+      const current = JSON.parse(await readFile(target, "utf8")) as { runId?: unknown };
+      if (typeof current.runId === "string" && current.runId !== this.#progress.runId) {
+        return;
+      }
+    } catch {
+      // Missing or corrupt → fall through; unlink handles ENOENT below.
+    }
+    try {
+      await unlink(target);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;

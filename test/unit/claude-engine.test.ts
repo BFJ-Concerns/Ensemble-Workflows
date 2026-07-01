@@ -502,3 +502,38 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     return true;
   }
 }
+
+test("fallbackModel rides the Claude dispatch as declared degradation", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("say something", { engine: "claude", model: "opus", fallbackModel: "sonnet" });
+      assert.equal(controlPlane.dispatched[0]?.model, "opus");
+      assert.equal(controlPlane.dispatched[0]?.fallbackModel, "sonnet");
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("an unpinned Claude call emits a visibility event; a pinned one does not", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "one" } }, { assistant: { text: "two" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      const unpinned: unknown[] = [];
+      runtime.onEvent((event) => {
+        if (event.method === "claude/unpinnedModel") {
+          unpinned.push(event.params.agentId);
+        }
+      });
+      try {
+        await runtime.agent("first", { engine: "claude", label: "loose" });
+        await runtime.agent("second", { engine: "claude", model: "opus" });
+        assert.deepEqual(unpinned, [1]);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});

@@ -7,6 +7,7 @@ import {
   ClaudeSandboxUnsupportedError,
   ClaudeWebSearchUnsupportedError,
   ClaudeWorktreeIsolationUnsupportedError,
+  FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
 } from "./errors.js";
@@ -39,6 +40,8 @@ export interface EngineTurnOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
+  /** Claude only: declared degradation when the pinned model is unavailable. */
+  fallbackModel?: string;
   webSearch: boolean;
   isolation?: "worktree";
   sandbox?: SandboxMode;
@@ -123,6 +126,9 @@ export class CodexEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    if (options.fallbackModel !== undefined) {
+      throw new FallbackModelUnsupportedError(this.name);
+    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -164,21 +170,24 @@ class CodexEngineInvocation implements EngineInvocation {
     this.#onWorktreeFinished = options.onWorktreeFinished;
   }
 
-  async runAttempt(): Promise<TurnResult> {
+  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+    // Codex retries open a fresh thread, so the correction rides the prompt —
+    // the same degraded-correction shape the opencode engine uses.
+    const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
     if (this.#options.isolation === "worktree") {
-      return this.#runIsolatedWorktreeTurn();
+      return this.#runIsolatedWorktreeTurn(prompt);
     }
 
-    return this.#runTurnInCwd({
+    return this.#runTurnInCwd(prompt, {
       sandbox: this.#options.sandbox ?? "read-only"
     });
   }
 
-  async #runIsolatedWorktreeTurn(): Promise<TurnResult> {
+  async #runIsolatedWorktreeTurn(prompt: string): Promise<TurnResult> {
     const worktree = await this.#worktreeManager.create();
 
     try {
-      return await this.#runTurnInCwd({
+      return await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
         sandbox: "workspace-write"
       });
@@ -187,14 +196,14 @@ class CodexEngineInvocation implements EngineInvocation {
     }
   }
 
-  async #runTurnInCwd(location: { cwd?: string; sandbox: SandboxMode }): Promise<TurnResult> {
+  async #runTurnInCwd(prompt: string, location: { cwd?: string; sandbox: SandboxMode }): Promise<TurnResult> {
     const threadId = await this.#transport.openThread({
       webSearch: this.#options.webSearch,
       sandbox: location.sandbox,
       ...(location.cwd !== undefined ? { cwd: location.cwd } : {})
     });
 
-    return this.#transport.runTurn(threadId, this.#prompt, {
+    return this.#transport.runTurn(threadId, prompt, {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -391,6 +400,13 @@ export async function createDefaultEngineRegistry(
       onEvent: options.onOpenCodeEvent
     })
   ]);
+}
+
+function promptWithFailureFeedback(prompt: string, failure: EngineAttemptFailure | undefined): string {
+  if (failure === undefined) {
+    return prompt;
+  }
+  return `${prompt}\n\nA previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
 }
 
 export function defaultCodexConcurrency(): number {

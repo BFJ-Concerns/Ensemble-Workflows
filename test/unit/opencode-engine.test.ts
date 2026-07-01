@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
+
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
+  FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError,
   OpenCodeSandboxUnsupportedError,
@@ -86,6 +89,16 @@ test("opencode unsupported options fail before spawning", () => {
         sandbox: "read-only"
       }),
     OpenCodeSandboxUnsupportedError
+  );
+  assert.throws(
+    () =>
+      adapter.createInvocation("fallback", {
+        webSearch: false,
+        timeoutMs: 1_000,
+        model: "glm-5.2",
+        fallbackModel: "glm-4"
+      }),
+    FallbackModelUnsupportedError
   );
   assert.equal(runner.runs.length, 0);
 });
@@ -232,3 +245,27 @@ ${JSON.stringify(
 function tokens(input: number, output: number, reasoning: number): { input: number; output: number; reasoning: number } {
   return { input, output, reasoning };
 }
+
+test("opencode run escalates to SIGKILL when a timed-out worker ignores SIGTERM", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-stubborn-"));
+  const bin = path.join(directory, "opencode");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`
+  );
+  await chmod(bin, 0o755);
+
+  const runner = new OpenCodeCliRunner(bin, { killGraceMs: 50 });
+  const result = await runner.run({
+    prompt: "hang forever",
+    cwd: directory,
+    providerModel: "openrouter/z-ai/glm-5.2",
+    timeoutMs: 50
+  });
+
+  assert.equal(result.signal, "SIGKILL");
+  assert.equal(result.exitCode, null);
+});

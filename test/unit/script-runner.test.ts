@@ -58,6 +58,7 @@ test("exposes worktrees as a workflow-visible side channel", async () => {
       {
         path: "/tmp/worktree",
         branch: "ensemble-workflows/example",
+        baseCommit: "fake-base",
         changed: true,
         removed: false
       }
@@ -383,3 +384,85 @@ function tokenUsageEvent(totalTokens: number): Parameters<TokenBudget["record"]>
     raw: {}
   };
 }
+
+test("export const defaults supplies per-engine policy that call sites override", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const recordingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async (prompt: string, options?: Record<string, unknown>) => {
+      // Spread to normalise the realm: an unmerged options object arrives with
+      // the sandbox's Object.prototype, which deepEqual treats as different.
+      seen.push({ ...(options ?? {}) });
+      return `agent:${prompt}`;
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  const result = await runWorkflowScript({
+    filename: "defaults.js",
+    runtime: recordingRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "defaults", description: "test" };
+      export const defaults = {
+        claude: { model: "opus", effort: "medium" },
+        codex: { effort: "low" }
+      };
+
+      await agent("uses claude defaults", { engine: "claude" });
+      await agent("call site wins", { engine: "claude", model: "sonnet" });
+      await agent("codex default effort", { engine: "codex" });
+      await agent("untouched engine", { engine: "opencode", model: "glm-5.2" });
+      return "ok";
+    `
+  });
+
+  assert.equal(result.result, "ok");
+  assert.deepEqual(seen[0], { engine: "claude", model: "opus", effort: "medium" });
+  assert.deepEqual(seen[1], { engine: "claude", model: "sonnet", effort: "medium" });
+  assert.deepEqual(seen[2], { engine: "codex", effort: "low" });
+  assert.deepEqual(seen[3], { engine: "opencode", model: "glm-5.2" });
+});
+
+test("defaults with a non-engine key fail before the body runs", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "bad-defaults.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "bad-defaults" };
+          export const defaults = { gemini: { model: "flash" } };
+          return "never";
+        `
+      }),
+    /defaults key "gemini" is not an engine/
+  );
+});
+
+test("defaults with an unsupported option key fail loudly", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "bad-defaults-option.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "bad-defaults-option" };
+          export const defaults = { claude: { schema: { type: "object" } } };
+          return "never";
+        `
+      }),
+    /defaults\.claude\.schema is not supported/
+  );
+});
+
+test("a script with a defaults block still exposes its meta to registry readers", async () => {
+  const { readWorkflowMeta } = await import("../../src/script-runner.js");
+  const meta = readWorkflowMeta(`
+    export const meta = { name: "with-defaults", description: "d" };
+    export const defaults = { codex: { effort: "low" } };
+    return "ok";
+  `);
+  assert.deepEqual(meta, { name: "with-defaults", description: "d" });
+});

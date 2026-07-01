@@ -4,6 +4,7 @@
   "creation_order",
   "effort",
   "engine",
+  "fallback_model",
   "id",
   "kind",
   "label",

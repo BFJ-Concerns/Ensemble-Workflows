@@ -129,7 +129,8 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       name: this.#nextName(),
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {})
+      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
+      ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {})
     });
     this.#handle = handle;
 

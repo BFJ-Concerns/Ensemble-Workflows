@@ -101,6 +101,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#process.once("exit", (code, signal) => {
       this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
     });
+    // Without a listener, a spawn failure (codex missing, bad codexBin) surfaces
+    // as an uncaught 'error' event and kills the whole process instead of
+    // rejecting the startup handshake.
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
   }
 
   static async start(options: CodexAppServerTransportOptions): Promise<CodexAppServerTransport> {
@@ -186,9 +192,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return await state.promise;
     } catch (error) {
       this.#turns.delete(threadId);
+      // A failed turn's transcript has no reader (failed attempts archive no
+      // transcripts), so drop it rather than let the map grow.
+      this.#transcripts.delete(threadId);
       clearTimeout(state.timeout);
       throw error;
     }
+  }
+
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts(): number {
+    return this.#transcripts.size;
   }
 
   async close(): Promise<void> {
@@ -207,6 +221,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       turn.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#turns.clear();
+    this.#transcripts.clear();
 
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
@@ -427,6 +442,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         })
       );
       this.#turns.delete(threadId);
+      this.#transcripts.delete(threadId);
       clearTimeout(turn.timeout);
     }
   }
@@ -455,6 +471,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (turn.itemText !== undefined) {
       result.itemText = turn.itemText;
     }
+    // The transcript is snapshotted into the result above; keeping the map entry
+    // would retain every attempt's full event log for the life of the run.
+    this.#transcripts.delete(threadId);
     turn.resolve(result);
   }
 
@@ -538,6 +557,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       turn.reject(wrapped);
     }
     this.#turns.clear();
+    this.#transcripts.clear();
   }
 }
 

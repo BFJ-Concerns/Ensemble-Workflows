@@ -365,7 +365,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
   );
 
   assert.equal(missingExitCode, 1);
-  assert.equal(missingStdout, "");
+  assert.equal(missingStdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
   assert.match(
     missingStderr,
     /agent\(\) requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'/
@@ -381,7 +381,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
   );
 
   assert.equal(unknownExitCode, 1);
-  assert.equal(unknownStdout, "");
+  assert.equal(unknownStdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
   assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex', 'claude', or 'opencode'/);
 });
 
@@ -918,7 +918,7 @@ test("Claude unsupported options fail loudly on the real agent path before spawn
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stdout, "");
+    assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
     assert.match(stderr, scenario.message);
     assert.equal(codex.invocations.length, 0);
   }
@@ -956,7 +956,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   );
 
   assert.equal(unsupported.exitCode, 1);
-  assert.equal(unsupported.stdout, "");
+  assert.equal(unsupported.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
   assert.match(unsupported.stderr, /CodexSchemaSubsetUnsupportedError: Codex rejected outputSchema before generation/);
   assert.doesNotMatch(unsupported.stderr, /verdict/);
 
@@ -1278,7 +1278,7 @@ test("CLI workflow exposes changed isolated worktrees and removes the clean one"
   }
 });
 
-test("CLI workflow returns non-zero, stderr error, and no stdout when the script throws", async () => {
+test("CLI workflow returns non-zero, stderr error, and a salvage envelope when the script throws", async () => {
   const { exitCode, stdout, stderr } = await runScript(
     `
       export const meta = { name: "throws" };
@@ -1289,7 +1289,7 @@ test("CLI workflow returns non-zero, stderr error, and no stdout when the script
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout, "");
+  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
   assert.match(stderr, /before throw/);
   assert.match(stderr, /Error: script exploded/);
 });

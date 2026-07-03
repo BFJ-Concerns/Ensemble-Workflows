@@ -8413,16 +8413,19 @@ var MODELS = [
 ];
 var StaticOpenCodeModelRegistry = class {
   #models = /* @__PURE__ */ new Map();
+  #names;
   constructor(models) {
     for (const model of models) {
       this.#models.set(model.key, model);
+      this.#models.set(model.providerModel, model);
     }
+    this.#names = models.map((model) => model.key);
   }
   get(model) {
     return this.#models.get(model);
   }
   names() {
-    return [...this.#models.keys()];
+    return [...this.#names];
   }
 };
 var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);

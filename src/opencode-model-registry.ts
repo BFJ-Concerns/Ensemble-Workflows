@@ -35,11 +35,16 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
 
 class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
   #models = new Map<string, OpenCodeModelRegistryEntry>();
+  #names: string[];
 
   constructor(models: readonly OpenCodeModelRegistryEntry[]) {
     for (const model of models) {
       this.#models.set(model.key, model);
+      // Callers that carry provenance know models
+      // by the provider id the run record reports, so accept it as a key too.
+      this.#models.set(model.providerModel, model);
     }
+    this.#names = models.map((model) => model.key);
   }
 
   get(model: string): OpenCodeModelRegistryEntry | undefined {
@@ -47,7 +52,7 @@ class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
   }
 
   names(): string[] {
-    return [...this.#models.keys()];
+    return [...this.#names];
   }
 }
 

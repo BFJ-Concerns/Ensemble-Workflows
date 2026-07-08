@@ -146,6 +146,24 @@ test("schema agents return the validated object when a retry succeeds", async ()
   assert.equal(transport.turns.length, 2);
 });
 
+test("schema agents label empty output as empty-output, not invalid-json", async () => {
+  // Empty or whitespace-only output is an empty-output failure, not invalid JSON.
+  const transport = new FakeTransport([turn(""), turn("  \n"), turn("{\"answer\":\"yes\"}")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 3
+  });
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
+
+  assert.deepEqual(result, { answer: "yes" });
+  assert.equal(transport.turns.length, 3);
+  assert.match(transport.turns[1]?.prompt ?? "", /A previous attempt failed \(empty-output\)/);
+  assert.match(transport.turns[2]?.prompt ?? "", /A previous attempt failed \(empty-output\)/);
+});
+
 test("Codex invalid_json_schema becomes a distinguishing schema-subset error", async () => {
   const transport = new ErrorTransport(
     appServerErrorFromPayload("turn/start", {

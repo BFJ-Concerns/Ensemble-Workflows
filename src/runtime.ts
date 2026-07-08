@@ -353,6 +353,16 @@ export class EnsembleRuntime {
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         recordResolvedModel(agentRecord, result);
+        // A silent worker (timeout, hang) is not a JSON problem: label it
+        // empty-output so records and retry nudges point at the real failure.
+        if (result.text.trim().length === 0) {
+          previousFailure = {
+            kind: "empty-output",
+            message: `agent returned empty text on attempt ${attempt}`
+          };
+          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          continue;
+        }
         const parsed = parseJsonFromText(result.text);
         if (parsed === null) {
           previousFailure = {

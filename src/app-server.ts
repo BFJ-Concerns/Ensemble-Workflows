@@ -144,9 +144,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
-      // codex-cli 0.144.0's v2 ThreadStartResponse reports the effective model
-      // and nullable reasoning effort. Retain them until this ephemeral thread's
-      // turn finishes so an unpinned call can disclose what it actually used.
+      // The v2 ThreadStartResponse reports the effective model and nullable
+      // reasoning effort. Retain them until this ephemeral thread's turn finishes
+      // so an unpinned call can disclose what it actually used.
       this.#resolvedThreadDefaults.set(threadId, {
         ...(typeof resultObject?.model === "string" ? { model: resultObject.model } : {}),
         ...(typeof resultObject?.reasoningEffort === "string" ? { effort: resultObject.reasoningEffort } : {})

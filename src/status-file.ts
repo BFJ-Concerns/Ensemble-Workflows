@@ -3,11 +3,11 @@ import path from "node:path";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
 
-/** Filename the writer publishes to and the statusline reader consumes. */
+/** Filename the writer publishes for external status consumers. */
 export const STATUS_FILENAME = "ensemble.local.json";
 
 /**
- * The statusline reader treats a snapshot as stale after 30s. Claude and
+ * Consumers treat a snapshot as stale after 30s. Claude and
  * opencode report usage once per turn, so a long quiet turn would otherwise
  * blank the line mid-run; the heartbeat re-stamps well inside that window.
  */
@@ -25,7 +25,7 @@ export interface StatusFileWriterOptions {
 
 /**
  * Serialises a {@link RunProgress} model to a single `ensemble.local.json` on every
- * change, so a statusline command can render what the run is doing.
+ * change, so external consumers can render what the run is doing.
  *
  * Two guarantees matter:
  *

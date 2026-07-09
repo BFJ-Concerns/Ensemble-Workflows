@@ -31,7 +31,13 @@ import type {
   TurnResult,
   TokenUsageEvent
 } from "./types.js";
-import type { EngineAdapter, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type {
+  EngineAdapter,
+  EngineAttemptFailure,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions
+} from "./engines.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
@@ -308,7 +314,14 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== undefined) {
+          previousFailure = operationalFailure;
+          lastError = new EmptyAgentOutputError(previousFailure.message);
+          continue;
+        }
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -352,7 +365,13 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== undefined) {
+          previousFailure = operationalFailure;
+          continue;
+        }
         // A silent worker (timeout, hang) is not a JSON problem: label it
         // empty-output so records and retry nudges point at the real failure.
         if (result.text.trim().length === 0) {
@@ -399,6 +418,28 @@ export class EnsembleRuntime {
     for (const listener of this.#eventListeners) {
       listener(event);
     }
+  }
+
+  #recordResolvedCodexDefault(
+    engine: EngineName,
+    options: Partial<AgentOptions>,
+    agentId: number,
+    record: RuntimeAgentRecord,
+    result: TurnResult
+  ): void {
+    if (engine !== "codex" || options.model !== undefined || record.resolvedModel !== null || result.resolvedModel === undefined) {
+      return;
+    }
+    this.#emitEvent({
+      method: "codex/unpinnedModelResolved",
+      params: {
+        agentId,
+        label: options.label ?? null,
+        model: result.resolvedModel,
+        effort: result.resolvedEffort ?? null
+      },
+      receivedAt: Date.now()
+    });
   }
 
   #registerEngineCaps(): void {
@@ -512,6 +553,21 @@ function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): voi
   if (result.worktree !== undefined) {
     record.worktree = result.worktree;
   }
+}
+
+function recordOperationalFailure(
+  record: RuntimeAgentRecord,
+  attempt: number,
+  startedAtMs: number,
+  result: EngineAttemptResult
+): EngineAttemptFailure | undefined {
+  if (result.attemptFailure === undefined) {
+    return undefined;
+  }
+  record.attempts.push(
+    attemptRecord(attempt, "failed", result.attemptFailure, result.text, null, startedAtMs, result)
+  );
+  return result.attemptFailure;
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {

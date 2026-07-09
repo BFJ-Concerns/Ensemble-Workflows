@@ -50,7 +50,7 @@ export interface EngineTurnOptions {
 }
 
 export interface EngineAttemptFailure {
-  kind: "empty-output" | "invalid-json" | "schema-validation";
+  kind: "empty-output" | "invalid-json" | "schema-validation" | "claude-first-life-timeout";
   message: string;
 }
 
@@ -59,8 +59,13 @@ export interface EngineAttemptContext {
   previousFailure?: EngineAttemptFailure;
 }
 
+export interface EngineAttemptResult extends TurnResult {
+  /** Operational failure that should retain its identity through the shared retry loop. */
+  attemptFailure?: EngineAttemptFailure;
+}
+
 export interface EngineInvocation {
-  runAttempt(context: EngineAttemptContext): Promise<TurnResult>;
+  runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult>;
   close?(): Promise<void>;
 }
 

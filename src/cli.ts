@@ -5,7 +5,6 @@ import { parseArgs } from "node:util";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
-import { readStatusLine } from "./status-line.js";
 import { RunRecordWriter } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
 
@@ -24,7 +23,7 @@ export interface EnsembleCliOptions {
   timeoutMs?: number;
   /**
    * Directory for the live status side-channel. A non-empty string enables
-   * writing the run's snapshot (and is the directory `--statusline` reads).
+   * writing the run's snapshot for external consumers to read directly.
    * `null`/`undefined` disables it. Resolved from the environment at the bin.
    */
   statusDir?: string | null;
@@ -33,8 +32,6 @@ export interface EnsembleCliOptions {
    * null/undefined disables it. The bin resolves the default-on environment policy.
    */
   runRecordDir?: string | null;
-  /** Injectable clock for the `--statusline` reader; defaults to `Date.now`. */
-  now?: () => number;
   /** Injectable environment for registry resolution; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
 }
@@ -45,17 +42,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
 
-  // Statusline mode: render the latest run's snapshot as one line and exit.
-  // This is what a Claude Code statusLine command invokes; it never starts a run.
-  // Only recognised as the first token — after a script path it is script args.
-  if (argv[0] === "--statusline") {
-    const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
-    if (line !== null) {
-      stdout.write(`${line}\n`);
-    }
-    return 0;
-  }
-
   if (argv[0] === "workflows") {
     if (argv.length > 1) {
       stderr.write("Usage: ensemble workflows\n");
@@ -63,7 +49,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
     for (const entry of listing.entries) {
-      stdout.write(`${entry.name}\t${entry.description}\t${entry.scope}\t${entry.scriptPath}\n`);
+      const scope = entry.shadowed ? "user (shadowed by project)" : entry.scope;
+      stdout.write(`${entry.name}\t${entry.description}\t${scope}\t${entry.scriptPath}\n`);
     }
     for (const note of listing.notes) {
       stderr.write(`[workflows] skipped ${note.scriptPath}: ${note.message}\n`);
@@ -73,7 +60,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   let invocation: ParsedInvocation;
   try {
-    invocation = parseInvocation(argv);
+    invocation = await parseInvocation(argv, cwd);
   } catch (error) {
     stderr.write(`${formatError(error)}\n`);
     stderr.write(usage());
@@ -136,6 +123,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model: set, the ambient default applies\n`);
+        return;
+      }
+      if (event.method === "codex/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
+        stderr.write(`[codex] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}${effort}\n`);
         return;
       }
       if (event.method === "runRecord/writeFailed") {
@@ -299,7 +294,7 @@ function watchWorkflowInterrupts(): { promise: Promise<never>; dispose: () => vo
   };
 }
 
-function parseInvocation(argv: string[]): ParsedInvocation {
+async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvocation> {
   const split = splitTuningFlags(argv);
   const parsed = parseArgs({
     args: split.tuningArgs,
@@ -315,7 +310,7 @@ function parseInvocation(argv: string[]): ParsedInvocation {
 
   const jsonArgs = parsed.values["json-args"];
   const positionalArgs = split.scriptArg === undefined ? [] : split.scriptArgs;
-  const args = jsonArgs === undefined ? positionalArgs : parseJsonArgs(jsonArgs);
+  const args = jsonArgs === undefined ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
@@ -388,12 +383,28 @@ function isKnownInlineOption(value: string): boolean {
   );
 }
 
-function parseJsonArgs(value: string): unknown {
+async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
+  let source = value;
+  let sourceDescription = "the argument";
+  if (value.startsWith("@")) {
+    const filename = value.slice(1);
+    if (filename.length === 0) {
+      throw new CliUsageError("--json-args @file requires a file path");
+    }
+    const filePath = path.resolve(cwd, filename);
+    sourceDescription = filePath;
+    try {
+      source = await readFile(filePath, "utf8");
+    } catch (error) {
+      throw new CliUsageError(`--json-args could not read ${filePath}: ${formatError(error)}`);
+    }
+  }
+
   try {
-    return JSON.parse(value);
+    return JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`--json-args must be valid JSON: ${message}`);
+    throw new CliUsageError(`--json-args ${sourceDescription} must contain valid JSON: ${message}`);
   }
 }
 
@@ -460,7 +471,7 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");

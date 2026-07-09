@@ -60,6 +60,7 @@ interface TurnState {
 interface ThreadTranscript {
   events: JsonObject[];
   resolvedModel: string | null;
+  resolvedEffort: string | null;
 }
 
 export interface CodexAppServerTransportOptions {
@@ -140,8 +141,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
       const resolvedModel = resultObject?.model;
+      // The v2 ThreadStartResponse reports the effective model and nullable
+      // reasoning effort. Retain them until this ephemeral thread's turn finishes
+      // so an unpinned call can disclose what it actually used.
+      const resolvedEffort = resultObject?.reasoningEffort;
       this.#transcripts.set(threadId, {
         resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null,
         events: [
           {
             direction: "client",
@@ -187,6 +193,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (options.effort !== undefined) {
         params.effort = options.effort;
+        const transcript = this.#transcripts.get(threadId);
+        if (transcript !== undefined) {
+          transcript.resolvedEffort = options.effort;
+        }
       }
 
       this.#appendTranscript(threadId, {
@@ -467,10 +477,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
-    const resolvedModel = this.#transcripts.get(threadId)?.resolvedModel ?? null;
+    const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
       text,
-      ...(resolvedModel !== null ? { resolvedModel } : {}),
+      ...(transcript?.resolvedModel !== null && transcript?.resolvedModel !== undefined
+        ? { resolvedModel: transcript.resolvedModel }
+        : {}),
+      ...(transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== undefined
+        ? { resolvedEffort: transcript.resolvedEffort }
+        : {}),
       deltaText: turn.deltaText,
       durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -116,9 +116,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     if (options.fallbackModel !== undefined) {
       args.push("--fallback-model", options.fallbackModel);
     }
-    args.push(options.prompt);
-
-    const dispatch = await this.#run(this.#claudeBin, args, options.cwd);
+    // Prompts routinely contain whole diffs and can exceed the platform's argv
+    // ceiling. Claude's background mode accepts its initial prompt on stdin, so
+    // keep argv small and stream the bytes without involving a shell.
+    const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
     // `claude --bg` prints the short id and returns; if it failed outright there
     // is no session to wait for, so surface immediately with its stderr.
     if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
@@ -281,6 +282,44 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           resolve({ ok: error === null, stdout, stderr });
         }
       );
+    });
+  }
+
+  #runWithInput(file: string, args: string[], input: string, cwd?: string): Promise<ExecResult> {
+    return new Promise<ExecResult>((resolve) => {
+      const child = spawn(file, args, {
+        ...(cwd !== undefined ? { cwd } : {}),
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let settled = false;
+      const finish = (result: ExecResult): void => {
+        if (!settled) {
+          settled = true;
+          resolve(result);
+        }
+      };
+
+      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      child.on("error", (error) => {
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+      });
+      child.on("close", (code) => {
+        finish({
+          ok: code === 0,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString()
+        });
+      });
+
+      // A child that rejects input may close stdin before this write completes.
+      // Its exit status/stderr above is the useful dispatch error; suppress the
+      // stream's secondary EPIPE so it cannot become an unhandled exception.
+      child.stdin.on("error", () => undefined);
+      child.stdin.end(input);
     });
   }
 }

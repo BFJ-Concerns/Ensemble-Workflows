@@ -76,6 +76,7 @@ export interface EngineTranscriptArtifact {
 export interface TurnResult {
   text: string;
   resolvedModel?: string;
+  resolvedEffort?: string;
   worktree?: {
     branch: string;
     baseCommit: string;

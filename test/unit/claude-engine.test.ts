@@ -12,13 +12,13 @@ import {
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
+import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
 import type {
   ClaudeControlPlane,
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
   ClaudeSessionStatus
 } from "../../src/claude-control-plane.js";
-import type { RunRecordWriter } from "../../src/run-record.js";
 
 /**
  * One scripted worker turn — what a single dispatch or steer produces:
@@ -172,7 +172,13 @@ const fastConfig = { pollIntervalMs: 1, receiptTimeoutMs: 200, blockedRecoveryBo
 
 function makeRuntime(
   controlPlane: ClaudeControlPlane,
-  options: { claudeBudget?: number; maxAttempts?: number; blockedRecoveryBound?: number; turnTimeoutMs?: number } = {}
+  options: {
+    claudeBudget?: number;
+    maxAttempts?: number;
+    blockedRecoveryBound?: number;
+    turnTimeoutMs?: number;
+    firstLifeTimeoutMs?: number;
+  } = {}
 ): EnsembleRuntime {
   let runtime: EnsembleRuntime | null = null;
   const adapter = new ClaudeEngineAdapter({
@@ -182,7 +188,8 @@ function makeRuntime(
     onEvent: (event) => runtime?.handleEngineEvent("claude", event),
     config: {
       ...fastConfig,
-      ...(options.blockedRecoveryBound !== undefined ? { blockedRecoveryBound: options.blockedRecoveryBound } : {})
+      ...(options.blockedRecoveryBound !== undefined ? { blockedRecoveryBound: options.blockedRecoveryBound } : {}),
+      ...(options.firstLifeTimeoutMs !== undefined ? { firstLifeTimeoutMs: options.firstLifeTimeoutMs } : {})
     }
   });
   runtime = new EnsembleRuntime({
@@ -491,6 +498,53 @@ test("an unreadable transcript fails gracefully rather than throwing out of agen
   }
 });
 
+test("a worker that never shows life fails fast with a distinct recorded failure", async () => {
+  const controlPlane = new MissingTranscriptControlPlane();
+  const runtime = makeRuntime(controlPlane, {
+    maxAttempts: 1,
+    turnTimeoutMs: 5_000,
+    firstLifeTimeoutMs: 20
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => {
+      records.push(structuredClone(record));
+    }
+  } as unknown as RunRecordWriter);
+
+  const startedAt = Date.now();
+  try {
+    const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+    assert.equal(result, null);
+    assert.ok(Date.now() - startedAt < 500, "mute worker should not consume the full turn timeout");
+    assert.equal(records[0]?.attempts[0]?.failure?.kind, "claude-first-life-timeout");
+    assert.match(records[0]?.attempts[0]?.failure?.message ?? "", /no sign of life/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a slow worker survives the first-life guard once its transcript appears", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-slow-alive-"));
+  try {
+    const controlPlane = new SlowAliveControlPlane(dir);
+    const runtime = makeRuntime(controlPlane, {
+      maxAttempts: 1,
+      turnTimeoutMs: 1_000,
+      firstLifeTimeoutMs: 5
+    });
+    try {
+      const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+      assert.deepEqual(result, { ok: true });
+      assert.ok(controlPlane.pollCount >= 3);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // A control plane whose session settles (idle) but exposes no transcript path,
 // exercising the never-completes → graceful poll-timeout path.
 class MissingTranscriptControlPlane implements ClaudeControlPlane {
@@ -518,6 +572,49 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
 
   async stop(): Promise<void> {
     this.stopCount += 1;
+    this.#present = false;
+  }
+
+  async tmuxAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+class SlowAliveControlPlane implements ClaudeControlPlane {
+  pollCount = 0;
+  #path: string;
+  #present = false;
+
+  constructor(dir: string) {
+    this.#path = path.join(dir, "slow-alive.jsonl");
+  }
+
+  async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    this.#present = true;
+    // The persisted user entry proves dispatch reached the worker. Assistant
+    // output may legitimately take much longer and is governed by timeoutMs.
+    await writeFile(this.#path, `${JSON.stringify({ type: "user", message: { role: "user", content: "decide" } })}\n`);
+    return { id: "slow-1", sessionId: "slow-alive", name: options.name, cwd: options.cwd };
+  }
+
+  async poll(): Promise<ClaudeSessionStatus> {
+    this.pollCount += 1;
+    if (this.pollCount === 3) {
+      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}' })}\n`);
+      return { status: "idle", state: "working", present: true };
+    }
+    return { status: "busy", state: "working", present: this.#present };
+  }
+
+  async transcriptPath(): Promise<string | null> {
+    return this.#present ? this.#path : null;
+  }
+
+  async steer(): Promise<boolean> {
+    return false;
+  }
+
+  async stop(): Promise<void> {
     this.#present = false;
   }
 

@@ -40,7 +40,6 @@ export { RunRecordWriter } from "./run-record.js";
 export { resolveRunRecordDir, RUN_RECORD_ENV, RUN_RECORD_DIR_ENV } from "./run-record-config.js";
 export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
 export { resolveStatusDir } from "./status-config.js";
-export { formatStatusLine, readStatusLine } from "./status-line.js";
 export {
   NestedWorkflowError,
   WorkflowResolutionError,
@@ -81,6 +80,7 @@ export type {
   EngineAdapter,
   EngineAttemptContext,
   EngineAttemptFailure,
+  EngineAttemptResult,
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";

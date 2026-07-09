@@ -65,12 +65,14 @@ Node module access; the host-provided hooks are the way out.
   accounting, matching the names used by `agent()`.
 - `worktrees` exposes changed Codex worktrees left by `isolation: "worktree"`.
 - `args` is the raw CLI string arguments, or the parsed JSON value from
-  `--json-args`.
+  `--json-args '<json>'` or `--json-args @file`.
 
 `ensemble workflows` lists saved workflows in the project and user registries,
 printing each workflow's `meta.name` and `meta.description`. Files whose metadata
 cannot be parsed are noted on stderr and skipped, so one bad saved workflow does
-not hide the rest.
+not hide the rest. A user-scope entry whose name is taken by a project-scope
+entry is labelled `user (shadowed by project)` because name resolution will
+select the project entry.
 
 The agent skill teaching the hooks API and the invoke pattern is maintained
 outside this repository; any shell-capable orchestrator runs the same CLI
@@ -95,38 +97,24 @@ environment variable rather than a run-tuning flag:
 - `ENSEMBLE_STATUS=off` (or `0`/`false`/`no`) disables it.
 - `ENSEMBLE_STATUS_DIR` overrides the directory unconditionally.
 
-`ensemble --statusline` reads that snapshot and prints one compact line — meant
-for Claude Code's `statusLine`, so a run kicked off through the Bash tool shows
-its progress where you are already looking:
-
-```
-ensemble · ▸ Verify · codex ⚡3⏳2 48k/100k · claude ⚡1 · opencode 2.4k/20k · ✓12 ✗1 · 2m14s
-```
-
-```json
-// .claude/settings.json — point statusLine at the same binary
-{ "statusLine": { "type": "command", "command": "ensemble --statusline" } }
-```
-
-It prints nothing when no run is active (or one has finished or gone stale), so
-the statusline falls back cleanly. Per-engine spend is shown separately, never
-summed — the engines denominate different, non-comparable cost models. The run
-and `ensemble --statusline` resolve the same cwd-local path; set
-`ENSEMBLE_STATUS_DIR` consistently for both commands if you move it off the
-default.
+Consumers read and parse this file directly; Ensemble deliberately provides no
+rendering command. Treat a snapshot whose `updatedAt` is more than 30 seconds
+old as stale. The writer refreshes a quiet live run every 10 seconds, so a fresh
+publisher remains comfortably inside that window. Per-engine spend must remain
+separate because the engines denominate different, non-comparable cost models.
 
 ### `ensemble.local.json` schema
 
-The status file is a published interface for status-line authors. It contains one
+The status file is a published interface for status consumers. It contains one
 JSON object with these fields:
 
 - `schema`: `1`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `workflow`: string or `null`, from `meta.name` when present.
-- `state`: `"running"` or `"finished"`. Normal completion removes the file
-  instead of leaving a finished snapshot; readers should still tolerate
-  `"finished"` from older or interrupted publishers.
+- `state`: `"running"` or `"finished"`. A finished snapshot may exist briefly
+  while the writer closes; `close()` then removes the file. Readers should treat
+  absence as no active run and tolerate `"finished"` during that close window.
 - `startedAt`: number, Unix epoch milliseconds.
 - `updatedAt`: number, Unix epoch milliseconds.
 - `finishedAt`: number or `null`, Unix epoch milliseconds when the run has

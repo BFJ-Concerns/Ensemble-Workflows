@@ -12,11 +12,9 @@ import { EngineRegistry } from "../../src/engines.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
-import { formatStatusLine } from "../../src/status-line.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
-import type { ProgressSnapshot } from "../../src/progress.js";
 import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
 
 class CaptureStream extends Writable {
@@ -83,6 +81,58 @@ test("CLI passes parsed JSON as args when --json-args is set", async () => {
   assert.equal(exitCode, 0);
   assert.equal(stdout.text(), "{\"args\":{\"items\":[\"a\",\"b\"],\"count\":2},\"isArray\":false}\n");
   assert.equal(stderr.text(), "");
+});
+
+test("CLI reads parsed JSON args from an @file path", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-file-"));
+  const script = path.join(directory, "workflow.js");
+  const payload = path.join(directory, "payload.json");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-json-args-file" };
+      return { args, isArray: Array.isArray(args) };
+    `
+  );
+  await writeFile(payload, JSON.stringify({ brief: "Analyse the API's quirks (part 2)", rounds: 3 }));
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--json-args", "@payload.json", script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(
+    stdout.text(),
+    `{"args":{"brief":"Analyse the API's quirks (part 2)","rounds":3},"isArray":false}\n`
+  );
+  assert.equal(stderr.text(), "");
+});
+
+test("CLI reports an unreadable --json-args @file as a usage error", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-file-missing-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cli-json-args-file-missing" }; return args;`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--json-args", "@missing.json", script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /--json-args could not read .*missing\.json/);
+  assert.match(stderr.text(), /Usage: ensemble/);
 });
 
 test("CLI wires per-engine budget ceilings into the workflow runtime", async () => {
@@ -401,13 +451,13 @@ test("CLI emits completed worker outputs when the script throws mid-run", async 
   assert.match(stderr.text(), /reduce stage exploded/);
 });
 
-test("CLI treats --statusline after the script path as a script arg", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-arg-"));
+test("CLI treats an option-looking token after the script path as a script arg", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-option-arg-"));
   const script = path.join(directory, "workflow.js");
   await writeFile(
     script,
     `
-      export const meta = { name: "statusline-arg" };
+      export const meta = { name: "option-arg" };
       return { args };
     `
   );
@@ -415,7 +465,7 @@ test("CLI treats --statusline after the script path as a script arg", async () =
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
 
-  const exitCode = await runEnsembleCli([script, "--statusline"], {
+  const exitCode = await runEnsembleCli([script, "--not-a-tuning-flag"], {
     cwd: directory,
     stdout,
     stderr,
@@ -423,7 +473,7 @@ test("CLI treats --statusline after the script path as a script arg", async () =
   });
 
   assert.equal(exitCode, 0);
-  assert.equal(stdout.text(), "{\"args\":[\"--statusline\"]}\n");
+  assert.equal(stdout.text(), "{\"args\":[\"--not-a-tuning-flag\"]}\n");
 });
 
 test("CLI prints null for a return value JSON.stringify cannot serialise", async () => {
@@ -465,7 +515,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -492,6 +542,13 @@ test("CLI workflows lists saved workflows and notes unparseable files without cr
       return "ok";
     `
   );
+  await writeFile(
+    path.join(userRegistry, "summarise.js"),
+    `
+      export const meta = { name: "summarise", description: "Personal summary" };
+      return "ok";
+    `
+  );
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -507,52 +564,10 @@ test("CLI workflows lists saved workflows and notes unparseable files without cr
   assert.equal(
     stdout.text(),
     `summarise\tSummarise findings\tproject\t${path.join(projectRegistry, "summarise.js")}\n` +
+      `summarise\tPersonal summary\tuser (shadowed by project)\t${path.join(userRegistry, "summarise.js")}\n` +
       `verify\tVerify a claim\tuser\t${path.join(userRegistry, "verify.js")}\n`
   );
   assert.match(stderr.text(), /\[workflows\] skipped .*broken\.js: Workflow script must begin with `export const meta = \{ \.\.\. \}`/);
-});
-
-test("CLI --statusline prints the latest run's snapshot as one line", async () => {
-  const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-"));
-  const snapshot: ProgressSnapshot = {
-    schema: 1,
-    runId: "run-z",
-    pid: 1,
-    workflow: "demo",
-    state: "running",
-    startedAt: 0,
-    updatedAt: 10_000,
-    finishedAt: null,
-    currentPhase: "collect",
-    totals: { active: 2, queued: 0, done: 0, failed: 0 },
-    engines: {
-      codex: { cap: 4, active: 2, queued: 0, done: 0, failed: 0, spent: 0, ceiling: null, remaining: null },
-      claude: { cap: 8, active: 0, queued: 0, done: 0, failed: 0, spent: 0, ceiling: null, remaining: null }
-    },
-    agents: []
-  };
-  await writeFile(path.join(statusDir, STATUS_FILENAME), `${JSON.stringify(snapshot)}\n`);
-
-  const stdout = new CaptureStream();
-  const stderr = new CaptureStream();
-
-  const exitCode = await runEnsembleCli(["--statusline"], { statusDir, stdout, stderr, now: () => 12_000 });
-
-  assert.equal(exitCode, 0);
-  assert.equal(stderr.text(), "");
-  assert.equal(stdout.text(), `${formatStatusLine(snapshot, 12_000)}\n`);
-});
-
-test("CLI --statusline prints nothing when no run is active", async () => {
-  const statusDir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-statusline-empty-"));
-  const stdout = new CaptureStream();
-  const stderr = new CaptureStream();
-
-  const exitCode = await runEnsembleCli(["--statusline"], { statusDir, stdout, stderr, now: () => 0 });
-
-  assert.equal(exitCode, 0);
-  assert.equal(stdout.text(), "");
-  assert.equal(stderr.text(), "");
 });
 
 test("CLI removes the live status snapshot after a run", async () => {

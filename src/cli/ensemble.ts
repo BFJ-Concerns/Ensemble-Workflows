@@ -18,8 +18,8 @@ if (isMain) {
     process.stderr.write(`${versionError}\n`);
     process.exitCode = 1;
   } else {
-    // Resolve the status side-channel once at the edge, so the run that publishes
-    // the snapshot and a `--statusline` invocation read the same directory.
+    // Resolve the status side-channel once at the edge so every external reader
+    // observes the same cwd-local snapshot published by the run.
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
       cwd,

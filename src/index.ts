@@ -81,6 +81,7 @@ export type {
   EngineAdapter,
   EngineAttemptContext,
   EngineAttemptFailure,
+  EngineAttemptResult,
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";

@@ -6641,6 +6641,8 @@ var ClaudeDispatchError = class extends ClaudeWorkerError {
 };
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
 };
+var ClaudeFirstLifeTimeoutError = class extends ClaudeWorkerError {
+};
 var ClaudeBlockedError = class extends ClaudeWorkerError {
 };
 var ClaudeValveError = class extends ClaudeWorkerError {
@@ -7474,7 +7476,7 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
-import { execFile } from "node:child_process";
+import { execFile, spawn as spawn2 } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -7507,8 +7509,7 @@ var ClaudeCliControlPlane = class {
     if (options.fallbackModel !== void 0) {
       args.push("--fallback-model", options.fallbackModel);
     }
-    args.push(options.prompt);
-    const dispatch = await this.#run(this.#claudeBin, args, options.cwd);
+    const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
     if (!dispatch.ok && await this.#findByName(options.name) === null) {
       throw new ClaudeDispatchError(
         `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
@@ -7643,6 +7644,38 @@ var ClaudeCliControlPlane = class {
           resolve({ ok: error === null, stdout, stderr });
         }
       );
+    });
+  }
+  #runWithInput(file, args, input, cwd) {
+    return new Promise((resolve) => {
+      const child = spawn2(file, args, {
+        ...cwd !== void 0 ? { cwd } : {},
+        env: process.env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      const stdout = [];
+      const stderr = [];
+      let settled = false;
+      const finish = (result) => {
+        if (!settled) {
+          settled = true;
+          resolve(result);
+        }
+      };
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.on("error", (error) => {
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+      });
+      child.on("close", (code) => {
+        finish({
+          ok: code === 0,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString()
+        });
+      });
+      child.stdin.on("error", () => void 0);
+      child.stdin.end(input);
     });
   }
 };
@@ -7793,6 +7826,7 @@ var ClaudeEngineInvocation = class {
   #onEvent;
   #pollIntervalMs;
   #receiptTimeoutMs;
+  #firstLifeTimeoutMs;
   #blockedRecoveryBound;
   #namePrefix;
   #handle = null;
@@ -7806,6 +7840,7 @@ var ClaudeEngineInvocation = class {
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
     this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
+    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
     this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
     this.#namePrefix = config.namePrefix ?? "ensemble";
   }
@@ -7823,6 +7858,9 @@ var ClaudeEngineInvocation = class {
     } catch (error) {
       if (error instanceof ClaudeWorkerError) {
         await this.#teardown();
+        if (error instanceof ClaudeFirstLifeTimeoutError) {
+          return emptyTurnResult({ kind: "claude-first-life-timeout", message: error.message });
+        }
         return emptyTurnResult();
       }
       throw error;
@@ -7882,10 +7920,20 @@ var ClaudeEngineInvocation = class {
    */
   async #runToCompletion(handle, fromIndex) {
     const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
+    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    let sawLife = fromIndex > 0;
     let nudges = 0;
     let absences = 0;
     for (; ; ) {
       const status = await this.#controlPlane.poll(handle);
+      if (!sawLife) {
+        sawLife = await this.#tryReadTranscript(handle) !== null;
+        if (!sawLife && Date.now() >= firstLifeDeadline) {
+          throw new ClaudeFirstLifeTimeoutError(
+            `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+          );
+        }
+      }
       if (!status.present) {
         absences += 1;
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
@@ -8037,9 +8085,10 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
 };
-function emptyTurnResult() {
+function emptyTurnResult(attemptFailure) {
   return {
     text: "",
+    ...attemptFailure !== void 0 ? { attemptFailure } : {},
     deltaText: "",
     durationMs: null,
     firstDeltaMs: null,
@@ -8054,7 +8103,7 @@ function delay2(ms) {
 }
 
 // src/opencode-engine.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -8205,7 +8254,7 @@ function rejectUnsupportedOpenCodeOptions(options) {
 function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = spawn2(command, args, {
+    const child = spawn3(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -9186,6 +9235,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
         recordResolvedModel(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== void 0) {
+          previousFailure = operationalFailure;
+          lastError = new EmptyAgentOutputError(previousFailure.message);
+          continue;
+        }
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -9221,6 +9276,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
         recordResolvedModel(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== void 0) {
+          previousFailure = operationalFailure;
+          continue;
+        }
         if (result.text.trim().length === 0) {
           previousFailure = {
             kind: "empty-output",
@@ -9348,6 +9408,15 @@ function recordResolvedModel(record, result) {
   if (result.resolvedModel !== void 0) {
     record.resolvedModel = result.resolvedModel;
   }
+}
+function recordOperationalFailure(record, attempt, startedAtMs, result) {
+  if (result.attemptFailure === void 0) {
+    return void 0;
+  }
+  record.attempts.push(
+    attemptRecord(attempt, "failed", result.attemptFailure, result.text, null, startedAtMs, result)
+  );
+  return result.attemptFailure;
 }
 function failureFromError(error) {
   if (error instanceof Error) {

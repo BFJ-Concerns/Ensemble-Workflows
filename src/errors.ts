@@ -83,6 +83,9 @@ export class ClaudeDispatchError extends ClaudeWorkerError {}
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 
+/** The background session registered but never produced a transcript at all. */
+export class ClaudeFirstLifeTimeoutError extends ClaudeWorkerError {}
+
 export class ClaudeBlockedError extends ClaudeWorkerError {}
 
 export class ClaudeValveError extends ClaudeWorkerError {}

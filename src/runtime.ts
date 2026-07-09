@@ -31,7 +31,13 @@ import type {
   TurnResult,
   TokenUsageEvent
 } from "./types.js";
-import type { EngineAdapter, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type {
+  EngineAdapter,
+  EngineAttemptFailure,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions
+} from "./engines.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
@@ -309,6 +315,12 @@ export class EnsembleRuntime {
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         recordResolvedModel(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== undefined) {
+          previousFailure = operationalFailure;
+          lastError = new EmptyAgentOutputError(previousFailure.message);
+          continue;
+        }
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -353,6 +365,11 @@ export class EnsembleRuntime {
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         recordResolvedModel(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== undefined) {
+          previousFailure = operationalFailure;
+          continue;
+        }
         // A silent worker (timeout, hang) is not a JSON problem: label it
         // empty-output so records and retry nudges point at the real failure.
         if (result.text.trim().length === 0) {
@@ -508,6 +525,21 @@ function recordResolvedModel(record: RuntimeAgentRecord, result: TurnResult): vo
   if (result.resolvedModel !== undefined) {
     record.resolvedModel = result.resolvedModel;
   }
+}
+
+function recordOperationalFailure(
+  record: RuntimeAgentRecord,
+  attempt: number,
+  startedAtMs: number,
+  result: EngineAttemptResult
+): EngineAttemptFailure | undefined {
+  if (result.attemptFailure === undefined) {
+    return undefined;
+  }
+  record.attempts.push(
+    attemptRecord(attempt, "failed", result.attemptFailure, result.text, null, startedAtMs, result)
+  );
+  return result.attemptFailure;
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
+  ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
   ClaudeTranscriptError,
   ClaudeValveError,
@@ -11,7 +12,13 @@ import { finalAssistantText, readTranscriptFile, turnComplete, usageSince } from
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
-import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
+import type {
+  EngineAttemptContext,
+  EngineAttemptFailure,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions
+} from "./engines.js";
 import type { RuntimeEvent, TurnResult } from "./types.js";
 
 /**
@@ -23,6 +30,8 @@ export interface ClaudeEngineConfig {
   pollIntervalMs?: number;
   /** How long to wait for a steered worker to acknowledge before treating the valve as failed. */
   receiptTimeoutMs?: number;
+  /** How long a new session may exist without creating any transcript. */
+  firstLifeTimeoutMs?: number;
   /** Max in-session nudges for a blocked worker before giving up — keeps recovery bounded, never a hang. */
   blockedRecoveryBound?: number;
   /** Prefix for the unique per-dispatch session name. */
@@ -73,6 +82,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
+  #firstLifeTimeoutMs: number;
   #blockedRecoveryBound: number;
   #namePrefix: string;
 
@@ -89,11 +99,12 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2_000;
     this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 30_000;
+    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 60_000;
     this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
     this.#namePrefix = config.namePrefix ?? "ensemble";
   }
 
-  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+  async runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== undefined && this.#handle !== null;
@@ -113,6 +124,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
         // Graceful degradation: a stalled or failed worker is an empty turn, not a
         // hang. Drop the session so the next attempt re-dispatches fresh.
         await this.#teardown();
+        if (error instanceof ClaudeFirstLifeTimeoutError) {
+          return emptyTurnResult({ kind: "claude-first-life-timeout", message: error.message });
+        }
         return emptyTurnResult();
       }
       throw error;
@@ -183,11 +197,24 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
     const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
+    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    // Corrections necessarily operate on an existing transcript. The guard is
+    // only for a newly dispatched child that never starts writing one.
+    let sawLife = fromIndex > 0;
     let nudges = 0;
     let absences = 0;
 
     for (;;) {
       const status = await this.#controlPlane.poll(handle);
+
+      if (!sawLife) {
+        sawLife = (await this.#tryReadTranscript(handle)) !== null;
+        if (!sawLife && Date.now() >= firstLifeDeadline) {
+          throw new ClaudeFirstLifeTimeoutError(
+            `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+          );
+        }
+      }
 
       if (!status.present) {
         absences += 1;
@@ -365,9 +392,10 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   }
 }
 
-function emptyTurnResult(): TurnResult {
+function emptyTurnResult(attemptFailure?: EngineAttemptFailure): EngineAttemptResult {
   return {
     text: "",
+    ...(attemptFailure !== undefined ? { attemptFailure } : {}),
     deltaText: "",
     durationMs: null,
     firstDeltaMs: null,

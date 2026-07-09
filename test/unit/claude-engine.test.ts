@@ -18,6 +18,7 @@ import type {
   ClaudeSessionHandle,
   ClaudeSessionStatus
 } from "../../src/claude-control-plane.js";
+import type { RunRecordWriter } from "../../src/run-record.js";
 
 /**
  * One scripted worker turn — what a single dispatch or steer produces:
@@ -36,7 +37,7 @@ import type {
 interface ScriptedTurn {
   busyPolls?: number;
   outcome?: "complete" | "blocked";
-  assistant?: { text?: string; stop?: string; output?: number; input?: number; cached?: number };
+  assistant?: { text?: string; stop?: string; output?: number; input?: number; cached?: number; model?: string };
 }
 
 class FakeControlPlane implements ClaudeControlPlane {
@@ -151,6 +152,7 @@ function assistantLine(assistant: ScriptedTurn["assistant"] & object): string {
     type: "assistant",
     message: {
       role: "assistant",
+      ...(assistant.model !== undefined ? { model: assistant.model } : {}),
       content,
       stop_reason: assistant.stop ?? "end_turn",
       ...(usage !== undefined ? { usage } : {})
@@ -379,6 +381,27 @@ test("Claude worker tokens feed the Claude budget via the synthetic usage event"
         // totalTokens = input(5) + cached(2) + output(10), recorded as last-delta.
         assert.equal(runtime.budget.spent("claude"), 17);
         assert.equal(runtime.budget.spent("codex"), 0);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("Claude records the served model from its archived transcript", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "done", model: "claude-served" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      let resolvedModel: string | null = null;
+      runtime.setRunRecorder({
+        recordAgent: async (record) => {
+          resolvedModel = record.resolvedModel;
+        }
+      } as RunRecordWriter);
+      try {
+        await runtime.agent("work", { engine: "claude" });
+        assert.equal(resolvedModel, "claude-served");
       } finally {
         await runtime.close();
       }

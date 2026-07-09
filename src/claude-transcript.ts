@@ -29,6 +29,7 @@ export interface TranscriptFile {
 
 interface TranscriptMessage {
   role?: string;
+  model?: unknown;
   content?: unknown;
   usage?: unknown;
   stop_reason?: unknown;
@@ -83,6 +84,21 @@ export function finalAssistantText(entries: TranscriptEntry[], fromIndex = 0): s
     const text = textFromContent(entry.message?.content);
     if (text !== null && text.length > 0) {
       return text;
+    }
+  }
+  return null;
+}
+
+/** The last model id Claude reports for an assistant message in this turn. */
+export function resolvedModelSince(entries: TranscriptEntry[], fromIndex = 0): string | null {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0) {
+      return model;
     }
   }
   return null;

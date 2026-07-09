@@ -308,7 +308,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
-        recordResolvedModel(agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -352,7 +352,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
-        recordResolvedModel(agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
         // A silent worker (timeout, hang) is not a JSON problem: label it
         // empty-output so records and retry nudges point at the real failure.
         if (result.text.trim().length === 0) {
@@ -446,6 +446,7 @@ export class EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      worktree: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
@@ -504,9 +505,12 @@ function attemptRecord(
   };
 }
 
-function recordResolvedModel(record: RuntimeAgentRecord, result: TurnResult): void {
+function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {
   if (result.resolvedModel !== undefined) {
     record.resolvedModel = result.resolvedModel;
+  }
+  if (result.worktree !== undefined) {
+    record.worktree = result.worktree;
   }
 }
 

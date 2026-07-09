@@ -7,7 +7,7 @@ import {
   ClaudeValveError,
   ClaudeWorkerError
 } from "./errors.js";
-import { finalAssistantText, readTranscriptFile, turnComplete, usageSince } from "./claude-transcript.js";
+import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
@@ -229,9 +229,11 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
+    const resolvedModel = resolvedModelSince(entries, fromIndex);
     const usageEvent = this.#feedBudget(handle, entries, fromIndex);
     return {
       text,
+      ...(resolvedModel !== null ? { resolvedModel } : {}),
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,

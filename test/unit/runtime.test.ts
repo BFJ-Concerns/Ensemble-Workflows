@@ -258,6 +258,12 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
     worktreeManager
   });
   const events: string[] = [];
+  let recordedWorktree: unknown;
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      recordedWorktree = record.worktree;
+    }
+  } as RunRecordWriter);
   runtime.onEvent((event) => {
     events.push(event.method);
   });
@@ -284,6 +290,10 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
   assert.deepEqual(worktreeManager.finished, [
     { path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1", baseCommit: "fake-base-1" }
   ]);
+  assert.deepEqual(recordedWorktree, {
+    branch: "ensemble-workflows/fake-1",
+    baseCommit: "fake-base-1"
+  });
   assert.deepEqual(events, ["worktree/finished"]);
 });
 

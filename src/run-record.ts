@@ -15,7 +15,7 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MANIFEST_PATH = "manifest.json";
 
 type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
@@ -61,6 +61,7 @@ export interface RuntimeAgentRecord {
   effort: string | null;
   fallbackModel: string | null;
   resolvedModel: string | null;
+  worktree: { branch: string; baseCommit: string } | null;
   label: string | null;
   phase: string | null;
   status: AgentStatus;
@@ -100,7 +101,7 @@ interface GitState {
 }
 
 interface Manifest {
-  schema_version: 1;
+  schema_version: 2;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
@@ -149,7 +150,10 @@ interface Manifest {
 }
 
 interface UsageRollup {
-  tokens: TokenUsageBreakdown;
+  tokens: TokenUsageBreakdown & {
+    freshInputTokens: number;
+    cacheReadTokens: number;
+  };
   cost: {
     amount: number | null;
     currency: string | null;
@@ -166,6 +170,7 @@ export class RunRecordWriter {
   #agents = new Map<number, RuntimeAgentRecord>();
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
+  #sealed = false;
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -259,6 +264,9 @@ export class RunRecordWriter {
 
   async noteMeta(meta: unknown): Promise<void> {
     await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
       this.manifest.meta = {
         task: extractTask(meta),
         raw: meta
@@ -268,7 +276,12 @@ export class RunRecordWriter {
   }
 
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
-    await this.#serialise(() => this.#recordAgent(record));
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      await this.#recordAgent(record);
+    });
   }
 
   async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
@@ -304,6 +317,13 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      worktree:
+        record.worktree === null
+          ? null
+          : {
+              branch: record.worktree.branch,
+              base_commit: record.worktree.baseCommit
+            },
       label: record.label,
       phase: record.phase,
       status: record.status,
@@ -332,6 +352,9 @@ export class RunRecordWriter {
 
   async finish(options: RunRecordFinishOptions): Promise<void> {
     await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
       this.manifest.status = options.status;
       this.manifest.ended_at = options.endedAt ?? new Date().toISOString();
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
@@ -350,6 +373,10 @@ export class RunRecordWriter {
         value: options.result
       });
       await this.#writeManifest();
+      // Calls queued after finish belong to workers that outlived the workflow.
+      // The archive is now a coherent final snapshot; reopening it would race
+      // cleanup and could silently change the published result after return.
+      this.#sealed = true;
     });
   }
 
@@ -404,7 +431,7 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     const bucket = rollup[engine][model];
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last);
+        addUsage(bucket.tokens, event.last, engine);
         addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
@@ -441,21 +468,29 @@ function addProviderCost(
   }
 }
 
-function addUsage(target: TokenUsageBreakdown, delta: TokenUsageBreakdown): void {
+function addUsage(target: UsageRollup["tokens"], delta: TokenUsageBreakdown, engine: EngineName): void {
   target.cachedInputTokens += delta.cachedInputTokens;
   target.inputTokens += delta.inputTokens;
   target.outputTokens += delta.outputTokens;
   target.reasoningOutputTokens += delta.reasoningOutputTokens;
   target.totalTokens += delta.totalTokens;
+  target.cacheReadTokens += delta.cachedInputTokens;
+  // Codex reports cached input as a subset of input; Claude and opencode
+  // report cached input separately. This derived field normalises both shapes
+  // to uncached input without changing either engine's raw counters.
+  target.freshInputTokens +=
+    engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
 }
 
-function zeroUsage(): TokenUsageBreakdown {
+function zeroUsage(): UsageRollup["tokens"] {
   return {
     cachedInputTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
-    totalTokens: 0
+    totalTokens: 0,
+    freshInputTokens: 0,
+    cacheReadTokens: 0
   };
 }
 

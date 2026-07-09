@@ -8,6 +8,7 @@ import {
   finalAssistantText,
   parseTranscriptText,
   readTranscript,
+  resolvedModelSince,
   turnComplete,
   usageSince
 } from "../../src/claude-transcript.js";
@@ -16,11 +17,15 @@ import { ClaudeTranscriptError } from "../../src/errors.js";
 // A realistic assistant entry: standard Anthropic message shape, as Claude Code
 // persists it. `content` is an array of typed blocks; `usage` mirrors the API.
 // `stop` defaults to a terminal turn (end_turn); pass "tool_use" for mid-turn.
-function assistant(blocks: unknown[], options: { usage?: Record<string, number>; stop?: string } = {}): string {
+function assistant(
+  blocks: unknown[],
+  options: { usage?: Record<string, number>; stop?: string; model?: string } = {}
+): string {
   return JSON.stringify({
     type: "assistant",
     message: {
       role: "assistant",
+      ...(options.model !== undefined ? { model: options.model } : {}),
       content: blocks,
       stop_reason: options.stop ?? "end_turn",
       ...(options.usage !== undefined ? { usage: options.usage } : {})
@@ -95,6 +100,19 @@ test("finalAssistantText returns null when no assistant text exists in range", (
   const entries = parseTranscriptText(assistant([{ type: "tool_use", id: "t", name: "Bash", input: {} }]));
   assert.equal(finalAssistantText(entries), null);
   assert.equal(finalAssistantText([]), null);
+});
+
+test("resolvedModelSince returns the latest served model in range", () => {
+  const entries = parseTranscriptText(
+    [
+      assistant([textBlock("old")], { model: "claude-old" }),
+      assistant([textBlock("current")], { model: "claude-served" })
+    ].join("\n")
+  );
+
+  assert.equal(resolvedModelSince(entries), "claude-served");
+  assert.equal(resolvedModelSince(entries, 1), "claude-served");
+  assert.equal(resolvedModelSince(entries, 2), null);
 });
 
 test("usageSince sums output tokens and snapshots the final input side", () => {

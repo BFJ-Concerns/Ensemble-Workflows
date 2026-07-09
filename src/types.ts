@@ -76,6 +76,10 @@ export interface EngineTranscriptArtifact {
 export interface TurnResult {
   text: string;
   resolvedModel?: string;
+  worktree?: {
+    branch: string;
+    baseCommit: string;
+  };
   itemText?: string;
   deltaText: string;
   durationMs: number | null;

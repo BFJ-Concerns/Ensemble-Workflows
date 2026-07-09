@@ -7049,7 +7049,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const nestedThreadId = nestedThread?.id;
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
       this.#transcripts.set(threadId, {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
         events: [
           {
             direction: "client",
@@ -7086,6 +7088,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (options.model !== void 0) {
         params.model = options.model;
+        const transcript = this.#transcripts.get(threadId);
+        if (transcript !== void 0) {
+          transcript.resolvedModel = options.model;
+        }
       }
       if (options.effort !== void 0) {
         params.effort = options.effort;
@@ -7271,6 +7277,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "turn/started") {
       return;
     }
+    if (method === "model/rerouted") {
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+      }
+      return;
+    }
     if (method === "item/started") {
       const item = asJsonObject(params.item);
       const itemType = itemTypeFromItem(item);
@@ -7323,8 +7337,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
+    const resolvedModel = this.#transcripts.get(threadId)?.resolvedModel ?? null;
     const result = {
       text,
+      ...resolvedModel !== null ? { resolvedModel } : {},
       deltaText: turn.deltaText,
       durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
@@ -7383,6 +7399,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       // the run is stopped. A backstop is the orchestrator's responsibility.
       timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
         this.#turns.delete(threadId);
+        this.#transcripts.delete(threadId);
         state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
       }, timeoutMs)
     };
@@ -7701,6 +7718,19 @@ function finalAssistantText(entries, fromIndex = 0) {
   }
   return null;
 }
+function resolvedModelSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0) {
+      return model;
+    }
+  }
+  return null;
+}
 function turnComplete(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
@@ -7920,9 +7950,11 @@ var ClaudeEngineInvocation = class {
   #buildResult(handle, transcript, fromIndex) {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
+    const resolvedModel = resolvedModelSince(entries, fromIndex);
     const usageEvent = this.#feedBudget(handle, entries, fromIndex);
     return {
       text,
+      ...resolvedModel !== null ? { resolvedModel } : {},
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -8809,14 +8841,24 @@ var CodexEngineInvocation = class {
   }
   async #runIsolatedWorktreeTurn(prompt) {
     const worktree = await this.#worktreeManager.create();
+    let result;
     try {
-      return await this.#runTurnInCwd(prompt, {
+      result = await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
         sandbox: "workspace-write"
       });
-    } finally {
+    } catch (error) {
       await this.#finishWorktree(worktree);
+      throw error;
     }
+    const record = await this.#finishWorktree(worktree);
+    return {
+      ...result,
+      worktree: {
+        branch: record.branch,
+        baseCommit: record.baseCommit
+      }
+    };
   }
   async #runTurnInCwd(prompt, location) {
     const threadId = await this.#transport.openThread({
@@ -8844,6 +8886,7 @@ var CodexEngineInvocation = class {
       },
       receivedAt: Date.now()
     });
+    return record;
   }
 };
 var ClaudeEngineAdapter = class {
@@ -9185,7 +9228,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
-        recordResolvedModel(agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
           agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
@@ -9220,7 +9263,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
-        recordResolvedModel(agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
         if (result.text.trim().length === 0) {
           previousFailure = {
             kind: "empty-output",
@@ -9305,6 +9348,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      worktree: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
@@ -9344,9 +9388,12 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     transcripts: result?.transcripts ?? []
   };
 }
-function recordResolvedModel(record, result) {
+function recordTurnMetadata(record, result) {
   if (result.resolvedModel !== void 0) {
     record.resolvedModel = result.resolvedModel;
+  }
+  if (result.worktree !== void 0) {
+    record.worktree = result.worktree;
   }
 }
 function failureFromError(error) {
@@ -9935,7 +9982,7 @@ import { execFile as execFile3 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 import { fileURLToPath } from "node:url";
 var execFileAsync2 = promisify2(execFile3);
-var SCHEMA_VERSION = 1;
+var SCHEMA_VERSION = 2;
 var MANIFEST_PATH = "manifest.json";
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
@@ -9945,6 +9992,7 @@ var RunRecordWriter = class _RunRecordWriter {
   #agents = /* @__PURE__ */ new Map();
   #tmpSeq = 0;
   #writeChain = Promise.resolve();
+  #sealed = false;
   constructor(archiveDir, cwd, manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
@@ -10032,6 +10080,9 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async noteMeta(meta) {
     await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
       this.manifest.meta = {
         task: extractTask(meta),
         raw: meta
@@ -10040,7 +10091,12 @@ var RunRecordWriter = class _RunRecordWriter {
     });
   }
   async recordAgent(record) {
-    await this.#serialise(() => this.#recordAgent(record));
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      await this.#recordAgent(record);
+    });
   }
   async #recordAgent(record) {
     this.#agents.set(record.id, record);
@@ -10073,6 +10129,10 @@ var RunRecordWriter = class _RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      worktree: record.worktree === null ? null : {
+        branch: record.worktree.branch,
+        base_commit: record.worktree.baseCommit
+      },
       label: record.label,
       phase: record.phase,
       status: record.status,
@@ -10100,6 +10160,9 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async finish(options) {
     await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
       this.manifest.status = options.status;
       this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
@@ -10118,6 +10181,7 @@ var RunRecordWriter = class _RunRecordWriter {
         value: options.result
       });
       await this.#writeManifest();
+      this.#sealed = true;
     });
   }
   async #writeJson(relativePath, value) {
@@ -10168,7 +10232,7 @@ function buildCostRollup(records) {
     const bucket = rollup[engine][model];
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last);
+        addUsage(bucket.tokens, event.last, engine);
         addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
@@ -10197,12 +10261,14 @@ function addProviderCost(target, event, unlikeCurrencies) {
     target.currency = currency;
   }
 }
-function addUsage(target, delta) {
+function addUsage(target, delta, engine) {
   target.cachedInputTokens += delta.cachedInputTokens;
   target.inputTokens += delta.inputTokens;
   target.outputTokens += delta.outputTokens;
   target.reasoningOutputTokens += delta.reasoningOutputTokens;
   target.totalTokens += delta.totalTokens;
+  target.cacheReadTokens += delta.cachedInputTokens;
+  target.freshInputTokens += engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
 }
 function zeroUsage2() {
   return {
@@ -10210,7 +10276,9 @@ function zeroUsage2() {
     inputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
-    totalTokens: 0
+    totalTokens: 0,
+    freshInputTokens: 0,
+    cacheReadTokens: 0
   };
 }
 async function deriveNamespace(cwd) {

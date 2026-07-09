@@ -59,6 +59,7 @@ interface TurnState {
 
 interface ThreadTranscript {
   events: JsonObject[];
+  resolvedModel: string | null;
 }
 
 export interface CodexAppServerTransportOptions {
@@ -138,7 +139,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
       this.#transcripts.set(threadId, {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
         events: [
           {
             direction: "client",
@@ -177,6 +180,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (options.model !== undefined) {
         params.model = options.model;
+        const transcript = this.#transcripts.get(threadId);
+        if (transcript !== undefined) {
+          transcript.resolvedModel = options.model;
+        }
       }
       if (options.effort !== undefined) {
         params.effort = options.effort;
@@ -393,6 +400,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
 
+    if (method === "model/rerouted") {
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== undefined && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+      }
+      return;
+    }
+
     if (method === "item/started") {
       const item = asJsonObject(params.item);
       const itemType = itemTypeFromItem(item);
@@ -451,8 +467,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
+    const resolvedModel = this.#transcripts.get(threadId)?.resolvedModel ?? null;
     const result: TurnResult = {
       text,
+      ...(resolvedModel !== null ? { resolvedModel } : {}),
       deltaText: turn.deltaText,
       durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
@@ -519,6 +537,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
           ? undefined
           : setTimeout(() => {
               this.#turns.delete(threadId);
+              this.#transcripts.delete(threadId);
               state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
             }, timeoutMs)
     };

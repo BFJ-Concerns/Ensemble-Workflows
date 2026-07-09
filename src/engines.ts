@@ -185,15 +185,26 @@ class CodexEngineInvocation implements EngineInvocation {
 
   async #runIsolatedWorktreeTurn(prompt: string): Promise<TurnResult> {
     const worktree = await this.#worktreeManager.create();
+    let result: TurnResult;
 
     try {
-      return await this.#runTurnInCwd(prompt, {
+      result = await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
         sandbox: "workspace-write"
       });
-    } finally {
+    } catch (error) {
       await this.#finishWorktree(worktree);
+      throw error;
     }
+
+    const record = await this.#finishWorktree(worktree);
+    return {
+      ...result,
+      worktree: {
+        branch: record.branch,
+        baseCommit: record.baseCommit
+      }
+    };
   }
 
   async #runTurnInCwd(prompt: string, location: { cwd?: string; sandbox: SandboxMode }): Promise<TurnResult> {
@@ -211,7 +222,7 @@ class CodexEngineInvocation implements EngineInvocation {
     });
   }
 
-  async #finishWorktree(worktree: IsolatedWorktree): Promise<void> {
+  async #finishWorktree(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
     const record = await this.#worktreeManager.finish(worktree);
     this.#onWorktreeFinished(record);
     this.#onEvent({
@@ -224,6 +235,7 @@ class CodexEngineInvocation implements EngineInvocation {
       },
       receivedAt: Date.now()
     });
+    return record;
   }
 }
 

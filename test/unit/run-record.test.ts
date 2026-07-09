@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -38,14 +38,14 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v1-manifest-keys.json", "utf8"));
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v1-agent-keys.json", "utf8"));
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-manifest-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-agent-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
-  assert.equal(manifest.schema_version, 1);
+  assert.equal(manifest.schema_version, 2);
   assert.equal(manifest.kind, "run_manifest");
-  assert.equal(agent.schema_version, 1);
+  assert.equal(agent.schema_version, 2);
   assert.equal(agent.kind, "agent_record");
 });
 
@@ -81,6 +81,52 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
   assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.amount, 0.002);
   assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.source, "provider-reported");
   assert.equal("total" in manifest.cost_rollup, false);
+});
+
+test("cost roll-up preserves raw usage and adds comparable fresh-input and cache-read fields", async () => {
+  const cwd = await gitRepo("ensemble-record-derived-tokens-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-derived-tokens",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'tokens' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 27)));
+  await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, 0, 25)));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    cost_rollup: Record<
+      string,
+      Record<string, { tokens: TokenUsageBreakdown & { freshInputTokens: number; cacheReadTokens: number } }>
+    >;
+  };
+  const codex = manifest.cost_rollup.codex?.default?.tokens;
+  const claude = manifest.cost_rollup.claude?.default?.tokens;
+  assert.ok(codex);
+  assert.ok(claude);
+  assert.deepEqual(codex, {
+    cachedInputTokens: 8,
+    inputTokens: 20,
+    outputTokens: 5,
+    reasoningOutputTokens: 2,
+    totalTokens: 27,
+    freshInputTokens: 12,
+    cacheReadTokens: 8
+  });
+  assert.deepEqual(claude, {
+    cachedInputTokens: 8,
+    inputTokens: 12,
+    outputTokens: 5,
+    reasoningOutputTokens: 0,
+    totalTokens: 25,
+    freshInputTokens: 12,
+    cacheReadTokens: 8
+  });
 });
 
 test("standalone git diff write stages beside its destination and succeeds", async () => {
@@ -142,6 +188,60 @@ test("concurrent agent settles serialise cleanly and leave no temp litter", asyn
   }
   const litter = (await readdir(writer.archiveDir, { recursive: true })).filter((name) => name.endsWith(".tmp"));
   assert.deepEqual(litter, []);
+});
+
+test("failed-run finalisation drains queued records and seals the archive against late writes", async () => {
+  const cwd = await gitRepo("ensemble-record-failed-seal-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-failed-seal",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'failed' };\nthrow new Error('boom');\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const inFlight = writer.recordAgent(agentRecord(1, "codex", null, 3));
+  const finalising = writer.finish({ status: "failed", exitCode: 1, result: { partial: true } });
+  await Promise.all([inFlight, finalising]);
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    status: string;
+    files: Array<{ path: string }>;
+  };
+  assert.equal(manifest.status, "failed");
+  assert.ok(manifest.files.some((entry) => entry.path === "agents/000001/agent.json"));
+
+  await rm(writer.archiveDir, { recursive: true });
+  await writer.recordAgent(agentRecord(2, "codex", null, 4));
+});
+
+test("agent record includes the isolated worktree branch and base commit", async () => {
+  const cwd = await gitRepo("ensemble-record-worktree-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-worktree",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'worktree' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.recordAgent({
+    ...agentRecord(1, "codex", null, 3),
+    worktree: { branch: "ensemble-workflows/example", baseCommit: "0123456789abcdef" }
+  });
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    worktree: unknown;
+  };
+  assert.deepEqual(agent.worktree, {
+    branch: "ensemble-workflows/example",
+    base_commit: "0123456789abcdef"
+  });
 });
 
 test("archived dirty diff captures staged changes", async () => {
@@ -313,6 +413,7 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
     effort: null,
     fallbackModel: null,
     resolvedModel: null,
+    worktree: null,
     label: null,
     phase: null,
     status: "complete" as const,
@@ -344,6 +445,12 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
       }
     ]
   };
+}
+
+function agentRecordWithUsage(id: number, engine: EngineName, tokenUsage: TokenUsageBreakdown) {
+  const record = agentRecord(id, engine, null, 0);
+  record.attempts[0]!.tokenUsageEvents = [tokenUsageEventFromBreakdown(tokenUsage)];
+  return record;
 }
 
 class CaptureStream extends Writable {
@@ -411,18 +518,25 @@ function turn(text: string, tokens: number): TurnResult {
 }
 
 function tokenUsageEvent(totalTokens: number, cost?: number, currency?: string) {
-  const usage = {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: totalTokens,
-    reasoningOutputTokens: 0,
-    totalTokens
-  };
+  return tokenUsageEventFromBreakdown(usage(0, 0, totalTokens, 0, totalTokens), cost, currency);
+}
+
+function usage(
+  inputTokens: number,
+  cachedInputTokens: number,
+  outputTokens: number,
+  reasoningOutputTokens: number,
+  totalTokens: number
+): TokenUsageBreakdown {
+  return { cachedInputTokens, inputTokens, outputTokens, reasoningOutputTokens, totalTokens };
+}
+
+function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: number, currency?: string) {
   return {
     threadId: "thread",
     turnId: "turn",
-    last: usage,
-    total: usage,
+    last: tokenUsage,
+    total: tokenUsage,
     raw: {
       ...(cost === undefined ? {} : { cost }),
       ...(currency === undefined ? {} : { currency })

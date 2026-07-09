@@ -239,12 +239,13 @@ partial archive.
 
 Every JSON artefact carries:
 
-- `schema_version`: currently `1`.
+- `schema_version`: currently `2`. Version 2 adds worktree provenance and
+  cross-engine token derivations while retaining every version 1 field.
 - `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
-- `schema_version`: `1`.
+- `schema_version`: `2`.
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
@@ -264,16 +265,27 @@ The manifest is `manifest.json`. Its top-level fields are:
   omitted by a worker are grouped as `"default"`. Cost entries carry
   `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
   runtime only has token data, amount/currency are `null` and source is
-  `estimated`.
+  `estimated`. Each `tokens` object preserves the engine-reported
+  `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`,
+  and `totalTokens`, then adds two derived fields with one cross-engine meaning:
+  `freshInputTokens` is uncached input and `cacheReadTokens` is input served
+  from cache. Codex reports cached input as a subset of `inputTokens`, so its
+  fresh input is `inputTokens - cachedInputTokens`; Claude and opencode report
+  cached input separately, so their `inputTokens` is already fresh input.
+  Claude's `outputTokens` includes thinking, which its transcript does not split
+  out; Codex reports reasoning separately in `reasoningOutputTokens`. These
+  differences remain visible in the raw fields, and figures are never summed
+  across engines.
 - `files`: integrity table for archived artefacts, each with `path`, `size`, and
   `sha256`. `manifest.json` is excluded to avoid self-hashing recursion.
 
 Agent records live at `agents/<zero-padded-id>/agent.json`:
 
-- `schema_version`: `1`.
+- `schema_version`: `2`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
 - `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
+- `worktree`: isolated worktree `branch` and `base_commit`, otherwise `null`.
 - `label`, `phase`, and `status`.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.

@@ -1,0 +1,20 @@
+[
+  "args",
+  "cli_flags",
+  "cost_rollup",
+  "ended_at",
+  "environment",
+  "files",
+  "git",
+  "harness",
+  "kind",
+  "meta",
+  "namespace",
+  "result",
+  "run_id",
+  "run_uuid",
+  "schema_version",
+  "started_at",
+  "status",
+  "workflow"
+]

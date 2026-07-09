@@ -79,6 +79,7 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
 
     const result = await transport.runTurn(threadId, "hello?", {});
     assert.equal(result.text, "hello");
+    assert.equal(result.resolvedModel, "gpt-test-served");
     assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
     assert.equal(transport.openTranscripts(), 0);
   } finally {
@@ -111,7 +112,7 @@ reader.on("line", (line) => {
   }
   if (message.method === "thread/start") {
     threadCounter += 1;
-    send({ id: message.id, result: { threadId: "thread-" + threadCounter } });
+    send({ id: message.id, result: { threadId: "thread-" + threadCounter, model: "gpt-test-served" } });
     return;
   }
   if (message.method === "turn/start") {

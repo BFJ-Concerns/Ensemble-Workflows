@@ -7001,6 +7001,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
   #transcripts = /* @__PURE__ */ new Map();
+  #resolvedThreadDefaults = /* @__PURE__ */ new Map();
   #stderrTail = [];
   #hasExited = false;
   #onEvent;
@@ -7049,6 +7050,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const nestedThreadId = nestedThread?.id;
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
+      this.#resolvedThreadDefaults.set(threadId, {
+        ...typeof resultObject?.model === "string" ? { model: resultObject.model } : {},
+        ...typeof resultObject?.reasoningEffort === "string" ? { effort: resultObject.reasoningEffort } : {}
+      });
       this.#transcripts.set(threadId, {
         events: [
           {
@@ -7101,6 +7106,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     } catch (error) {
       this.#turns.delete(threadId);
       this.#transcripts.delete(threadId);
+      this.#resolvedThreadDefaults.delete(threadId);
       clearTimeout(state.timeout);
       throw error;
     }
@@ -7125,6 +7131,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -7323,6 +7330,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
+    const resolvedDefaults = this.#resolvedThreadDefaults.get(threadId);
     const result = {
       text,
       deltaText: turn.deltaText,
@@ -7340,10 +7348,17 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         }
       ]
     };
+    if (resolvedDefaults?.model !== void 0) {
+      result.resolvedModel = resolvedDefaults.model;
+    }
+    if (resolvedDefaults?.effort !== void 0) {
+      result.resolvedEffort = resolvedDefaults.effort;
+    }
     if (turn.itemText !== void 0) {
       result.itemText = turn.itemText;
     }
     this.#transcripts.delete(threadId);
+    this.#resolvedThreadDefaults.delete(threadId);
     turn.resolve(result);
   }
   #appendTranscript(threadId, event) {
@@ -7419,6 +7434,7 @@ ${this.#stderrTail.join("\n")}` : "";
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
@@ -9185,6 +9201,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
@@ -9220,6 +9237,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         if (result.text.trim().length === 0) {
           previousFailure = {
@@ -9262,6 +9280,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
     for (const listener of this.#eventListeners) {
       listener(event);
     }
+  }
+  #recordResolvedCodexDefault(engine, options, agentId, record, result) {
+    if (engine !== "codex" || options.model !== void 0 || record.resolvedModel !== null || result.resolvedModel === void 0) {
+      return;
+    }
+    this.#emitEvent({
+      method: "codex/unpinnedModelResolved",
+      params: {
+        agentId,
+        label: options.label ?? null,
+        model: result.resolvedModel,
+        effort: result.resolvedEffort ?? null
+      },
+      receivedAt: Date.now()
+    });
   }
   #registerEngineCaps() {
     for (const name of this.#engines.names()) {
@@ -10680,6 +10713,15 @@ async function runEnsembleCli(argv, options = {}) {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         stderr.write(`[claude] agent ${agentId}${label} runs unpinned \u2014 no model: set, the ambient default applies
+`);
+        return;
+      }
+      if (event.method === "codex/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
+        stderr.write(`[codex] agent ${agentId}${label} runs unpinned \u2014 resolved ambient default: ${model}${effort}
 `);
         return;
       }

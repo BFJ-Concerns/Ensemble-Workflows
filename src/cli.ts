@@ -138,6 +138,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model: set, the ambient default applies\n`);
         return;
       }
+      if (event.method === "codex/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
+        stderr.write(`[codex] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}${effort}\n`);
+        return;
+      }
       if (event.method === "runRecord/writeFailed") {
         const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
         stderr.write(`[run-record] failed to archive an agent record: ${message}\n`);

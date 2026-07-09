@@ -308,6 +308,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         const text = result.text.trim();
         if (text.length > 0) {
@@ -352,6 +353,7 @@ export class EnsembleRuntime {
           attempt,
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         // A silent worker (timeout, hang) is not a JSON problem: label it
         // empty-output so records and retry nudges point at the real failure.
@@ -399,6 +401,28 @@ export class EnsembleRuntime {
     for (const listener of this.#eventListeners) {
       listener(event);
     }
+  }
+
+  #recordResolvedCodexDefault(
+    engine: EngineName,
+    options: Partial<AgentOptions>,
+    agentId: number,
+    record: RuntimeAgentRecord,
+    result: TurnResult
+  ): void {
+    if (engine !== "codex" || options.model !== undefined || record.resolvedModel !== null || result.resolvedModel === undefined) {
+      return;
+    }
+    this.#emitEvent({
+      method: "codex/unpinnedModelResolved",
+      params: {
+        agentId,
+        label: options.label ?? null,
+        model: result.resolvedModel,
+        effort: result.resolvedEffort ?? null
+      },
+      receivedAt: Date.now()
+    });
   }
 
   #registerEngineCaps(): void {

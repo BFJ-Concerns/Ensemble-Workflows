@@ -61,6 +61,11 @@ interface ThreadTranscript {
   events: JsonObject[];
 }
 
+interface ResolvedThreadDefaults {
+  model?: string;
+  effort?: string;
+}
+
 export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
@@ -81,6 +86,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
   #transcripts = new Map<string, ThreadTranscript>();
+  #resolvedThreadDefaults = new Map<string, ResolvedThreadDefaults>();
   #stderrTail: string[] = [];
   #hasExited = false;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
@@ -138,6 +144,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
+      // codex-cli 0.144.0's v2 ThreadStartResponse reports the effective model
+      // and nullable reasoning effort. Retain them until this ephemeral thread's
+      // turn finishes so an unpinned call can disclose what it actually used.
+      this.#resolvedThreadDefaults.set(threadId, {
+        ...(typeof resultObject?.model === "string" ? { model: resultObject.model } : {}),
+        ...(typeof resultObject?.reasoningEffort === "string" ? { effort: resultObject.reasoningEffort } : {})
+      });
       this.#transcripts.set(threadId, {
         events: [
           {
@@ -195,6 +208,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // A failed turn's transcript has no reader (failed attempts archive no
       // transcripts), so drop it rather than let the map grow.
       this.#transcripts.delete(threadId);
+      this.#resolvedThreadDefaults.delete(threadId);
       clearTimeout(state.timeout);
       throw error;
     }
@@ -222,6 +236,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
 
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
@@ -451,6 +466,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
+    const resolvedDefaults = this.#resolvedThreadDefaults.get(threadId);
     const result: TurnResult = {
       text,
       deltaText: turn.deltaText,
@@ -468,12 +484,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
         }
       ]
     };
+    if (resolvedDefaults?.model !== undefined) {
+      result.resolvedModel = resolvedDefaults.model;
+    }
+    if (resolvedDefaults?.effort !== undefined) {
+      result.resolvedEffort = resolvedDefaults.effort;
+    }
     if (turn.itemText !== undefined) {
       result.itemText = turn.itemText;
     }
     // The transcript is snapshotted into the result above; keeping the map entry
     // would retain every attempt's full event log for the life of the run.
     this.#transcripts.delete(threadId);
+    this.#resolvedThreadDefaults.delete(threadId);
     turn.resolve(result);
   }
 
@@ -558,6 +581,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
   }
 }
 

@@ -653,7 +653,8 @@ class ScheduledTextEngine implements EngineAdapter {
 
   constructor(
     readonly name: EngineName,
-    concurrency: number
+    concurrency: number,
+    readonly resolvedDefault?: { model: string; effort?: string }
   ) {
     this.concurrency = concurrency;
     this.scheduler = new Scheduler(concurrency);
@@ -670,7 +671,7 @@ class ScheduledTextEngine implements EngineAdapter {
         this.maxActive = Math.max(this.maxActive, this.active);
         await new Promise((resolve) => setTimeout(resolve, 20));
         this.active -= 1;
-        return turn(`${this.name}:${prompt}`);
+        return turn(`${this.name}:${prompt}`, this.resolvedDefault);
       }
     };
   }
@@ -714,14 +715,16 @@ class HangOnPromptEngine implements EngineAdapter {
   }
 }
 
-function turn(text: string): TurnResult {
+function turn(text: string, resolvedDefault?: { model: string; effort?: string }): TurnResult {
   return {
     text,
     deltaText: text,
     durationMs: 1,
     firstDeltaMs: 1,
     items: {},
-    tokenUsageEvents: []
+    tokenUsageEvents: [],
+    ...(resolvedDefault !== undefined ? { resolvedModel: resolvedDefault.model } : {}),
+    ...(resolvedDefault?.effort !== undefined ? { resolvedEffort: resolvedDefault.effort } : {})
   };
 }
 
@@ -790,4 +793,57 @@ test("CLI warns on unpinned Claude calls and stays quiet when defaults pin the m
   assert.equal(pinnedExit, 0);
   assert.doesNotMatch(pinnedStderr.text(), /runs unpinned/);
   assert.equal(pinnedStdout.text(), "\"claude:model from defaults\"\n");
+});
+
+test("CLI logs the resolved Codex default and stays quiet when the model is pinned", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-codex-default-"));
+  const unpinnedScript = path.join(directory, "unpinned.js");
+  await writeFile(
+    unpinnedScript,
+    `
+      export const meta = { name: "unpinned-codex" };
+      return await agent("ambient model", { engine: "codex", label: "loose" });
+    `
+  );
+  const pinnedScript = path.join(directory, "pinned.js");
+  await writeFile(
+    pinnedScript,
+    `
+      export const meta = { name: "pinned-codex" };
+      export const defaults = { codex: { model: "gpt-pinned" } };
+      return await agent("explicit model", { engine: "codex" });
+    `
+  );
+
+  const makeRuntime = async () =>
+    new EnsembleRuntime({
+      engines: new EngineRegistry([
+        new ScheduledTextEngine("codex", 2, { model: "gpt-resolved-default", effort: "high" })
+      ]),
+      defaultTurnTimeoutMs: 1_000,
+      defaultMaxAttempts: 1
+    });
+
+  const unpinnedStderr = new CaptureStream();
+  const unpinnedExit = await runEnsembleCli([unpinnedScript], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: unpinnedStderr,
+    createRuntime: makeRuntime
+  });
+  assert.equal(unpinnedExit, 0);
+  assert.equal(
+    unpinnedStderr.text(),
+    "[codex] agent 1 (loose) runs unpinned — resolved ambient default: gpt-resolved-default (high effort)\n"
+  );
+
+  const pinnedStderr = new CaptureStream();
+  const pinnedExit = await runEnsembleCli([pinnedScript], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: pinnedStderr,
+    createRuntime: makeRuntime
+  });
+  assert.equal(pinnedExit, 0);
+  assert.doesNotMatch(pinnedStderr.text(), /resolved ambient default/);
 });

@@ -13,6 +13,8 @@ export interface SavedWorkflowMeta {
 export interface SavedWorkflowEntry extends SavedWorkflowMeta {
   scriptPath: string;
   scope: "project" | "user";
+  /** True when project-first name resolution makes this user entry unreachable by name. */
+  shadowed: boolean;
 }
 
 export interface WorkflowRegistryDirs {
@@ -96,9 +98,13 @@ export async function listSavedWorkflows(options: {
     listRegistryDir(dirs.project, "project", options.readMeta),
     listRegistryDir(dirs.user, "user", options.readMeta)
   ]);
+  const projectNames = new Set(project.entries.map((entry) => entry.name));
 
   return {
-    entries: [...project.entries, ...user.entries].sort(compareEntries),
+    entries: [
+      ...project.entries,
+      ...user.entries.map((entry) => ({ ...entry, shadowed: projectNames.has(entry.name) }))
+    ].sort(compareEntries),
     notes: [...project.notes, ...user.notes]
   };
 }
@@ -179,7 +185,7 @@ async function listRegistryDir(
         notes.push({ scriptPath, message: "meta.name must be a string" });
         continue;
       }
-      entries.push({ ...meta, scriptPath, scope });
+      entries.push({ ...meta, scriptPath, scope, shadowed: false });
     } catch (error) {
       notes.push({ scriptPath, message: formatError(error) });
     }

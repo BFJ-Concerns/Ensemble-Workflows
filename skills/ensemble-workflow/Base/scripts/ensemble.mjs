@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path13) {
-      let input = path13;
+    function removeDotSegments(path12) {
+      let input = path12;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path13, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
+        const [path12, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6570,12 +6570,12 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path12 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile7 } from "node:fs/promises";
-import path10 from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import path9 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/runtime.ts
@@ -7003,6 +7003,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
   #transcripts = /* @__PURE__ */ new Map();
+  #resolvedThreadDefaults = /* @__PURE__ */ new Map();
   #stderrTail = [];
   #hasExited = false;
   #onEvent;
@@ -7051,6 +7052,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const nestedThreadId = nestedThread?.id;
     const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
     if (threadId !== null) {
+      this.#resolvedThreadDefaults.set(threadId, {
+        ...typeof resultObject?.model === "string" ? { model: resultObject.model } : {},
+        ...typeof resultObject?.reasoningEffort === "string" ? { effort: resultObject.reasoningEffort } : {}
+      });
       this.#transcripts.set(threadId, {
         events: [
           {
@@ -7103,6 +7108,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     } catch (error) {
       this.#turns.delete(threadId);
       this.#transcripts.delete(threadId);
+      this.#resolvedThreadDefaults.delete(threadId);
       clearTimeout(state.timeout);
       throw error;
     }
@@ -7127,6 +7133,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -7325,6 +7332,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     const text = turn.itemText ?? turn.deltaText;
+    const resolvedDefaults = this.#resolvedThreadDefaults.get(threadId);
     const result = {
       text,
       deltaText: turn.deltaText,
@@ -7342,10 +7350,17 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         }
       ]
     };
+    if (resolvedDefaults?.model !== void 0) {
+      result.resolvedModel = resolvedDefaults.model;
+    }
+    if (resolvedDefaults?.effort !== void 0) {
+      result.resolvedEffort = resolvedDefaults.effort;
+    }
     if (turn.itemText !== void 0) {
       result.itemText = turn.itemText;
     }
     this.#transcripts.delete(threadId);
+    this.#resolvedThreadDefaults.delete(threadId);
     turn.resolve(result);
   }
   #appendTranscript(threadId, event) {
@@ -7421,6 +7436,7 @@ ${this.#stderrTail.join("\n")}` : "";
     }
     this.#turns.clear();
     this.#transcripts.clear();
+    this.#resolvedThreadDefaults.clear();
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
@@ -7712,14 +7728,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path13) {
+async function readTranscriptFile(path12) {
   let text;
   try {
-    text = await readFile(path13, "utf8");
+    text = await readFile(path12, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path13}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path12}`, { cause: error });
   }
-  return { path: path13, text, entries: parseTranscriptText(text) };
+  return { path: path12, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -7988,11 +8004,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path13 = await this.#controlPlane.transcriptPath(handle);
-    if (path13 === null) {
+    const path12 = await this.#controlPlane.transcriptPath(handle);
+    if (path12 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path13);
+    return readTranscriptFile(path12);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -9234,6 +9250,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
         if (operationalFailure !== void 0) {
@@ -9275,6 +9292,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           attempt,
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
+        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
         recordResolvedModel(agentRecord, result);
         const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
         if (operationalFailure !== void 0) {
@@ -9322,6 +9340,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
     for (const listener of this.#eventListeners) {
       listener(event);
     }
+  }
+  #recordResolvedCodexDefault(engine, options, agentId, record, result) {
+    if (engine !== "codex" || options.model !== void 0 || record.resolvedModel !== null || result.resolvedModel === void 0) {
+      return;
+    }
+    this.#emitEvent({
+      method: "codex/unpinnedModelResolved",
+      params: {
+        agentId,
+        label: options.label ?? null,
+        model: result.resolvedModel,
+        effort: result.resolvedEffort ?? null
+      },
+      receivedAt: Date.now()
+    });
   }
   #registerEngineCaps() {
     for (const name of this.#engines.names()) {
@@ -9565,8 +9598,12 @@ async function listSavedWorkflows(options) {
     listRegistryDir(dirs.project, "project", options.readMeta),
     listRegistryDir(dirs.user, "user", options.readMeta)
   ]);
+  const projectNames = new Set(project.entries.map((entry) => entry.name));
   return {
-    entries: [...project.entries, ...user.entries].sort(compareEntries),
+    entries: [
+      ...project.entries,
+      ...user.entries.map((entry) => ({ ...entry, shadowed: projectNames.has(entry.name) }))
+    ].sort(compareEntries),
     notes: [...project.notes, ...user.notes]
   };
 }
@@ -9625,7 +9662,7 @@ async function listRegistryDir(dir, scope, readMeta) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
         continue;
       }
-      entries.push({ ...meta, scriptPath, scope });
+      entries.push({ ...meta, scriptPath, scope, shadowed: false });
     } catch (error) {
       notes.push({ scriptPath, message: formatError2(error) });
     }
@@ -10551,111 +10588,6 @@ function resolveStatusDir(env, cwd) {
   }
 }
 
-// src/status-line.ts
-import { readFile as readFile6 } from "node:fs/promises";
-import path9 from "node:path";
-var STALE_MS = 3e4;
-function formatStatusLine(snapshot, nowMs) {
-  const parts = ["ensemble"];
-  const head = snapshot.currentPhase ?? snapshot.workflow;
-  if (head !== null && head.length > 0) {
-    parts.push(`\u25B8 ${head}`);
-  }
-  for (const [engine, progress] of Object.entries(snapshot.engines)) {
-    const segment = engineSegment(engine, progress);
-    if (segment !== null) {
-      parts.push(segment);
-    }
-  }
-  const { done, failed } = snapshot.totals;
-  if (done > 0 || failed > 0) {
-    parts.push(failed > 0 ? `\u2713${done} \u2717${failed}` : `\u2713${done}`);
-  }
-  const endedAt = snapshot.finishedAt ?? nowMs;
-  parts.push(formatDuration(Math.max(0, endedAt - snapshot.startedAt)));
-  return parts.join(" \xB7 ");
-}
-async function readStatusLine(dir, now) {
-  if (dir === null || dir.length === 0) {
-    return null;
-  }
-  let raw;
-  try {
-    raw = await readFile6(path9.join(dir, STATUS_FILENAME), "utf8");
-  } catch {
-    return null;
-  }
-  let snapshot;
-  try {
-    snapshot = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!isProgressSnapshot(snapshot)) {
-    return null;
-  }
-  const nowMs = now();
-  if (snapshot.state === "finished") {
-    return null;
-  }
-  if (nowMs - snapshot.updatedAt > STALE_MS) {
-    return null;
-  }
-  return formatStatusLine(snapshot, nowMs);
-}
-function engineSegment(engine, progress) {
-  if (progress === void 0) {
-    return null;
-  }
-  const busy = progress.active > 0 || progress.queued > 0;
-  const spent = progress.spent > 0;
-  if (!busy && !spent) {
-    return null;
-  }
-  let segment = engine;
-  if (busy) {
-    segment += ` \u26A1${progress.active}`;
-    if (progress.queued > 0) {
-      segment += `\u23F3${progress.queued}`;
-    }
-  }
-  if (spent) {
-    segment += ` ${formatTokens(progress.spent)}`;
-    if (progress.ceiling !== null) {
-      segment += `/${formatTokens(progress.ceiling)}`;
-    }
-  }
-  return segment;
-}
-function formatTokens(tokens) {
-  if (tokens < 1e3) {
-    return String(tokens);
-  }
-  const thousands = tokens / 1e3;
-  return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
-}
-function formatDuration(ms) {
-  const totalSeconds = Math.floor(ms / 1e3);
-  const seconds = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const hours = Math.floor(totalMinutes / 60);
-  if (hours > 0) {
-    return `${hours}h${String(minutes).padStart(2, "0")}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m${String(seconds).padStart(2, "0")}s`;
-  }
-  return `${seconds}s`;
-}
-function isProgressSnapshot(value) {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value;
-  return candidate.schema === 1 && typeof candidate.runId === "string" && (candidate.state === "running" || candidate.state === "finished") && typeof candidate.startedAt === "number" && typeof candidate.updatedAt === "number" && typeof candidate.totals === "object" && candidate.totals !== null && typeof candidate.engines === "object" && candidate.engines !== null;
-}
-
 // src/index.ts
 async function createRuntime2(options = {}) {
   return createRuntime(options);
@@ -10667,14 +10599,6 @@ async function runEnsembleCli(argv, options = {}) {
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  if (argv[0] === "--statusline") {
-    const line = await readStatusLine(options.statusDir ?? null, options.now ?? (() => Date.now()));
-    if (line !== null) {
-      stdout.write(`${line}
-`);
-    }
-    return 0;
-  }
   if (argv[0] === "workflows") {
     if (argv.length > 1) {
       stderr.write("Usage: ensemble workflows\n");
@@ -10682,7 +10606,8 @@ async function runEnsembleCli(argv, options = {}) {
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
     for (const entry of listing.entries) {
-      stdout.write(`${entry.name}	${entry.description}	${entry.scope}	${entry.scriptPath}
+      const scope = entry.shadowed ? "user (shadowed by project)" : entry.scope;
+      stdout.write(`${entry.name}	${entry.description}	${scope}	${entry.scriptPath}
 `);
     }
     for (const note of listing.notes) {
@@ -10693,7 +10618,7 @@ async function runEnsembleCli(argv, options = {}) {
   }
   let invocation;
   try {
-    invocation = parseInvocation(argv);
+    invocation = await parseInvocation(argv, cwd);
   } catch (error) {
     stderr.write(`${formatError3(error)}
 `);
@@ -10710,8 +10635,8 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   try {
-    const scriptPath = path10.resolve(cwd, invocation.scriptArg);
-    const source = await readFile7(scriptPath, "utf8");
+    const scriptPath = path9.resolve(cwd, invocation.scriptArg);
+    const source = await readFile6(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
@@ -10749,6 +10674,15 @@ async function runEnsembleCli(argv, options = {}) {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
         stderr.write(`[claude] agent ${agentId}${label} runs unpinned \u2014 no model: set, the ambient default applies
+`);
+        return;
+      }
+      if (event.method === "codex/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
+        stderr.write(`[codex] agent ${agentId}${label} runs unpinned \u2014 resolved ambient default: ${model}${effort}
 `);
         return;
       }
@@ -10876,7 +10810,7 @@ function watchWorkflowInterrupts() {
     }
   };
 }
-function parseInvocation(argv) {
+async function parseInvocation(argv, cwd) {
   const split = splitTuningFlags(argv);
   const parsed = parseArgs({
     args: split.tuningArgs,
@@ -10891,7 +10825,7 @@ function parseInvocation(argv) {
   });
   const jsonArgs = parsed.values["json-args"];
   const positionalArgs = split.scriptArg === void 0 ? [] : split.scriptArgs;
-  const args = jsonArgs === void 0 ? positionalArgs : parseJsonArgs(jsonArgs);
+  const args = jsonArgs === void 0 ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
@@ -10947,12 +10881,27 @@ function isKnownOption(value) {
 function isKnownInlineOption(value) {
   return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
 }
-function parseJsonArgs(value) {
+async function parseJsonArgs(value, cwd) {
+  let source = value;
+  let sourceDescription = "the argument";
+  if (value.startsWith("@")) {
+    const filename = value.slice(1);
+    if (filename.length === 0) {
+      throw new CliUsageError("--json-args @file requires a file path");
+    }
+    const filePath = path9.resolve(cwd, filename);
+    sourceDescription = filePath;
+    try {
+      source = await readFile6(filePath, "utf8");
+    } catch (error) {
+      throw new CliUsageError(`--json-args could not read ${filePath}: ${formatError3(error)}`);
+    }
+  }
   try {
-    return JSON.parse(value);
+    return JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`--json-args must be valid JSON: ${message}`);
+    throw new CliUsageError(`--json-args ${sourceDescription} must contain valid JSON: ${message}`);
   }
 }
 function parseEngineMap(values, parseValue, flagName) {
@@ -11005,7 +10954,7 @@ function parseTimeoutMs(value) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");
@@ -11027,7 +10976,7 @@ function formatError3(error) {
 
 // src/node-version.ts
 import { readFileSync } from "node:fs";
-import path11 from "node:path";
+import path10 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
   if (">=24.14.0".trim().length > 0) {
@@ -11080,9 +11029,9 @@ function parseVersion(version) {
   };
 }
 function readPackageMetadata(fromUrl) {
-  let current = path11.dirname(fileURLToPath2(fromUrl));
+  let current = path10.dirname(fileURLToPath2(fromUrl));
   while (true) {
-    const candidate = path11.join(current, "package.json");
+    const candidate = path10.join(current, "package.json");
     try {
       const metadata = JSON.parse(readFileSync(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
@@ -11090,7 +11039,7 @@ function readPackageMetadata(fromUrl) {
       }
     } catch {
     }
-    const parent = path11.dirname(current);
+    const parent = path10.dirname(current);
     if (parent === current) {
       throw new Error("Could not locate ensemble-workflows package.json");
     }
@@ -11099,7 +11048,7 @@ function readPackageMetadata(fromUrl) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path11.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {

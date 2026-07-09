@@ -76,6 +76,7 @@ export interface EngineTranscriptArtifact {
 export interface TurnResult {
   text: string;
   resolvedModel?: string;
+  resolvedEffort?: string;
   itemText?: string;
   deltaText: string;
   durationMs: number | null;

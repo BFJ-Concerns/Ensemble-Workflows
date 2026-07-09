@@ -17,8 +17,7 @@ const DISABLED_VALUES = new Set(["0", "off", "false", "no"]);
  * - Otherwise it uses the run cwd's `.claude` directory, if already present.
  *
  * Returns the directory, or `null` when disabled. Resolving at the process edge
- * (the bin) keeps the same directory in view for both the run that writes the
- * snapshot and the statusline command that reads it.
+ * (the bin) gives direct file consumers one stable cwd-local location.
  */
 export function resolveStatusDir(env: NodeJS.ProcessEnv, cwd: string): string | null {
   const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();

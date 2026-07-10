@@ -133,6 +133,23 @@ test("CLI reports an unreadable --json-args @file as a usage error", async () =>
   assert.equal(stdout.text(), "");
   assert.match(stderr.text(), /--json-args could not read .*missing\.json/);
   assert.match(stderr.text(), /Usage: ensemble/);
+  assert.doesNotMatch(stderr.text(), /\n\s+at /);
+});
+
+test("CLI reports usage errors without a stack trace", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--unknown"], { stdout, stderr });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(
+    stderr.text(),
+    "Unknown option before script path: --unknown\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "       ensemble workflows\n"
+  );
 });
 
 test("CLI wires per-engine budget ceilings into the workflow runtime", async () => {

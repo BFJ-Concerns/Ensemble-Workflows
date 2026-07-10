@@ -232,6 +232,8 @@ function workflowName(meta: unknown): string | null {
 interface ParsedInvocation {
   scriptArg: string | undefined;
   args: unknown;
+  /** Whether args came through --json-args, independent of the parsed value's shape. */
+  jsonArgsProvided: boolean;
   budgetCeilings?: EngineBudgetCeilings;
   concurrencyCaps?: EngineConcurrencyCaps;
   timeoutMs?: number;
@@ -247,7 +249,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
-    jsonArgs: !Array.isArray(invocation.args)
+    jsonArgs: invocation.jsonArgsProvided
   };
 }
 
@@ -318,6 +320,7 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
   return {
     scriptArg: split.scriptArg,
     args,
+    jsonArgsProvided: jsonArgs !== undefined,
     ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {})
@@ -396,7 +399,8 @@ async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
     try {
       source = await readFile(filePath, "utf8");
     } catch (error) {
-      throw new CliUsageError(`--json-args could not read ${filePath}: ${formatError(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CliUsageError(`--json-args could not read ${filePath}: ${message}`);
     }
   }
 
@@ -490,6 +494,9 @@ function serialiseResult(result: unknown): string {
 }
 
 function formatError(error: unknown): string {
+  if (error instanceof CliUsageError) {
+    return error.message;
+  }
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }

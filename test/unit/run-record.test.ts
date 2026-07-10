@@ -339,6 +339,40 @@ test("CLI timeout leaves a usable partial archive with meta.task", async () => {
   assert.equal(manifest.result.archive_path, "result.json");
 });
 
+test("CLI records that --json-args supplied an array payload", async () => {
+  const cwd = await gitRepo("ensemble-record-json-args-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const script = path.join(cwd, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "record-json-args" };
+      return { args, codexBudget: budget.remaining("codex") };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["--json-args", '["alpha", "beta"]', script], {
+    cwd,
+    stdout,
+    stderr,
+    runRecordDir: store,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([]),
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '{"args":["alpha","beta"],"codexBudget":null}\n');
+  const manifest = JSON.parse(await readFile(await findManifest(store), "utf8")) as {
+    cli_flags: { jsonArgs: boolean };
+  };
+  assert.equal(manifest.cli_flags.jsonArgs, true);
+});
+
 test("child workflow agents are recorded in the parent's single durable run record", async () => {
   const cwd = await gitRepo("ensemble-record-child-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));

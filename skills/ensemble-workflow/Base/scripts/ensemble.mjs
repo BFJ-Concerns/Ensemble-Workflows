@@ -10826,7 +10826,7 @@ function cliFlags(invocation) {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
-    jsonArgs: !Array.isArray(invocation.args)
+    jsonArgs: invocation.jsonArgsProvided
   };
 }
 var CliUsageError = class extends Error {
@@ -10891,6 +10891,7 @@ async function parseInvocation(argv, cwd) {
   return {
     scriptArg: split.scriptArg,
     args,
+    jsonArgsProvided: jsonArgs !== void 0,
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {}
@@ -10953,7 +10954,8 @@ async function parseJsonArgs(value, cwd) {
     try {
       source = await readFile6(filePath, "utf8");
     } catch (error) {
-      throw new CliUsageError(`--json-args could not read ${filePath}: ${formatError3(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CliUsageError(`--json-args could not read ${filePath}: ${message}`);
     }
   }
   try {
@@ -11027,6 +11029,9 @@ function serialiseResult(result) {
   }
 }
 function formatError3(error) {
+  if (error instanceof CliUsageError) {
+    return error.message;
+  }
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }

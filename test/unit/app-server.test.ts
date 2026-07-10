@@ -8,12 +8,16 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { AppServerExitedError, AppServerStartupTimeoutError, TurnTimeoutError } from "../../src/errors.js";
 
 test("Codex app-server initialize uses the startup handshake budget", async () => {
-  const codexBin = await fakeCodexAppServer({ initializeDelayMs: 60, respondToInitialize: true });
+  const codexBin = await fakeCodexAppServer({ initializeDelayMs: 0, respondToInitialize: true });
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
     codexBin,
-    requestTimeoutMs: 20,
-    startupHandshakeTimeoutMs: 200,
+    // An app-server response necessarily crosses a process boundary, so it
+    // cannot complete within the ordinary zero-millisecond request budget.
+    // Successful initialisation therefore proves that #handshake selected its
+    // dedicated startup budget; the generous bound is only a runaway guard.
+    requestTimeoutMs: 0,
+    startupHandshakeTimeoutMs: 5_000,
     clientName: "ensemble-test",
     clientVersion: "0.0.0"
   });

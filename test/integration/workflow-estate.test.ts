@@ -872,16 +872,10 @@ test("CLI concurrency flag serialises Claude without reducing Codex concurrency"
   assert.equal(codex.concurrency, 2);
   assert.equal(claude.concurrency, 1);
 
-  const firstCodexFinish = codex.scheduleFinishes[0];
-  const secondCodexStart = codex.scheduleStarts[1];
-  const firstClaudeFinish = claude.scheduleFinishes[0];
-  const secondClaudeStart = claude.scheduleStarts[1];
-  assert.ok(firstCodexFinish !== undefined);
-  assert.ok(secondCodexStart !== undefined);
-  assert.ok(firstClaudeFinish !== undefined);
-  assert.ok(secondClaudeStart !== undefined);
-  assert.ok(secondCodexStart < firstCodexFinish);
-  assert.ok(firstClaudeFinish <= secondClaudeStart);
+  // Peak active work is recorded at the scheduler boundary, so it proves the
+  // per-engine caps without inferring scheduler behaviour from wall-clock order.
+  assert.equal(codex.maxActive, 2);
+  assert.equal(claude.maxActive, 1);
 });
 
 test("Claude unsupported options fail loudly on the real agent path before spawning", async () => {

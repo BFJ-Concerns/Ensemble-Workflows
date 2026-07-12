@@ -308,7 +308,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
 }
 
 export interface OpenCodeEngineAdapterOptions {
-  /** Defaults to 2: opencode v1's curated model is pay-as-you-go through OpenRouter. */
+  /** Defaults to 2: opencode providers have independent rate and resource limits. */
   concurrency?: number;
   /** Base working directory workers are dispatched from. Defaults to `process.cwd()`. */
   cwd?: string;
@@ -346,7 +346,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
     rejectUnsupportedOpenCodeOptions(options);
     if (options.model === undefined) {
-      throw new OpenCodeModelRequiredError();
+      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
     const model = this.#modelRegistry.get(options.model);
     if (model === undefined) {

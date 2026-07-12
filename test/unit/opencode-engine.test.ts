@@ -54,7 +54,15 @@ test("opencode requires a registered curated model before spawning", () => {
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ runner });
 
-  assert.throws(() => adapter.createInvocation("missing", { webSearch: false, timeoutMs: 1_000 }), OpenCodeModelRequiredError);
+  assert.throws(
+    () => adapter.createInvocation("missing", { webSearch: false, timeoutMs: 1_000 }),
+    (error: unknown) => {
+      assert.ok(error instanceof OpenCodeModelRequiredError);
+      assert.match(error.message, /"glm-5\.2"/);
+      assert.match(error.message, /"qwen-3-6-27b-standard"/);
+      return true;
+    }
+  );
   assert.throws(
     () => adapter.createInvocation("unknown", { webSearch: false, timeoutMs: 1_000, model: "glm-later" }),
     OpenCodeModelNotRegisteredError
@@ -161,7 +169,7 @@ test("opencode durable agent record stores authored and resolved models", async 
 
   await runtime.agent("return JSON", {
     engine: "opencode",
-    model: "glm-5.2",
+    model: "qwen-3-6-27b-standard",
     schema: {
       type: "object",
       required: ["status"],
@@ -176,8 +184,8 @@ test("opencode durable agent record stores authored and resolved models", async 
     model: unknown;
     resolved_model: unknown;
   };
-  assert.equal(agent.model, "glm-5.2");
-  assert.equal(agent.resolved_model, "openrouter/z-ai/glm-5.2");
+  assert.equal(agent.model, "qwen-3-6-27b-standard");
+  assert.equal(agent.resolved_model, "local/Qwen3.6-27B-Standard");
 });
 
 test("opencode reaches the shared schema validation and budget path", async () => {

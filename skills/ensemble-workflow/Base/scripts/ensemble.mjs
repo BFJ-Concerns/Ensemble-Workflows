@@ -6671,8 +6671,10 @@ var ClaudeSandboxUnsupportedError = class extends EnsembleError {
   }
 };
 var OpenCodeModelRequiredError = class extends EnsembleError {
-  constructor() {
-    super("agent({ engine:'opencode' }) requires a model from the curated opencode registry; use model:'glm-5.2'");
+  constructor(registered) {
+    super(
+      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    );
   }
 };
 var OpenCodeModelNotRegisteredError = class extends EnsembleError {
@@ -8497,6 +8499,58 @@ var MODELS = [
     billing: {
       mode: "pay-as-you-go"
     }
+  },
+  {
+    key: "gemma-4-31b-qat-standard",
+    providerModel: "local/Gemma-4-31B-QAT-Standard",
+    displayName: "Gemma 4 31B QAT Standard",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-heretic",
+    providerModel: "local/Gemma-4-31B-QAT-Heretic",
+    displayName: "Gemma 4 31B QAT Heretic",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-standard",
+    providerModel: "local/Qwen3.6-27B-Standard",
+    displayName: "Qwen 3.6 27B Standard",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-heretic-neo-code",
+    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
+    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
   }
 ];
 var StaticOpenCodeModelRegistry = class {
@@ -9009,7 +9063,7 @@ var OpenCodeEngineAdapter = class {
   createInvocation(prompt, options) {
     rejectUnsupportedOpenCodeOptions(options);
     if (options.model === void 0) {
-      throw new OpenCodeModelRequiredError();
+      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
     const model = this.#modelRegistry.get(options.model);
     if (model === void 0) {

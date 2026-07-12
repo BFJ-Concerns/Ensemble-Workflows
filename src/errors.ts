@@ -140,8 +140,12 @@ export class ClaudeSandboxUnsupportedError extends EnsembleError {
 }
 
 export class OpenCodeModelRequiredError extends EnsembleError {
-  constructor() {
-    super("agent({ engine:'opencode' }) requires a model from the curated opencode registry; use model:'glm-5.2'");
+  constructor(registered: readonly string[]) {
+    super(
+      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered
+        .map((name) => JSON.stringify(name))
+        .join(", ")}`
+    );
   }
 }
 

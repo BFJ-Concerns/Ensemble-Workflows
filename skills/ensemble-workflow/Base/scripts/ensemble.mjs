@@ -8173,9 +8173,14 @@ var OpenCodeCliRunner = class {
   async exportSession(sessionId, cwd) {
     const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4, this.#killGraceMs);
     if (result.exitCode !== 0) {
-      return null;
+      return {
+        status: "command-failed",
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stderr: result.stderr
+      };
     }
-    return result.stdout;
+    return { status: "ok", stdout: result.stdout };
   }
 };
 var OpenCodeEngineInvocation = class {
@@ -8205,9 +8210,39 @@ var OpenCodeEngineInvocation = class {
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {}
     });
     const parsedRun = parseRunEvents(run.stdout);
-    const exportText = parsedRun.sessionId === null ? null : await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
-    const exportData = exportText === null ? null : parseExport(exportText);
-    const text = exportData === null ? fallbackText(parsedRun.events) : finalAssistantText2(exportData);
+    let exportData = null;
+    let exportDiagnostic;
+    if (parsedRun.sessionId === null) {
+      exportDiagnostic = { status: "no-session-id" };
+    } else {
+      const exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
+      if (exportResult.status === "command-failed") {
+        exportDiagnostic = {
+          status: "command-failed",
+          exit_code: exportResult.exitCode,
+          signal: exportResult.signal,
+          stderr: exportResult.stderr
+        };
+      } else {
+        const parsedExport = parseExport(exportResult.stdout);
+        if (parsedExport.ok) {
+          exportData = parsedExport.data;
+          exportDiagnostic = { status: "available" };
+        } else {
+          exportDiagnostic = { status: "parse-failed", error: parsedExport.error };
+        }
+      }
+    }
+    const fallback = fallbackText(parsedRun.events);
+    let text = fallback;
+    if (exportData !== null) {
+      const exportedText = finalAssistantText2(exportData);
+      if (exportedText.trim().length > 0) {
+        text = exportedText;
+      } else {
+        exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
+      }
+    }
     const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
     const transcripts = [
       {
@@ -8229,7 +8264,12 @@ var OpenCodeEngineInvocation = class {
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts
+      transcripts,
+      diagnostics: {
+        opencode: {
+          session_export: exportDiagnostic
+        }
+      }
     };
   }
   #usageEvent(sessionId, exportData) {
@@ -8378,13 +8418,13 @@ function sessionIdFromEvent(event) {
 function parseExport(output) {
   const start = output.indexOf("{");
   if (start < 0) {
-    return null;
+    return { ok: false, error: "export output did not contain a JSON object" };
   }
   try {
     const value = JSON.parse(output.slice(start));
-    return isRecord(value) ? value : null;
-  } catch {
-    return null;
+    return isRecord(value) ? { ok: true, data: value } : { ok: false, error: "export JSON root was not an object" };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 function finalAssistantText2(exportData) {
@@ -8405,6 +8445,31 @@ function finalAssistantText2(exportData) {
   return "";
 }
 function fallbackText(events) {
+  let currentStepText = null;
+  let finalStoppedStepText = "";
+  for (const event of events) {
+    if (!isRecord(event) || !isRecord(event.part)) {
+      continue;
+    }
+    if (event.type === "step_start" && event.part.type === "step-start") {
+      currentStepText = [];
+      continue;
+    }
+    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+      currentStepText ??= [];
+      currentStepText.push(event.part.text);
+      continue;
+    }
+    if (event.type === "step_finish" && event.part.type === "step-finish") {
+      if (event.part.reason === "stop" && currentStepText !== null) {
+        finalStoppedStepText = currentStepText.join("");
+      }
+      currentStepText = null;
+    }
+  }
+  if (finalStoppedStepText.length > 0) {
+    return finalStoppedStepText;
+  }
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!isRecord(event)) {
@@ -9523,7 +9588,8 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     durationMs: result?.durationMs ?? null,
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
-    transcripts: result?.transcripts ?? []
+    transcripts: result?.transcripts ?? [],
+    diagnostics: result?.diagnostics ?? {}
   };
 }
 function recordTurnMetadata(record, result) {
@@ -10302,7 +10368,8 @@ var RunRecordWriter = class _RunRecordWriter {
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
         first_delta_ms: attempt.firstDeltaMs,
-        token_usage_events: attempt.tokenUsageEvents
+        token_usage_events: attempt.tokenUsageEvents,
+        diagnostics: attempt.diagnostics ?? {}
       })),
       transcripts: transcriptRefs
     });

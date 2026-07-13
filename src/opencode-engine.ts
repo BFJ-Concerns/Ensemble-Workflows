@@ -13,8 +13,17 @@ import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } f
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
-  exportSession(sessionId: string, cwd: string): Promise<string | null>;
+  exportSession(sessionId: string, cwd: string): Promise<OpenCodeSessionExportResult>;
 }
+
+export type OpenCodeSessionExportResult =
+  | { status: "ok"; stdout: string }
+  | {
+      status: "command-failed";
+      exitCode: number | null;
+      signal: NodeJS.Signals | null;
+      stderr: string;
+    };
 
 export interface OpenCodeRunOptions {
   prompt: string;
@@ -58,6 +67,15 @@ interface ParsedRunEvents {
   sessionId: string | null;
 }
 
+type OpenCodeExportDiagnostic =
+  | { status: "available" }
+  | { status: "no-session-id" }
+  | { status: "command-failed"; exit_code: number | null; signal: NodeJS.Signals | null; stderr: string }
+  | { status: "parse-failed"; error: string }
+  | { status: "unusable"; error: string };
+
+type ParsedExport = { ok: true; data: OpenCodeExport } | { ok: false; error: string };
+
 export class OpenCodeCliRunner implements OpenCodeRunner {
   #bin: string;
   #killGraceMs: number;
@@ -86,12 +104,17 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
     return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs);
   }
 
-  async exportSession(sessionId: string, cwd: string): Promise<string | null> {
+  async exportSession(sessionId: string, cwd: string): Promise<OpenCodeSessionExportResult> {
     const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000, this.#killGraceMs);
     if (result.exitCode !== 0) {
-      return null;
+      return {
+        status: "command-failed",
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stderr: result.stderr
+      };
     }
-    return result.stdout;
+    return { status: "ok", stdout: result.stdout };
   }
 }
 
@@ -124,9 +147,39 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {})
     });
     const parsedRun = parseRunEvents(run.stdout);
-    const exportText = parsedRun.sessionId === null ? null : await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
-    const exportData = exportText === null ? null : parseExport(exportText);
-    const text = exportData === null ? fallbackText(parsedRun.events) : finalAssistantText(exportData);
+    let exportData: OpenCodeExport | null = null;
+    let exportDiagnostic: OpenCodeExportDiagnostic;
+    if (parsedRun.sessionId === null) {
+      exportDiagnostic = { status: "no-session-id" };
+    } else {
+      const exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
+      if (exportResult.status === "command-failed") {
+        exportDiagnostic = {
+          status: "command-failed",
+          exit_code: exportResult.exitCode,
+          signal: exportResult.signal,
+          stderr: exportResult.stderr
+        };
+      } else {
+        const parsedExport = parseExport(exportResult.stdout);
+        if (parsedExport.ok) {
+          exportData = parsedExport.data;
+          exportDiagnostic = { status: "available" };
+        } else {
+          exportDiagnostic = { status: "parse-failed", error: parsedExport.error };
+        }
+      }
+    }
+    const fallback = fallbackText(parsedRun.events);
+    let text = fallback;
+    if (exportData !== null) {
+      const exportedText = finalAssistantText(exportData);
+      if (exportedText.trim().length > 0) {
+        text = exportedText;
+      } else {
+        exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
+      }
+    }
     const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
     const transcripts = [
       {
@@ -150,7 +203,12 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       firstDeltaMs: null,
       items: {},
       tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts
+      transcripts,
+      diagnostics: {
+        opencode: {
+          session_export: exportDiagnostic
+        }
+      }
     };
   }
 
@@ -316,16 +374,18 @@ function sessionIdFromEvent(event: unknown): string | null {
   return null;
 }
 
-function parseExport(output: string): OpenCodeExport | null {
+function parseExport(output: string): ParsedExport {
   const start = output.indexOf("{");
   if (start < 0) {
-    return null;
+    return { ok: false, error: "export output did not contain a JSON object" };
   }
   try {
     const value = JSON.parse(output.slice(start)) as unknown;
-    return isRecord(value) ? (value as OpenCodeExport) : null;
-  } catch {
-    return null;
+    return isRecord(value)
+      ? { ok: true, data: value as OpenCodeExport }
+      : { ok: false, error: "export JSON root was not an object" };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -350,6 +410,36 @@ function finalAssistantText(exportData: OpenCodeExport): string {
 }
 
 function fallbackText(events: unknown[]): string {
+  let currentStepText: string[] | null = null;
+  let finalStoppedStepText = "";
+  for (const event of events) {
+    if (!isRecord(event) || !isRecord(event.part)) {
+      continue;
+    }
+    if (event.type === "step_start" && event.part.type === "step-start") {
+      currentStepText = [];
+      continue;
+    }
+    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+      // A message may stream in several text parts; retaining the step boundary
+      // prevents earlier tool-progress narration from becoming the answer.
+      currentStepText ??= [];
+      currentStepText.push(event.part.text);
+      continue;
+    }
+    if (event.type === "step_finish" && event.part.type === "step-finish") {
+      if (event.part.reason === "stop" && currentStepText !== null) {
+        finalStoppedStepText = currentStepText.join("");
+      }
+      currentStepText = null;
+    }
+  }
+  if (finalStoppedStepText.length > 0) {
+    return finalStoppedStepText;
+  }
+
+  // Retain compatibility with older event shapes after trying the current
+  // opencode JSON stream contract above.
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
     if (!isRecord(event)) {

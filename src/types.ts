@@ -88,6 +88,8 @@ export interface TurnResult {
   items: Record<string, number>;
   tokenUsageEvents: TokenUsageEvent[];
   transcripts?: EngineTranscriptArtifact[];
+  /** Engine-specific operational evidence retained by the durable attempt record. */
+  diagnostics?: JsonObject;
 }
 
 export interface TurnStartOptions {

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type {
   EngineName,
   EngineTranscriptArtifact,
+  JsonObject,
   JsonSchema,
   TokenUsageBreakdown,
   TokenUsageEvent
@@ -52,6 +53,7 @@ export interface RuntimeAgentAttemptRecord {
   firstDeltaMs: number | null;
   tokenUsageEvents: TokenUsageEvent[];
   transcripts: EngineTranscriptArtifact[];
+  diagnostics?: JsonObject;
 }
 
 export interface RuntimeAgentRecord {
@@ -342,7 +344,8 @@ export class RunRecordWriter {
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
         first_delta_ms: attempt.firstDeltaMs,
-        token_usage_events: attempt.tokenUsageEvents
+        token_usage_events: attempt.tokenUsageEvents,
+        diagnostics: attempt.diagnostics ?? {}
       })),
       transcripts: transcriptRefs
     });

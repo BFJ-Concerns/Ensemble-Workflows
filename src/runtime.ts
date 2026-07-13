@@ -529,7 +529,7 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts"> | null
+  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null
 ): RuntimeAgentAttemptRecord {
   return {
     attempt,
@@ -542,7 +542,8 @@ function attemptRecord(
     durationMs: result?.durationMs ?? null,
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
-    transcripts: result?.transcripts ?? []
+    transcripts: result?.transcripts ?? [],
+    diagnostics: result?.diagnostics ?? {}
   };
 }
 

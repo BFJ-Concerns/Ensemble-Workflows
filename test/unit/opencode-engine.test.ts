@@ -8,6 +8,7 @@ import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
+  EmptyAgentOutputError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError,
@@ -18,16 +19,27 @@ import {
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
-import type { OpenCodeRunOptions, OpenCodeRunResult, OpenCodeRunner } from "../../src/opencode-engine.js";
+import type {
+  OpenCodeRunOptions,
+  OpenCodeRunResult,
+  OpenCodeRunner,
+  OpenCodeSessionExportResult
+} from "../../src/opencode-engine.js";
 
 class FakeOpenCodeRunner implements OpenCodeRunner {
   runs: OpenCodeRunOptions[] = [];
   exports: string[] = [];
 
   #runResult: OpenCodeRunResult;
-  #exportText: string | null;
+  #exportResult: OpenCodeSessionExportResult;
 
-  constructor(options: { runResult?: Partial<OpenCodeRunResult>; exportText?: string | null } = {}) {
+  constructor(
+    options: {
+      runResult?: Partial<OpenCodeRunResult>;
+      exportText?: string | null;
+      exportResult?: OpenCodeSessionExportResult;
+    } = {}
+  ) {
     this.#runResult = {
       exitCode: 0,
       signal: null,
@@ -36,7 +48,11 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       durationMs: 12,
       ...options.runResult
     };
-    this.#exportText = options.exportText ?? exportText("final answer", tokens(3, 2, 1));
+    this.#exportResult =
+      options.exportResult ??
+      (options.exportText === null
+        ? { status: "command-failed", exitCode: 1, signal: null, stderr: "fixture export failure" }
+        : { status: "ok", stdout: options.exportText ?? exportText("final answer", tokens(3, 2, 1)) });
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
@@ -44,9 +60,9 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
     return this.#runResult;
   }
 
-  async exportSession(sessionId: string): Promise<string | null> {
+  async exportSession(sessionId: string): Promise<OpenCodeSessionExportResult> {
     this.exports.push(sessionId);
-    return this.#exportText;
+    return this.#exportResult;
   }
 }
 
@@ -137,6 +153,204 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.deepEqual(events, ["thread/tokenUsage/updated"]);
   assert.equal(result.transcripts?.[0]?.filename, "transcript.opencode.jsonl");
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
+});
+
+test("opencode export fallback recovers the complete final stopped step into the result and run record", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-fallback-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-fallback-store-"));
+  const stream = await readFile("test/fixtures/opencode/boundary-17-final-step.jsonl", "utf8");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { stdout: stream },
+    exportResult: {
+      status: "command-failed",
+      exitCode: 17,
+      signal: null,
+      stderr: "session export unavailable"
+    }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-fallback",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-fallback' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  const result = await runtime.agent("return the report", {
+    engine: "opencode",
+    model: "glm-5.2"
+  });
+
+  assert.equal(result.length, 2_640);
+  assert.match(result, /^Here is the report:/);
+  assert.match(result, /neither the cached digests nor the signed headers serve this role\./);
+  assert.match(result, /Evidence: `src\/inventory\/keys\.py:40-44`$/);
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    status: unknown;
+    raw_output: string;
+    attempts: Array<{ raw_output: string; diagnostics: unknown }>;
+  };
+  assert.equal(agent.status, "complete");
+  assert.equal(agent.raw_output.length, 2_640);
+  assert.equal(agent.attempts[0]?.raw_output.length, 2_640);
+  assert.deepEqual(agent.attempts[0]?.diagnostics, {
+    opencode: {
+      session_export: {
+        status: "command-failed",
+        exit_code: 17,
+        signal: null,
+        stderr: "session export unavailable"
+      }
+    }
+  });
+});
+
+test("opencode run record distinguishes an unparseable export from a failed export command", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-parse-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-parse-store-"));
+  const stream = await readFile("test/fixtures/opencode/boundary-17-final-step.jsonl", "utf8");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { stdout: stream },
+    exportResult: { status: "ok", stdout: "Exporting session: ses_test\n{not-json" }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-export-parse",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-export-parse' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  const result = await runtime.agent("return the report", {
+    engine: "opencode",
+    model: "glm-5.2"
+  });
+
+  assert.equal(result.length, 2_640);
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    attempts: Array<{ diagnostics: { opencode: { session_export: { status: string; error: string } } } }>;
+  };
+  const diagnostic = agent.attempts[0]?.diagnostics.opencode.session_export;
+  assert.equal(diagnostic?.status, "parse-failed");
+  assert.match(diagnostic?.error ?? "", /Unexpected token|property name/i);
+});
+
+test("opencode records a missing stream session id separately without attempting export", async () => {
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", part: { type: "step-start" } }),
+        JSON.stringify({ type: "text", part: { type: "text", text: "answer without a session id" } }),
+        JSON.stringify({ type: "step_finish", part: { type: "step-finish", reason: "stop" } })
+      ].join("\n")
+    }
+  });
+  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+    webSearch: false,
+    model: "glm-5.2"
+  });
+
+  const result = await invocation.runAttempt({ attempt: 1 });
+
+  assert.equal(result.text, "answer without a session id");
+  assert.deepEqual(result.diagnostics, {
+    opencode: { session_export: { status: "no-session-id" } }
+  });
+  assert.deepEqual(runner.exports, []);
+});
+
+test("opencode records empty-output only when neither export nor stream contains text", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-store-"));
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        })
+      ].join("\n")
+    },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-genuinely-empty",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-genuinely-empty' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  await assert.rejects(
+    runtime.agent("return text", { engine: "opencode", model: "glm-5.2" }),
+    EmptyAgentOutputError
+  );
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    attempts: Array<{ failure: { kind: string } | null; diagnostics: unknown }>;
+  };
+  assert.equal(agent.attempts[0]?.failure?.kind, "empty-output");
+  assert.deepEqual(agent.attempts[0]?.diagnostics, {
+    opencode: {
+      session_export: { status: "command-failed", exit_code: 1, signal: null, stderr: "export failed" }
+    }
+  });
+});
+
+test("opencode falls back from a parseable export without assistant text while retaining usage", async () => {
+  const stdout = [
+    JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+    JSON.stringify({ type: "text", sessionID: "ses_test", part: { type: "text", text: "first " } }),
+    JSON.stringify({ type: "text", sessionID: "ses_test", part: { type: "text", text: "second" } }),
+    JSON.stringify({ type: "step_finish", sessionID: "ses_test", part: { type: "step-finish", reason: "stop" } })
+  ].join("\n");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { stdout },
+    exportResult: {
+      status: "ok",
+      stdout: `Exporting session: ses_test\n${JSON.stringify({
+        info: { tokens: { input: 3, output: 2, reasoning: 1, cache: { read: 0, write: 0 } } },
+        messages: []
+      })}`
+    }
+  });
+  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+    webSearch: false,
+    model: "glm-5.2"
+  });
+
+  const result = await invocation.runAttempt({ attempt: 1 });
+
+  assert.equal(result.text, "first second");
+  assert.equal(result.tokenUsageEvents[0]?.last.totalTokens, 6);
+  assert.deepEqual(result.diagnostics, {
+    opencode: {
+      session_export: { status: "unusable", error: "export did not contain assistant text" }
+    }
+  });
 });
 
 test("opencode durable agent record stores authored and resolved models", async () => {

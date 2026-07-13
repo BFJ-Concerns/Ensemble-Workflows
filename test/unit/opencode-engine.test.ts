@@ -273,6 +273,38 @@ test("opencode records a missing stream session id separately without attempting
   assert.deepEqual(runner.exports, []);
 });
 
+test("opencode fallback keeps the last text-bearing stopped step when a textless stop follows", async () => {
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+        JSON.stringify({ type: "text", sessionID: "ses_test", part: { type: "text", text: "complete " } }),
+        JSON.stringify({ type: "text", sessionID: "ses_test", part: { type: "text", text: "answer" } }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        }),
+        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        })
+      ].join("\n")
+    },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
+  });
+  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+    webSearch: false,
+    model: "glm-5.2"
+  });
+
+  const result = await invocation.runAttempt({ attempt: 1 });
+
+  assert.equal(result.text, "complete answer");
+});
+
 test("opencode records empty-output only when neither export nor stream contains text", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-cwd-"));
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-store-"));

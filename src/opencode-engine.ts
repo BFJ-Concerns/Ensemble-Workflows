@@ -429,7 +429,12 @@ function fallbackText(events: unknown[]): string {
     }
     if (event.type === "step_finish" && event.part.type === "step-finish") {
       if (event.part.reason === "stop" && currentStepText !== null) {
-        finalStoppedStepText = currentStepText.join("");
+        const stoppedStepText = currentStepText.join("");
+        // A later housekeeping step may stop without emitting an answer. It
+        // must not erase the last completed text-bearing assistant step.
+        if (stoppedStepText.trim().length > 0) {
+          finalStoppedStepText = stoppedStepText;
+        }
       }
       currentStepText = null;
     }

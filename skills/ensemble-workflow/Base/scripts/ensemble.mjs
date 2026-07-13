@@ -8462,7 +8462,10 @@ function fallbackText(events) {
     }
     if (event.type === "step_finish" && event.part.type === "step-finish") {
       if (event.part.reason === "stop" && currentStepText !== null) {
-        finalStoppedStepText = currentStepText.join("");
+        const stoppedStepText = currentStepText.join("");
+        if (stoppedStepText.trim().length > 0) {
+          finalStoppedStepText = stoppedStepText;
+        }
       }
       currentStepText = null;
     }

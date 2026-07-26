@@ -62,7 +62,12 @@ Node module access; the host-provided hooks are the way out.
 - `phase(title)` and `log(message)` write to the run log; `phase()` also updates
   the live progress snapshot when enabled.
 - `budget.spent(engine)` / `budget.remaining(engine)` expose per-engine token
-  accounting, matching the names used by `agent()`.
+  accounting, matching the names used by `agent()`. opencode accounts from the
+  session export when available and from token-bearing step events on the stream
+  fallback. Across multi-step turns it charges the final input and cache-read
+  snapshot once, plus every output and reasoning delta; cache reads count on
+  both paths. An older or truncated fallback stream without usable token data
+  remains unmeasured and does not advance spend towards its ceiling.
 - `worktrees` exposes changed Codex worktrees left by `isolation: "worktree"`.
 - `args` is the raw CLI string arguments, or the parsed JSON value from
   `--json-args '<json>'` or `--json-args @file`.

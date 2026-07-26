@@ -68,6 +68,20 @@ interface ParsedRunEvents {
   sessionId: string | null;
 }
 
+interface OpenCodeUsage {
+  breakdown: TokenUsageBreakdown | null;
+  cost: unknown;
+}
+
+interface OpenCodeTokenSnapshot {
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  reportedTotal: number | null;
+  hasCategorisedTokens: boolean;
+}
+
 type OpenCodeExportDiagnostic =
   | { status: "available" }
   | { status: "no-session-id" }
@@ -181,7 +195,17 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const usage =
+      exportData === null
+        ? usageFromStream(parsedRun.events)
+        : {
+            breakdown: usageFromExport(exportData),
+            cost: exportData.info?.cost ?? null
+          };
+    const usageEvent =
+      parsedRun.sessionId === null || usage.breakdown === null
+        ? null
+        : this.#usageEvent(parsedRun.sessionId, usage.breakdown, usage.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -213,9 +237,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     };
   }
 
-  #usageEvent(sessionId: string, exportData: OpenCodeExport): TokenUsageEvent | null {
-    const breakdown = usageFromExport(exportData.info?.tokens);
-    if (breakdown === null || breakdown.totalTokens === 0) {
+  #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
+    if (breakdown.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -231,7 +254,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         model: this.#modelKey,
         providerModel: this.#providerModel,
         tokenUsage: { last: breakdown, total: breakdown },
-        cost: exportData.info?.cost ?? null
+        cost
       }
     };
     this.#onEvent?.({
@@ -465,21 +488,108 @@ function fallbackText(events: unknown[]): string {
   return "";
 }
 
-function usageFromExport(tokens: unknown): TokenUsageBreakdown | null {
+function usageFromExport(exportData: OpenCodeExport): TokenUsageBreakdown | null {
+  const messageTokens: unknown[] = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
+  }
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
+}
+
+function usageFromStream(events: unknown[]): OpenCodeUsage {
+  const stepTokens: unknown[] = [];
+  let cost: number | null = null;
+  for (const event of events) {
+    if (
+      !isRecord(event) ||
+      event.type !== "step_finish" ||
+      !isRecord(event.part) ||
+      event.part.type !== "step-finish"
+    ) {
+      continue;
+    }
+    stepTokens.push(event.part.tokens);
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
+}
+
+function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
   if (!isRecord(tokens)) {
     return null;
   }
-  const inputTokens = numberField(tokens, "input") ?? 0;
-  const outputTokens = numberField(tokens, "output") ?? 0;
-  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
   const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const reportedTotal = numberField(tokens, "total");
+  if (
+    inputTokens === null &&
+    outputTokens === null &&
+    reasoningOutputTokens === null &&
+    cachedInputTokens === null &&
+    reportedTotal === null
+  ) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    reportedTotal,
+    hasCategorisedTokens:
+      cachedInputTokens !== null ||
+      inputTokens !== null ||
+      outputTokens !== null ||
+      reasoningOutputTokens !== null
+  };
+}
+
+function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown | null {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    // opencode 1.18.5's captured multi-step stream restates input/cache for
+    // each model step while output/reasoning are new deltas. Charge the final
+    // input/cache snapshot once and every generated delta, matching Claude's
+    // convention. See test/fixtures/opencode/multi-step-tool-calls.jsonl.
+    cachedInputTokens = snapshot.cachedInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
+  }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens =
+    cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
     cachedInputTokens,
     inputTokens,
     outputTokens,
     reasoningOutputTokens,
-    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
+    totalTokens
   };
 }
 
@@ -530,7 +640,10 @@ function errorFromEvent(event: unknown): string | null {
 }
 
 function numberField(record: Record<string, unknown>, key: string): number | null {
-  const value = record[key];
+  return numberValue(record[key]);
+}
+
+function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 

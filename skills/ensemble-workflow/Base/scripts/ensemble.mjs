@@ -8382,7 +8382,11 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = parsedRun.sessionId === null || usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId, usage2.breakdown, usage2.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -8411,9 +8415,8 @@ var OpenCodeEngineInvocation = class {
       }
     };
   }
-  #usageEvent(sessionId, exportData) {
-    const breakdown = usageFromExport(exportData.info?.tokens);
-    if (breakdown === null || breakdown.totalTokens === 0) {
+  #usageEvent(sessionId, breakdown, cost) {
+    if (breakdown.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -8429,7 +8432,7 @@ var OpenCodeEngineInvocation = class {
         model: this.#modelKey,
         providerModel: this.#providerModel,
         tokenUsage: { last: breakdown, total: breakdown },
-        cost: exportData.info?.cost ?? null
+        cost
       }
     };
     this.#onEvent?.({
@@ -8630,21 +8633,85 @@ function fallbackText(events) {
   }
   return "";
 }
-function usageFromExport(tokens) {
+function usageFromExport(exportData) {
+  const messageTokens = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
+  }
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
+}
+function usageFromStream(events) {
+  const stepTokens = [];
+  let cost = null;
+  for (const event of events) {
+    if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
+      continue;
+    }
+    stepTokens.push(event.part.tokens);
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
+}
+function openCodeTokenSnapshot(tokens) {
   if (!isRecord(tokens)) {
     return null;
   }
-  const inputTokens = numberField(tokens, "input") ?? 0;
-  const outputTokens = numberField(tokens, "output") ?? 0;
-  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
   const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const reportedTotal = numberField(tokens, "total");
+  if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    reportedTotal,
+    hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
+  };
+}
+function aggregateOpenCodeUsage(tokenSnapshots) {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    cachedInputTokens = snapshot.cachedInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
+  }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
     cachedInputTokens,
     inputTokens,
     outputTokens,
     reasoningOutputTokens,
-    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
+    totalTokens
   };
 }
 function transcriptContent(stdout, exportData) {
@@ -8689,7 +8756,9 @@ function errorFromEvent(event) {
   return null;
 }
 function numberField(record, key) {
-  const value = record[key];
+  return numberValue(record[key]);
+}
+function numberValue(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function isRecord(value) {

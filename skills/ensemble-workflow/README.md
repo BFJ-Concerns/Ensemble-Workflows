@@ -91,7 +91,8 @@ Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,
 `qwen-3-6-27b-standard`, `qwen-3-6-27b-heretic-neo-code`.
 
-Default concurrency caps: codex `min(16, cpus − 2)`, claude 8, opencode 2.
+Default concurrency caps: codex `max(1, min(16, cpus − 2))`, claude 8,
+opencode 2.
 Calls beyond the cap queue per engine.
 
 ## Return contract and failure modes
@@ -111,7 +112,8 @@ Calls beyond the cap queue per engine.
   timed out, transcript unreadable, subprocess killed on deadline) degrade to
   an empty attempt inside the retry loop — they consume attempts rather than
   hanging or throwing. A Codex turn timeout or app-server error **throws** out
-  of `agent()`.
+  of `agent()` (app-server backpressure alone is retried within the attempt
+  bound first).
 - **Budget**: each attempt checks the engine's ceiling first; once spend
   reaches it, `agent()` throws a budget-exhausted error. Ceilings are
   enforced at turn start, so a ceiling can be overshot by the turn in flight.

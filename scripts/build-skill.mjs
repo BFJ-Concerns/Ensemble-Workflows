@@ -1,8 +1,9 @@
 // Bundles the CLI into the standalone skill launcher
 // (skills/ensemble-workflow/Base/scripts/ensemble.mjs).
 //
-// The bundle lives at Base/scripts/ where skill installs expect it — no
-// package.json beside the bundle. The version guard needs the Node floor at
+// The skill's guidance is maintained separately; this repo ships only the
+// bundle, at the Base/scripts/ path skill installs expect — no package.json
+// beside the bundle. The version guard needs the Node floor at
 // startup, so we read `engines.node` here at build time and inline it via an
 // esbuild `define`, leaving the bundle self-contained. package.json stays the
 // single source of truth; only the moment of reading it moves from runtime to

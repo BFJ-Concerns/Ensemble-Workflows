@@ -8382,7 +8382,11 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData.info?.tokens),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = parsedRun.sessionId === null || usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId, usage2.breakdown, usage2.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -8411,9 +8415,8 @@ var OpenCodeEngineInvocation = class {
       }
     };
   }
-  #usageEvent(sessionId, exportData) {
-    const breakdown = usageFromExport(exportData.info?.tokens);
-    if (breakdown === null || breakdown.totalTokens === 0) {
+  #usageEvent(sessionId, breakdown, cost) {
+    if (breakdown.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -8429,7 +8432,7 @@ var OpenCodeEngineInvocation = class {
         model: this.#modelKey,
         providerModel: this.#providerModel,
         tokenUsage: { last: breakdown, total: breakdown },
-        cost: exportData.info?.cost ?? null
+        cost
       }
     };
     this.#onEvent?.({
@@ -8647,6 +8650,57 @@ function usageFromExport(tokens) {
     totalTokens: inputTokens + outputTokens + reasoningOutputTokens
   };
 }
+function usageFromStream(events) {
+  let breakdown = null;
+  let cost = null;
+  for (const event of events) {
+    if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
+      continue;
+    }
+    const step = usageFromStreamTokens(event.part.tokens);
+    if (step !== null) {
+      breakdown = addUsage(breakdown, step);
+    }
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown, cost };
+}
+function usageFromStreamTokens(tokens) {
+  if (!isRecord(tokens)) {
+    return null;
+  }
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
+  const cache = tokens.cache;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const reportedTotal = numberField(tokens, "total");
+  if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    totalTokens: reportedTotal ?? (cachedInputTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0) + (reasoningOutputTokens ?? 0)
+  };
+}
+function addUsage(current, next) {
+  if (current === null) {
+    return next;
+  }
+  return {
+    cachedInputTokens: current.cachedInputTokens + next.cachedInputTokens,
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    reasoningOutputTokens: current.reasoningOutputTokens + next.reasoningOutputTokens,
+    totalTokens: current.totalTokens + next.totalTokens
+  };
+}
 function transcriptContent(stdout, exportData) {
   const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   if (exportData !== null) {
@@ -8689,7 +8743,9 @@ function errorFromEvent(event) {
   return null;
 }
 function numberField(record, key) {
-  const value = record[key];
+  return numberValue(record[key]);
+}
+function numberValue(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 function isRecord(value) {
@@ -10546,7 +10602,7 @@ function buildCostRollup(records) {
     const bucket = rollup[engine][model];
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last, engine);
+        addUsage2(bucket.tokens, event.last, engine);
         addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
@@ -10575,7 +10631,7 @@ function addProviderCost(target, event, unlikeCurrencies) {
     target.currency = currency;
   }
 }
-function addUsage(target, delta, engine) {
+function addUsage2(target, delta, engine) {
   target.cachedInputTokens += delta.cachedInputTokens;
   target.inputTokens += delta.inputTokens;
   target.outputTokens += delta.outputTokens;

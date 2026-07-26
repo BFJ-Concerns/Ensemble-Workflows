@@ -68,6 +68,11 @@ interface ParsedRunEvents {
   sessionId: string | null;
 }
 
+interface OpenCodeUsage {
+  breakdown: TokenUsageBreakdown | null;
+  cost: unknown;
+}
+
 type OpenCodeExportDiagnostic =
   | { status: "available" }
   | { status: "no-session-id" }
@@ -181,7 +186,17 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usageEvent = exportData === null || parsedRun.sessionId === null ? null : this.#usageEvent(parsedRun.sessionId, exportData);
+    const usage =
+      exportData === null
+        ? usageFromStream(parsedRun.events)
+        : {
+            breakdown: usageFromExport(exportData.info?.tokens),
+            cost: exportData.info?.cost ?? null
+          };
+    const usageEvent =
+      parsedRun.sessionId === null || usage.breakdown === null
+        ? null
+        : this.#usageEvent(parsedRun.sessionId, usage.breakdown, usage.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -213,9 +228,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     };
   }
 
-  #usageEvent(sessionId: string, exportData: OpenCodeExport): TokenUsageEvent | null {
-    const breakdown = usageFromExport(exportData.info?.tokens);
-    if (breakdown === null || breakdown.totalTokens === 0) {
+  #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
+    if (breakdown.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -231,7 +245,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         model: this.#modelKey,
         providerModel: this.#providerModel,
         tokenUsage: { last: breakdown, total: breakdown },
-        cost: exportData.info?.cost ?? null
+        cost
       }
     };
     this.#onEvent?.({
@@ -483,6 +497,73 @@ function usageFromExport(tokens: unknown): TokenUsageBreakdown | null {
   };
 }
 
+function usageFromStream(events: unknown[]): OpenCodeUsage {
+  let breakdown: TokenUsageBreakdown | null = null;
+  let cost: number | null = null;
+  for (const event of events) {
+    if (
+      !isRecord(event) ||
+      event.type !== "step_finish" ||
+      !isRecord(event.part) ||
+      event.part.type !== "step-finish"
+    ) {
+      continue;
+    }
+    const step = usageFromStreamTokens(event.part.tokens);
+    if (step !== null) {
+      breakdown = addUsage(breakdown, step);
+    }
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown, cost };
+}
+
+function usageFromStreamTokens(tokens: unknown): TokenUsageBreakdown | null {
+  if (!isRecord(tokens)) {
+    return null;
+  }
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
+  const cache = tokens.cache;
+  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const reportedTotal = numberField(tokens, "total");
+  if (
+    inputTokens === null &&
+    outputTokens === null &&
+    reasoningOutputTokens === null &&
+    cachedInputTokens === null &&
+    reportedTotal === null
+  ) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    totalTokens:
+      reportedTotal ??
+      (cachedInputTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0) + (reasoningOutputTokens ?? 0)
+  };
+}
+
+function addUsage(current: TokenUsageBreakdown | null, next: TokenUsageBreakdown): TokenUsageBreakdown {
+  if (current === null) {
+    return next;
+  }
+  return {
+    cachedInputTokens: current.cachedInputTokens + next.cachedInputTokens,
+    inputTokens: current.inputTokens + next.inputTokens,
+    outputTokens: current.outputTokens + next.outputTokens,
+    reasoningOutputTokens: current.reasoningOutputTokens + next.reasoningOutputTokens,
+    totalTokens: current.totalTokens + next.totalTokens
+  };
+}
+
 function transcriptContent(stdout: string, exportData: OpenCodeExport | null): string {
   const lines = stdout
     .split(/\r?\n/)
@@ -530,7 +611,10 @@ function errorFromEvent(event: unknown): string | null {
 }
 
 function numberField(record: Record<string, unknown>, key: string): number | null {
-  const value = record[key];
+  return numberValue(record[key]);
+}
+
+function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 

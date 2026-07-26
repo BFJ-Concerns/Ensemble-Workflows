@@ -327,7 +327,7 @@ export interface OpenCodeEngineAdapterOptions {
   bin?: string;
   runner?: OpenCodeRunner;
   modelRegistry?: OpenCodeModelRegistry;
-  /** Routes export-derived token usage into the runtime budget recorder. */
+  /** Routes opencode token usage into the runtime budget recorder. */
   onEvent?: (event: RuntimeEvent) => void;
 }
 

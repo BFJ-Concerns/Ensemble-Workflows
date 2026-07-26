@@ -73,6 +73,15 @@ interface OpenCodeUsage {
   cost: unknown;
 }
 
+interface OpenCodeTokenSnapshot {
+  cachedInputTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  reportedTotal: number | null;
+  hasCategorisedTokens: boolean;
+}
+
 type OpenCodeExportDiagnostic =
   | { status: "available" }
   | { status: "no-session-id" }
@@ -190,7 +199,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       exportData === null
         ? usageFromStream(parsedRun.events)
         : {
-            breakdown: usageFromExport(exportData.info?.tokens),
+            breakdown: usageFromExport(exportData),
             cost: exportData.info?.cost ?? null
           };
     const usageEvent =
@@ -479,26 +488,20 @@ function fallbackText(events: unknown[]): string {
   return "";
 }
 
-function usageFromExport(tokens: unknown): TokenUsageBreakdown | null {
-  if (!isRecord(tokens)) {
-    return null;
+function usageFromExport(exportData: OpenCodeExport): TokenUsageBreakdown | null {
+  const messageTokens: unknown[] = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
   }
-  const inputTokens = numberField(tokens, "input") ?? 0;
-  const outputTokens = numberField(tokens, "output") ?? 0;
-  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
-  const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
-  return {
-    cachedInputTokens,
-    inputTokens,
-    outputTokens,
-    reasoningOutputTokens,
-    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
-  };
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
 }
 
 function usageFromStream(events: unknown[]): OpenCodeUsage {
-  let breakdown: TokenUsageBreakdown | null = null;
+  const stepTokens: unknown[] = [];
   let cost: number | null = null;
   for (const event of events) {
     if (
@@ -509,19 +512,16 @@ function usageFromStream(events: unknown[]): OpenCodeUsage {
     ) {
       continue;
     }
-    const step = usageFromStreamTokens(event.part.tokens);
-    if (step !== null) {
-      breakdown = addUsage(breakdown, step);
-    }
+    stepTokens.push(event.part.tokens);
     const stepCost = numberValue(event.part.cost);
     if (stepCost !== null) {
       cost = (cost ?? 0) + stepCost;
     }
   }
-  return { breakdown, cost };
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
 }
 
-function usageFromStreamTokens(tokens: unknown): TokenUsageBreakdown | null {
+function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
   if (!isRecord(tokens)) {
     return null;
   }
@@ -545,22 +545,51 @@ function usageFromStreamTokens(tokens: unknown): TokenUsageBreakdown | null {
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
-    totalTokens:
-      reportedTotal ??
-      (cachedInputTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0) + (reasoningOutputTokens ?? 0)
+    reportedTotal,
+    hasCategorisedTokens:
+      cachedInputTokens !== null ||
+      inputTokens !== null ||
+      outputTokens !== null ||
+      reasoningOutputTokens !== null
   };
 }
 
-function addUsage(current: TokenUsageBreakdown | null, next: TokenUsageBreakdown): TokenUsageBreakdown {
-  if (current === null) {
-    return next;
+function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown | null {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    // opencode 1.18.5's captured multi-step stream restates input/cache for
+    // each model step while output/reasoning are new deltas. Charge the final
+    // input/cache snapshot once and every generated delta, matching Claude's
+    // convention. See test/fixtures/opencode/multi-step-tool-calls.jsonl.
+    cachedInputTokens = snapshot.cachedInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
   }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens =
+    cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
-    cachedInputTokens: current.cachedInputTokens + next.cachedInputTokens,
-    inputTokens: current.inputTokens + next.inputTokens,
-    outputTokens: current.outputTokens + next.outputTokens,
-    reasoningOutputTokens: current.reasoningOutputTokens + next.reasoningOutputTokens,
-    totalTokens: current.totalTokens + next.totalTokens
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
   };
 }
 

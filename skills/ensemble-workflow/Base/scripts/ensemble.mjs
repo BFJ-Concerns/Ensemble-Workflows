@@ -8383,7 +8383,7 @@ var OpenCodeEngineInvocation = class {
       }
     }
     const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData.info?.tokens),
+      breakdown: usageFromExport(exportData),
       cost: exportData.info?.cost ?? null
     };
     const usageEvent = parsedRun.sessionId === null || usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId, usage2.breakdown, usage2.cost);
@@ -8633,42 +8633,33 @@ function fallbackText(events) {
   }
   return "";
 }
-function usageFromExport(tokens) {
-  if (!isRecord(tokens)) {
-    return null;
+function usageFromExport(exportData) {
+  const messageTokens = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
   }
-  const inputTokens = numberField(tokens, "input") ?? 0;
-  const outputTokens = numberField(tokens, "output") ?? 0;
-  const reasoningOutputTokens = numberField(tokens, "reasoning") ?? 0;
-  const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") ?? 0 : 0;
-  return {
-    cachedInputTokens,
-    inputTokens,
-    outputTokens,
-    reasoningOutputTokens,
-    totalTokens: inputTokens + outputTokens + reasoningOutputTokens
-  };
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
 }
 function usageFromStream(events) {
-  let breakdown = null;
+  const stepTokens = [];
   let cost = null;
   for (const event of events) {
     if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
       continue;
     }
-    const step = usageFromStreamTokens(event.part.tokens);
-    if (step !== null) {
-      breakdown = addUsage(breakdown, step);
-    }
+    stepTokens.push(event.part.tokens);
     const stepCost = numberValue(event.part.cost);
     if (stepCost !== null) {
       cost = (cost ?? 0) + stepCost;
     }
   }
-  return { breakdown, cost };
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
 }
-function usageFromStreamTokens(tokens) {
+function openCodeTokenSnapshot(tokens) {
   if (!isRecord(tokens)) {
     return null;
   }
@@ -8686,19 +8677,41 @@ function usageFromStreamTokens(tokens) {
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
-    totalTokens: reportedTotal ?? (cachedInputTokens ?? 0) + (inputTokens ?? 0) + (outputTokens ?? 0) + (reasoningOutputTokens ?? 0)
+    reportedTotal,
+    hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
   };
 }
-function addUsage(current, next) {
-  if (current === null) {
-    return next;
+function aggregateOpenCodeUsage(tokenSnapshots) {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    cachedInputTokens = snapshot.cachedInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
   }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
-    cachedInputTokens: current.cachedInputTokens + next.cachedInputTokens,
-    inputTokens: current.inputTokens + next.inputTokens,
-    outputTokens: current.outputTokens + next.outputTokens,
-    reasoningOutputTokens: current.reasoningOutputTokens + next.reasoningOutputTokens,
-    totalTokens: current.totalTokens + next.totalTokens
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
   };
 }
 function transcriptContent(stdout, exportData) {
@@ -10602,7 +10615,7 @@ function buildCostRollup(records) {
     const bucket = rollup[engine][model];
     for (const attempt of record.attempts) {
       for (const event of attempt.tokenUsageEvents) {
-        addUsage2(bucket.tokens, event.last, engine);
+        addUsage(bucket.tokens, event.last, engine);
         addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
@@ -10631,7 +10644,7 @@ function addProviderCost(target, event, unlikeCurrencies) {
     target.currency = currency;
   }
 }
-function addUsage2(target, delta, engine) {
+function addUsage(target, delta, engine) {
   target.cachedInputTokens += delta.cachedInputTokens;
   target.inputTokens += delta.inputTokens;
   target.outputTokens += delta.outputTokens;

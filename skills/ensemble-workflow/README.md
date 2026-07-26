@@ -63,8 +63,10 @@ no `require`, no `import`, no dynamic code generation.
 - `phase(title)` / `log(message)` — run log; `phase` also updates live status.
 - `budget.spent(engine)` / `budget.remaining(engine)` — token accounting
   (remaining is `Infinity` without a ceiling). opencode uses stream step usage
-  when session export is unavailable; a stream without usable token data emits
-  no usage event and therefore does not advance spend towards its ceiling.
+  when session export is unavailable; both paths charge the final input/cache
+  snapshot plus every output/reasoning delta. A stream without usable token
+  data emits no usage event and therefore does not advance spend towards its
+  ceiling.
 - `worktrees` — records of changed Codex worktrees from `isolation`.
 - `args` — the CLI positional strings, or the `--json-args` value.
 

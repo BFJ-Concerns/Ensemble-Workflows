@@ -271,53 +271,59 @@ test("opencode fallback usage below the ceiling admits the next call", async () 
   assert.equal(runtime.budget.spent("opencode"), 83_656);
 });
 
-test("opencode fallback aggregates usage from every token-bearing step", async () => {
-  let runtime: EnsembleRuntime | null = null;
-  const runner = new FakeOpenCodeRunner({
-    runResult: {
-      stdout: [
-        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
-        JSON.stringify({
-          type: "step_finish",
-          sessionID: "ses_test",
-          part: {
-            type: "step-finish",
-            reason: "tool-calls",
-            tokens: { total: 5, input: 2, output: 1, reasoning: 0, cache: { read: 2, write: 0 } }
-          }
-        }),
-        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
-        JSON.stringify({ type: "text", sessionID: "ses_test", part: { type: "text", text: "answer" } }),
-        JSON.stringify({
-          type: "step_finish",
-          sessionID: "ses_test",
-          part: {
-            type: "step-finish",
-            reason: "stop",
-            tokens: { total: 7, input: 3, output: 2, reasoning: 0, cache: { read: 2, write: 0 } }
-          }
-        })
-      ].join("\n")
-    },
+test("opencode stream and export share snapshot-input and delta-output accounting", async () => {
+  const stream = await readFile("test/fixtures/opencode/multi-step-tool-calls.jsonl", "utf8");
+  const fallbackRunner = new FakeOpenCodeRunner({
+    runResult: { stdout: stream },
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
-  const adapter = new OpenCodeEngineAdapter({
-    runner,
-    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  let fallbackRuntime: EnsembleRuntime | null = null;
+  const fallbackAdapter = new OpenCodeEngineAdapter({
+    runner: fallbackRunner,
+    onEvent: (event) => fallbackRuntime?.handleEngineEvent("opencode", event)
   });
-  runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([adapter]),
-    budgetCeilings: { opencode: 12 },
+  fallbackRuntime = new EnsembleRuntime({
+    engines: new EngineRegistry([fallbackAdapter]),
+    budgetCeilings: { opencode: 16_095 },
     defaultMaxAttempts: 1
   });
 
-  assert.equal(await runtime.agent("multi-step turn", { engine: "opencode", model: "glm-5.2" }), "answer");
-  assert.equal(runtime.budget.spent("opencode"), 12);
+  assert.equal(await fallbackRuntime.agent("multi-step turn", { engine: "opencode", model: "glm-5.2" }), "DONE");
+  assert.deepEqual(fallbackRuntime.budget.events[0]?.event.last, {
+    cachedInputTokens: 12_268,
+    inputTokens: 3_244,
+    outputTokens: 45,
+    reasoningOutputTokens: 538,
+    totalTokens: 16_095
+  });
   await assert.rejects(
-    runtime.agent("blocked after all step usage", { engine: "opencode", model: "glm-5.2" }),
+    fallbackRuntime.agent("blocked after fallback usage", { engine: "opencode", model: "glm-5.2" }),
     BudgetExceededError
   );
-  assert.equal(runner.runs.length, 1);
+  assert.equal(fallbackRunner.runs.length, 1);
+
+  const exportRunner = new FakeOpenCodeRunner({
+    runResult: { stdout: stream },
+    exportText: multiStepExportText()
+  });
+  let exportRuntime: EnsembleRuntime | null = null;
+  const exportAdapter = new OpenCodeEngineAdapter({
+    runner: exportRunner,
+    onEvent: (event) => exportRuntime?.handleEngineEvent("opencode", event)
+  });
+  exportRuntime = new EnsembleRuntime({
+    engines: new EngineRegistry([exportAdapter]),
+    budgetCeilings: { opencode: 16_095 },
+    defaultMaxAttempts: 1
+  });
+
+  assert.equal(await exportRuntime.agent("multi-step turn", { engine: "opencode", model: "glm-5.2" }), "DONE");
+  assert.deepEqual(exportRuntime.budget.events[0]?.event.last, fallbackRuntime.budget.events[0]?.event.last);
+  await assert.rejects(
+    exportRuntime.agent("blocked after export usage", { engine: "opencode", model: "glm-5.2" }),
+    BudgetExceededError
+  );
+  assert.equal(exportRunner.runs.length, 1);
 });
 
 test("opencode fallback without usable token data leaves the budget unmeasured", async () => {
@@ -352,6 +358,59 @@ test("opencode fallback without usable token data leaves the budget unmeasured",
   assert.equal(runtime.budget.spent("opencode"), 0);
   assert.equal(runtime.budget.events.length, 0);
   assert.equal(runner.runs.length, 2);
+});
+
+test("opencode fallback charges token-bearing schema retries", async () => {
+  let runtime: EnsembleRuntime | null = null;
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+        JSON.stringify({
+          type: "text",
+          sessionID: "ses_test",
+          part: { type: "text", text: JSON.stringify({ status: "retry" }) }
+        }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: {
+            type: "step-finish",
+            reason: "stop",
+            tokens: { total: 7, input: 4, output: 2, reasoning: 0, cache: { read: 1, write: 0 } }
+          }
+        })
+      ].join("\n")
+    },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
+  });
+  const adapter = new OpenCodeEngineAdapter({
+    runner,
+    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    budgetCeilings: { opencode: 100 },
+    defaultMaxAttempts: 2
+  });
+
+  const result = await runtime.agent("return valid JSON", {
+    engine: "opencode",
+    model: "glm-5.2",
+    schema: {
+      type: "object",
+      required: ["status"],
+      additionalProperties: false,
+      properties: {
+        status: { type: "string", enum: ["ok"] }
+      }
+    }
+  });
+
+  assert.equal(result, null);
+  assert.equal(runner.runs.length, 2);
+  assert.equal(runtime.budget.events.length, 2);
+  assert.equal(runtime.budget.spent("opencode"), 14);
 });
 
 test("opencode run record distinguishes an unparseable export from a failed export command", async () => {
@@ -720,6 +779,41 @@ ${JSON.stringify(
   null,
   2
 )}
+`;
+}
+
+function multiStepExportText(): string {
+  const first = {
+    total: 15_380,
+    input: 14_812,
+    output: 44,
+    reasoning: 524,
+    cache: { read: 0, write: 0 }
+  };
+  const second = {
+    total: 15_527,
+    input: 3_244,
+    output: 1,
+    reasoning: 14,
+    cache: { read: 12_268, write: 0 }
+  };
+  return `Exporting session: ses_0608b95c9ffeS5uMwz6QTN8O68
+${JSON.stringify({
+  info: {
+    id: "ses_0608b95c9ffeS5uMwz6QTN8O68",
+    cost: 0.0056952,
+    tokens: {
+      input: 18_056,
+      output: 45,
+      reasoning: 538,
+      cache: { read: 12_268, write: 0 }
+    }
+  },
+  messages: [
+    { info: { role: "assistant", tokens: first }, parts: [] },
+    { info: { role: "assistant", tokens: second }, parts: [{ type: "text", text: "DONE" }] }
+  ]
+})}
 `;
 }
 

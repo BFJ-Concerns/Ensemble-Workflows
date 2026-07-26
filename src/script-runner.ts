@@ -110,13 +110,20 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
+  const resultSettlement = resultRecord.promise.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (error: unknown) => ({ status: "rejected" as const, error })
+  );
   // Meta is known the moment the script evaluates — surface it before awaiting
   // the body so a live status view can name the run from the start.
   await options.onMeta?.(meta);
-  const result = await withTimeout(resultRecord.promise, options.timeoutMs);
+  const settlement = await withTimeout(resultSettlement, options.timeoutMs);
+  if (settlement.status === "rejected") {
+    throw settlement.error;
+  }
   return {
     meta,
-    result: normaliseVmValue(result)
+    result: normaliseVmValue(settlement.value)
   };
 }
 

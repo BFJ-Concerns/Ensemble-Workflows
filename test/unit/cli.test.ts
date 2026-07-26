@@ -426,9 +426,10 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
   assert.match(stderr.text(), /Error: bad workflow/);
 });
 
-test("CLI emits completed worker outputs when the script throws mid-run", async () => {
+test("CLI with run recording emits completed worker outputs when the script throws mid-run", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-failed-salvage-"));
   const script = path.join(directory, "workflow.js");
+  const runRecordDir = path.join(directory, "records");
   // One worker finishes before the script blows up; its output must survive in
   // the salvage envelope — a late failure is not total loss.
   await writeFile(
@@ -447,25 +448,24 @@ test("CLI emits completed worker outputs when the script throws mid-run", async 
     cwd: directory,
     stdout,
     stderr,
-    createRuntime: async () =>
-      new EnsembleRuntime({
-        engines: new EngineRegistry([new HangOnPromptEngine("codex", 4)]),
-        defaultTurnTimeoutMs: 1_000,
-        defaultMaxAttempts: 1
-      })
+    runRecordDir,
+    createRuntime: async () => salvageRuntime()
   });
 
   assert.equal(exitCode, 1);
   const envelope = JSON.parse(stdout.text()) as {
     partial: boolean;
     reason: string;
-    completed: Array<{ label: string | null; output: unknown }>;
+    completed: Array<{ engine: string; label: string | null; output: unknown }>;
   };
   assert.equal(envelope.partial, true);
   assert.equal(envelope.reason, "failed");
   assert.equal(envelope.completed.length, 1);
+  assert.equal(envelope.completed[0]?.engine, "codex");
+  assert.equal(envelope.completed[0]?.label, "alpha");
   assert.equal(envelope.completed[0]?.output, "codex:done-fast");
   assert.match(stderr.text(), /reduce stage exploded/);
+  await access(path.join(runRecordDir, "runs"));
 });
 
 test("CLI treats an option-looking token after the script path as a script arg", async () => {
@@ -637,6 +637,32 @@ function fakeRuntime(): EnsembleRuntime {
     agent: async (prompt: string) => prompt,
     close: async () => {}
   } as unknown as EnsembleRuntime;
+}
+
+function salvageRuntime(): EnsembleRuntime {
+  const completed: Array<{
+    id: number;
+    engine: "codex";
+    label: string | null;
+    phase: string | null;
+    output: string;
+  }> = [];
+  const runtime = fakeRuntime() as EnsembleRuntime & {
+    completedOutputs: () => typeof completed;
+  };
+  runtime.agent = async (prompt: string, options: { label?: string; phase?: string }) => {
+    const output = `codex:${prompt}`;
+    completed.push({
+      id: completed.length + 1,
+      engine: "codex",
+      label: options.label ?? null,
+      phase: options.phase ?? null,
+      output
+    });
+    return output;
+  };
+  runtime.completedOutputs = () => completed;
+  return runtime;
 }
 
 function hangingRuntime(): EnsembleRuntime {

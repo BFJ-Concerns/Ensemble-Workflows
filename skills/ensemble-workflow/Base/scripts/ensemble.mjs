@@ -10000,11 +10000,18 @@ async function runWorkflowScript(options) {
   }
   const resultRecord = asResultRecord(runResult);
   const meta = normaliseVmValue(resultRecord.meta);
+  const resultSettlement = resultRecord.promise.then(
+    (value) => ({ status: "fulfilled", value }),
+    (error) => ({ status: "rejected", error })
+  );
   await options.onMeta?.(meta);
-  const result = await withTimeout(resultRecord.promise, options.timeoutMs);
+  const settlement = await withTimeout(resultSettlement, options.timeoutMs);
+  if (settlement.status === "rejected") {
+    throw settlement.error;
+  }
   return {
     meta,
-    result: normaliseVmValue(result)
+    result: normaliseVmValue(settlement.value)
   };
 }
 function readWorkflowMeta(source, filename = "workflow.js") {

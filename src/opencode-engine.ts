@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 import {
   FallbackModelUnsupportedError,
+  OpenCodeNetworkUnsupportedError,
   OpenCodeRunError,
   OpenCodeSandboxUnsupportedError,
   OpenCodeWebSearchUnsupportedError,
@@ -269,6 +270,9 @@ export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): vo
   }
   if (options.sandbox !== undefined) {
     throw new OpenCodeSandboxUnsupportedError(options.sandbox);
+  }
+  if (options.network !== undefined) {
+    throw new OpenCodeNetworkUnsupportedError(options.network);
   }
   if (options.fallbackModel !== undefined) {
     throw new FallbackModelUnsupportedError("opencode");

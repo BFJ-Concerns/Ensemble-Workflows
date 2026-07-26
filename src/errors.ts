@@ -139,6 +139,25 @@ export class ClaudeSandboxUnsupportedError extends EnsembleError {
   }
 }
 
+export class ClaudeNetworkUnsupportedError extends EnsembleError {
+  constructor(network: boolean) {
+    super(
+      `network:${JSON.stringify(network)} is not supported on the Claude engine in v1: ` +
+        "Ensemble does not manage the Claude worker's network boundary. " +
+        "Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability."
+    );
+  }
+}
+
+export class CodexDangerFullAccessNetworkDisabledError extends EnsembleError {
+  constructor() {
+    super(
+      "sandbox:'danger-full-access' cannot be combined with network:false: " +
+        "full access includes network access, so Ensemble cannot honour both options."
+    );
+  }
+}
+
 export class OpenCodeModelRequiredError extends EnsembleError {
   constructor(registered: readonly string[]) {
     super(
@@ -191,6 +210,16 @@ export class OpenCodeSandboxUnsupportedError extends EnsembleError {
       `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: ` +
         "the sandbox option is a Codex app-server capability. " +
         "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
+    );
+  }
+}
+
+export class OpenCodeNetworkUnsupportedError extends EnsembleError {
+  constructor(network: boolean) {
+    super(
+      `network:${JSON.stringify(network)} is not supported on the opencode engine in v1: ` +
+        "the opencode subprocess transport does not expose an Ensemble-controlled network boundary. " +
+        "Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability."
     );
   }
 }

@@ -12,6 +12,7 @@ import {
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError,
+  OpenCodeNetworkUnsupportedError,
   OpenCodeSandboxUnsupportedError,
   OpenCodeWebSearchUnsupportedError,
   OpenCodeWorktreeIsolationUnsupportedError
@@ -113,6 +114,16 @@ test("opencode unsupported options fail before spawning", () => {
         sandbox: "read-only"
       }),
     OpenCodeSandboxUnsupportedError
+  );
+  assert.throws(
+    () =>
+      adapter.createInvocation("offline", {
+        webSearch: false,
+        timeoutMs: 1_000,
+        model: "glm-5.2",
+        network: false
+      }),
+    OpenCodeNetworkUnsupportedError
   );
   assert.throws(
     () =>

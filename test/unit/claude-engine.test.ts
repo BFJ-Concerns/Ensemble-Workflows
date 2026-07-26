@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import {
+  ClaudeNetworkUnsupportedError,
   ClaudeSandboxUnsupportedError,
   ClaudeWebSearchUnsupportedError,
   ClaudeWorktreeIsolationUnsupportedError
@@ -477,6 +478,21 @@ test("sandbox is rejected on the Claude engine with a clear error", async () => 
         ClaudeSandboxUnsupportedError
       );
       // Rejected before any worker is spawned, just like the isolation guard.
+      assert.equal(controlPlane.dispatchCount, 0);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("network is rejected on the Claude engine before spawning", async () => {
+  await withControlPlane([{ assistant: { text: "unused" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await assert.rejects(
+        () => runtime.agent("offline", { engine: "claude", network: false }),
+        ClaudeNetworkUnsupportedError
+      );
       assert.equal(controlPlane.dispatchCount, 0);
     } finally {
       await runtime.close();

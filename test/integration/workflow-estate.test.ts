@@ -891,6 +891,11 @@ test("Claude unsupported options fail loudly on the real agent path before spawn
       message: /ClaudeSandboxUnsupportedError: sandbox:"read-only" is not supported on the Claude engine/
     },
     {
+      name: "claude-network-fail-loud",
+      options: `{ engine: "claude", network: false }`,
+      message: /ClaudeNetworkUnsupportedError: network:false is not supported on the Claude engine/
+    },
+    {
       name: "claude-worktree-fail-loud",
       options: `{ engine: "claude", isolation: "worktree" }`,
       message: /ClaudeWorktreeIsolationUnsupportedError: isolation:'worktree' is not supported on the Claude engine/

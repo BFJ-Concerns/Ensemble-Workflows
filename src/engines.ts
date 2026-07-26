@@ -4,9 +4,11 @@ import { CodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
 import {
+  ClaudeNetworkUnsupportedError,
   ClaudeSandboxUnsupportedError,
   ClaudeWebSearchUnsupportedError,
   ClaudeWorktreeIsolationUnsupportedError,
+  CodexDangerFullAccessNetworkDisabledError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
@@ -45,6 +47,7 @@ export interface EngineTurnOptions {
   webSearch: boolean;
   isolation?: "worktree";
   sandbox?: SandboxMode;
+  network?: boolean;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
 }
@@ -134,6 +137,9 @@ export class CodexEngineAdapter implements EngineAdapter {
     if (options.fallbackModel !== undefined) {
       throw new FallbackModelUnsupportedError(this.name);
     }
+    if (options.sandbox === "danger-full-access" && options.network === false) {
+      throw new CodexDangerFullAccessNetworkDisabledError();
+    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -195,7 +201,7 @@ class CodexEngineInvocation implements EngineInvocation {
     try {
       result = await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
-        sandbox: "workspace-write"
+        sandbox: this.#options.sandbox ?? "workspace-write"
       });
     } catch (error) {
       await this.#finishWorktree(worktree);
@@ -220,6 +226,8 @@ class CodexEngineInvocation implements EngineInvocation {
     });
 
     return this.#transport.runTurn(threadId, prompt, {
+      sandbox: location.sandbox,
+      network: this.#options.network ?? true,
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -291,6 +299,9 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     }
     if (options.sandbox !== undefined) {
       throw new ClaudeSandboxUnsupportedError(options.sandbox);
+    }
+    if (options.network !== undefined) {
+      throw new ClaudeNetworkUnsupportedError(options.network);
     }
     return new ClaudeEngineInvocation({
       prompt,

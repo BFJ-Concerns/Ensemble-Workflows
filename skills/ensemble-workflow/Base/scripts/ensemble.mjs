@@ -6670,6 +6670,20 @@ var ClaudeSandboxUnsupportedError = class extends EnsembleError {
     );
   }
 };
+var ClaudeNetworkUnsupportedError = class extends EnsembleError {
+  constructor(network) {
+    super(
+      `network:${JSON.stringify(network)} is not supported on the Claude engine in v1: Ensemble does not manage the Claude worker's network boundary. Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability.`
+    );
+  }
+};
+var CodexDangerFullAccessNetworkDisabledError = class extends EnsembleError {
+  constructor() {
+    super(
+      "sandbox:'danger-full-access' cannot be combined with network:false: full access includes network access, so Ensemble cannot honour both options."
+    );
+  }
+};
 var OpenCodeModelRequiredError = class extends EnsembleError {
   constructor(registered) {
     super(
@@ -6709,6 +6723,13 @@ var OpenCodeSandboxUnsupportedError = class extends EnsembleError {
   constructor(sandbox) {
     super(
       `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
+    );
+  }
+};
+var OpenCodeNetworkUnsupportedError = class extends EnsembleError {
+  constructor(network) {
+    super(
+      `network:${JSON.stringify(network)} is not supported on the opencode engine in v1: the opencode subprocess transport does not expose an Ensemble-controlled network boundary. Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability.`
     );
   }
 };
@@ -7087,7 +7108,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     try {
       const params = {
         threadId,
-        input: [{ type: "text", text: prompt }]
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: sandboxPolicy(options.sandbox, options.network)
       };
       if (options.schema !== void 0) {
         params.outputSchema = options.schema;
@@ -7449,6 +7471,16 @@ ${this.#stderrTail.join("\n")}` : "";
     this.#transcripts.clear();
   }
 };
+function sandboxPolicy(sandbox, network) {
+  switch (sandbox) {
+    case "read-only":
+      return { type: "readOnly", networkAccess: network };
+    case "workspace-write":
+      return { type: "workspaceWrite", networkAccess: network };
+    case "danger-full-access":
+      return { type: "dangerFullAccess" };
+  }
+}
 function appServerErrorFromPayload(method, errorPayload) {
   if (payloadContainsInvalidJsonSchema(errorPayload)) {
     return new CodexSchemaSubsetUnsupportedError(errorPayload);
@@ -8328,6 +8360,9 @@ function rejectUnsupportedOpenCodeOptions(options) {
   if (options.sandbox !== void 0) {
     throw new OpenCodeSandboxUnsupportedError(options.sandbox);
   }
+  if (options.network !== void 0) {
+    throw new OpenCodeNetworkUnsupportedError(options.network);
+  }
   if (options.fallbackModel !== void 0) {
     throw new FallbackModelUnsupportedError("opencode");
   }
@@ -8980,6 +9015,9 @@ var CodexEngineAdapter = class {
     if (options.fallbackModel !== void 0) {
       throw new FallbackModelUnsupportedError(this.name);
     }
+    if (options.sandbox === "danger-full-access" && options.network === false) {
+      throw new CodexDangerFullAccessNetworkDisabledError();
+    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -9023,7 +9061,7 @@ var CodexEngineInvocation = class {
     try {
       result = await this.#runTurnInCwd(prompt, {
         cwd: worktree.path,
-        sandbox: "workspace-write"
+        sandbox: this.#options.sandbox ?? "workspace-write"
       });
     } catch (error) {
       await this.#finishWorktree(worktree);
@@ -9045,6 +9083,8 @@ var CodexEngineInvocation = class {
       ...location.cwd !== void 0 ? { cwd: location.cwd } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
+      sandbox: location.sandbox,
+      network: this.#options.network ?? true,
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -9095,6 +9135,9 @@ var ClaudeEngineAdapter = class {
     }
     if (options.sandbox !== void 0) {
       throw new ClaudeSandboxUnsupportedError(options.sandbox);
+    }
+    if (options.network !== void 0) {
+      throw new ClaudeNetworkUnsupportedError(options.network);
     }
     return new ClaudeEngineInvocation({
       prompt,
@@ -9543,7 +9586,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
       ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
-      ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {}
+      ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {},
+      ...options.network !== void 0 ? { network: options.network } : {}
     };
   }
   #newAgentRecord(id, engine, options) {

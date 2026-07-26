@@ -475,7 +475,8 @@ export class EnsembleRuntime {
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
       ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
-      ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {})
+      ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {}),
+      ...(options.network !== undefined ? { network: options.network } : {})
     };
   }
 

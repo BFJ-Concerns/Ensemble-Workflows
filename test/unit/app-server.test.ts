@@ -81,12 +81,72 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
     const threadId = await transport.openThread({ webSearch: false, sandbox: "read-only" });
     assert.equal(transport.openTranscripts(), 1);
 
-    const result = await transport.runTurn(threadId, "hello?", {});
+    const result = await transport.runTurn(threadId, "hello?", { sandbox: "read-only", network: true });
     assert.equal(result.text, "hello");
     assert.equal(result.resolvedModel, "gpt-test-default");
     assert.equal(result.resolvedEffort, "medium");
     assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
     assert.equal(transport.openTranscripts(), 0);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server emits the exact turn sandbox policy for each supported posture", async () => {
+  const codexBin = await fakeCodexTurnServer();
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+  const cases = [
+    {
+      sandbox: "read-only" as const,
+      network: true,
+      expected: { type: "readOnly", networkAccess: true }
+    },
+    {
+      sandbox: "read-only" as const,
+      network: false,
+      expected: { type: "readOnly", networkAccess: false }
+    },
+    {
+      sandbox: "workspace-write" as const,
+      network: true,
+      expected: { type: "workspaceWrite", networkAccess: true }
+    },
+    {
+      sandbox: "workspace-write" as const,
+      network: false,
+      expected: { type: "workspaceWrite", networkAccess: false }
+    },
+    {
+      sandbox: "danger-full-access" as const,
+      network: true,
+      expected: { type: "dangerFullAccess" }
+    }
+  ];
+
+  try {
+    for (const scenario of cases) {
+      const threadId = await transport.openThread({ webSearch: false, sandbox: scenario.sandbox });
+      const result = await transport.runTurn(threadId, "hello?", {
+        sandbox: scenario.sandbox,
+        network: scenario.network
+      });
+      const transcript = result.transcripts?.[0]?.content;
+      assert.ok(transcript);
+      const turnStart = transcript
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { method?: string; params?: { sandboxPolicy?: unknown } })
+        .find((event) => event.method === "turn/start");
+
+      assert.deepEqual(turnStart?.params?.sandboxPolicy, scenario.expected);
+    }
   } finally {
     await transport.close();
   }

@@ -77,15 +77,18 @@ unknown values throw before any worker spawns.
 | `effort` | passed to the turn | passed to the CLI | passed as the model variant |
 | `fallbackModel` | throws | supported (declared degradation) | throws |
 | `webSearch: true` | supported | throws | throws |
-| `isolation: 'worktree'` | supported — fresh git worktree, `workspace-write` sandbox, changed worktrees reported | throws | throws |
-| `sandbox` | `'read-only'` (default) or `'workspace-write'` | throws | throws |
+| `isolation: 'worktree'` | supported — fresh git worktree; defaults to `workspace-write` but preserves an explicit `sandbox`; changed worktrees reported | throws | throws |
+| `sandbox` | `'read-only'` (default), `'workspace-write'`, or `'danger-full-access'` | throws | throws |
+| `network` | boolean, defaults to `true`; `false` blocks worker-shell networking | throws | throws |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | per-turn deadline; omitted → unbounded | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | default 3 | default 3 | default 3 |
 | `label`, `phase` | bookkeeping only, all engines | | |
 
-Every "throws" above is a fail-fast contract error naming the option and the
-engine that would support it — the option is never silently dropped.
+Every engine-unsupported "throws" above is a fail-fast contract error naming
+the option and the engine that would support it — the option is never silently
+dropped. Codex also rejects `sandbox: 'danger-full-access'` with
+`network: false` before dispatch because full access includes network access.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,

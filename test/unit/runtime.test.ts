@@ -5,6 +5,7 @@ import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   BudgetExceededError,
+  CodexDangerFullAccessNetworkDisabledError,
   CodexSchemaSubsetUnsupportedError,
   FallbackModelUnsupportedError,
   InvalidAgentSchemaError,
@@ -233,8 +234,8 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 
-test("default agents keep the read-only sandbox and base cwd", async () => {
-  const transport = new FakeTransport([turn("ok")]);
+test("Codex agents enable network by default and pass an explicit disable", async () => {
+  const transport = new FakeTransport([turn("default"), turn("disabled")]);
   const runtime = new EnsembleRuntime({
     transport,
     concurrencyCaps: { codex: 1 },
@@ -243,11 +244,30 @@ test("default agents keep the read-only sandbox and base cwd", async () => {
   });
 
   await runtime.agent("read", { engine: "codex" });
+  await runtime.agent("offline", { engine: "codex", network: false });
 
-  assert.deepEqual(transport.openedThreads, [{ webSearch: false, sandbox: "read-only" }]);
+  assert.deepEqual(transport.openedThreads, [
+    { webSearch: false, sandbox: "read-only" },
+    { webSearch: false, sandbox: "read-only" }
+  ]);
+  assert.deepEqual(
+    transport.turns.map(({ options }) => options),
+    [
+      {
+        sandbox: "read-only",
+        network: true,
+        timeoutMs: 1_000
+      },
+      {
+        sandbox: "read-only",
+        network: false,
+        timeoutMs: 1_000
+      }
+    ]
+  );
 });
 
-test("worktree isolation forces workspace-write in the isolated cwd and records the finished worktree", async () => {
+test("worktree isolation honours an explicit read-only sandbox and records the finished worktree", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const worktreeManager = new FakeWorktreeManager(true);
   const runtime = new EnsembleRuntime({
@@ -274,10 +294,15 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
   assert.deepEqual(transport.openedThreads, [
     {
       webSearch: false,
-      sandbox: "workspace-write",
+      sandbox: "read-only",
       cwd: "/fake/worktree-1"
     }
   ]);
+  assert.deepEqual(transport.turns[0]?.options, {
+    sandbox: "read-only",
+    network: true,
+    timeoutMs: 1_000
+  });
   assert.deepEqual(runtime.worktrees, [
     {
       path: "/fake/worktree-1",
@@ -295,6 +320,58 @@ test("worktree isolation forces workspace-write in the isolated cwd and records 
     baseCommit: "fake-base-1"
   });
   assert.deepEqual(events, ["worktree/finished"]);
+});
+
+test("worktree isolation defaults to workspace-write without overriding an explicit full-access sandbox", async () => {
+  const transport = new FakeTransport([turn("default"), turn("explicit")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1,
+    worktreeManager: new FakeWorktreeManager(false)
+  });
+
+  await runtime.agent("default", { engine: "codex", isolation: "worktree" });
+  await runtime.agent("explicit", {
+    engine: "codex",
+    isolation: "worktree",
+    sandbox: "danger-full-access"
+  });
+
+  assert.deepEqual(
+    transport.openedThreads.map(({ sandbox }) => sandbox),
+    ["workspace-write", "danger-full-access"]
+  );
+  assert.deepEqual(
+    transport.turns.map(({ options }) => ({ sandbox: options.sandbox, network: options.network })),
+    [
+      { sandbox: "workspace-write", network: true },
+      { sandbox: "danger-full-access", network: true }
+    ]
+  );
+});
+
+test("danger-full-access with network disabled fails before a Codex worker spawns", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  await assert.rejects(
+    () =>
+      runtime.agent("contradiction", {
+        engine: "codex",
+        sandbox: "danger-full-access",
+        network: false
+      }),
+    CodexDangerFullAccessNetworkDisabledError
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
 });
 
 test("agent requires an explicit engine", async () => {

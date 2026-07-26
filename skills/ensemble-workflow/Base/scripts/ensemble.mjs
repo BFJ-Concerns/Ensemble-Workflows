@@ -8175,6 +8175,113 @@ function delay2(ms) {
   });
 }
 
+// src/opencode-model-registry.ts
+var MODELS = [
+  {
+    key: "glm-5.2",
+    providerModel: "openrouter/z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    provider: "openrouter",
+    family: "glm",
+    capabilities: {
+      vision: false
+    },
+    billing: {
+      mode: "pay-as-you-go"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-standard",
+    providerModel: "local/Gemma-4-31B-QAT-Standard",
+    displayName: "Gemma 4 31B QAT Standard",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-heretic",
+    providerModel: "local/Gemma-4-31B-QAT-Heretic",
+    displayName: "Gemma 4 31B QAT Heretic",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-standard",
+    providerModel: "local/Qwen3.6-27B-Standard",
+    displayName: "Qwen 3.6 27B Standard",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-heretic-neo-code",
+    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
+    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  }
+];
+var StaticOpenCodeModelRegistry = class {
+  #models = /* @__PURE__ */ new Map();
+  #names;
+  constructor(models) {
+    for (const model of models) {
+      this.#models.set(model.key, model);
+      this.#models.set(model.providerModel, model);
+    }
+    this.#names = models.map((model) => model.key);
+  }
+  get(model) {
+    return this.#models.get(model);
+  }
+  names() {
+    return [...this.#names];
+  }
+};
+var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+
+// src/engine-option-validation.ts
+function assertFallbackModelSupported(engine, fallbackModel) {
+  if (fallbackModel !== void 0 && engine !== "claude") {
+    throw new FallbackModelUnsupportedError(engine);
+  }
+}
+function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
+  const registered = registry.get(model);
+  if (registered === void 0) {
+    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+  }
+  return registered;
+}
+function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
+  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  if (engine === "opencode" && defaults.model !== void 0) {
+    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
 var OpenCodeCliRunner = class {
@@ -8363,9 +8470,7 @@ function rejectUnsupportedOpenCodeOptions(options) {
   if (options.network !== void 0) {
     throw new OpenCodeNetworkUnsupportedError(options.network);
   }
-  if (options.fallbackModel !== void 0) {
-    throw new FallbackModelUnsupportedError("opencode");
-  }
+  assertFallbackModelSupported("opencode", options.fallbackModel);
 }
 function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3) {
   return new Promise((resolve, reject) => {
@@ -8590,93 +8695,6 @@ function numberField(record, key) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-// src/opencode-model-registry.ts
-var MODELS = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-standard",
-    providerModel: "local/Gemma-4-31B-QAT-Standard",
-    displayName: "Gemma 4 31B QAT Standard",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-heretic",
-    providerModel: "local/Gemma-4-31B-QAT-Heretic",
-    displayName: "Gemma 4 31B QAT Heretic",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-standard",
-    providerModel: "local/Qwen3.6-27B-Standard",
-    displayName: "Qwen 3.6 27B Standard",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-heretic-neo-code",
-    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
-    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  }
-];
-var StaticOpenCodeModelRegistry = class {
-  #models = /* @__PURE__ */ new Map();
-  #names;
-  constructor(models) {
-    for (const model of models) {
-      this.#models.set(model.key, model);
-      this.#models.set(model.providerModel, model);
-    }
-    this.#names = models.map((model) => model.key);
-  }
-  get(model) {
-    return this.#models.get(model);
-  }
-  names() {
-    return [...this.#names];
-  }
-};
-var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
 
 // src/scheduler.ts
 var Scheduler = class {
@@ -9039,9 +9057,7 @@ var CodexEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
-    if (options.fallbackModel !== void 0) {
-      throw new FallbackModelUnsupportedError(this.name);
-    }
+    assertFallbackModelSupported(this.name, options.fallbackModel);
     if (options.sandbox === "danger-full-access" && options.network === false) {
       throw new CodexDangerFullAccessNetworkDisabledError();
     }
@@ -9203,10 +9219,7 @@ var OpenCodeEngineAdapter = class {
     if (options.model === void 0) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
-    const model = this.#modelRegistry.get(options.model);
-    if (model === void 0) {
-      throw new OpenCodeModelNotRegisteredError(options.model, this.#modelRegistry.names());
-    }
+    const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     return new OpenCodeEngineInvocation({
       prompt,
       cwd: this.#cwd,
@@ -10089,6 +10102,7 @@ function validateWorkflowDefaults(value) {
       }
       engineDefaults[option] = optionValue;
     }
+    validateEngineDefaults(engine, engineDefaults);
     defaults[engine] = engineDefaults;
   }
   return defaults;

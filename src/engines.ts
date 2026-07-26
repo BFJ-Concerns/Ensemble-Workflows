@@ -4,13 +4,15 @@ import { CodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
 import {
+  assertFallbackModelSupported,
+  requireRegisteredOpenCodeModel
+} from "./engine-option-validation.js";
+import {
   ClaudeNetworkUnsupportedError,
   ClaudeSandboxUnsupportedError,
   ClaudeWebSearchUnsupportedError,
   ClaudeWorktreeIsolationUnsupportedError,
   CodexDangerFullAccessNetworkDisabledError,
-  FallbackModelUnsupportedError,
-  OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
@@ -134,9 +136,7 @@ export class CodexEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    if (options.fallbackModel !== undefined) {
-      throw new FallbackModelUnsupportedError(this.name);
-    }
+    assertFallbackModelSupported(this.name, options.fallbackModel);
     if (options.sandbox === "danger-full-access" && options.network === false) {
       throw new CodexDangerFullAccessNetworkDisabledError();
     }
@@ -359,10 +359,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
     if (options.model === undefined) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
-    const model = this.#modelRegistry.get(options.model);
-    if (model === undefined) {
-      throw new OpenCodeModelNotRegisteredError(options.model, this.#modelRegistry.names());
-    }
+    const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     return new OpenCodeEngineInvocation({
       prompt,
       cwd: this.#cwd,

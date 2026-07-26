@@ -2,6 +2,7 @@ import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { validateEngineDefaults } from "./engine-option-validation.js";
 import { createWorkflowHooks } from "./hooks.js";
 import {
   NestedWorkflowError,
@@ -214,6 +215,7 @@ function validateWorkflowDefaults(value: unknown): WorkflowDefaults {
       }
       engineDefaults[option] = optionValue;
     }
+    validateEngineDefaults(engine, engineDefaults);
     defaults[engine] = engineDefaults;
   }
   return defaults;

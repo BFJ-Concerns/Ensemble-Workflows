@@ -109,6 +109,13 @@ Calls beyond the cap queue per engine.
   output, unparseable JSON, or schema-validation failure). A malformed schema
   throws before the first attempt. Codex may additionally reject a schema
   outside its `outputSchema` subset, with an error saying so.
+
+  On Claude and opencode the schema rides the prompt, and the worker is asked
+  for a conforming JSON value while being allowed to surround it with prose or
+  markdown fences — that tolerance is the specified behaviour, not a leniency.
+  Where a response offers more than one candidate value, the **last** one that
+  validates against the schema is the answer; a response with no validating
+  candidate fails as above.
 - **Without `schema`**: returns the worker's final text (trimmed, non-empty);
   **throws** an empty-output error after `maxAttempts` empty attempts.
 - **Retries** carry the previous failure back to the worker: Claude corrects

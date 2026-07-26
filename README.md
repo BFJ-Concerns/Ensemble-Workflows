@@ -74,9 +74,11 @@ not hide the rest. A user-scope entry whose name is taken by a project-scope
 entry is labelled `user (shadowed by project)` because name resolution will
 select the project entry.
 
-A skill teaching the hooks API and the invoke pattern is staged under
-[`skills/ensemble-workflow/`](skills/ensemble-workflow/Base/SKILL.md). Any
-shell-capable orchestrator runs the same CLI directly.
+The agent skill teaching the hooks API and the invoke pattern is maintained
+outside this repository, which keeps no copy of its guidance.
+[`skills/ensemble-workflow/`](skills/ensemble-workflow/README.md) holds only the
+built runtime bundle (`Base/scripts/ensemble.mjs`) and a usage brief for running
+it directly. Any shell-capable orchestrator runs the same CLI that way.
 
 ## Live status
 

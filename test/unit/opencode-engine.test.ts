@@ -316,6 +316,84 @@ test("opencode fallback keeps the last text-bearing stopped step when a textless
   assert.equal(result.text, "complete answer");
 });
 
+test("opencode schema agents keep a completed answer when unowned text is later stopped", async () => {
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", sessionID: "ses_test", part: { type: "step-start" } }),
+        JSON.stringify({
+          type: "text",
+          sessionID: "ses_test",
+          part: { type: "text", text: '{"status":"ok"}' }
+        }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        }),
+        JSON.stringify({
+          type: "text",
+          sessionID: "ses_test",
+          part: { type: "text", text: '{"status":"orphan"}' }
+        }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        })
+      ].join("\n")
+    },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner })]),
+    defaultMaxAttempts: 1
+  });
+
+  const result = await runtime.agent("return JSON", {
+    engine: "opencode",
+    model: "glm-5.2",
+    schema: {
+      type: "object",
+      required: ["status"],
+      additionalProperties: false,
+      properties: {
+        status: { type: "string", enum: ["ok"] }
+      }
+    }
+  });
+
+  assert.deepEqual(result, { status: "ok" });
+});
+
+test("opencode retains ownerless-only fallback text when no completed answer precedes it", async () => {
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({
+          type: "text",
+          sessionID: "ses_test",
+          part: { type: "text", text: "legacy answer" }
+        }),
+        JSON.stringify({
+          type: "step_finish",
+          sessionID: "ses_test",
+          part: { type: "step-finish", reason: "stop" }
+        })
+      ].join("\n")
+    },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
+  });
+  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+    webSearch: false,
+    model: "glm-5.2"
+  });
+
+  const result = await invocation.runAttempt({ attempt: 1 });
+
+  assert.equal(result.text, "legacy answer");
+});
+
 test("opencode records empty-output only when neither export nor stream contains text", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-cwd-"));
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-empty-store-"));
@@ -477,6 +555,8 @@ test("opencode reaches the shared schema validation and budget path", async () =
   assert.deepEqual(result, { status: "ok" });
   assert.equal(runtime.budget.spent("opencode"), 7);
   assert.equal(runtime.progress.snapshot().engines.opencode?.spent, 7);
+  assert.match(runner.runs[0]?.prompt ?? "", /may surround the value with prose.*markdown code fences/);
+  assert.doesNotMatch(runner.runs[0]?.prompt ?? "", /exactly one JSON value/);
 });
 
 function exportText(text: string, tokenCounts: { input: number; output: number; reasoning: number }): string {

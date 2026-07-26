@@ -225,6 +225,8 @@ test("completion is read from the transcript even when state never reports done"
       assert.deepEqual(result, { ok: true });
       assert.equal(controlPlane.dispatchCount, 1);
       assert.equal(controlPlane.steerCount, 0);
+      assert.match(controlPlane.dispatched[0]?.prompt ?? "", /may surround the value with prose.*markdown code fences/);
+      assert.doesNotMatch(controlPlane.dispatched[0]?.prompt ?? "", /exactly one JSON value/);
       // close() runs in the shared loop's finally → the session is torn down.
       assert.equal(controlPlane.stopCount, 1);
     } finally {
@@ -263,6 +265,7 @@ test("schema-invalid output is corrected in-session through the valve, not a red
         assert.equal(controlPlane.steerCount, 1);
         assert.match(controlPlane.steered[0] ?? "", /did not satisfy the required schema/);
         assert.match(controlPlane.steered[0] ?? "", /Validation errors/);
+        assert.match(controlPlane.steered[0] ?? "", /may surround the value with prose or markdown fences/);
       } finally {
         await runtime.close();
       }
@@ -284,6 +287,7 @@ test("unparseable output is corrected in-session with the invalid-JSON prompt", 
         assert.equal(controlPlane.dispatchCount, 1);
         assert.equal(controlPlane.steerCount, 1);
         assert.match(controlPlane.steered[0] ?? "", /not valid JSON/);
+        assert.match(controlPlane.steered[0] ?? "", /may surround the value with prose or markdown fences/);
       } finally {
         await runtime.close();
       }

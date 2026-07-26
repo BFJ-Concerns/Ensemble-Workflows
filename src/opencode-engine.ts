@@ -249,7 +249,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     ];
     if (this.#options.schema !== undefined) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -427,6 +427,9 @@ function fallbackText(events: unknown[]): string {
     if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
       // A message may stream in several text parts; retaining the step boundary
       // prevents earlier tool-progress narration from becoming the answer.
+      if (currentStepText === null && finalStoppedStepText.length > 0) {
+        continue;
+      }
       currentStepText ??= [];
       currentStepText.push(event.part.text);
       continue;

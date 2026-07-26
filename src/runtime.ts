@@ -16,7 +16,7 @@ import {
   createDefaultEngineRegistry,
   defaultCodexConcurrency
 } from "./engines.js";
-import { assertCompilableSchema, parseJsonFromText, validateJsonSchema } from "./schema.js";
+import { assertCompilableSchema, selectLastValidJsonFromText } from "./schema.js";
 
 import type {
   AgentOptions,
@@ -382,8 +382,8 @@ export class EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-        const parsed = parseJsonFromText(result.text);
-        if (parsed === null) {
+        const selection = selectLastValidJsonFromText(result.text, options.schema);
+        if (selection.kind === "invalid-json") {
           previousFailure = {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
@@ -391,15 +391,15 @@ export class EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-
-        const validation = validateJsonSchema(parsed.value, options.schema);
-        if (validation.ok) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, parsed.value, startedAt, result));
-          return parsed.value;
+        if (selection.kind === "valid") {
+          agentRecord.attempts.push(
+            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+          );
+          return selection.parsed.value;
         }
         previousFailure = {
           kind: "schema-validation",
-          message: JSON.stringify(validation.errors ?? [])
+          message: JSON.stringify(selection.validation.errors ?? [])
         };
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {

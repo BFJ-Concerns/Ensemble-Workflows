@@ -147,6 +147,73 @@ test("schema agents return the validated object when a retry succeeds", async ()
   assert.equal(transport.turns.length, 2);
 });
 
+test("schema agents return the last validating candidate from prose and fences", async () => {
+  const transport = new FakeTransport([
+    turn(
+      [
+        "Initial reading:",
+        "```json",
+        '{"answer":"draft"}',
+        "```",
+        "Final conclusion:",
+        '{"answer":"final"}'
+      ].join("\n")
+    )
+  ]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+  const candidateSchema = {
+    type: "object",
+    required: ["answer"],
+    additionalProperties: false,
+    properties: {
+      answer: { type: "string", enum: ["draft", "final"] }
+    }
+  };
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema: candidateSchema });
+
+  assert.deepEqual(result, { answer: "final" });
+});
+
+test("schema agents keep an earlier valid candidate when the final candidate fails validation", async () => {
+  const transport = new FakeTransport([
+    turn('Accepted: {"answer":"yes"}\nDiscarded later thought: {"answer":"no"}')
+  ]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
+
+  assert.deepEqual(result, { answer: "yes" });
+});
+
+test("schema agents keep schema-validation failure behaviour when no candidate validates", async () => {
+  const transport = new FakeTransport([
+    turn('First: {"answer":"no"}\nSecond: {"answer":"still no"}'),
+    turn('["not an object"] then {"answer":"yes"}')
+  ]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 2
+  });
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema });
+
+  assert.deepEqual(result, { answer: "yes" });
+  assert.match(transport.turns[1]?.prompt ?? "", /A previous attempt failed \(schema-validation\)/);
+});
+
 test("schema agents label empty output as empty-output, not invalid-json", async () => {
   // Empty or whitespace-only output is an empty-output failure, not invalid JSON.
   const transport = new FakeTransport([turn(""), turn("  \n"), turn("{\"answer\":\"yes\"}")]);

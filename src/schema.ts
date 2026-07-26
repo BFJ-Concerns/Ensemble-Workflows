@@ -21,6 +21,11 @@ export interface ValidationResult {
   errors: ErrorObject[] | null | undefined;
 }
 
+export type JsonSelectionResult =
+  | { kind: "valid"; parsed: ParsedJson }
+  | { kind: "invalid-json" }
+  | { kind: "schema-validation"; validation: ValidationResult };
+
 export function parseJsonFromText(text: string): ParsedJson | null {
   const trimmed = text.trim();
   if (trimmed.length === 0) {
@@ -49,6 +54,31 @@ export function parseJsonFromText(text: string): ParsedJson | null {
   }
 
   return null;
+}
+
+export function selectLastValidJsonFromText(text: string, schema: JsonSchema): JsonSelectionResult {
+  const candidates = parseJsonCandidates(text);
+  if (candidates.length === 0) {
+    return { kind: "invalid-json" };
+  }
+
+  let selected: ParsedJson | null = null;
+  let lastValidation: ValidationResult | null = null;
+  for (const candidate of candidates) {
+    const validation = validateJsonSchema(candidate.value, schema);
+    if (validation.ok) {
+      selected = candidate;
+    }
+    lastValidation = validation;
+  }
+
+  if (selected !== null) {
+    return { kind: "valid", parsed: selected };
+  }
+  if (lastValidation !== null) {
+    return { kind: "schema-validation", validation: lastValidation };
+  }
+  return { kind: "invalid-json" };
 }
 
 export function validateJsonSchema(value: unknown, schema: JsonSchema): ValidationResult {
@@ -188,12 +218,55 @@ function tryParse(source: string): { ok: true; value: unknown } | { ok: false } 
   }
 }
 
+function parseJsonCandidates(source: string): ParsedJson[] {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) {
+    return [];
+  }
+
+  const direct = tryParse(trimmed);
+  if (direct.ok) {
+    return [{ value: direct.value, source: "direct" }];
+  }
+
+  const candidates: ParsedJson[] = [];
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const open = trimmed[index];
+    if (open !== "{" && open !== "[") {
+      continue;
+    }
+    const close = open === "{" ? "}" : "]";
+    const candidate = extractBalancedJsonAt(trimmed, index, open, close);
+    if (candidate === null) {
+      continue;
+    }
+    const parsed = tryParse(candidate.text);
+    if (parsed.ok) {
+      candidates.push({
+        value: parsed.value,
+        source: open === "{" ? "object-fallback" : "array-fallback"
+      });
+    }
+    index = candidate.end;
+  }
+  return candidates;
+}
+
 function extractBalancedJson(source: string, open: "{" | "[", close: "}" | "]"): string | null {
   const start = source.indexOf(open);
   if (start === -1) {
     return null;
   }
 
+  return extractBalancedJsonAt(source, start, open, close)?.text ?? null;
+}
+
+function extractBalancedJsonAt(
+  source: string,
+  start: number,
+  open: "{" | "[",
+  close: "}" | "]"
+): { text: string; end: number } | null {
   let depth = 0;
   let isInString = false;
   let isEscaped = false;
@@ -219,7 +292,7 @@ function extractBalancedJson(source: string, open: "{" | "[", close: "}" | "]"):
     } else if (char === close) {
       depth -= 1;
       if (depth === 0) {
-        return source.slice(start, index + 1);
+        return { text: source.slice(start, index + 1), end: index };
       }
     }
   }

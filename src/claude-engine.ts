@@ -351,7 +351,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     ];
     if (this.#options.schema !== undefined) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -367,12 +367,12 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       case "schema-validation":
         return (
           `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. ` +
-          "Reply with a single corrected JSON value that conforms to the schema — no prose, no markdown fences."
+          "Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences."
         );
       case "invalid-json":
         return (
           "Your last final message was not valid JSON for the required schema. " +
-          "Reply with exactly one JSON value that conforms to the schema — no prose, no markdown fences."
+          "Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences."
         );
       case "empty-output":
       default:

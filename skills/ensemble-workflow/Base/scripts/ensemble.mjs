@@ -8128,7 +8128,7 @@ var ClaudeEngineInvocation = class {
     ];
     if (this.#options.schema !== void 0) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -8141,9 +8141,9 @@ var ClaudeEngineInvocation = class {
   #correctionMessage(previousFailure) {
     switch (previousFailure.kind) {
       case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a single corrected JSON value that conforms to the schema \u2014 no prose, no markdown fences.`;
+        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
       case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with exactly one JSON value that conforms to the schema \u2014 no prose, no markdown fences.";
+        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
       case "empty-output":
       default:
         return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
@@ -8339,7 +8339,7 @@ var OpenCodeEngineInvocation = class {
     ];
     if (this.#options.schema !== void 0) {
       lines.push(
-        "When finished, your FINAL message must be exactly one JSON value conforming to this JSON Schema, with no surrounding prose, explanation, or markdown code fences:",
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
         JSON.stringify(this.#options.schema)
       );
     }
@@ -8491,6 +8491,9 @@ function fallbackText(events) {
       continue;
     }
     if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+      if (currentStepText === null && finalStoppedStepText.length > 0) {
+        continue;
+      }
       currentStepText ??= [];
       currentStepText.push(event.part.text);
       continue;
@@ -8722,30 +8725,27 @@ var ajv = new import_ajv.Ajv({
   allErrors: true,
   strict: false
 });
-function parseJsonFromText(text) {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return null;
+function selectLastValidJsonFromText(text, schema) {
+  const candidates = parseJsonCandidates(text);
+  if (candidates.length === 0) {
+    return { kind: "invalid-json" };
   }
-  const direct = tryParse(trimmed);
-  if (direct.ok) {
-    return { value: direct.value, source: "direct" };
-  }
-  const objectCandidate = extractBalancedJson(trimmed, "{", "}");
-  if (objectCandidate !== null) {
-    const parsed = tryParse(objectCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "object-fallback" };
+  let selected = null;
+  let lastValidation = null;
+  for (const candidate of candidates) {
+    const validation = validateJsonSchema(candidate.value, schema);
+    if (validation.ok) {
+      selected = candidate;
     }
+    lastValidation = validation;
   }
-  const arrayCandidate = extractBalancedJson(trimmed, "[", "]");
-  if (arrayCandidate !== null) {
-    const parsed = tryParse(arrayCandidate);
-    if (parsed.ok) {
-      return { value: parsed.value, source: "array-fallback" };
-    }
+  if (selected !== null) {
+    return { kind: "valid", parsed: selected };
   }
-  return null;
+  if (lastValidation !== null) {
+    return { kind: "schema-validation", validation: lastValidation };
+  }
+  return { kind: "invalid-json" };
 }
 function validateJsonSchema(value, schema) {
   const validate = compileSchema(schema);
@@ -8857,11 +8857,38 @@ function tryParse(source) {
     return { ok: false };
   }
 }
-function extractBalancedJson(source, open, close) {
-  const start = source.indexOf(open);
-  if (start === -1) {
-    return null;
+function parseJsonCandidates(source) {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) {
+    return [];
   }
+  const direct = tryParse(trimmed);
+  if (direct.ok) {
+    return [{ value: direct.value, source: "direct" }];
+  }
+  const candidates = [];
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const open = trimmed[index];
+    if (open !== "{" && open !== "[") {
+      continue;
+    }
+    const close = open === "{" ? "}" : "]";
+    const candidate = extractBalancedJsonAt(trimmed, index, open, close);
+    if (candidate === null) {
+      continue;
+    }
+    const parsed = tryParse(candidate.text);
+    if (parsed.ok) {
+      candidates.push({
+        value: parsed.value,
+        source: open === "{" ? "object-fallback" : "array-fallback"
+      });
+    }
+    index = candidate.end;
+  }
+  return candidates;
+}
+function extractBalancedJsonAt(source, start, open, close) {
   let depth = 0;
   let isInString = false;
   let isEscaped = false;
@@ -8884,7 +8911,7 @@ function extractBalancedJson(source, open, close) {
     } else if (char === close) {
       depth -= 1;
       if (depth === 0) {
-        return source.slice(start, index + 1);
+        return { text: source.slice(start, index + 1), end: index };
       }
     }
   }
@@ -9506,8 +9533,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-        const parsed = parseJsonFromText(result.text);
-        if (parsed === null) {
+        const selection = selectLastValidJsonFromText(result.text, options.schema);
+        if (selection.kind === "invalid-json") {
           previousFailure = {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
@@ -9515,14 +9542,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
           continue;
         }
-        const validation = validateJsonSchema(parsed.value, options.schema);
-        if (validation.ok) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, parsed.value, startedAt, result));
-          return parsed.value;
+        if (selection.kind === "valid") {
+          agentRecord.attempts.push(
+            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+          );
+          return selection.parsed.value;
         }
         previousFailure = {
           kind: "schema-validation",
-          message: JSON.stringify(validation.errors ?? [])
+          message: JSON.stringify(selection.validation.errors ?? [])
         };
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {

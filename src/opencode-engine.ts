@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import {
-  FallbackModelUnsupportedError,
   OpenCodeNetworkUnsupportedError,
   OpenCodeRunError,
   OpenCodeSandboxUnsupportedError,
@@ -274,9 +274,7 @@ export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): vo
   if (options.network !== undefined) {
     throw new OpenCodeNetworkUnsupportedError(options.network);
   }
-  if (options.fallbackModel !== undefined) {
-    throw new FallbackModelUnsupportedError("opencode");
-  }
+  assertFallbackModelSupported("opencode", options.fallbackModel);
 }
 
 function runProcess(

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { WorkflowTimeoutError, extractWorkflowSource, runWorkflowScript } from "../../src/script-runner.js";
 import { TokenBudget } from "../../src/budget.js";
+import { FallbackModelUnsupportedError, OpenCodeModelNotRegisteredError } from "../../src/errors.js";
 
 import type { WorkflowRuntime } from "../../src/hooks.js";
 import type { EngineName } from "../../src/types.js";
@@ -423,6 +424,64 @@ test("export const defaults supplies per-engine policy that call sites override"
   assert.deepEqual(seen[3], { engine: "opencode", model: "glm-5.2" });
 });
 
+test("child workflow defaults stay lexical and call sites still override them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-child-defaults-"));
+  const child = path.join(directory, "child.js");
+  await writeFile(
+    child,
+    `
+      export const meta = { name: "child-defaults" };
+      export const defaults = {
+        claude: { model: "child-model", fallbackModel: "child-fallback" }
+      };
+
+      await agent("child default", { engine: "claude" });
+      await agent("child override", { engine: "claude", model: "call-model" });
+      return "child";
+    `
+  );
+
+  const seen: Array<{ prompt: string; options: Record<string, unknown> }> = [];
+  const recordingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async (prompt: string, options?: Record<string, unknown>) => {
+      seen.push({ prompt, options: { ...(options ?? {}) } });
+      return `agent:${prompt}`;
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  const result = await runWorkflowScript({
+    filename: path.join(directory, "parent.js"),
+    runtime: recordingRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "parent-defaults" };
+      export const defaults = {
+        claude: { model: "parent-model", effort: "low" }
+      };
+
+      await agent("parent default", { engine: "claude" });
+      return await workflow({ scriptPath: "./child.js" }, []);
+    `
+  });
+
+  assert.equal(result.result, "child");
+  assert.deepEqual(seen, [
+    {
+      prompt: "parent default",
+      options: { engine: "claude", model: "parent-model", effort: "low" }
+    },
+    {
+      prompt: "child default",
+      options: { engine: "claude", model: "child-model", fallbackModel: "child-fallback" }
+    },
+    {
+      prompt: "child override",
+      options: { engine: "claude", model: "call-model", fallbackModel: "child-fallback" }
+    }
+  ]);
+});
+
 test("defaults with a non-engine key fail before the body runs", async () => {
   await assert.rejects(
     () =>
@@ -455,6 +514,66 @@ test("defaults with an unsupported option key fail loudly", async () => {
       }),
     /defaults\.claude\.schema is not supported/
   );
+});
+
+test("engine-incompatible defaults fail before the body runs", async () => {
+  const logs: string[] = [];
+  let agentCalls = 0;
+  const lateRejectingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      agentCalls += 1;
+      throw new FallbackModelUnsupportedError("codex");
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "codex-fallback-default.js",
+        runtime: lateRejectingRuntime,
+        log: (message) => logs.push(message),
+        source: `
+          export const meta = { name: "codex-fallback-default" };
+          export const defaults = { codex: { fallbackModel: "sonnet" } };
+          log("body ran");
+          return await agent("never", { engine: "codex" });
+        `
+      }),
+    /fallbackModel is not supported on the codex engine/
+  );
+  assert.deepEqual(logs, []);
+  assert.equal(agentCalls, 0);
+});
+
+test("an unregistered opencode model in defaults fails before the body runs", async () => {
+  const logs: string[] = [];
+  let agentCalls = 0;
+  const lateRejectingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      agentCalls += 1;
+      throw new OpenCodeModelNotRegisteredError("glm-later", ["glm-5.2"]);
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "unknown-opencode-default.js",
+        runtime: lateRejectingRuntime,
+        log: (message) => logs.push(message),
+        source: `
+          export const meta = { name: "unknown-opencode-default" };
+          export const defaults = { opencode: { model: "glm-later" } };
+          log("body ran");
+          return await agent("never", { engine: "opencode" });
+        `
+      }),
+    /OpenCode model "glm-later" is not registered/
+  );
+  assert.deepEqual(logs, []);
+  assert.equal(agentCalls, 0);
 });
 
 test("a script with a defaults block still exposes its meta to registry readers", async () => {

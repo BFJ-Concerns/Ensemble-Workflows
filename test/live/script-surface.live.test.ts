@@ -152,6 +152,74 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
   }
 });
 
+test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive, timeout: 420_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-tolerant-parse-"));
+  const script = path.join(directory, "workflow.js");
+  const recordStore = path.join(directory, "records");
+  const expected = {
+    token: "LIVE_TOLERANT_CLAUDE",
+    product: 57,
+    checkedBy: "claude"
+  };
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "claude-tolerant-parse",
+          description: "Live proof that a prose-wrapped Claude result reaches the schema consumer"
+        };
+
+        const schema = {
+          type: "object",
+          required: ["token", "product", "checkedBy"],
+          additionalProperties: false,
+          properties: {
+            token: { type: "string", enum: ["LIVE_TOLERANT_CLAUDE"] },
+            product: { type: "integer", enum: [57] },
+            checkedBy: { type: "string", enum: ["claude"] }
+          }
+        };
+
+        phase("prose-wrapped-claude");
+        return await agent(
+          "Calculate 19 multiplied by 3. In your final response, first write at least one complete sentence " +
+            "explaining how you computed the product. After that prose, include a JSON object with token " +
+            "LIVE_TOLERANT_CLAUDE, product 57, and checkedBy claude. The prose before the object is required.",
+          {
+            engine: "claude",
+            label: "prose-wrapped-claude",
+            schema,
+            maxAttempts: 1
+          }
+        );
+      `
+    );
+
+    const cliPath = path.resolve("dist/src/cli/ensemble.js");
+    const result = await runNode([cliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /\[phase\] prose-wrapped-claude/);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+
+    const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
+    assert.equal(agent.attempts.length, 1);
+    assert.equal(agent.attempts[0]?.status, "complete");
+    assert.deepEqual(agent.validated_output, expected);
+    assert.equal(typeof agent.raw_output, "string");
+    const rawOutput = agent.raw_output ?? "";
+    const objectStart = rawOutput.indexOf("{");
+    assert.ok(objectStart > 0, `Claude did not put prose before its JSON object: ${rawOutput}`);
+    assert.match(rawOutput.slice(0, objectStart), /[A-Za-z][\s\S]*[.!?]/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("live CLI gives default Codex workers network and denies it when requested", { skip: !isLive, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-network-"));
   const script = path.join(directory, "workflow.js");
@@ -287,32 +355,49 @@ interface RecordedCommand {
   aggregatedOutput: string | null;
 }
 
-async function recordedCommand(recordStore: string, label: string, url: string): Promise<RecordedCommand> {
+interface RecordedAgent {
+  label: string | null;
+  raw_output: string | null;
+  validated_output: unknown;
+  attempts: Array<{ status: string; diagnostics: Record<string, unknown> }>;
+  transcripts: Array<{ path: string }>;
+}
+
+interface RecordedAgentArchive {
+  agent: RecordedAgent;
+  archiveDirectory: string;
+}
+
+async function recordedAgent(recordStore: string, label: string): Promise<RecordedAgentArchive> {
   const entries = await readdir(recordStore, { recursive: true });
   for (const entry of entries.filter((candidate) => candidate.endsWith("agent.json"))) {
     const agentPath = path.join(recordStore, entry);
-    const agent = JSON.parse(await readFile(agentPath, "utf8")) as {
-      label: string | null;
-      transcripts: Array<{ path: string }>;
-    };
-    if (agent.label !== label) {
-      continue;
+    const agent = JSON.parse(await readFile(agentPath, "utf8")) as RecordedAgent;
+    if (agent.label === label) {
+      return {
+        agent,
+        archiveDirectory: path.resolve(path.dirname(agentPath), "../..")
+      };
     }
-    const archiveDirectory = path.resolve(path.dirname(agentPath), "../..");
-    for (const transcript of agent.transcripts) {
-      const events = (await readFile(path.join(archiveDirectory, transcript.path), "utf8"))
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as { method?: string; params?: { item?: RecordedCommand & { type?: string } } });
-      const completed = events.find(
-        (event) =>
-          event.method === "item/completed" &&
-          event.params?.item?.type === "commandExecution" &&
-          event.params.item.command.includes(url)
-      )?.params?.item;
-      if (completed !== undefined) {
-        return completed;
-      }
+  }
+  throw new Error(`No recorded agent with label ${label}`);
+}
+
+async function recordedCommand(recordStore: string, label: string, url: string): Promise<RecordedCommand> {
+  const { agent, archiveDirectory } = await recordedAgent(recordStore, label);
+  for (const transcript of agent.transcripts) {
+    const events = (await readFile(path.join(archiveDirectory, transcript.path), "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { method?: string; params?: { item?: RecordedCommand & { type?: string } } });
+    const completed = events.find(
+      (event) =>
+        event.method === "item/completed" &&
+        event.params?.item?.type === "commandExecution" &&
+        event.params.item.command.includes(url)
+    )?.params?.item;
+    if (completed !== undefined) {
+      return completed;
     }
   }
   throw new Error(`No completed command execution for ${label} and ${url}`);

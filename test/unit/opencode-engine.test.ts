@@ -137,6 +137,26 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
 });
 
+test("a per-call cwd reaches opencode run and overrides the adapter cwd", async () => {
+  const runner = new FakeOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ cwd: "/adapter/cwd", runner });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    defaultMaxAttempts: 1
+  });
+
+  try {
+    await runtime.agent("read", {
+      engine: "opencode",
+      model: "glm-5.2",
+      cwd: "/per-call/cwd"
+    });
+    assert.equal(runner.runs[0]?.cwd, "/per-call/cwd");
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("opencode export fallback recovers the complete final stopped step into the result and run record", async () => {
   let runtime: EnsembleRuntime | null = null;
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-fallback-cwd-"));

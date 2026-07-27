@@ -232,6 +232,18 @@ test("completion is read from the transcript even when state never reports done"
   });
 });
 
+test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", async () => {
+  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane);
+    try {
+      await runtime.agent("read", { engine: "claude", cwd: "/per-call/cwd" });
+      assert.equal(controlPlane.dispatched[0]?.cwd, "/per-call/cwd");
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
 test("a text agent returns the bare final assistant message", async () => {
   await withControlPlane([{ assistant: { text: "the plain answer" } }], async (controlPlane) => {
     const runtime = makeRuntime(controlPlane);

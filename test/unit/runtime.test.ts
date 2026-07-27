@@ -315,6 +315,19 @@ test("Codex agents pass only turn options that remain configurable", async () =>
   assert.deepEqual(transport.turns[0]?.options, { timeoutMs: 1_000 });
 });
 
+test("a per-call cwd reaches the Codex thread and overrides the run-wide cwd", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  await runtime.agent("read", { engine: "codex", cwd: "/per-call/cwd" });
+
+  assert.deepEqual(transport.openedThreads, [{ cwd: "/per-call/cwd" }]);
+});
+
 test("worktree isolation uses the isolated cwd and records the finished worktree", async () => {
   const transport = new FakeTransport([turn("ok")]);
   const worktreeManager = new FakeWorktreeManager(true);

@@ -475,6 +475,7 @@ export class EnsembleRuntime {
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       ...(options.isolation !== undefined ? { isolation: options.isolation } : {})
     };
   }

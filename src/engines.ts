@@ -41,6 +41,7 @@ export interface EngineTurnOptions {
   effort?: string;
   /** Claude only: declared degradation when the pinned model is unavailable. */
   fallbackModel?: string;
+  cwd?: string;
   isolation?: "worktree";
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
@@ -178,7 +179,7 @@ class CodexEngineInvocation implements EngineInvocation {
       return this.#runIsolatedWorktreeTurn(prompt);
     }
 
-    return this.#runTurnInCwd(prompt);
+    return this.#runTurnInCwd(prompt, this.#options.cwd);
   }
 
   async #runIsolatedWorktreeTurn(prompt: string): Promise<TurnResult> {
@@ -276,7 +277,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     }
     return new ClaudeEngineInvocation({
       prompt,
-      cwd: this.#cwd,
+      cwd: options.cwd ?? this.#cwd,
       options,
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
@@ -333,7 +334,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
     return new OpenCodeEngineInvocation({
       prompt,
-      cwd: this.#cwd,
+      cwd: options.cwd ?? this.#cwd,
       providerModel: model.providerModel,
       modelKey: model.key,
       options,

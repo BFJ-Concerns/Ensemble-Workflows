@@ -14,6 +14,7 @@ export interface AgentOptions {
   effort?: string;
   /** Claude only: declared degradation when the pinned model tier is unavailable. */
   fallbackModel?: string;
+  cwd?: string;
   isolation?: IsolationMode;
   timeoutMs?: number;
   maxAttempts?: number;

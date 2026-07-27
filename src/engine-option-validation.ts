@@ -21,6 +21,7 @@ const AGENT_OPTION_KEYS = [
   "model",
   "effort",
   "fallbackModel",
+  "cwd",
   "isolation",
   "timeoutMs",
   "maxAttempts",

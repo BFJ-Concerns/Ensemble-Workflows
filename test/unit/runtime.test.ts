@@ -179,6 +179,24 @@ test("schema agents return the last validating candidate from prose and fences",
   assert.deepEqual(result, { answer: "final" });
 });
 
+test("schema agents recover a valid array nested inside an unparseable brace region", async () => {
+  const transport = new FakeTransport([turn('Findings: { see below ["a","b"] }')]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  const result = await runtime.agent("return findings", {
+    engine: "codex",
+    schema: { type: "array", items: { type: "string" } }
+  });
+
+  assert.deepEqual(result, ["a", "b"]);
+  assert.equal(transport.turns.length, 1);
+});
+
 test("schema agents keep an earlier valid candidate when the final candidate fails validation", async () => {
   const transport = new FakeTransport([
     turn('Accepted: {"answer":"yes"}\nDiscarded later thought: {"answer":"no"}')

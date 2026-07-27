@@ -230,26 +230,80 @@ function parseJsonCandidates(source: string): ParsedJson[] {
   }
 
   const candidates: ParsedJson[] = [];
+  const balancedEnds = indexBalancedJsonEnds(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
     const open = trimmed[index];
     if (open !== "{" && open !== "[") {
       continue;
     }
-    const close = open === "{" ? "}" : "]";
-    const candidate = extractBalancedJsonAt(trimmed, index, open, close);
-    if (candidate === null) {
+    const end = balancedEnds.get(index);
+    if (end === undefined) {
       continue;
     }
-    const parsed = tryParse(candidate.text);
+    const parsed = tryParse(trimmed.slice(index, end + 1));
     if (parsed.ok) {
       candidates.push({
         value: parsed.value,
         source: open === "{" ? "object-fallback" : "array-fallback"
       });
+      // A valid outer value already contains every nested value. Preserve the
+      // settled non-overlapping candidate rule by skipping its interior.
+      index = end;
     }
-    index = candidate.end;
   }
   return candidates;
+}
+
+function indexBalancedJsonEnds(source: string): Map<number, number> {
+  const ends = new Map<number, number>();
+  indexDelimiterEnds(source, "{", "}", ends);
+  indexDelimiterEnds(source, "[", "]", ends);
+  return ends;
+}
+
+function indexDelimiterEnds(
+  source: string,
+  open: "{" | "[",
+  close: "}" | "]",
+  ends: Map<number, number>
+): void {
+  const starts: number[] = [];
+  let isInString = false;
+  let isEscaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (starts.length === 0) {
+      if (char === open) {
+        starts.push(index);
+        isInString = false;
+        isEscaped = false;
+      }
+      continue;
+    }
+
+    if (isInString) {
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (char === "\\") {
+        isEscaped = true;
+      } else if (char === "\"") {
+        isInString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      isInString = true;
+    } else if (char === open) {
+      starts.push(index);
+    } else if (char === close) {
+      const start = starts.pop();
+      if (start !== undefined) {
+        ends.set(start, index);
+      }
+    }
+  }
 }
 
 function extractBalancedJson(source: string, open: "{" | "[", close: "}" | "]"): string | null {

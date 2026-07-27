@@ -3,7 +3,6 @@ export type JsonSchema = JsonObject;
 
 export type EngineName = "codex" | "claude" | "opencode";
 export type IsolationMode = "worktree";
-export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
 export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
@@ -15,10 +14,7 @@ export interface AgentOptions {
   effort?: string;
   /** Claude only: declared degradation when the pinned model tier is unavailable. */
   fallbackModel?: string;
-  webSearch?: boolean;
   isolation?: IsolationMode;
-  sandbox?: SandboxMode;
-  network?: boolean;
   timeoutMs?: number;
   maxAttempts?: number;
   label?: string;
@@ -97,16 +93,12 @@ export interface TurnStartOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
-  sandbox: SandboxMode;
-  network: boolean;
   // Omitted → no per-turn deadline (unbounded). There is no default; a backstop
   // is the orchestrator's choice (see the skill's backstop section).
   timeoutMs?: number;
 }
 
 export interface ThreadStartOptions {
-  webSearch: boolean;
-  sandbox: SandboxMode;
   cwd?: string;
 }
 

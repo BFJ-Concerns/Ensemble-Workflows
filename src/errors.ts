@@ -5,6 +5,9 @@ export class EnsembleError extends Error {
   }
 }
 
+/** A workflow-authored agent option that the runtime cannot honour. */
+export class AgentOptionRejectedError extends EnsembleError {}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {
@@ -52,13 +55,13 @@ export class BudgetExceededError extends EnsembleError {
   }
 }
 
-export class MissingEngineError extends EnsembleError {
+export class MissingEngineError extends AgentOptionRejectedError {
   constructor() {
     super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
   }
 }
 
-export class UnknownEngineError extends EnsembleError {
+export class UnknownEngineError extends AgentOptionRejectedError {
   constructor(engine: unknown) {
     super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
@@ -99,7 +102,7 @@ export class ClaudeTranscriptError extends ClaudeWorkerError {}
  * outright rather than silently ignoring it or half-wiring a foreign mechanism.
  * This is a contract error, not an operational one — it fails fast, never retries.
  */
-export class ClaudeWorktreeIsolationUnsupportedError extends EnsembleError {
+export class ClaudeWorktreeIsolationUnsupportedError extends AgentOptionRejectedError {
   constructor() {
     super(
       "isolation:'worktree' is not supported on the Claude engine in v1: " +
@@ -109,56 +112,7 @@ export class ClaudeWorktreeIsolationUnsupportedError extends EnsembleError {
   }
 }
 
-/**
- * Thrown when a workflow asks for live web search on the Claude engine. Ensemble
- * only wires `webSearch` through Codex's app-server config in v1; silently
- * dropping it would make a script believe the worker searched when it did not.
- */
-export class ClaudeWebSearchUnsupportedError extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the Claude engine in v1: " +
-        "Ensemble only enables live web search through Codex's app-server config. " +
-        "Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-}
-
-/**
- * Thrown when a workflow asks Claude to honour Ensemble's Codex app-server
- * sandbox option. Claude background workers are not launched through that
- * sandbox boundary, so the only honest v1 behaviour is to fail fast.
- */
-export class ClaudeSandboxUnsupportedError extends EnsembleError {
-  constructor(sandbox: string) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the Claude engine in v1: ` +
-        "the sandbox option is a Codex app-server capability. " +
-        "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
-    );
-  }
-}
-
-export class ClaudeNetworkUnsupportedError extends EnsembleError {
-  constructor(network: boolean) {
-    super(
-      `network:${JSON.stringify(network)} is not supported on the Claude engine in v1: ` +
-        "Ensemble does not manage the Claude worker's network boundary. " +
-        "Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability."
-    );
-  }
-}
-
-export class CodexDangerFullAccessNetworkDisabledError extends EnsembleError {
-  constructor() {
-    super(
-      "sandbox:'danger-full-access' cannot be combined with network:false: " +
-        "full access includes network access, so Ensemble cannot honour both options."
-    );
-  }
-}
-
-export class OpenCodeModelRequiredError extends EnsembleError {
+export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
     super(
       `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered
@@ -168,7 +122,7 @@ export class OpenCodeModelRequiredError extends EnsembleError {
   }
 }
 
-export class OpenCodeModelNotRegisteredError extends EnsembleError {
+export class OpenCodeModelNotRegisteredError extends AgentOptionRejectedError {
   constructor(model: string, registered: readonly string[]) {
     super(
       `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
@@ -184,42 +138,12 @@ export class OpenCodeRunError extends OpenCodeWorkerError {
   }
 }
 
-export class OpenCodeWorktreeIsolationUnsupportedError extends EnsembleError {
+export class OpenCodeWorktreeIsolationUnsupportedError extends AgentOptionRejectedError {
   constructor() {
     super(
       "isolation:'worktree' is not supported on the opencode engine in v1: " +
         "Ensemble only manages git-worktree isolation for Codex workers. " +
         "Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
-  }
-}
-
-export class OpenCodeWebSearchUnsupportedError extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the opencode engine in v1: " +
-        "the opencode subprocess transport does not expose an Ensemble-controlled live-search switch. " +
-        "Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-}
-
-export class OpenCodeSandboxUnsupportedError extends EnsembleError {
-  constructor(sandbox: string) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: ` +
-        "the sandbox option is a Codex app-server capability. " +
-        "Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing."
-    );
-  }
-}
-
-export class OpenCodeNetworkUnsupportedError extends EnsembleError {
-  constructor(network: boolean) {
-    super(
-      `network:${JSON.stringify(network)} is not supported on the opencode engine in v1: ` +
-        "the opencode subprocess transport does not expose an Ensemble-controlled network boundary. " +
-        "Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability."
     );
   }
 }
@@ -235,12 +159,31 @@ export class TurnTimeoutError extends EnsembleError {
  * Only the Claude CLI exposes a fallback-model switch; silently dropping the
  * option would let a script believe its degradation policy was in force.
  */
-export class FallbackModelUnsupportedError extends EnsembleError {
+export class FallbackModelUnsupportedError extends AgentOptionRejectedError {
   constructor(engine: string) {
     super(
       `fallbackModel is not supported on the ${engine} engine in v1: ` +
         "only the Claude engine exposes a fallback-model switch. " +
         "Remove fallbackModel, or use engine:'claude' for declared degradation."
+    );
+  }
+}
+
+export class RemovedAgentOptionError extends AgentOptionRejectedError {
+  constructor(option: string) {
+    super(
+      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. ` +
+        `Remove ${JSON.stringify(option)} from this call.`
+    );
+  }
+}
+
+export class UnrecognisedAgentOptionError extends AgentOptionRejectedError {
+  constructor(option: string, recognised: readonly string[]) {
+    super(
+      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised
+        .map((name) => JSON.stringify(name))
+        .join(", ")}`
     );
   }
 }

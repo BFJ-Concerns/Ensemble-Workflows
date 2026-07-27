@@ -300,17 +300,14 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
       const findings = await parallel([
         () => agent("search alpha", {
           engine: "codex",
-          webSearch: true,
           schema: findingSchema
         }),
         () => agent("search beta", {
           engine: "codex",
-          webSearch: true,
           schema: findingSchema
         }),
         () => agent("search gamma", {
           engine: "codex",
-          webSearch: true,
           schema: findingSchema
         })
       ]);
@@ -351,7 +348,7 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
   assert.deepEqual(result.findings.map((finding) => finding.topic).sort(), ["alpha", "beta", "gamma"]);
   assert.equal(result.compiled.count, 3);
   assert.match(result.compiled.summary, /alpha beta gamma/);
-  assert.equal(transport.openedThreads.filter((thread) => thread.webSearch).length, 3);
+  assert.equal(transport.openedThreads.length, 4);
 });
 
 test("engine routing rejects missing and unknown engines through the real CLI", async () => {
@@ -878,22 +875,27 @@ test("CLI concurrency flag serialises Claude without reducing Codex concurrency"
   assert.equal(claude.maxActive, 1);
 });
 
-test("Claude unsupported options fail loudly on the real agent path before spawning", async () => {
+test("removed options fail loudly on the real agent path before spawning", async () => {
   for (const scenario of [
     {
-      name: "claude-web-search-fail-loud",
+      name: "web-search-removed",
       options: `{ engine: "claude", webSearch: true }`,
-      message: /ClaudeWebSearchUnsupportedError: webSearch:true is not supported on the Claude engine/
+      message: /RemovedAgentOptionError: agent\(\) option "webSearch" was removed/
     },
     {
-      name: "claude-sandbox-fail-loud",
+      name: "sandbox-removed",
       options: `{ engine: "claude", sandbox: "read-only" }`,
-      message: /ClaudeSandboxUnsupportedError: sandbox:"read-only" is not supported on the Claude engine/
+      message: /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/
     },
     {
-      name: "claude-network-fail-loud",
+      name: "network-removed",
       options: `{ engine: "claude", network: false }`,
-      message: /ClaudeNetworkUnsupportedError: network:false is not supported on the Claude engine/
+      message: /RemovedAgentOptionError: agent\(\) option "network" was removed/
+    },
+    {
+      name: "unknown-option",
+      options: `{ engine: "claude", maxAttemps: 2 }`,
+      message: /UnrecognisedAgentOptionError: Unrecognised agent\(\) option "maxAttemps"/
     },
     {
       name: "claude-worktree-fail-loud",
@@ -1034,6 +1036,35 @@ test("pipeline workflow interleaves items and drops only the failing item", asyn
   assert.deepEqual(result.results, ["slow-stage1", "fast-stage1", null]);
   assert.ok(result.events.indexOf("stage1-start-fast") < result.events.indexOf("stage0-end-slow"));
   assert.ok(!result.events.includes("stage1-start-bad"));
+});
+
+test("parallel and pipeline propagate rejected options before a worker opens", async () => {
+  for (const scenario of [
+    {
+      name: "parallel-rejected-option",
+      body: `await parallel([() => agent("never", { engine: "codex", sandbox: "read-only" })]);`,
+      message: /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/
+    },
+    {
+      name: "pipeline-rejected-option",
+      body: `await pipeline(["item"], () => agent("never", { engine: "codex", maxAttemps: 2 }));`,
+      message: /UnrecognisedAgentOptionError: Unrecognised agent\(\) option "maxAttemps"/
+    }
+  ]) {
+    const { exitCode, stdout, stderr, transport } = await runScript(
+      `
+        export const meta = { name: ${JSON.stringify(scenario.name)} };
+        ${scenario.body}
+        return "never";
+      `,
+      []
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(stderr, scenario.message);
+    assert.equal(transport.openedThreads.length, 0);
+  }
 });
 
 test("schema retries, per-thunk failure, and budget ceiling survive a whole workflow", async () => {

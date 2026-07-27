@@ -62,6 +62,33 @@ test("built CLI salvages a top-level failure with its recorder enabled by defaul
   }
 });
 
+test("built CLI rejects a removed agent option with its removal reason", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-removed-option-"));
+  const script = path.join(directory, "workflow.js");
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = { name: "removed-option" };
+        await agent("must never run", { engine: "codex", sandbox: "read-only" });
+      `
+    );
+
+    const cliPath = path.resolve("dist/src/cli/ensemble.js");
+    const result = await runNode([cliPath, script], {
+      ...process.env,
+      ENSEMBLE_RUN_RECORD: "off"
+    });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 async function findOnlyFile(root: string, basename: string): Promise<string> {
   const entries = await readdir(root, { recursive: true });
   const matches = entries.filter((entry) => path.basename(entry) === basename);

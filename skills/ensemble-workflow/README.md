@@ -55,11 +55,13 @@ no `require`, no `import`, no dynamic code generation.
 - `workflow(nameOrRef, args?)` — run a saved workflow by name, or
   `{ scriptPath }` relative to the run cwd. One level only: a child workflow
   calling `workflow()` throws.
-- `parallel(thunks)` — `Promise.all` over thunks; a thunk that throws yields
-  `null` in its slot (logged), never rejects the batch.
+- `parallel(thunks)` — `Promise.all` over thunks; an ordinary thrown error
+  yields `null` in its slot and is logged. A rejected `agent()` option
+  propagates and fails the run.
 - `pipeline(items, ...stages)` — runs each item through the stages
   (`stage(previous, originalItem, index)`), items in parallel; a stage failure
-  yields `null` for that item.
+  yields `null` for that item, except that a rejected `agent()` option
+  propagates.
 - `phase(title)` / `log(message)` — run log; `phase` also updates live status.
 - `budget.spent(engine)` / `budget.remaining(engine)` — token accounting
   (remaining is `Infinity` without a ceiling). opencode uses stream step usage
@@ -80,19 +82,21 @@ unknown values throw before any worker spawns.
 | `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
 | `effort` | passed to the turn | passed to the CLI | passed as the model variant |
 | `fallbackModel` | throws | supported (declared degradation) | throws |
-| `webSearch: true` | supported | throws | throws |
-| `isolation: 'worktree'` | supported — fresh git worktree; defaults to `workspace-write` but preserves an explicit `sandbox`; changed worktrees reported | throws | throws |
-| `sandbox` | `'read-only'` (default), `'workspace-write'`, or `'danger-full-access'` | throws | throws |
-| `network` | boolean, defaults to `true`; `false` blocks worker-shell networking | throws | throws |
+| `isolation: 'worktree'` | supported — fresh git worktree; changed worktrees reported | throws | throws |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | per-turn deadline; omitted → unbounded | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | default 3 | default 3 | default 3 |
 | `label`, `phase` | bookkeeping only, all engines | | |
 
-Every engine-unsupported "throws" above is a fail-fast contract error naming
-the option and the engine that would support it — the option is never silently
-dropped. Codex also rejects `sandbox: 'danger-full-access'` with
-`network: false` before dispatch because full access includes network access.
+Every worker is unrestricted: it can read and write wherever the user running
+the harness can and can reach the network. Codex receives this full-access
+posture explicitly on every turn; Claude and opencode already run without an
+Ensemble-managed containment boundary. Backend web search remains available to
+Codex workers without an `agent()` option.
+
+An unrecognised option key throws before that call's worker spawns. The removed
+`sandbox`, `network`, and `webSearch` keys receive a specific removal error
+rather than being ignored.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,
@@ -135,6 +139,6 @@ Calls beyond the cap queue per engine.
   partial-result envelope described above; completed workers' outputs are not
   lost.
 
-Failures inside `parallel()` and `pipeline()` — including thrown `agent()`
-errors — surface as `null` elements, so callers must null-check fan-in
-results.
+Ordinary failures inside `parallel()` and `pipeline()` surface as `null`
+elements, so callers must null-check fan-in results. A rejected `agent()`
+option is the narrow exception: it propagates and fails the run.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { RemovedAgentOptionError } from "../../src/errors.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 
 test("parallel returns null for throwing thunks and logs the failure", async () => {
@@ -20,6 +21,22 @@ test("parallel returns null for throwing thunks and logs the failure", async () 
   assert.deepEqual(results, ["first", null, "third"]);
   assert.equal(logs.length, 1);
   assert.match(logs[0] ?? "", /parallel thunk 1 failed: Error: boom/);
+});
+
+test("parallel propagates a rejected agent option", async () => {
+  await assert.rejects(
+    () =>
+      parallel(
+        [
+          () => "first",
+          () => {
+            throw new RemovedAgentOptionError("sandbox");
+          }
+        ],
+        () => {}
+      ),
+    RemovedAgentOptionError
+  );
 });
 
 test("pipeline allows cross-item interleaving and drops only the failed item", async () => {
@@ -58,6 +75,22 @@ test("pipeline allows cross-item interleaving and drops only the failed item", a
   assert.ok(events.indexOf("stage-1-fast") < events.indexOf("stage-0-end-slow"));
   assert.ok(!events.includes("stage-1-bad"));
   assert.ok(events.some((event) => /log:pipeline item 2 stage 0 failed: Error: stage broke/.test(event)));
+});
+
+test("pipeline propagates a rejected agent option", async () => {
+  await assert.rejects(
+    () =>
+      pipeline(
+        ["item"],
+        [
+          () => {
+            throw new RemovedAgentOptionError("network");
+          }
+        ],
+        () => {}
+      ),
+    RemovedAgentOptionError
+  );
 });
 
 test("the budget hook is a read-only facade, not the live ledger", async () => {

@@ -1,4 +1,9 @@
-import { FallbackModelUnsupportedError, OpenCodeModelNotRegisteredError } from "./errors.js";
+import {
+  FallbackModelUnsupportedError,
+  OpenCodeModelNotRegisteredError,
+  RemovedAgentOptionError,
+  UnrecognisedAgentOptionError
+} from "./errors.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -8,6 +13,32 @@ interface EngineDefaultOptions {
   model?: string;
   effort?: string;
   fallbackModel?: string;
+}
+
+const AGENT_OPTION_KEYS = [
+  "engine",
+  "schema",
+  "model",
+  "effort",
+  "fallbackModel",
+  "isolation",
+  "timeoutMs",
+  "maxAttempts",
+  "label",
+  "phase"
+] as const;
+const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
+const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
+
+export function assertRecognisedAgentOptions(options: object): void {
+  for (const key of Object.keys(options)) {
+    if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
+      throw new RemovedAgentOptionError(key);
+    }
+    if (!AGENT_OPTION_KEY_SET.has(key)) {
+      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+    }
+  }
 }
 
 export function assertFallbackModelSupported(engine: EngineName, fallbackModel: string | undefined): void {

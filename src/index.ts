@@ -68,7 +68,6 @@ export type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
-  SandboxMode,
   ThreadStartOptions,
   TokenAccountingMode,
   TokenUsageBreakdown,

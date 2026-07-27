@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
+import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
   EmptyAgentOutputError,
@@ -188,6 +189,7 @@ export class EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    assertRecognisedAgentOptions(options);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -468,15 +470,12 @@ export class EnsembleRuntime {
   #engineTurnOptions(options: Partial<AgentOptions>): EngineTurnOptions {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
-      webSearch: options.webSearch ?? false,
       ...(resolvedTimeoutMs !== undefined ? { timeoutMs: resolvedTimeoutMs } : {}),
       ...(options.schema !== undefined ? { schema: options.schema } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
-      ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
-      ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {}),
-      ...(options.network !== undefined ? { network: options.network } : {})
+      ...(options.isolation !== undefined ? { isolation: options.isolation } : {})
     };
   }
 

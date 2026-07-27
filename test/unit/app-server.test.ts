@@ -78,10 +78,10 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
   });
 
   try {
-    const threadId = await transport.openThread({ webSearch: false, sandbox: "read-only" });
+    const threadId = await transport.openThread({});
     assert.equal(transport.openTranscripts(), 1);
 
-    const result = await transport.runTurn(threadId, "hello?", { sandbox: "read-only", network: true });
+    const result = await transport.runTurn(threadId, "hello?", {});
     assert.equal(result.text, "hello");
     assert.equal(result.resolvedModel, "gpt-test-default");
     assert.equal(result.resolvedEffort, "medium");
@@ -92,7 +92,7 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
   }
 });
 
-test("Codex app-server emits the exact turn sandbox policy for each supported posture", async () => {
+test("Codex app-server sends full access explicitly on the thread and every turn", async () => {
   const codexBin = await fakeCodexTurnServer();
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
@@ -102,51 +102,20 @@ test("Codex app-server emits the exact turn sandbox policy for each supported po
     clientName: "ensemble-test",
     clientVersion: "0.0.0"
   });
-  const cases = [
-    {
-      sandbox: "read-only" as const,
-      network: true,
-      expected: { type: "readOnly", networkAccess: true }
-    },
-    {
-      sandbox: "read-only" as const,
-      network: false,
-      expected: { type: "readOnly", networkAccess: false }
-    },
-    {
-      sandbox: "workspace-write" as const,
-      network: true,
-      expected: { type: "workspaceWrite", networkAccess: true }
-    },
-    {
-      sandbox: "workspace-write" as const,
-      network: false,
-      expected: { type: "workspaceWrite", networkAccess: false }
-    },
-    {
-      sandbox: "danger-full-access" as const,
-      network: true,
-      expected: { type: "dangerFullAccess" }
-    }
-  ];
-
   try {
-    for (const scenario of cases) {
-      const threadId = await transport.openThread({ webSearch: false, sandbox: scenario.sandbox });
-      const result = await transport.runTurn(threadId, "hello?", {
-        sandbox: scenario.sandbox,
-        network: scenario.network
-      });
-      const transcript = result.transcripts?.[0]?.content;
-      assert.ok(transcript);
-      const turnStart = transcript
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { method?: string; params?: { sandboxPolicy?: unknown } })
-        .find((event) => event.method === "turn/start");
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "hello?", {});
+    const transcript = result.transcripts?.[0]?.content;
+    assert.ok(transcript);
+    const events = transcript
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
+    const threadStart = events.find((event) => event.method === "thread/start");
+    const turnStart = events.find((event) => event.method === "turn/start");
 
-      assert.deepEqual(turnStart?.params?.sandboxPolicy, scenario.expected);
-    }
+    assert.equal(threadStart?.params?.sandbox, "danger-full-access");
+    assert.deepEqual(turnStart?.params?.sandboxPolicy, { type: "dangerFullAccess" });
   } finally {
     await transport.close();
   }

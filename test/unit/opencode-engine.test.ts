@@ -13,9 +13,6 @@ import {
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError,
-  OpenCodeNetworkUnsupportedError,
-  OpenCodeSandboxUnsupportedError,
-  OpenCodeWebSearchUnsupportedError,
   OpenCodeWorktreeIsolationUnsupportedError
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
@@ -73,7 +70,7 @@ test("opencode requires a registered curated model before spawning", () => {
   const adapter = new OpenCodeEngineAdapter({ runner });
 
   assert.throws(
-    () => adapter.createInvocation("missing", { webSearch: false, timeoutMs: 1_000 }),
+    () => adapter.createInvocation("missing", { timeoutMs: 1_000 }),
     (error: unknown) => {
       assert.ok(error instanceof OpenCodeModelRequiredError);
       assert.match(error.message, /"glm-5\.2"/);
@@ -82,7 +79,7 @@ test("opencode requires a registered curated model before spawning", () => {
     }
   );
   assert.throws(
-    () => adapter.createInvocation("unknown", { webSearch: false, timeoutMs: 1_000, model: "glm-later" }),
+    () => adapter.createInvocation("unknown", { timeoutMs: 1_000, model: "glm-later" }),
     OpenCodeModelNotRegisteredError
   );
   assert.equal(runner.runs.length, 0);
@@ -95,7 +92,6 @@ test("opencode unsupported options fail before spawning", () => {
   assert.throws(
     () =>
       adapter.createInvocation("isolated", {
-        webSearch: false,
         timeoutMs: 1_000,
         model: "glm-5.2",
         isolation: "worktree"
@@ -103,33 +99,8 @@ test("opencode unsupported options fail before spawning", () => {
     OpenCodeWorktreeIsolationUnsupportedError
   );
   assert.throws(
-    () => adapter.createInvocation("search", { webSearch: true, timeoutMs: 1_000, model: "glm-5.2" }),
-    OpenCodeWebSearchUnsupportedError
-  );
-  assert.throws(
-    () =>
-      adapter.createInvocation("sandbox", {
-        webSearch: false,
-        timeoutMs: 1_000,
-        model: "glm-5.2",
-        sandbox: "read-only"
-      }),
-    OpenCodeSandboxUnsupportedError
-  );
-  assert.throws(
-    () =>
-      adapter.createInvocation("offline", {
-        webSearch: false,
-        timeoutMs: 1_000,
-        model: "glm-5.2",
-        network: false
-      }),
-    OpenCodeNetworkUnsupportedError
-  );
-  assert.throws(
     () =>
       adapter.createInvocation("fallback", {
-        webSearch: false,
         timeoutMs: 1_000,
         model: "glm-5.2",
         fallbackModel: "glm-4"
@@ -147,7 +118,6 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
     onEvent: (event) => events.push(event.method)
   });
   const invocation = adapter.createInvocation("answer shortly", {
-    webSearch: false,
     timeoutMs: 1_000,
     model: "glm-5.2",
     effort: "minimal"
@@ -461,7 +431,6 @@ test("opencode records a missing stream session id separately without attempting
     }
   });
   const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
-    webSearch: false,
     model: "glm-5.2"
   });
 
@@ -497,7 +466,6 @@ test("opencode fallback keeps the last text-bearing stopped step when a textless
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
-    webSearch: false,
     model: "glm-5.2"
   });
 
@@ -575,7 +543,6 @@ test("opencode retains ownerless-only fallback text when no completed answer pre
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
-    webSearch: false,
     model: "glm-5.2"
   });
 
@@ -649,7 +616,6 @@ test("opencode falls back from a parseable export without assistant text while r
     }
   });
   const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
-    webSearch: false,
     model: "glm-5.2"
   });
 

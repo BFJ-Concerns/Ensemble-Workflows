@@ -123,13 +123,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async openThread(options: ThreadStartOptions): Promise<string> {
-    const config = options.webSearch ? { web_search: "live" } : {};
     const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
-      sandbox: options.sandbox,
+      sandbox: "danger-full-access",
       ephemeral: true,
-      config
+      config: {}
     };
     const result = await this.#request("thread/start", requestParams);
 
@@ -180,7 +179,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       const params: JsonObject = {
         threadId,
         input: [{ type: "text", text: prompt }],
-        sandboxPolicy: sandboxPolicy(options.sandbox, options.network)
+        sandboxPolicy: { type: "dangerFullAccess" }
       };
       if (options.schema !== undefined) {
         params.outputSchema = options.schema;
@@ -593,17 +592,6 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#turns.clear();
     this.#transcripts.clear();
-  }
-}
-
-function sandboxPolicy(sandbox: ThreadStartOptions["sandbox"], network: boolean): JsonObject {
-  switch (sandbox) {
-    case "read-only":
-      return { type: "readOnly", networkAccess: network };
-    case "workspace-write":
-      return { type: "workspaceWrite", networkAccess: network };
-    case "danger-full-access":
-      return { type: "dangerFullAccess" };
   }
 }
 

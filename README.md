@@ -36,17 +36,21 @@ Node module access; the host-provided hooks are the way out.
 
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or
-  `null` after bounded retry; without a schema, it returns final text. Unsupported
-  engine options throw rather than silently doing less than requested. A Claude
-  call with no `model` pin is flagged on stderr, and `fallbackModel` (Claude
-  only) declares degradation when a pinned tier is unavailable.
+  `null` after bounded retry; without a schema, it returns final text. Every
+  worker runs unrestricted with filesystem and network access. Unrecognised
+  option keys throw before that call's worker spawns; the removed `sandbox`,
+  `network`, and `webSearch` keys name their removal. A Claude call with no
+  `model` pin is flagged on stderr, and `fallbackModel` (Claude only) declares
+  degradation when a pinned tier is unavailable.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallbackModel` that every `agent()` call
   inherits and call-site options override.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
-  failed thunk becomes `null` in the returned array and is still logged.
+  failed thunk becomes `null` in the returned array and is still logged, except
+  that a rejected `agent()` option propagates and fails the run.
 - `pipeline(items, ...stages)` runs each item through each stage independently,
-  with no cross-item barrier between stages.
+  with no cross-item barrier between stages. Ordinary stage failures drop that
+  item to `null`; rejected `agent()` options propagate.
 - `workflow(nameOrRef, args)` runs a saved workflow inline and returns the
   child's result. `nameOrRef` is either a workflow name string or
   `{ scriptPath }`. Names resolve project-first from

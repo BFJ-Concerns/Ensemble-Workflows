@@ -2,10 +2,7 @@ import { spawn } from "node:child_process";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import {
-  OpenCodeNetworkUnsupportedError,
   OpenCodeRunError,
-  OpenCodeSandboxUnsupportedError,
-  OpenCodeWebSearchUnsupportedError,
   OpenCodeWorktreeIsolationUnsupportedError
 } from "./errors.js";
 
@@ -287,15 +284,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): void {
   if (options.isolation === "worktree") {
     throw new OpenCodeWorktreeIsolationUnsupportedError();
-  }
-  if (options.webSearch) {
-    throw new OpenCodeWebSearchUnsupportedError();
-  }
-  if (options.sandbox !== undefined) {
-    throw new OpenCodeSandboxUnsupportedError(options.sandbox);
-  }
-  if (options.network !== undefined) {
-    throw new OpenCodeNetworkUnsupportedError(options.network);
   }
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }

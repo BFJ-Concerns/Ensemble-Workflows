@@ -8,11 +8,7 @@ import {
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
 import {
-  ClaudeNetworkUnsupportedError,
-  ClaudeSandboxUnsupportedError,
-  ClaudeWebSearchUnsupportedError,
   ClaudeWorktreeIsolationUnsupportedError,
-  CodexDangerFullAccessNetworkDisabledError,
   OpenCodeModelRequiredError
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
@@ -31,7 +27,6 @@ import type {
   JsonSchema,
   RuntimeEvent,
   RuntimeTransport,
-  SandboxMode,
   TurnResult
 } from "./types.js";
 import type {
@@ -46,10 +41,7 @@ export interface EngineTurnOptions {
   effort?: string;
   /** Claude only: declared degradation when the pinned model is unavailable. */
   fallbackModel?: string;
-  webSearch: boolean;
   isolation?: "worktree";
-  sandbox?: SandboxMode;
-  network?: boolean;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
 }
@@ -137,9 +129,6 @@ export class CodexEngineAdapter implements EngineAdapter {
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
     assertFallbackModelSupported(this.name, options.fallbackModel);
-    if (options.sandbox === "danger-full-access" && options.network === false) {
-      throw new CodexDangerFullAccessNetworkDisabledError();
-    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -189,9 +178,7 @@ class CodexEngineInvocation implements EngineInvocation {
       return this.#runIsolatedWorktreeTurn(prompt);
     }
 
-    return this.#runTurnInCwd(prompt, {
-      sandbox: this.#options.sandbox ?? "read-only"
-    });
+    return this.#runTurnInCwd(prompt);
   }
 
   async #runIsolatedWorktreeTurn(prompt: string): Promise<TurnResult> {
@@ -199,10 +186,7 @@ class CodexEngineInvocation implements EngineInvocation {
     let result: TurnResult;
 
     try {
-      result = await this.#runTurnInCwd(prompt, {
-        cwd: worktree.path,
-        sandbox: this.#options.sandbox ?? "workspace-write"
-      });
+      result = await this.#runTurnInCwd(prompt, worktree.path);
     } catch (error) {
       await this.#finishWorktree(worktree);
       throw error;
@@ -218,16 +202,12 @@ class CodexEngineInvocation implements EngineInvocation {
     };
   }
 
-  async #runTurnInCwd(prompt: string, location: { cwd?: string; sandbox: SandboxMode }): Promise<TurnResult> {
+  async #runTurnInCwd(prompt: string, cwd?: string): Promise<TurnResult> {
     const threadId = await this.#transport.openThread({
-      webSearch: this.#options.webSearch,
-      sandbox: location.sandbox,
-      ...(location.cwd !== undefined ? { cwd: location.cwd } : {})
+      ...(cwd !== undefined ? { cwd } : {})
     });
 
     return this.#transport.runTurn(threadId, prompt, {
-      sandbox: location.sandbox,
-      network: this.#options.network ?? true,
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -293,15 +273,6 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // Codex git-worktree manager does not map onto them. Reject rather than
       // half-wire a foreign mechanism (see report → isolation:'worktree' on Claude).
       throw new ClaudeWorktreeIsolationUnsupportedError();
-    }
-    if (options.webSearch) {
-      throw new ClaudeWebSearchUnsupportedError();
-    }
-    if (options.sandbox !== undefined) {
-      throw new ClaudeSandboxUnsupportedError(options.sandbox);
-    }
-    if (options.network !== undefined) {
-      throw new ClaudeNetworkUnsupportedError(options.network);
     }
     return new ClaudeEngineInvocation({
       prompt,

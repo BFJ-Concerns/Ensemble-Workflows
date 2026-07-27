@@ -1,3 +1,6 @@
+import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
+import { AgentOptionRejectedError } from "./errors.js";
+
 import type { AgentOptions, Budget, EngineName } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
@@ -82,6 +85,9 @@ export async function parallel<T>(
       try {
         return await thunk();
       } catch (error) {
+        if (error instanceof AgentOptionRejectedError) {
+          throw error;
+        }
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         return null;
       }
@@ -107,6 +113,9 @@ export async function pipeline<Item>(
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
+          if (error instanceof AgentOptionRejectedError) {
+            throw error;
+          }
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           return null;
         }
@@ -126,6 +135,7 @@ function mergeAgentDefaults(
   defaults: WorkflowDefaults,
   agentOptions: Partial<AgentOptions> | undefined
 ): Partial<AgentOptions> {
+  assertRecognisedAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
   if (engineDefaults === undefined) {

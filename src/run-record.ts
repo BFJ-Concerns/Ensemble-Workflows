@@ -63,7 +63,14 @@ export interface RuntimeAgentRecord {
   effort: string | null;
   fallbackModel: string | null;
   resolvedModel: string | null;
-  worktree: { branch: string; baseCommit: string } | null;
+  resolvedCwd: string;
+  isolation: "worktree" | null;
+  worktree: {
+    branch: string;
+    baseCommit: string;
+    changed: boolean;
+    removed: boolean;
+  } | null;
   label: string | null;
   phase: string | null;
   status: AgentStatus;
@@ -319,12 +326,16 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      resolved_cwd: record.resolvedCwd,
+      isolation: record.isolation,
       worktree:
         record.worktree === null
           ? null
           : {
               branch: record.worktree.branch,
-              base_commit: record.worktree.baseCommit
+              base_commit: record.worktree.baseCommit,
+              changed: record.worktree.changed,
+              removed: record.worktree.removed
             },
       label: record.label,
       phase: record.phase,

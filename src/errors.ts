@@ -95,23 +95,6 @@ export class ClaudeValveError extends ClaudeWorkerError {}
 
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 
-/**
- * Thrown when a workflow asks for `isolation:'worktree'` on the Claude engine.
- * Claude background sessions manage their own `.claude/worktrees/` isolation, so
- * the Codex git-worktree manager does not map onto them; v1 rejects the combination
- * outright rather than silently ignoring it or half-wiring a foreign mechanism.
- * This is a contract error, not an operational one — it fails fast, never retries.
- */
-export class ClaudeWorktreeIsolationUnsupportedError extends AgentOptionRejectedError {
-  constructor() {
-    super(
-      "isolation:'worktree' is not supported on the Claude engine in v1: " +
-        "Claude background sessions manage their own .claude/worktrees isolation. " +
-        "Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
-  }
-}
-
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
     super(
@@ -138,13 +121,9 @@ export class OpenCodeRunError extends OpenCodeWorkerError {
   }
 }
 
-export class OpenCodeWorktreeIsolationUnsupportedError extends AgentOptionRejectedError {
-  constructor() {
-    super(
-      "isolation:'worktree' is not supported on the opencode engine in v1: " +
-        "Ensemble only manages git-worktree isolation for Codex workers. " +
-        "Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
+export class WorktreePlacementRejectedError extends AgentOptionRejectedError {
+  constructor(cwd: string, options?: ErrorOptions) {
+    super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
   }
 }
 

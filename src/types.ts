@@ -75,10 +75,6 @@ export interface TurnResult {
   text: string;
   resolvedModel?: string;
   resolvedEffort?: string;
-  worktree?: {
-    branch: string;
-    baseCommit: string;
-  };
   itemText?: string;
   deltaText: string;
   durationMs: number | null;

@@ -7,15 +7,11 @@ import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import {
-  ClaudeWorktreeIsolationUnsupportedError,
-  OpenCodeModelRequiredError
-} from "./errors.js";
+import { OpenCodeModelRequiredError } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
-import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
@@ -29,11 +25,6 @@ import type {
   RuntimeTransport,
   TurnResult
 } from "./types.js";
-import type {
-  IsolatedWorktree,
-  IsolatedWorktreeRecord,
-  WorktreeIsolationManager
-} from "./worktree-isolation.js";
 
 export interface EngineTurnOptions {
   schema?: JsonSchema;
@@ -42,7 +33,6 @@ export interface EngineTurnOptions {
   /** Claude only: declared degradation when the pinned model is unavailable. */
   fallbackModel?: string;
   cwd?: string;
-  isolation?: "worktree";
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
 }
@@ -100,9 +90,6 @@ export class EngineRegistry {
 export interface CodexEngineAdapterOptions {
   transport: RuntimeTransport;
   concurrency: number;
-  worktreeManager?: WorktreeIsolationManager;
-  onEvent: (event: RuntimeEvent) => void;
-  onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 }
 
 export class CodexEngineAdapter implements EngineAdapter {
@@ -111,17 +98,11 @@ export class CodexEngineAdapter implements EngineAdapter {
 
   #transport: RuntimeTransport;
   #scheduler: Scheduler;
-  #worktreeManager: WorktreeIsolationManager;
-  #onEvent: (event: RuntimeEvent) => void;
-  #onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 
   constructor(options: CodexEngineAdapterOptions) {
     this.concurrency = options.concurrency;
     this.#transport = options.transport;
     this.#scheduler = new Scheduler(options.concurrency);
-    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager(options.transport.cwd);
-    this.#onEvent = options.onEvent;
-    this.#onWorktreeFinished = options.onWorktreeFinished;
   }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -133,10 +114,7 @@ export class CodexEngineAdapter implements EngineAdapter {
     return new CodexEngineInvocation({
       prompt,
       options,
-      transport: this.#transport,
-      worktreeManager: this.#worktreeManager,
-      onEvent: this.#onEvent,
-      onWorktreeFinished: this.#onWorktreeFinished
+      transport: this.#transport
     });
   }
 
@@ -149,61 +127,27 @@ interface CodexEngineInvocationOptions {
   prompt: string;
   options: EngineTurnOptions;
   transport: RuntimeTransport;
-  worktreeManager: WorktreeIsolationManager;
-  onEvent: (event: RuntimeEvent) => void;
-  onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 }
 
 class CodexEngineInvocation implements EngineInvocation {
   #prompt: string;
   #options: EngineTurnOptions;
   #transport: RuntimeTransport;
-  #worktreeManager: WorktreeIsolationManager;
-  #onEvent: (event: RuntimeEvent) => void;
-  #onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 
   constructor(options: CodexEngineInvocationOptions) {
     this.#prompt = options.prompt;
     this.#options = options.options;
     this.#transport = options.transport;
-    this.#worktreeManager = options.worktreeManager;
-    this.#onEvent = options.onEvent;
-    this.#onWorktreeFinished = options.onWorktreeFinished;
   }
 
   async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
     // Codex retries open a fresh thread, so the correction rides the prompt —
     // the same degraded-correction shape the opencode engine uses.
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    if (this.#options.isolation === "worktree") {
-      return this.#runIsolatedWorktreeTurn(prompt);
-    }
-
     return this.#runTurnInCwd(prompt, this.#options.cwd);
   }
 
-  async #runIsolatedWorktreeTurn(prompt: string): Promise<TurnResult> {
-    const worktree = await this.#worktreeManager.create();
-    let result: TurnResult;
-
-    try {
-      result = await this.#runTurnInCwd(prompt, worktree.path);
-    } catch (error) {
-      await this.#finishWorktree(worktree);
-      throw error;
-    }
-
-    const record = await this.#finishWorktree(worktree);
-    return {
-      ...result,
-      worktree: {
-        branch: record.branch,
-        baseCommit: record.baseCommit
-      }
-    };
-  }
-
-  async #runTurnInCwd(prompt: string, cwd?: string): Promise<TurnResult> {
+  async #runTurnInCwd(prompt: string, cwd: string | undefined): Promise<TurnResult> {
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {})
     });
@@ -216,21 +160,6 @@ class CodexEngineInvocation implements EngineInvocation {
     });
   }
 
-  async #finishWorktree(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
-    const record = await this.#worktreeManager.finish(worktree);
-    this.#onWorktreeFinished(record);
-    this.#onEvent({
-      method: "worktree/finished",
-      params: {
-        path: record.path,
-        branch: record.branch,
-        changed: record.changed,
-        removed: record.removed
-      },
-      receivedAt: Date.now()
-    });
-    return record;
-  }
 }
 
 export interface ClaudeEngineAdapterOptions {
@@ -269,12 +198,6 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    if (options.isolation === "worktree") {
-      // Claude background sessions own their own .claude/worktrees isolation; the
-      // Codex git-worktree manager does not map onto them. Reject rather than
-      // half-wire a foreign mechanism (see report → isolation:'worktree' on Claude).
-      throw new ClaudeWorktreeIsolationUnsupportedError();
-    }
     return new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -360,7 +283,6 @@ export interface CreateDefaultEngineRegistryOptions {
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
-  onWorktreeFinished: (record: IsolatedWorktreeRecord) => void;
 }
 
 export async function createDefaultEngineRegistry(
@@ -379,9 +301,7 @@ export async function createDefaultEngineRegistry(
   return new EngineRegistry([
     new CodexEngineAdapter({
       transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
-      onEvent: options.onEvent,
-      onWorktreeFinished: options.onWorktreeFinished
+      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,

@@ -4,6 +4,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { WorktreePlacementRejectedError } from "./errors.js";
+
 const execFileAsync = promisify(execFile);
 
 export interface IsolatedWorktree {
@@ -19,22 +21,17 @@ export interface IsolatedWorktreeRecord extends IsolatedWorktree {
 }
 
 export interface WorktreeIsolationManager {
-  create(): Promise<IsolatedWorktree>;
+  create(baseCwd: string): Promise<IsolatedWorktree>;
   finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord>;
 }
 
 export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
-  readonly baseCwd: string;
-
   #counter = 0;
-  #repoRoot: Promise<string> | null = null;
+  #repoRoots = new Map<string, Promise<string>>();
+  #worktreeRoots = new Map<string, string>();
 
-  constructor(baseCwd: string) {
-    this.baseCwd = baseCwd;
-  }
-
-  async create(): Promise<IsolatedWorktree> {
-    const repoRoot = await this.#gitRepoRoot();
+  async create(baseCwd: string): Promise<IsolatedWorktree> {
+    const repoRoot = await this.#gitRepoRoot(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
     const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
@@ -42,6 +39,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     await mkdir(path.dirname(worktreePath), { recursive: true });
     await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
+    this.#worktreeRoots.set(worktreePath, repoRoot);
 
     return {
       path: worktreePath,
@@ -58,6 +56,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
 
     if (changed) {
+      this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
         changed: true,
@@ -65,9 +64,13 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
       };
     }
 
-    const repoRoot = await this.#gitRepoRoot();
+    const repoRoot = this.#worktreeRoots.get(worktree.path);
+    if (repoRoot === undefined) {
+      throw new Error(`worktree was not created by this manager: ${worktree.path}`);
+    }
     await git(repoRoot, ["worktree", "remove", worktree.path]);
     await git(repoRoot, ["branch", "-D", worktree.branch]);
+    this.#worktreeRoots.delete(worktree.path);
 
     return {
       ...worktree,
@@ -76,13 +79,23 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     };
   }
 
-  async #gitRepoRoot(): Promise<string> {
-    this.#repoRoot ??= git(this.baseCwd, ["rev-parse", "--show-toplevel"]).catch((error: unknown) => {
-      throw new Error(`isolation:'worktree' requires cwd to be inside a git repo: ${this.baseCwd}`, {
-        cause: error
+  async #gitRepoRoot(baseCwd: string): Promise<string> {
+    const resolvedCwd = path.resolve(baseCwd);
+    let repoRoot = this.#repoRoots.get(resolvedCwd);
+    if (repoRoot === undefined) {
+      repoRoot = git(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error: unknown) => {
+        throw new WorktreePlacementRejectedError(resolvedCwd, {
+          cause: error
+        });
       });
-    });
-    return (await this.#repoRoot).trim();
+      this.#repoRoots.set(resolvedCwd, repoRoot);
+    }
+    try {
+      return (await repoRoot).trim();
+    } catch (error) {
+      this.#repoRoots.delete(resolvedCwd);
+      throw error;
+    }
   }
 
   #uniqueName(): string {

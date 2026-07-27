@@ -1,17 +1,24 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { appServerErrorFromPayload } from "../../src/app-server.js";
+import { EngineRegistry } from "../../src/engines.js";
+import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   FallbackModelUnsupportedError,
   InvalidAgentSchemaError,
-  MissingEngineError
+  MissingEngineError,
+  WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
 import type { RunRecordWriter } from "../../src/run-record.js";
+import type { EngineAdapter } from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -79,6 +86,7 @@ class ErrorTransport implements RuntimeTransport {
 }
 
 class FakeWorktreeManager implements WorktreeIsolationManager {
+  createdFrom: string[] = [];
   finished: IsolatedWorktree[] = [];
 
   #next = 0;
@@ -88,7 +96,8 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
     this.#changed = changed;
   }
 
-  async create(): Promise<IsolatedWorktree> {
+  async create(baseCwd: string): Promise<IsolatedWorktree> {
+    this.createdFrom.push(baseCwd);
     this.#next += 1;
     return {
       path: `/fake/worktree-${this.#next}`,
@@ -304,6 +313,7 @@ test("Codex agents pass only turn options that remain configurable", async () =>
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
+    cwd: "/fake/repo",
     concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
@@ -311,7 +321,7 @@ test("Codex agents pass only turn options that remain configurable", async () =>
 
   await runtime.agent("read", { engine: "codex" });
 
-  assert.deepEqual(transport.openedThreads, [{}]);
+  assert.deepEqual(transport.openedThreads, [{ cwd: "/fake/repo" }]);
   assert.deepEqual(transport.turns[0]?.options, { timeoutMs: 1_000 });
 });
 
@@ -333,6 +343,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   const worktreeManager = new FakeWorktreeManager(true);
   const runtime = new EnsembleRuntime({
     transport,
+    cwd: "/fake/repo",
     concurrencyCaps: { codex: 1 },
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1,
@@ -370,11 +381,165 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   assert.deepEqual(worktreeManager.finished, [
     { path: "/fake/worktree-1", branch: "ensemble-workflows/fake-1", baseCommit: "fake-base-1" }
   ]);
+  assert.deepEqual(worktreeManager.createdFrom, ["/fake/repo"]);
   assert.deepEqual(recordedWorktree, {
     branch: "ensemble-workflows/fake-1",
-    baseCommit: "fake-base-1"
+    baseCommit: "fake-base-1",
+    changed: true,
+    removed: false
   });
   assert.deepEqual(events, ["worktree/finished"]);
+});
+
+test("one worktree stays open across every retry in one agent call", async () => {
+  const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"no\"}"), turn("{\"answer\":\"yes\"}")]);
+  const worktreeManager = new FakeWorktreeManager(true);
+  const runtime = new EnsembleRuntime({
+    transport,
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 3,
+    worktreeManager
+  });
+
+  const result = await runtime.agent("return JSON", {
+    engine: "codex",
+    schema,
+    isolation: "worktree"
+  });
+
+  assert.deepEqual(result, { answer: "yes" });
+  assert.deepEqual(worktreeManager.createdFrom, ["/fake/repo"]);
+  assert.equal(worktreeManager.finished.length, 1);
+  assert.deepEqual(transport.openedThreads, [
+    { cwd: "/fake/worktree-1" },
+    { cwd: "/fake/worktree-1" },
+    { cwd: "/fake/worktree-1" }
+  ]);
+});
+
+test("a failed worker still finishes and records its changed worktree", async () => {
+  const transport = new ErrorTransport(new Error("worker failed after commit"));
+  const worktreeManager = new FakeWorktreeManager(true);
+  const records: unknown[] = [];
+  const runtime = new EnsembleRuntime({
+    transport,
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(record);
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("commit then fail", { engine: "codex", isolation: "worktree" }),
+    /worker failed after commit/
+  );
+
+  assert.equal(worktreeManager.finished.length, 1);
+  assert.equal(runtime.worktrees[0]?.changed, true);
+  assert.deepEqual((records[0] as { worktree: unknown }).worktree, {
+    branch: "ensemble-workflows/fake-1",
+    baseCommit: "fake-base-1",
+    changed: true,
+    removed: false
+  });
+});
+
+test("placement closes a worktree when invocation option validation rejects the call", async () => {
+  const transport = new FakeTransport([]);
+  const worktreeManager = new FakeWorktreeManager(false);
+  const runtime = new EnsembleRuntime({
+    transport,
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+
+  await assert.rejects(
+    () =>
+      runtime.agent("never starts", {
+        engine: "codex",
+        fallbackModel: "sonnet",
+        isolation: "worktree"
+      }),
+    FallbackModelUnsupportedError
+  );
+
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(worktreeManager.finished.length, 1);
+  assert.equal(runtime.worktrees[0]?.removed, true);
+});
+
+test("invocation shutdown completes before worktree finalisation", async () => {
+  const order: string[] = [];
+  const worktreeManager: WorktreeIsolationManager = {
+    create: async () => ({
+      path: "/fake/ordered-worktree",
+      branch: "ensemble-workflows/ordered",
+      baseCommit: "ordered-base"
+    }),
+    finish: async (worktree) => {
+      order.push("worktree-finish");
+      return { ...worktree, changed: false, removed: true };
+    }
+  };
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: async () => {
+        order.push("attempt");
+        return turn("ok");
+      },
+      close: async () => {
+        order.push("invocation-close");
+      }
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+
+  await runtime.agent("read", { engine: "claude", isolation: "worktree" });
+
+  assert.deepEqual(order, ["attempt", "invocation-close", "worktree-finish"]);
+});
+
+test("non-git cwd under isolation fails loudly before spawning and escapes parallel", async () => {
+  const nonGitCwd = await mkdtemp(path.join(tmpdir(), "ensemble-runtime-non-git-"));
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        parallel(
+          [() => runtime.agent("never starts", { engine: "codex", cwd: nonGitCwd, isolation: "worktree" })],
+          () => undefined
+        ),
+      WorktreePlacementRejectedError
+    );
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(runtime.worktrees.length, 0);
+  } finally {
+    await rm(nonGitCwd, { recursive: true, force: true });
+  }
 });
 
 test("removed and unrecognised options fail before a Codex thread opens", async () => {

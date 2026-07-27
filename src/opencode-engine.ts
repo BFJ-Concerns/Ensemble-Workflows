@@ -1,10 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
-import {
-  OpenCodeRunError,
-  OpenCodeWorktreeIsolationUnsupportedError
-} from "./errors.js";
+import { OpenCodeRunError } from "./errors.js";
 
 import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
 import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
@@ -282,9 +279,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 }
 
 export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): void {
-  if (options.isolation === "worktree") {
-    throw new OpenCodeWorktreeIsolationUnsupportedError();
-  }
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }
 

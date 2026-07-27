@@ -5,9 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import {
-  ClaudeWorktreeIsolationUnsupportedError
-} from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -448,22 +445,6 @@ test("the budget ceiling blocks a later Claude agent once exhausted", async () =
       }
     }
   );
-});
-
-test("isolation:'worktree' is rejected on the Claude engine with a clear error", async () => {
-  await withControlPlane([{ assistant: { text: "unused" } }], async (controlPlane) => {
-    const runtime = makeRuntime(controlPlane);
-    try {
-      await assert.rejects(
-        () => runtime.agent("write", { engine: "claude", isolation: "worktree" }),
-        ClaudeWorktreeIsolationUnsupportedError
-      );
-      // Rejected before any worker is spawned.
-      assert.equal(controlPlane.dispatchCount, 0);
-    } finally {
-      await runtime.close();
-    }
-  });
 });
 
 test("an unreadable transcript fails gracefully rather than throwing out of agent()", async () => {

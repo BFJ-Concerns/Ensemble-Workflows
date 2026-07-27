@@ -13,8 +13,8 @@ const execFileAsync = promisify(execFile);
 test("GitWorktreeIsolationManager rejects non-git cwd with a clear error", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-non-git-"));
   try {
-    const manager = new GitWorktreeIsolationManager(directory);
-    await assert.rejects(() => manager.create(), /requires cwd to be inside a git repo/);
+    const manager = new GitWorktreeIsolationManager();
+    await assert.rejects(() => manager.create(directory), /requires cwd to be inside a git repository/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -32,8 +32,8 @@ test("GitWorktreeIsolationManager removes unchanged worktrees and their temporar
   await git(repo, ["commit", "-m", "initial"]);
 
   try {
-    const manager = new GitWorktreeIsolationManager(repo);
-    const worktree = await manager.create();
+    const manager = new GitWorktreeIsolationManager();
+    const worktree = await manager.create(repo);
     await access(worktree.path);
 
     const record = await manager.finish(worktree);
@@ -59,8 +59,8 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
   await git(repo, ["commit", "-m", "initial"]);
 
   try {
-    const manager = new GitWorktreeIsolationManager(repo);
-    const worktree = await manager.create();
+    const manager = new GitWorktreeIsolationManager();
+    const worktree = await manager.create(repo);
 
     // The worker commits its work: clean status, moved tip.
     await writeFile(path.join(worktree.path, "feature.txt"), "worker output\n");
@@ -80,6 +80,39 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("one manager creates worktrees from different repositories independently", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-multi-repo-"));
+  const firstRepo = path.join(directory, "first");
+  const secondRepo = path.join(directory, "second");
+  await initialiseRepo(firstRepo);
+  await initialiseRepo(secondRepo);
+  const manager = new GitWorktreeIsolationManager();
+
+  try {
+    const first = await manager.create(firstRepo);
+    const second = await manager.create(secondRepo);
+
+    assert.match(first.path, /first\.ensemble-workflows-worktrees/);
+    assert.match(second.path, /second\.ensemble-workflows-worktrees/);
+    await git(firstRepo, ["rev-parse", "--verify", first.branch]);
+    await git(secondRepo, ["rev-parse", "--verify", second.branch]);
+    await manager.finish(first);
+    await manager.finish(second);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function initialiseRepo(repo: string): Promise<void> {
+  await mkdir(repo);
+  await git(repo, ["init"]);
+  await git(repo, ["config", "user.email", "ensemble-workflows@example.invalid"]);
+  await git(repo, ["config", "user.name", "Ensemble Workflows Test"]);
+  await writeFile(path.join(repo, "README.md"), "temporary isolation fixture\n");
+  await git(repo, ["add", "README.md"]);
+  await git(repo, ["commit", "-m", "initial"]);
+}
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", args, { cwd });

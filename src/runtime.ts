@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
@@ -64,6 +65,7 @@ export class EnsembleRuntime {
   readonly progress: RunProgress;
 
   #engines: EngineRegistry;
+  #placement: AgentPlacementManager;
   #defaultTurnTimeoutMs: number | undefined;
   #defaultMaxAttempts: number;
   #eventListeners = new Set<RuntimeEventListener>();
@@ -74,6 +76,7 @@ export class EnsembleRuntime {
   constructor(options: {
     engines?: EngineRegistry;
     transport?: RuntimeTransport;
+    cwd?: string;
     concurrencyCaps?: EngineConcurrencyCaps;
     budgetCeilings?: EngineBudgetCeilings;
     defaultTurnTimeoutMs?: number;
@@ -90,15 +93,16 @@ export class EnsembleRuntime {
     });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
+    this.#placement = new AgentPlacementManager({
+      baseCwd: options.cwd ?? process.cwd(),
+      ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {})
+    });
     this.#engines =
       options.engines ??
       new EngineRegistry([
         new CodexEngineAdapter({
           transport: requireTransport(options.transport),
-          concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency(),
-          ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {}),
-          onEvent: (event) => this.handleEngineEvent("codex", event),
-          onWorktreeFinished: (record) => this.worktrees.push(record)
+          concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
         }),
         new ClaudeEngineAdapter({
           ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {})
@@ -112,9 +116,9 @@ export class EnsembleRuntime {
 
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
     let runtime: EnsembleRuntime | null = null;
-    const worktrees: IsolatedWorktreeRecord[] = [];
+    const cwd = options.cwd ?? process.cwd();
     const engines = await createDefaultEngineRegistry({
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
@@ -129,23 +133,16 @@ export class EnsembleRuntime {
       onOpenCodeEvent: (event) => {
         runtime?.handleEngineEvent("opencode", event);
       },
-      onWorktreeFinished: (record) => {
-        if (runtime === null) {
-          worktrees.push(record);
-          return;
-        }
-        runtime.worktrees.push(record);
-      },
       ...(options.concurrencyCaps !== undefined ? { concurrencyCaps: options.concurrencyCaps } : {})
     });
 
     runtime = new EnsembleRuntime({
       engines,
+      cwd,
       ...(options.budgetCeilings !== undefined ? { budgetCeilings: options.budgetCeilings } : {}),
       ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
-    runtime.worktrees.push(...worktrees);
 
     return runtime;
   }
@@ -285,14 +282,41 @@ export class EnsembleRuntime {
     agentId: number,
     agentRecord: RuntimeAgentRecord
   ): Promise<string | unknown | null> {
-    const invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options));
+    const placement = await this.#placement.open(options);
+    agentRecord.resolvedCwd = placement.cwd;
+    agentRecord.isolation = options.isolation ?? null;
+    let invocation: EngineInvocation | undefined;
     try {
+      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== undefined) {
         return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
       }
       return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
     } finally {
-      await invocation.close?.();
+      try {
+        await invocation?.close?.();
+      } finally {
+        const worktree = await this.#placement.close(placement);
+        if (worktree !== null) {
+          this.worktrees.push(worktree);
+          agentRecord.worktree = {
+            branch: worktree.branch,
+            baseCommit: worktree.baseCommit,
+            changed: worktree.changed,
+            removed: worktree.removed
+          };
+          this.#emitEvent({
+            method: "worktree/finished",
+            params: {
+              path: worktree.path,
+              branch: worktree.branch,
+              changed: worktree.changed,
+              removed: worktree.removed
+            },
+            receivedAt: Date.now()
+          });
+        }
+      }
     }
   }
 
@@ -467,7 +491,7 @@ export class EnsembleRuntime {
     return adapter;
   }
 
-  #engineTurnOptions(options: Partial<AgentOptions>): EngineTurnOptions {
+  #engineTurnOptions(options: Partial<AgentOptions>, cwd: string): EngineTurnOptions {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
       ...(resolvedTimeoutMs !== undefined ? { timeoutMs: resolvedTimeoutMs } : {}),
@@ -475,8 +499,7 @@ export class EnsembleRuntime {
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
-      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      ...(options.isolation !== undefined ? { isolation: options.isolation } : {})
+      cwd
     };
   }
 
@@ -488,6 +511,8 @@ export class EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
+      isolation: options.isolation ?? null,
       worktree: null,
       label: options.label ?? null,
       phase: options.phase ?? null,
@@ -551,9 +576,6 @@ function attemptRecord(
 function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {
   if (result.resolvedModel !== undefined) {
     record.resolvedModel = result.resolvedModel;
-  }
-  if (result.worktree !== undefined) {
-    record.worktree = result.worktree;
   }
 }
 

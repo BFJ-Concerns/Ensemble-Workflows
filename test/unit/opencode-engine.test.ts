@@ -12,8 +12,7 @@ import {
   EmptyAgentOutputError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
-  OpenCodeModelRequiredError,
-  OpenCodeWorktreeIsolationUnsupportedError
+  OpenCodeModelRequiredError
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -85,19 +84,10 @@ test("opencode requires a registered curated model before spawning", () => {
   assert.equal(runner.runs.length, 0);
 });
 
-test("opencode unsupported options fail before spawning", () => {
+test("opencode rejects fallbackModel before spawning", () => {
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ runner });
 
-  assert.throws(
-    () =>
-      adapter.createInvocation("isolated", {
-        timeoutMs: 1_000,
-        model: "glm-5.2",
-        isolation: "worktree"
-      }),
-    OpenCodeWorktreeIsolationUnsupportedError
-  );
   assert.throws(
     () =>
       adapter.createInvocation("fallback", {

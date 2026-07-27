@@ -218,7 +218,7 @@ test("failed-run finalisation drains queued records and seals the archive agains
   await writer.recordAgent(agentRecord(2, "codex", null, 4));
 });
 
-test("agent record includes the isolated worktree branch and base commit", async () => {
+test("agent record includes resolved placement and the complete worktree outcome", async () => {
   const cwd = await gitRepo("ensemble-record-worktree-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
   const writer = await RunRecordWriter.start({
@@ -232,15 +232,28 @@ test("agent record includes the isolated worktree branch and base commit", async
   });
   await writer.recordAgent({
     ...agentRecord(1, "codex", null, 3),
-    worktree: { branch: "ensemble-workflows/example", baseCommit: "0123456789abcdef" }
+    resolvedCwd: "/tmp/example-worktree",
+    isolation: "worktree" as const,
+    worktree: {
+      branch: "ensemble-workflows/example",
+      baseCommit: "0123456789abcdef",
+      changed: true,
+      removed: false
+    }
   });
 
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    resolved_cwd: string;
+    isolation: string | null;
     worktree: unknown;
   };
+  assert.equal(agent.resolved_cwd, "/tmp/example-worktree");
+  assert.equal(agent.isolation, "worktree");
   assert.deepEqual(agent.worktree, {
     branch: "ensemble-workflows/example",
-    base_commit: "0123456789abcdef"
+    base_commit: "0123456789abcdef",
+    changed: true,
+    removed: false
   });
 });
 
@@ -447,6 +460,8 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
     effort: null,
     fallbackModel: null,
     resolvedModel: null,
+    resolvedCwd: "/fixture/repo",
+    isolation: null,
     worktree: null,
     label: null,
     phase: null,

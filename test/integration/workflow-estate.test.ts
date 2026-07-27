@@ -896,11 +896,6 @@ test("removed options fail loudly on the real agent path before spawning", async
       name: "unknown-option",
       options: `{ engine: "claude", maxAttemps: 2 }`,
       message: /UnrecognisedAgentOptionError: Unrecognised agent\(\) option "maxAttemps"/
-    },
-    {
-      name: "claude-worktree-fail-loud",
-      options: `{ engine: "claude", isolation: "worktree" }`,
-      message: /ClaudeWorktreeIsolationUnsupportedError: isolation:'worktree' is not supported on the Claude engine/
     }
   ]) {
     const codex = new ScriptedEngineAdapter({ name: "codex", concurrency: 1, responses: [] });
@@ -1339,6 +1334,7 @@ async function runScript(
   const transport = new ScriptedTransport(responses, directory);
   const runtime = new EnsembleRuntime({
     transport,
+    cwd: directory,
     concurrencyCaps: { codex: 8 },
     ...(runtimeOptions.budgetCeilings !== undefined ? { budgetCeilings: runtimeOptions.budgetCeilings } : {}),
     defaultTurnTimeoutMs: 1_000,
@@ -1377,6 +1373,7 @@ async function runScriptWithEngines(
       createRuntime: async () =>
         new EnsembleRuntime({
           engines: new EngineRegistry([codex, claude]),
+          cwd: directory,
           defaultTurnTimeoutMs: 1_000,
           defaultMaxAttempts: 3
         })
@@ -1430,6 +1427,7 @@ async function runScriptWithCliEngines(
       claude = claudeAdapter;
       runtime = new EnsembleRuntime({
         engines: new EngineRegistry([codexAdapter, claudeAdapter]),
+        ...(runtimeOption.cwd !== undefined ? { cwd: runtimeOption.cwd } : {}),
         ...(runtimeOption.budgetCeilings !== undefined ? { budgetCeilings: runtimeOption.budgetCeilings } : {}),
         defaultTurnTimeoutMs: 1_000,
         defaultMaxAttempts: 3

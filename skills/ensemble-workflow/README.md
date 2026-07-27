@@ -69,7 +69,8 @@ no `require`, no `import`, no dynamic code generation.
   snapshot plus every output/reasoning delta. A stream without usable token
   data emits no usage event and therefore does not advance spend towards its
   ceiling.
-- `worktrees` — records of changed Codex worktrees from `isolation`.
+- `worktrees` — finished worktree records from any engine, including whether
+  each worktree changed and whether the unchanged worktree was removed.
 - `args` — the CLI positional strings, or the `--json-args` value.
 
 ## `agent()` options and per-engine support
@@ -82,7 +83,8 @@ unknown values throw before any worker spawns.
 | `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
 | `effort` | passed to the turn | passed to the CLI | passed as the model variant |
 | `fallbackModel` | throws | supported (declared degradation) | throws |
-| `isolation: 'worktree'` | supported — fresh git worktree; changed worktrees reported | throws | throws |
+| `cwd` | worker working directory; defaults to the run cwd | same | same |
+| `isolation: 'worktree'` | fresh git worktree | same | same |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | per-turn deadline; omitted → unbounded | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | default 3 | default 3 | default 3 |
@@ -97,6 +99,21 @@ Codex workers without an `agent()` option.
 An unrecognised option key throws before that call's worker spawns. The removed
 `sandbox`, `network`, and `webSearch` keys receive a specific removal error
 rather than being ignored.
+
+Placement is resolved once per `agent()` call and retained across all retries
+and in-session corrections. With `cwd` and worktree isolation together, `cwd`
+selects the source repository and the worker starts in a linked worktree cut
+from it; a non-git `cwd` fails before the worker spawns. An unchanged worktree
+and its temporary branch are removed. Changed work is preserved and reported,
+never auto-merged: committed work is recoverable through the reported branch,
+while dirty uncommitted work is not recoverable through that branch and
+requires the preserved linked worktree and its metadata.
+A linked worktree shares its repository's object store and refs, so this
+isolates the checkout rather than containing the worker or repository.
+
+Each durable agent record always includes `resolved_cwd` and `isolation`
+(`null` when unused). Records for successfully created worktrees also include
+the branch, base commit, and `changed` / `removed` outcome.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,

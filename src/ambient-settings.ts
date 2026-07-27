@@ -6,7 +6,7 @@ import {
   defaultClaudeConcurrency,
   defaultCodexConcurrency,
   defaultOpenCodeConcurrency
-} from "./engines.js";
+} from "./concurrency-defaults.js";
 
 import type { EngineConcurrencyCaps, EngineName } from "./types.js";
 

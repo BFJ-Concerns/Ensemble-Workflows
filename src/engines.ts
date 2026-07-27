@@ -1,5 +1,3 @@
-import { cpus } from "node:os";
-
 import { CodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
@@ -12,6 +10,11 @@ import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeO
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
+import {
+  defaultClaudeConcurrency,
+  defaultCodexConcurrency,
+  defaultOpenCodeConcurrency
+} from "./concurrency-defaults.js";
 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
@@ -326,14 +329,8 @@ function promptWithFailureFeedback(prompt: string, failure: EngineAttemptFailure
   return `${prompt}\n\nA previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
 }
 
-export function defaultCodexConcurrency(): number {
-  return Math.max(1, Math.min(16, cpus().length - 2));
-}
-
-export function defaultClaudeConcurrency(): number {
-  return 8;
-}
-
-export function defaultOpenCodeConcurrency(): number {
-  return 2;
-}
+export {
+  defaultClaudeConcurrency,
+  defaultCodexConcurrency,
+  defaultOpenCodeConcurrency
+} from "./concurrency-defaults.js";

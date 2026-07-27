@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -220,87 +219,55 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
   }
 });
 
-test("live CLI gives default Codex workers network and denies it when requested", { skip: !isLive, timeout: 240_000 }, async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-network-"));
+test("live built CLI gives Codex workers unrestricted filesystem and network access", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-unrestricted-"));
   const script = path.join(directory, "workflow.js");
   const recordStore = path.join(directory, "records");
-  const defaultPath = `/default-${randomUUID()}`;
-  const blockedPath = `/blocked-${randomUUID()}`;
-  const defaultReceipt = `NETWORK_DEFAULT_${randomUUID()}`;
-  const blockedReceipt = `NETWORK_BLOCKED_${randomUUID()}`;
-  const requests: string[] = [];
-  const server = createServer((request, response) => {
-    requests.push(request.url ?? "");
-    if (request.url === defaultPath) {
-      response.writeHead(200, { "content-type": "text/plain" });
-      response.end(defaultReceipt);
-      return;
-    }
-    if (request.url === blockedPath) {
-      response.writeHead(200, { "content-type": "text/plain" });
-      response.end(blockedReceipt);
-      return;
-    }
-    response.writeHead(404);
-    response.end("not found");
-  });
+  const outsidePath = path.join(tmpdir(), `ensemble-outside-${randomUUID()}.txt`);
+  const outsideReceipt = `OUTSIDE_WORKSPACE_${randomUUID()}`;
+  const registryUrl = "https://registry.npmjs.org/typescript/5.9.3";
+  const registryReceipt = "typescript@5.9.3";
+  const command =
+    `printf '%s' '${outsideReceipt}' > '${outsidePath}' && ` +
+    `curl --silent --show-error --fail --max-time 20 '${registryUrl}' | ` +
+    `node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>{const p=JSON.parse(s);process.stdout.write(p.name+'@'+p.version)})"`;
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    assert.ok(address !== null && typeof address !== "string");
-    const defaultUrl = `http://127.0.0.1:${address.port}${defaultPath}`;
-    const blockedUrl = `http://127.0.0.1:${address.port}${blockedPath}`;
-
     await writeFile(
       script,
       `
         export const meta = {
-          name: "codex-network-posture",
-          description: "Live proof of Codex worker-shell reachability under both network postures"
+          name: "codex-unrestricted-posture",
+          description: "Live proof of Codex worker filesystem and network reach"
         };
 
         const resultSchema = {
           type: "object",
-          required: ["attempted", "exitCode", "httpStatus", "body"],
+          required: ["attempted", "exitCode", "registryReceipt"],
           additionalProperties: false,
           properties: {
             attempted: { type: "boolean", enum: [true] },
             exitCode: { type: "integer" },
-            httpStatus: { type: "integer" },
-            body: { type: "string" }
+            registryReceipt: { type: "string" }
           }
         };
 
-        const defaultUrl = ${JSON.stringify(defaultUrl)};
-        const blockedUrl = ${JSON.stringify(blockedUrl)};
-        const instruction = (url) =>
-          "Use the shell tool to run this command exactly once: " +
-          "curl --silent --show-error --max-time 10 --write-out '\\\\n%{http_code}' " + url + ". " +
-          "Do not infer or invent its result. Return attempted true, the tool exit code as exitCode, " +
-          "the final curl status line as integer httpStatus (000 becomes 0), and preceding stdout as body.";
-
-        phase("network-default");
-        const defaultResult = await agent(instruction(defaultUrl), {
+        phase("unrestricted-posture");
+        const result = await agent(
+          ${JSON.stringify(
+            `Use the shell tool to run this command exactly once: ${command}. ` +
+              "Do not infer or invent its result. Return attempted true, the tool exit code as exitCode, " +
+              "and the command stdout as registryReceipt."
+          )},
+          {
           engine: "codex",
-          label: "network-default",
+          label: "unrestricted-posture",
           schema: resultSchema,
           maxAttempts: 1
-        });
+          }
+        );
 
-        phase("network-blocked");
-        const blockedResult = await agent(instruction(blockedUrl), {
-          engine: "codex",
-          network: false,
-          label: "network-blocked",
-          schema: resultSchema,
-          maxAttempts: 1
-        });
-
-        return { defaultResult, blockedResult };
+        return result;
       `
     );
 
@@ -310,43 +277,28 @@ test("live CLI gives default Codex workers network and denies it when requested"
     });
 
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stderr, /\[phase\] network-default/);
-    assert.match(result.stderr, /\[phase\] network-blocked/);
-    const parsed = JSON.parse(result.stdout) as {
-      defaultResult: NetworkProbeResult;
-      blockedResult: NetworkProbeResult;
-    };
-    assert.deepEqual(parsed.defaultResult, {
+    assert.match(result.stderr, /\[phase\] unrestricted-posture/);
+    const parsed = JSON.parse(result.stdout) as UnrestrictedProbeResult;
+    assert.deepEqual(parsed, {
       attempted: true,
       exitCode: 0,
-      httpStatus: 200,
-      body: defaultReceipt
+      registryReceipt
     });
-    assert.equal(parsed.blockedResult.attempted, true);
-    assert.notEqual(parsed.blockedResult.exitCode, 0);
-    assert.equal(parsed.blockedResult.httpStatus, 0);
+    assert.equal(await readFile(outsidePath, "utf8"), outsideReceipt);
 
-    assert.equal(requests.filter((requestPath) => requestPath === defaultPath).length, 1);
-    assert.equal(requests.filter((requestPath) => requestPath === blockedPath).length, 0);
-
-    const defaultCommand = await recordedCommand(recordStore, "network-default", defaultUrl);
-    assert.equal(defaultCommand.exitCode, 0);
-    assert.match(defaultCommand.aggregatedOutput ?? "", new RegExp(defaultReceipt));
-
-    const blockedCommand = await recordedCommand(recordStore, "network-blocked", blockedUrl);
-    assert.notEqual(blockedCommand.exitCode, 0);
-    assert.doesNotMatch(blockedCommand.aggregatedOutput ?? "", new RegExp(blockedReceipt));
+    const recorded = await recordedCommand(recordStore, "unrestricted-posture", registryUrl);
+    assert.equal(recorded.exitCode, 0);
+    assert.match(recorded.aggregatedOutput ?? "", /typescript@5\.9\.3/);
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(outsidePath, { force: true });
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-interface NetworkProbeResult {
+interface UnrestrictedProbeResult {
   attempted: true;
   exitCode: number;
-  httpStatus: number;
-  body: string;
+  registryReceipt: string;
 }
 
 interface RecordedCommand {

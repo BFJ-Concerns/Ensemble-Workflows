@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path13) {
-      let input = path13;
+    function removeDotSegments(path12) {
+      let input = path12;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path13, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
+        const [path12, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6576,25 +6576,278 @@ var require_ajv = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path12 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile6 } from "node:fs/promises";
-import path10 from "node:path";
+import path9 from "node:path";
 import { parseArgs } from "node:util";
+
+// src/ambient-settings.ts
+import { readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+
+// src/concurrency-defaults.ts
+import { cpus } from "node:os";
+function defaultCodexConcurrency() {
+  return Math.max(1, Math.min(16, cpus().length - 2));
+}
+function defaultClaudeConcurrency() {
+  return 8;
+}
+function defaultOpenCodeConcurrency() {
+  return 2;
+}
+
+// src/ambient-settings.ts
+var CONFIG_SCHEMA_VERSION = 1;
+var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
+var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
+var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+var AmbientConfigError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = new.target.name;
+  }
+};
+var ENGINES = ["codex", "claude", "opencode"];
+var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
+var ENABLED_VALUES = /* @__PURE__ */ new Set(["1", "on", "true", "yes"]);
+function resolveAmbientSettings(input) {
+  const configFile = machineConfigPath(input.env);
+  const config = readMachineConfig(configFile);
+  const defaults = {
+    codex: defaultCodexConcurrency(),
+    claude: defaultClaudeConcurrency(),
+    opencode: defaultOpenCodeConcurrency()
+  };
+  return {
+    configFile,
+    agentCeiling: resolveNumber({
+      flag: input.flags?.agentCeiling,
+      env: input.env[AGENT_CEILING_ENV],
+      envKey: AGENT_CEILING_ENV,
+      file: config?.agent_ceiling,
+      fileKey: "agent_ceiling",
+      configFile,
+      fallback: null
+    }),
+    concurrencyCaps: Object.fromEntries(
+      ENGINES.map((engine) => [
+        engine,
+        resolveNumber({
+          flag: input.flags?.concurrencyCaps?.[engine],
+          env: input.env[`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`],
+          envKey: `ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`,
+          file: config?.concurrency?.[engine],
+          fileKey: `concurrency.${engine}`,
+          configFile,
+          fallback: defaults[engine]
+        })
+      ])
+    ),
+    runRecordDir: resolveRunRecord(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd)
+  };
+}
+function machineConfigPath(env) {
+  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path.join(homedir(), ".config");
+  return path.join(configHome, "ensemble", "config.json");
+}
+function readMachineConfig(configFile) {
+  let source;
+  try {
+    source = readFileSync(configFile, "utf8");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) {
+      return null;
+    }
+    throw new AmbientConfigError(`Cannot read machine configuration ${configFile}: ${errorMessage(error)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch (error) {
+    throw new AmbientConfigError(`Cannot parse JSON machine configuration ${configFile}: ${errorMessage(error)}`);
+  }
+  if (!isObject(parsed) || Array.isArray(parsed)) {
+    throw fileValueError(configFile, "<root>", "must be a JSON object");
+  }
+  assertKnownKeys(parsed, ["schema_version", "agent_ceiling", "concurrency", "run_record", "status"], configFile);
+  if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
+    throw new AmbientConfigError(
+      `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
+    );
+  }
+  validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
+  validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
+  validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
+  validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
+  return parsed;
+}
+function validateSection(root, key, knownKeys, configFile, validate) {
+  const value = root[key];
+  if (value === void 0) {
+    return;
+  }
+  if (!isObject(value) || Array.isArray(value)) {
+    throw fileValueError(configFile, key, "must be a JSON object");
+  }
+  assertKnownKeys(value, knownKeys, configFile, key);
+  for (const nestedKey of knownKeys) {
+    validate(value, nestedKey, configFile, key);
+  }
+}
+function validateRunSetting(section, key, configFile, prefix = "") {
+  const value = section[key];
+  if (value === void 0) {
+    return;
+  }
+  const qualified = `${prefix}.${key}`;
+  if (key === "enabled" && typeof value !== "boolean") {
+    throw fileValueError(configFile, qualified, "must be a boolean");
+  }
+  if (key === "dir" && (typeof value !== "string" || value.trim().length === 0)) {
+    throw fileValueError(configFile, qualified, "must be a non-empty string");
+  }
+}
+function validateOptionalPositiveInteger(section, key, configFile, prefix = "") {
+  const value = section[key];
+  if (value === void 0) {
+    return;
+  }
+  const qualified = prefix.length > 0 ? `${prefix}.${key}` : key;
+  assertPositiveInteger(value, qualified, configFile);
+}
+function assertKnownKeys(value, knownKeys, configFile, prefix) {
+  const allowed = new Set(knownKeys);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      const qualified = prefix === void 0 ? key : `${prefix}.${key}`;
+      throw new AmbientConfigError(`Unknown machine configuration key ${qualified} in ${configFile}`);
+    }
+  }
+}
+function resolveNumber(input) {
+  if (input.flag !== void 0) {
+    assertPositiveInteger(input.flag, input.fileKey, "CLI flags");
+    return { value: input.flag, layer: "flag" };
+  }
+  if (input.env !== void 0) {
+    const parsed = parseEnvironmentInteger(input.env, input.envKey);
+    return { value: parsed, layer: "env" };
+  }
+  if (input.file !== void 0) {
+    return { value: input.file, layer: "config-file" };
+  }
+  return { value: input.fallback, layer: "default" };
+}
+function resolveRunRecord(config, env) {
+  const enabled = resolveEnabled(env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
+  if (!enabled.value) {
+    return { value: null, layer: enabled.layer };
+  }
+  const directory = resolveDirectory(
+    env[RUN_RECORD_DIR_ENV],
+    RUN_RECORD_DIR_ENV,
+    config?.run_record?.dir,
+    path.join(dataHome(env), "ensemble")
+  );
+  return directory;
+}
+function resolveStatus(config, env, cwd) {
+  const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+  if (!enabled.value) {
+    return { value: null, layer: enabled.layer };
+  }
+  const directory = resolveDirectory(
+    env.ENSEMBLE_STATUS_DIR,
+    "ENSEMBLE_STATUS_DIR",
+    config?.status?.dir,
+    path.join(cwd, ".claude")
+  );
+  return { value: isDirectory(directory.value) ? directory.value : null, layer: directory.layer };
+}
+function resolveEnabled(envValue, envKey, fileValue) {
+  if (envValue !== void 0) {
+    const normalised = envValue.trim().toLowerCase();
+    if (DISABLED_VALUES.has(normalised)) {
+      return { value: false, layer: "env" };
+    }
+    if (ENABLED_VALUES.has(normalised)) {
+      return { value: true, layer: "env" };
+    }
+    throw new AmbientConfigError(`Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0`);
+  }
+  if (fileValue !== void 0) {
+    return { value: fileValue, layer: "config-file" };
+  }
+  return { value: true, layer: "default" };
+}
+function resolveDirectory(envValue, envKey, fileValue, fallback) {
+  if (envValue !== void 0) {
+    if (envValue.trim().length === 0) {
+      throw new AmbientConfigError(`Invalid value for ${envKey}: expected a non-empty directory path`);
+    }
+    return { value: envValue, layer: "env" };
+  }
+  if (fileValue !== void 0) {
+    return { value: fileValue, layer: "config-file" };
+  }
+  return { value: fallback, layer: "default" };
+}
+function parseEnvironmentInteger(value, key) {
+  if (!/^[0-9]+$/.test(value.trim())) {
+    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1`);
+  }
+  const parsed = Number(value.trim());
+  assertPositiveInteger(parsed, key, "environment");
+  return parsed;
+}
+function assertPositiveInteger(value, key, source) {
+  if (!Number.isInteger(value) || value < 1) {
+    if (source.endsWith(".json")) {
+      throw fileValueError(source, key, "must be an integer of at least 1");
+    }
+    throw new AmbientConfigError(`Invalid value for ${key} from ${source}: expected an integer of at least 1`);
+  }
+}
+function fileValueError(configFile, key, detail) {
+  return new AmbientConfigError(`Invalid machine configuration key ${key} in ${configFile}: ${detail}`);
+}
+function dataHome(env) {
+  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path.join(homedir(), ".local", "share");
+}
+function isDirectory(candidate) {
+  try {
+    return statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null;
+}
+function isNodeError(error, code) {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // src/runtime.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/agent-placement.ts
-import path2 from "node:path";
+import path3 from "node:path";
 
 // src/worktree-isolation.ts
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir } from "node:fs/promises";
-import path from "node:path";
+import path2 from "node:path";
 import { promisify } from "node:util";
 
 // src/errors.ts
@@ -6735,8 +6988,8 @@ var GitWorktreeIsolationManager = class {
     const repoRoot = await this.#gitRepoRoot(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir(path.dirname(worktreePath), { recursive: true });
+    const worktreePath = path2.join(path2.dirname(repoRoot), `${path2.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir(path2.dirname(worktreePath), { recursive: true });
     await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
@@ -6772,7 +7025,7 @@ var GitWorktreeIsolationManager = class {
     };
   }
   async #gitRepoRoot(baseCwd) {
-    const resolvedCwd = path.resolve(baseCwd);
+    const resolvedCwd = path2.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === void 0) {
       repoRoot = git(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
@@ -6821,7 +7074,7 @@ var AgentPlacementManager = class {
   baseCwd;
   #worktreeManager;
   constructor(options) {
-    this.baseCwd = path2.resolve(options.baseCwd);
+    this.baseCwd = path3.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
   }
   async open(options) {
@@ -6840,8 +7093,138 @@ var AgentPlacementManager = class {
   }
 };
 function resolveAgentCwd(baseCwd, requestedCwd) {
-  return path2.resolve(baseCwd, requestedCwd ?? ".");
+  return path3.resolve(baseCwd, requestedCwd ?? ".");
 }
+
+// src/admission.ts
+var AdmissionController = class {
+  ceiling;
+  #caps;
+  #ceilingActive = 0;
+  #engineActive = /* @__PURE__ */ new Map();
+  #waiting = [];
+  #onAdmission;
+  #eventSeq = 0;
+  #closed = false;
+  constructor(options) {
+    if (options.ceiling !== null && (!Number.isInteger(options.ceiling) || options.ceiling < 1)) {
+      throw new Error(`Agent ceiling must be a positive integer, got ${options.ceiling}`);
+    }
+    for (const [engine, cap] of options.caps) {
+      if (!Number.isInteger(cap) || cap < 1) {
+        throw new Error(`Concurrency cap for ${engine} must be a positive integer, got ${cap}`);
+      }
+    }
+    this.ceiling = options.ceiling;
+    this.#caps = options.caps;
+    this.#onAdmission = options.onAdmission;
+  }
+  admit(engine, agentId, task) {
+    if (this.#closed) {
+      throw new Error("AdmissionController is closed");
+    }
+    if (!this.#caps.has(engine)) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return new Promise((resolve, reject) => {
+      this.#waiting.push({
+        engine,
+        agentId,
+        task: async () => task(),
+        resolve: (value) => resolve(value),
+        reject
+      });
+      this.#emit("queued", engine, agentId);
+      this.#drain();
+    });
+  }
+  /**
+   * Settles every promise already accepted by the runtime. Waiting tasks are
+   * released through their engine adapters without enforcing admission gates:
+   * engine shutdown immediately follows and is responsible for making those
+   * already-accepted calls return without dispatching further live work.
+   */
+  close() {
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    const waiting = this.#waiting.splice(0);
+    for (const entry of waiting) {
+      this.#start(entry, true);
+    }
+  }
+  snapshot() {
+    return {
+      ceilingActive: this.#ceilingActive,
+      engineActive: new Map(this.#engineActive),
+      waiting: this.#waiting.length
+    };
+  }
+  #drain() {
+    let index = 0;
+    while (index < this.#waiting.length) {
+      if (this.#tryAdmitFrom(index)) {
+        index = 0;
+        continue;
+      }
+      const entry = this.#waiting[index];
+      if (entry !== void 0) {
+        this.#emit("skipped", entry.engine, entry.agentId);
+      }
+      index += 1;
+    }
+  }
+  #tryAdmitFrom(index) {
+    const entry = this.#waiting[index];
+    if (entry === void 0) {
+      return false;
+    }
+    if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
+      return false;
+    }
+    if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
+      return false;
+    }
+    this.#waiting.splice(index, 1);
+    this.#start(entry, false);
+    return true;
+  }
+  #start(entry, bypassGates) {
+    this.#ceilingActive += 1;
+    this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) + 1);
+    this.#emit("admitted", entry.engine, entry.agentId);
+    Promise.resolve().then(entry.task).then(entry.resolve, entry.reject).finally(() => {
+      this.#ceilingActive -= 1;
+      this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) - 1);
+      this.#emit("released", entry.engine, entry.agentId);
+      if (!bypassGates && !this.#closed) {
+        this.#drain();
+      }
+    });
+  }
+  #capFor(engine) {
+    const cap = this.#caps.get(engine);
+    if (cap === void 0) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return cap;
+  }
+  #activeFor(engine) {
+    return this.#engineActive.get(engine) ?? 0;
+  }
+  #emit(kind, engine, agentId) {
+    this.#eventSeq += 1;
+    this.#onAdmission?.({
+      seq: this.#eventSeq,
+      engine,
+      agentId,
+      kind,
+      ceilingHeld: this.#ceilingActive,
+      engineHeld: this.#activeFor(engine)
+    });
+  }
+};
 
 // src/budget.ts
 var TokenBudget = class {
@@ -7234,9 +7617,6 @@ var RunProgress = class {
 function rank(state) {
   return state === "running" ? 0 : 1;
 }
-
-// src/engines.ts
-import { cpus } from "node:os";
 
 // src/app-server.ts
 import { spawn } from "node:child_process";
@@ -7749,8 +8129,8 @@ function itemTypeFromItem(item) {
 // src/claude-control-plane.ts
 import { execFile as execFile2, spawn as spawn2 } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import path3 from "node:path";
+import { homedir as homedir2 } from "node:os";
+import path4 from "node:path";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -7763,7 +8143,7 @@ var ClaudeCliControlPlane = class {
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
-    this.#projectsDir = options.projectsDir ?? path3.join(homedir(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path4.join(homedir2(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
@@ -7827,7 +8207,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path3.join(this.#projectsDir, dir, filename);
+      const candidate = path4.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -7989,14 +8369,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path13) {
+async function readTranscriptFile(path12) {
   let text;
   try {
-    text = await readFile(path13, "utf8");
+    text = await readFile(path12, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path13}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path12}`, { cause: error });
   }
-  return { path: path13, text, entries: parseTranscriptText(text) };
+  return { path: path12, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -8284,11 +8664,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path13 = await this.#controlPlane.transcriptPath(handle);
-    if (path13 === null) {
+    const path12 = await this.#controlPlane.transcriptPath(handle);
+    if (path12 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path13);
+    return readTranscriptFile(path12);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -9241,7 +9621,7 @@ var ClaudeEngineAdapter = class {
   #onEvent;
   #config;
   constructor(options = {}) {
-    this.concurrency = options.concurrency ?? 8;
+    this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
     this.#cwd = options.cwd ?? process.cwd();
     this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
@@ -9342,12 +9722,6 @@ function promptWithFailureFeedback(prompt, failure) {
 
 A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
 }
-function defaultCodexConcurrency() {
-  return Math.max(1, Math.min(16, cpus().length - 2));
-}
-function defaultOpenCodeConcurrency() {
-  return 2;
-}
 
 // src/runtime.ts
 var EnsembleRuntime = class _EnsembleRuntime {
@@ -9356,6 +9730,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
   progress;
   #engines;
+  #admission;
   #placement;
   #defaultTurnTimeoutMs;
   #defaultMaxAttempts;
@@ -9388,6 +9763,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
       })
     ]);
+    this.#admission = new AdmissionController({
+      ceiling: options.agentCeiling ?? null,
+      caps: this.#engineCaps()
+    });
     this.#registerEngineCaps();
   }
   static async create(options = {}) {
@@ -9416,6 +9795,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd,
       ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
       ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
+      ...options.agentCeiling !== void 0 ? { agentCeiling: options.agentCeiling } : {},
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
     return runtime;
@@ -9455,6 +9835,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       assertCompilableSchema(options.schema);
     }
     const engine = this.#engineFor(options.engine);
+    const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
@@ -9468,35 +9849,46 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
-    return engine.schedule(async () => {
-      this.progress.startAgent(agentId);
-      try {
-        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-        const outcome = result === null ? "failed" : "done";
-        this.progress.settleAgent(agentId, outcome);
-        agentRecord.status = outcome === "done" ? "complete" : "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = result;
-        if (outcome === "done") {
-          this.#completed.push({
-            id: agentId,
-            engine: engine.name,
-            label: options.label ?? null,
-            phase: options.phase ?? null,
-            output: result
-          });
+    return this.#admission.admit(
+      engine.name,
+      agentId,
+      () => engine.schedule(async () => {
+        const executionStartedAt = Date.now();
+        this.progress.startAgent(agentId);
+        try {
+          const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+          const outcome = result === null ? "failed" : "done";
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, outcome);
+          agentRecord.status = outcome === "done" ? "complete" : "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = result;
+          if (outcome === "done") {
+            this.#completed.push({
+              id: agentId,
+              engine: engine.name,
+              label: options.label ?? null,
+              phase: options.phase ?? null,
+              output: result
+            });
+          }
+          await this.#recordAgentSafely(agentRecord);
+          return result;
+        } catch (error) {
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, "failed");
+          agentRecord.status = "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = null;
+          await this.#recordAgentSafely(agentRecord);
+          throw error;
         }
-        await this.#recordAgentSafely(agentRecord);
-        return result;
-      } catch (error) {
-        this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = null;
-        await this.#recordAgentSafely(agentRecord);
-        throw error;
-      }
-    });
+      })
+    );
   }
   /**
    * The archive is observability: a bookkeeping failure must not reject (or,
@@ -9527,6 +9919,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async close() {
     this.#closed = true;
+    this.#admission.close();
     await this.#engines.close();
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
@@ -9695,6 +10088,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
+  #engineCaps() {
+    const caps = /* @__PURE__ */ new Map();
+    for (const name of this.#engines.names()) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== void 0) {
+        caps.set(name, adapter.concurrency);
+      }
+    }
+    return caps;
+  }
   #engineFor(engine) {
     if (engine === void 0) {
       throw new MissingEngineError();
@@ -9738,6 +10141,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       schema: options.schema ?? null,
       rawOutput: null,
       validatedOutput: null,
+      queuedMs: 0,
+      executionMs: 0,
       attempts: []
     };
   }
@@ -9892,13 +10297,13 @@ function formatError(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { readFile as readFile3 } from "node:fs/promises";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
 import { access as access2, readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import path4 from "node:path";
+import { homedir as homedir3 } from "node:os";
+import path5 from "node:path";
 var WorkflowResolutionError = class extends Error {
   constructor(message, options) {
     super(message, options);
@@ -9911,10 +10316,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path4.join(homedir2(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir3(), ".local", "share");
   return {
-    project: path4.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path4.join(dataHome, "ensemble", "workflows")
+    project: path5.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path5.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -9924,7 +10329,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path4.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path5.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -9994,7 +10399,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path4.join(dir, entry.name);
+    const scriptPath = path5.join(dir, entry.name);
     try {
       const source = await readFile2(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -10062,7 +10467,7 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
   const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
-  const cwd = options.cwd ?? path5.dirname(path5.resolve(options.filename));
+  const cwd = options.cwd ?? path6.dirname(path6.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -10384,7 +10789,7 @@ function skipBlockComment(source, start) {
 import { createHash } from "node:crypto";
 import { mkdir as mkdir2, readFile as readFile4, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 import { execFile as execFile3 } from "node:child_process";
 import { promisify as promisify2 } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -10420,7 +10825,7 @@ var RunRecordWriter = class _RunRecordWriter {
   static async start(options) {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = path6.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
+    const archiveDir = path7.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
     await mkdir2(archiveDir, { recursive: true });
     const harnessRoot = await findHarnessRoot() ?? options.cwd;
     const packageInfo = await readPackageInfo(harnessRoot);
@@ -10448,6 +10853,10 @@ var RunRecordWriter = class _RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
       git: {
         start: gitStart,
         end: null
@@ -10552,6 +10961,8 @@ var RunRecordWriter = class _RunRecordWriter {
       schema: record.schema,
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
+      queued_ms: record.queuedMs,
+      execution_ms: record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -10601,16 +11012,16 @@ var RunRecordWriter = class _RunRecordWriter {
 `);
   }
   async #writeText(relativePath, content) {
-    const destination = path6.join(this.archiveDir, relativePath);
-    await mkdir2(path6.dirname(destination), { recursive: true });
-    const temporary = path6.join(path6.dirname(destination), `.${path6.basename(destination)}${this.#tmpSuffix()}`);
+    const destination = path7.join(this.archiveDir, relativePath);
+    await mkdir2(path7.dirname(destination), { recursive: true });
+    const temporary = path7.join(path7.dirname(destination), `.${path7.basename(destination)}${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
-    const destination = path6.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path6.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    const destination = path7.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path7.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
 `);
   }
@@ -10621,7 +11032,7 @@ var RunRecordWriter = class _RunRecordWriter {
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
   async #trackFile(relativePath) {
-    const absolute = path6.join(this.archiveDir, relativePath);
+    const absolute = path7.join(this.archiveDir, relativePath);
     const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
     this.#files.set(relativePath, {
       path: relativePath,
@@ -10713,7 +11124,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
   if (dirty === true) {
     const diff = await git2(["diff", "HEAD", "--binary"], cwd) ?? await git2(["diff", "--binary"], cwd);
     if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path6.join(archiveDir, diffPath), diff);
+      await writeStandaloneText(path7.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
     }
   }
@@ -10721,7 +11132,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
 }
 async function readPackageInfo(cwd) {
   try {
-    const text = await readFile4(path6.join(cwd, "package.json"), "utf8");
+    const text = await readFile4(path7.join(cwd, "package.json"), "utf8");
     const parsed = JSON.parse(text);
     return {
       name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
@@ -10732,17 +11143,17 @@ async function readPackageInfo(cwd) {
   }
 }
 async function findHarnessRoot() {
-  let current = path6.dirname(fileURLToPath(import.meta.url));
+  let current = path7.dirname(fileURLToPath(import.meta.url));
   for (; ; ) {
     try {
-      const text = await readFile4(path6.join(current, "package.json"), "utf8");
+      const text = await readFile4(path7.join(current, "package.json"), "utf8");
       const parsed = JSON.parse(text);
       if (parsed.name === "ensemble-workflows") {
         return current;
       }
     } catch {
     }
-    const parent = path6.dirname(current);
+    const parent = path7.dirname(current);
     if (parent === current) {
       return null;
     }
@@ -10801,8 +11212,8 @@ async function hashFile(filePath) {
   return createHash("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir2(path6.dirname(destination), { recursive: true });
-  const temporary = path6.join(path6.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await mkdir2(path7.dirname(destination), { recursive: true });
+  const temporary = path7.join(path7.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
 async function writeAndRename(temporary, destination, content) {
@@ -10823,29 +11234,6 @@ function padAttempt(attempt) {
 function safeName(filename, suffix) {
   const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
   return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
-}
-
-// src/run-record-config.ts
-import { homedir as homedir3 } from "node:os";
-import path7 from "node:path";
-var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
-var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
-function resolveRunRecordDir(env) {
-  if (isOff(env[RUN_RECORD_ENV])) {
-    return null;
-  }
-  const explicit = env[RUN_RECORD_DIR_ENV];
-  if (explicit !== void 0 && explicit.length > 0) {
-    return explicit;
-  }
-  const dataHome = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path7.join(homedir3(), ".local", "share");
-  return path7.join(dataHome, "ensemble");
-}
-function isOff(value) {
-  if (value === void 0) {
-    return false;
-  }
-  return ["off", "0", "false", "no"].includes(value.trim().toLowerCase());
 }
 
 // src/status-file.ts
@@ -10907,7 +11295,7 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      if (!isNodeError(error) || error.code !== "ENOENT") {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
         this.#reportError(error);
       }
     }
@@ -10925,7 +11313,7 @@ var StatusFileWriter = class {
     try {
       await this.#fileOperations.rename(target, claim);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
+      if (isNodeError2(error) && error.code === "ENOENT") {
         return;
       }
       this.#reportError(error);
@@ -10941,7 +11329,7 @@ var StatusFileWriter = class {
       try {
         await this.#fileOperations.link(claim, target);
       } catch (error) {
-        if (!isNodeError(error) || error.code !== "EEXIST") {
+        if (!isNodeError2(error) || error.code !== "EEXIST") {
           this.#reportError(error);
           return;
         }
@@ -10950,7 +11338,7 @@ var StatusFileWriter = class {
     try {
       await this.#fileOperations.unlink(claim);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
+      if (isNodeError2(error) && error.code === "ENOENT") {
         return;
       }
       this.#reportError(error);
@@ -10963,32 +11351,8 @@ var StatusFileWriter = class {
     }
   }
 };
-function isNodeError(error) {
+function isNodeError2(error) {
   return typeof error === "object" && error !== null && "code" in error;
-}
-
-// src/status-config.ts
-import { statSync } from "node:fs";
-import path9 from "node:path";
-var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
-function resolveStatusDir(env, cwd) {
-  const toggle = (env.ENSEMBLE_STATUS ?? "").trim().toLowerCase();
-  if (DISABLED_VALUES.has(toggle)) {
-    return null;
-  }
-  const explicit = env.ENSEMBLE_STATUS_DIR?.trim();
-  if (explicit !== void 0 && explicit.length > 0) {
-    return isDirectory(explicit) ? explicit : null;
-  }
-  const localClaudeDir = path9.join(cwd, ".claude");
-  return isDirectory(localClaudeDir) ? localClaudeDir : null;
-}
-function isDirectory(candidate) {
-  try {
-    return statSync(candidate).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // src/index.ts
@@ -11020,12 +11384,23 @@ async function runEnsembleCli(argv, options = {}) {
     return 0;
   }
   let invocation;
+  let ambientSettings;
   try {
     invocation = await parseInvocation(argv, cwd);
+    ambientSettings = resolveAmbientSettings({
+      env,
+      cwd,
+      flags: {
+        ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
+        ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
+      }
+    });
   } catch (error) {
     stderr.write(`${formatError3(error)}
 `);
-    stderr.write(usage());
+    if (!(error instanceof AmbientConfigError)) {
+      stderr.write(usage());
+    }
     return 2;
   }
   if (invocation.scriptArg === void 0) {
@@ -11038,16 +11413,16 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   try {
-    const scriptPath = path10.resolve(cwd, invocation.scriptArg);
+    const scriptPath = path9.resolve(cwd, invocation.scriptArg);
     const source = await readFile6(scriptPath, "utf8");
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
-      ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
+      ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
-    const runRecordDir = options.runRecordDir ?? null;
+    const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
@@ -11057,11 +11432,12 @@ async function runEnsembleCli(argv, options = {}) {
         workflowPath: scriptPath,
         workflowSource: source,
         args: invocation.args,
-        cliFlags: cliFlags(invocation)
+        cliFlags: cliFlags(invocation),
+        concurrency: recordConcurrency(ambientSettings, progress)
       });
       runtime.setRunRecorder?.(runRecordWriter);
     }
-    const statusDir = options.statusDir ?? null;
+    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
@@ -11125,9 +11501,10 @@ async function runEnsembleCli(argv, options = {}) {
         runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
-      stdout.write(`${serialiseResult(result)}
+      const serialised = serialiseResult(result);
+      stdout.write(`${serialised}
 `);
-      finalRecord = { status: "complete", exitCode: 0, result };
+      finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
       return 0;
     } finally {
       interrupt.dispose();
@@ -11135,9 +11512,10 @@ async function runEnsembleCli(argv, options = {}) {
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     const partial = partialResult(runtime, status);
-    stdout.write(`${serialiseResult(partial)}
+    const serialised = serialiseResult(partial);
+    stdout.write(`${serialised}
 `);
-    finalRecord = { status, exitCode: 1, result: partial };
+    finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
     stderr.write(`${formatError3(error)}
 `);
     return 1;
@@ -11168,10 +11546,38 @@ function workflowName(meta) {
 function cliFlags(invocation) {
   return {
     ...invocation.budgetCeilings !== void 0 ? { budget: invocation.budgetCeilings } : {},
+    ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     jsonArgs: invocation.jsonArgsProvided
   };
+}
+function runtimeConcurrencyOptions(settings) {
+  const concurrencyCaps = {};
+  for (const engine of ["codex", "claude", "opencode"]) {
+    const resolved = settings.concurrencyCaps[engine];
+    if (resolved.layer !== "default") {
+      concurrencyCaps[engine] = resolved.value;
+    }
+  }
+  return {
+    ...settings.agentCeiling.value !== null ? { agentCeiling: settings.agentCeiling.value } : {},
+    ...Object.keys(concurrencyCaps).length > 0 ? { concurrencyCaps } : {}
+  };
+}
+function recordConcurrency(settings, progress) {
+  const snapshot = progress?.snapshot();
+  if (snapshot === void 0) {
+    return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
+  }
+  const engines = {};
+  for (const engine of ["codex", "claude", "opencode"]) {
+    const cap = snapshot.engines[engine]?.cap;
+    if (cap !== null && cap !== void 0) {
+      engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
+    }
+  }
+  return { agentCeiling: settings.agentCeiling, engines };
 }
 var CliUsageError = class extends Error {
   constructor(message) {
@@ -11220,6 +11626,7 @@ async function parseInvocation(argv, cwd) {
     options: {
       "json-args": { type: "string" },
       budget: { type: "string", multiple: true },
+      "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" }
     },
@@ -11230,6 +11637,7 @@ async function parseInvocation(argv, cwd) {
   const positionalArgs = split.scriptArg === void 0 ? [] : split.scriptArgs;
   const args = jsonArgs === void 0 ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
+  const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   return {
@@ -11237,6 +11645,7 @@ async function parseInvocation(argv, cwd) {
     args,
     jsonArgsProvided: jsonArgs !== void 0,
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
+    ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {}
   };
@@ -11280,10 +11689,10 @@ function splitTuningFlags(argv) {
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--concurrency" || value === "--timeout";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
 }
 async function parseJsonArgs(value, cwd) {
   let source = value;
@@ -11293,7 +11702,7 @@ async function parseJsonArgs(value, cwd) {
     if (filename.length === 0) {
       throw new CliUsageError("--json-args @file requires a file path");
     }
-    const filePath = path10.resolve(cwd, filename);
+    const filePath = path9.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile6(filePath, "utf8");
@@ -11347,6 +11756,16 @@ function parseConcurrencyCap(value) {
   }
   return cap;
 }
+function parseAgentCeiling(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  const ceiling = Number(value);
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer, got ${value}`);
+  }
+  return ceiling;
+}
 function parseTimeoutMs(value) {
   if (value === void 0) {
     return void 0;
@@ -11359,7 +11778,7 @@ function parseTimeoutMs(value) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");
@@ -11383,8 +11802,8 @@ function formatError3(error) {
 }
 
 // src/node-version.ts
-import { readFileSync } from "node:fs";
-import path11 from "node:path";
+import { readFileSync as readFileSync2 } from "node:fs";
+import path10 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
   if (">=24.14.0".trim().length > 0) {
@@ -11437,17 +11856,17 @@ function parseVersion(version) {
   };
 }
 function readPackageMetadata(fromUrl) {
-  let current = path11.dirname(fileURLToPath2(fromUrl));
+  let current = path10.dirname(fileURLToPath2(fromUrl));
   while (true) {
-    const candidate = path11.join(current, "package.json");
+    const candidate = path10.join(current, "package.json");
     try {
-      const metadata = JSON.parse(readFileSync(candidate, "utf8"));
+      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
         return metadata;
       }
     } catch {
     }
-    const parent = path11.dirname(current);
+    const parent = path10.dirname(current);
     if (parent === current) {
       throw new Error("Could not locate ensemble-workflows package.json");
     }
@@ -11456,7 +11875,7 @@ function readPackageMetadata(fromUrl) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path11.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {
@@ -11466,9 +11885,7 @@ if (isMain) {
   } else {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
-      cwd,
-      statusDir: resolveStatusDir(process.env, cwd),
-      runRecordDir: resolveRunRecordDir(process.env)
+      cwd
     });
     process.exitCode = exitCode;
   }

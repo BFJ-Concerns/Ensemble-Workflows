@@ -186,6 +186,23 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   assert.equal(engine.attempts, 2);
 });
 
+test("ensemble agent reports option mistakes as stack-free usage errors", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--unknown", "prompt"], {
+    stdin: Readable.from([]),
+    stdout,
+    stderr
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /Unknown option '--unknown'/);
+  assert.match(stderr.text(), /ensemble agent --engine/);
+  assert.doesNotMatch(stderr.text(), /\n\s+at /);
+});
+
 test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-worktree-"));
   await execFileAsync("git", ["init"], { cwd: directory });

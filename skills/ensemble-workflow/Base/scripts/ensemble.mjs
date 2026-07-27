@@ -3765,6 +3765,7 @@ var require_fast_uri = __commonJS({
       return uriTokens.join("");
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
+    var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3793,6 +3794,11 @@ var require_fast_uri = __commonJS({
         } else {
           uri = "//" + uri;
         }
+      }
+      const authorityMatch = uri.match(AUTHORITY_PREFIX);
+      if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
+        parsed.error = "URI authority must not contain a literal backslash.";
+        malformedAuthorityOrPort = true;
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
@@ -3837,7 +3843,7 @@ var require_fast_uri = __commonJS({
         if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
           if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) {
             try {
-              parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
+              parsed.host = new URL("http://" + parsed.host).hostname;
             } catch (e) {
               parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
             }
@@ -6588,6 +6594,8 @@ var EnsembleError = class extends Error {
     this.name = new.target.name;
   }
 };
+var AgentOptionRejectedError = class extends EnsembleError {
+};
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -6623,12 +6631,12 @@ var BudgetExceededError = class extends EnsembleError {
     super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
   }
 };
-var MissingEngineError = class extends EnsembleError {
+var MissingEngineError = class extends AgentOptionRejectedError {
   constructor() {
     super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
   }
 };
-var UnknownEngineError = class extends EnsembleError {
+var UnknownEngineError = class extends AgentOptionRejectedError {
   constructor(engine) {
     super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
@@ -6649,49 +6657,21 @@ var ClaudeValveError = class extends ClaudeWorkerError {
 };
 var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
-var ClaudeWorktreeIsolationUnsupportedError = class extends EnsembleError {
+var ClaudeWorktreeIsolationUnsupportedError = class extends AgentOptionRejectedError {
   constructor() {
     super(
       "isolation:'worktree' is not supported on the Claude engine in v1: Claude background sessions manage their own .claude/worktrees isolation. Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
     );
   }
 };
-var ClaudeWebSearchUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the Claude engine in v1: Ensemble only enables live web search through Codex's app-server config. Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-};
-var ClaudeSandboxUnsupportedError = class extends EnsembleError {
-  constructor(sandbox) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the Claude engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
-    );
-  }
-};
-var ClaudeNetworkUnsupportedError = class extends EnsembleError {
-  constructor(network) {
-    super(
-      `network:${JSON.stringify(network)} is not supported on the Claude engine in v1: Ensemble does not manage the Claude worker's network boundary. Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability.`
-    );
-  }
-};
-var CodexDangerFullAccessNetworkDisabledError = class extends EnsembleError {
-  constructor() {
-    super(
-      "sandbox:'danger-full-access' cannot be combined with network:false: full access includes network access, so Ensemble cannot honour both options."
-    );
-  }
-};
-var OpenCodeModelRequiredError = class extends EnsembleError {
+var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
   constructor(registered) {
     super(
       `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
     );
   }
 };
-var OpenCodeModelNotRegisteredError = class extends EnsembleError {
+var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
   constructor(model, registered) {
     super(
       `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
@@ -6705,31 +6685,10 @@ var OpenCodeRunError = class extends OpenCodeWorkerError {
     super(message);
   }
 };
-var OpenCodeWorktreeIsolationUnsupportedError = class extends EnsembleError {
+var OpenCodeWorktreeIsolationUnsupportedError = class extends AgentOptionRejectedError {
   constructor() {
     super(
       "isolation:'worktree' is not supported on the opencode engine in v1: Ensemble only manages git-worktree isolation for Codex workers. Run the worker without isolation, or use engine:'codex' for git-worktree isolation."
-    );
-  }
-};
-var OpenCodeWebSearchUnsupportedError = class extends EnsembleError {
-  constructor() {
-    super(
-      "webSearch:true is not supported on the opencode engine in v1: the opencode subprocess transport does not expose an Ensemble-controlled live-search switch. Run the worker without webSearch, or use engine:'codex' for live web search."
-    );
-  }
-};
-var OpenCodeSandboxUnsupportedError = class extends EnsembleError {
-  constructor(sandbox) {
-    super(
-      `sandbox:${JSON.stringify(sandbox)} is not supported on the opencode engine in v1: the sandbox option is a Codex app-server capability. Run the worker without sandbox, or use engine:'codex' when you need Ensemble-managed sandboxing.`
-    );
-  }
-};
-var OpenCodeNetworkUnsupportedError = class extends EnsembleError {
-  constructor(network) {
-    super(
-      `network:${JSON.stringify(network)} is not supported on the opencode engine in v1: the opencode subprocess transport does not expose an Ensemble-controlled network boundary. Run the worker without network, or use engine:'codex' when you need Ensemble-managed reachability.`
     );
   }
 };
@@ -6738,10 +6697,24 @@ var TurnTimeoutError = class extends EnsembleError {
     super(message);
   }
 };
-var FallbackModelUnsupportedError = class extends EnsembleError {
+var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine) {
     super(
       `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
+    );
+  }
+};
+var RemovedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option) {
+    super(
+      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
+    );
+  }
+};
+var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option, recognised) {
+    super(
+      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
     );
   }
 };
@@ -6821,6 +6794,137 @@ function numericField(source, key) {
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/opencode-model-registry.ts
+var MODELS = [
+  {
+    key: "glm-5.2",
+    providerModel: "openrouter/z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    provider: "openrouter",
+    family: "glm",
+    capabilities: {
+      vision: false
+    },
+    billing: {
+      mode: "pay-as-you-go"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-standard",
+    providerModel: "local/Gemma-4-31B-QAT-Standard",
+    displayName: "Gemma 4 31B QAT Standard",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-heretic",
+    providerModel: "local/Gemma-4-31B-QAT-Heretic",
+    displayName: "Gemma 4 31B QAT Heretic",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-standard",
+    providerModel: "local/Qwen3.6-27B-Standard",
+    displayName: "Qwen 3.6 27B Standard",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-heretic-neo-code",
+    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
+    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  }
+];
+var StaticOpenCodeModelRegistry = class {
+  #models = /* @__PURE__ */ new Map();
+  #names;
+  constructor(models) {
+    for (const model of models) {
+      this.#models.set(model.key, model);
+      this.#models.set(model.providerModel, model);
+    }
+    this.#names = models.map((model) => model.key);
+  }
+  get(model) {
+    return this.#models.get(model);
+  }
+  names() {
+    return [...this.#names];
+  }
+};
+var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+
+// src/engine-option-validation.ts
+var AGENT_OPTION_KEYS = [
+  "engine",
+  "schema",
+  "model",
+  "effort",
+  "fallbackModel",
+  "isolation",
+  "timeoutMs",
+  "maxAttempts",
+  "label",
+  "phase"
+];
+var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
+var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+function assertRecognisedAgentOptions(options) {
+  for (const key of Object.keys(options)) {
+    if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
+      throw new RemovedAgentOptionError(key);
+    }
+    if (!AGENT_OPTION_KEY_SET.has(key)) {
+      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+    }
+  }
+}
+function assertFallbackModelSupported(engine, fallbackModel) {
+  if (fallbackModel !== void 0 && engine !== "claude") {
+    throw new FallbackModelUnsupportedError(engine);
+  }
+}
+function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
+  const registered = registry.get(model);
+  if (registered === void 0) {
+    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+  }
+  return registered;
+}
+function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
+  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  if (engine === "opencode" && defaults.model !== void 0) {
+    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
 }
 
 // src/progress.ts
@@ -7059,13 +7163,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return transport;
   }
   async openThread(options) {
-    const config = options.webSearch ? { web_search: "live" } : {};
     const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
-      sandbox: options.sandbox,
+      sandbox: "danger-full-access",
       ephemeral: true,
-      config
+      config: {}
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -7109,7 +7212,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       const params = {
         threadId,
         input: [{ type: "text", text: prompt }],
-        sandboxPolicy: sandboxPolicy(options.sandbox, options.network)
+        sandboxPolicy: { type: "dangerFullAccess" }
       };
       if (options.schema !== void 0) {
         params.outputSchema = options.schema;
@@ -7471,16 +7574,6 @@ ${this.#stderrTail.join("\n")}` : "";
     this.#transcripts.clear();
   }
 };
-function sandboxPolicy(sandbox, network) {
-  switch (sandbox) {
-    case "read-only":
-      return { type: "readOnly", networkAccess: network };
-    case "workspace-write":
-      return { type: "workspaceWrite", networkAccess: network };
-    case "danger-full-access":
-      return { type: "dangerFullAccess" };
-  }
-}
 function appServerErrorFromPayload(method, errorPayload) {
   if (payloadContainsInvalidJsonSchema(errorPayload)) {
     return new CodexSchemaSubsetUnsupportedError(errorPayload);
@@ -8175,113 +8268,6 @@ function delay2(ms) {
   });
 }
 
-// src/opencode-model-registry.ts
-var MODELS = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-standard",
-    providerModel: "local/Gemma-4-31B-QAT-Standard",
-    displayName: "Gemma 4 31B QAT Standard",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-heretic",
-    providerModel: "local/Gemma-4-31B-QAT-Heretic",
-    displayName: "Gemma 4 31B QAT Heretic",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-standard",
-    providerModel: "local/Qwen3.6-27B-Standard",
-    displayName: "Qwen 3.6 27B Standard",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-heretic-neo-code",
-    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
-    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  }
-];
-var StaticOpenCodeModelRegistry = class {
-  #models = /* @__PURE__ */ new Map();
-  #names;
-  constructor(models) {
-    for (const model of models) {
-      this.#models.set(model.key, model);
-      this.#models.set(model.providerModel, model);
-    }
-    this.#names = models.map((model) => model.key);
-  }
-  get(model) {
-    return this.#models.get(model);
-  }
-  names() {
-    return [...this.#names];
-  }
-};
-var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
-
-// src/engine-option-validation.ts
-function assertFallbackModelSupported(engine, fallbackModel) {
-  if (fallbackModel !== void 0 && engine !== "claude") {
-    throw new FallbackModelUnsupportedError(engine);
-  }
-}
-function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
-  const registered = registry.get(model);
-  if (registered === void 0) {
-    throw new OpenCodeModelNotRegisteredError(model, registry.names());
-  }
-  return registered;
-}
-function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
-  assertFallbackModelSupported(engine, defaults.fallbackModel);
-  if (engine === "opencode" && defaults.model !== void 0) {
-    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
-  }
-}
-
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
 var OpenCodeCliRunner = class {
@@ -8463,15 +8449,6 @@ var OpenCodeEngineInvocation = class {
 function rejectUnsupportedOpenCodeOptions(options) {
   if (options.isolation === "worktree") {
     throw new OpenCodeWorktreeIsolationUnsupportedError();
-  }
-  if (options.webSearch) {
-    throw new OpenCodeWebSearchUnsupportedError();
-  }
-  if (options.sandbox !== void 0) {
-    throw new OpenCodeSandboxUnsupportedError(options.sandbox);
-  }
-  if (options.network !== void 0) {
-    throw new OpenCodeNetworkUnsupportedError(options.network);
   }
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }
@@ -9127,9 +9104,6 @@ var CodexEngineAdapter = class {
   }
   createInvocation(prompt, options) {
     assertFallbackModelSupported(this.name, options.fallbackModel);
-    if (options.sandbox === "danger-full-access" && options.network === false) {
-      throw new CodexDangerFullAccessNetworkDisabledError();
-    }
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -9163,18 +9137,13 @@ var CodexEngineInvocation = class {
     if (this.#options.isolation === "worktree") {
       return this.#runIsolatedWorktreeTurn(prompt);
     }
-    return this.#runTurnInCwd(prompt, {
-      sandbox: this.#options.sandbox ?? "read-only"
-    });
+    return this.#runTurnInCwd(prompt);
   }
   async #runIsolatedWorktreeTurn(prompt) {
     const worktree = await this.#worktreeManager.create();
     let result;
     try {
-      result = await this.#runTurnInCwd(prompt, {
-        cwd: worktree.path,
-        sandbox: this.#options.sandbox ?? "workspace-write"
-      });
+      result = await this.#runTurnInCwd(prompt, worktree.path);
     } catch (error) {
       await this.#finishWorktree(worktree);
       throw error;
@@ -9188,15 +9157,11 @@ var CodexEngineInvocation = class {
       }
     };
   }
-  async #runTurnInCwd(prompt, location) {
+  async #runTurnInCwd(prompt, cwd) {
     const threadId = await this.#transport.openThread({
-      webSearch: this.#options.webSearch,
-      sandbox: location.sandbox,
-      ...location.cwd !== void 0 ? { cwd: location.cwd } : {}
+      ...cwd !== void 0 ? { cwd } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
-      sandbox: location.sandbox,
-      network: this.#options.network ?? true,
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -9241,15 +9206,6 @@ var ClaudeEngineAdapter = class {
   createInvocation(prompt, options) {
     if (options.isolation === "worktree") {
       throw new ClaudeWorktreeIsolationUnsupportedError();
-    }
-    if (options.webSearch) {
-      throw new ClaudeWebSearchUnsupportedError();
-    }
-    if (options.sandbox !== void 0) {
-      throw new ClaudeSandboxUnsupportedError(options.sandbox);
-    }
-    if (options.network !== void 0) {
-      throw new ClaudeNetworkUnsupportedError(options.network);
     }
     return new ClaudeEngineInvocation({
       prompt,
@@ -9456,6 +9412,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    assertRecognisedAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -9689,15 +9646,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #engineTurnOptions(options) {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
-      webSearch: options.webSearch ?? false,
       ...resolvedTimeoutMs !== void 0 ? { timeoutMs: resolvedTimeoutMs } : {},
       ...options.schema !== void 0 ? { schema: options.schema } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
-      ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
-      ...options.sandbox !== void 0 ? { sandbox: options.sandbox } : {},
-      ...options.network !== void 0 ? { network: options.network } : {}
+      ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
     };
   }
   #newAgentRecord(id, engine, options) {
@@ -9817,6 +9771,9 @@ async function parallel(thunks, log) {
       try {
         return await thunk();
       } catch (error) {
+        if (error instanceof AgentOptionRejectedError) {
+          throw error;
+        }
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         return null;
       }
@@ -9835,6 +9792,9 @@ async function pipeline(items, stages, log) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
+          if (error instanceof AgentOptionRejectedError) {
+            throw error;
+          }
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           return null;
         }
@@ -9844,6 +9804,7 @@ async function pipeline(items, stages, log) {
   );
 }
 function mergeAgentDefaults(defaults, agentOptions) {
+  assertRecognisedAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engineDefaults === void 0) {

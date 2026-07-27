@@ -75,9 +75,17 @@ test("built CLI sends unrestricted posture on every Codex turn", async () => {
           name: "record-codex-posture",
           description: "Record the policy received by the final Codex protocol consumer"
         };
-        return await agent("return worker-ok", {
+        return await agent("return a receipt object", {
           engine: "codex",
-          maxAttempts: 1
+          maxAttempts: 2,
+          schema: {
+            type: "object",
+            required: ["receipt"],
+            additionalProperties: false,
+            properties: {
+              receipt: { type: "string" }
+            }
+          }
         });
       `
     );
@@ -85,11 +93,18 @@ test("built CLI sends unrestricted posture on every Codex turn", async () => {
     const result = await fixture.run();
 
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, `"worker-ok"\n`);
+    assert.equal(result.stdout, `null\n`);
     const messages = await fixture.messages();
+    const threadStarts = messages.filter((message) => message.method === "thread/start");
+    assert.equal(threadStarts.length, 2);
+    for (const threadStart of threadStarts) {
+      assert.equal(threadStart.params?.sandbox, "danger-full-access");
+    }
     const turnStarts = messages.filter((message) => message.method === "turn/start");
-    assert.equal(turnStarts.length, 1);
-    assert.deepEqual(turnStarts[0]?.params?.sandboxPolicy, { type: "dangerFullAccess" });
+    assert.equal(turnStarts.length, 2);
+    for (const turnStart of turnStarts) {
+      assert.deepEqual(turnStart.params?.sandboxPolicy, { type: "dangerFullAccess" });
+    }
   } finally {
     await fixture.cleanup();
   }
@@ -226,6 +241,37 @@ test("built CLI propagates removed options from parallel before that worker spaw
   }
 });
 
+test("built CLI rejects an unrecognised option before opening that worker", async () => {
+  const fixture = await createProcessFixture("unknown-option-rejection");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unknown-option-rejection",
+          description: "Typoed agent options fail before thread creation"
+        };
+        return await agent("must not open a worker", {
+          engine: "codex",
+          typoedLabel: "mistake",
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /unrecognised agent\(\) option[\s\S]*typoedLabel/i);
+    const messages = await fixture.messages();
+    assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI still collapses ordinary parallel and pipeline errors to null", async () => {
   const fixture = await createProcessFixture("ordinary-combinator-errors");
 
@@ -339,6 +385,7 @@ test("built CLI recovers nested valid JSON through an unparseable balanced regio
 interface RecordedMessage {
   method?: string;
   params?: {
+    sandbox?: unknown;
     sandboxPolicy?: unknown;
   };
 }

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const liveOptions = { skip: !isLive };
+const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 test("live CLI runs a fan-out then compiler workflow and splits stdout from stderr", liveOptions, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-"));
@@ -271,8 +272,7 @@ test("live built CLI gives Codex workers unrestricted filesystem and network acc
       `
     );
 
-    const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script], {
+    const result = await runNode([bundledCliPath, script], {
       env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
     });
 
@@ -300,6 +300,77 @@ interface UnrestrictedProbeResult {
   exitCode: number;
   registryReceipt: string;
 }
+
+test("live CLI gives a real Codex worker unrestricted filesystem and network access", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-unrestricted-estate-"));
+  const cacheDirectory = path.join(homedir(), ".cache");
+  await mkdir(cacheDirectory, { recursive: true });
+  const outsideDirectory = await mkdtemp(path.join(cacheDirectory, "ensemble-worker-posture-"));
+  const outsideFile = path.join(outsideDirectory, "worker-receipt.txt");
+  const script = path.join(directory, "workflow.js");
+  const recordStore = path.join(directory, "records");
+  const fileReceipt = `UNRESTRICTED_FILE_${randomUUID()}`;
+  const registryUrl = "https://registry.npmjs.org/-/ping";
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "codex-unrestricted-posture-estate",
+          description: "Worker-shell proof of unrestricted filesystem and network access"
+        };
+
+        const resultSchema = {
+          type: "object",
+          required: ["attempted", "exitCode", "httpStatus", "body"],
+          additionalProperties: false,
+          properties: {
+            attempted: { type: "boolean", enum: [true] },
+            exitCode: { type: "integer", enum: [0] },
+            httpStatus: { type: "integer", enum: [200] },
+            body: { type: "string", enum: ["{}"] }
+          }
+        };
+
+        phase("unrestricted-posture-estate");
+        return await agent(
+          ${JSON.stringify(
+            `Use the shell tool to run this command exactly once: printf %s ${fileReceipt} > ${outsideFile} && curl --silent --show-error --max-time 10 --write-out '\\n%{http_code}' ${registryUrl}. Do not infer or invent its result. Return attempted true, the tool exit code as exitCode, the final curl status line as integer httpStatus, and the preceding curl stdout as body.`
+          )},
+          {
+          engine: "codex",
+          label: "unrestricted-posture-estate",
+          schema: resultSchema,
+          maxAttempts: 1
+          }
+        );
+      `
+    );
+
+    const result = await runNode([bundledCliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stderr, /\[phase\] unrestricted-posture-estate/);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      attempted: true,
+      exitCode: 0,
+      httpStatus: 200,
+      body: "{}"
+    });
+
+    assert.equal(await readFile(outsideFile, "utf8"), fileReceipt);
+    const command = await recordedCommand(recordStore, "unrestricted-posture-estate", registryUrl);
+    assert.equal(command.exitCode, 0);
+    assert.match(command.command, new RegExp(escapeRegExp(outsideFile)));
+    assert.match(command.aggregatedOutput ?? "", /\{\}\s+200/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(outsideDirectory, { recursive: true, force: true });
+  }
+});
 
 interface RecordedCommand {
   command: string;
@@ -353,6 +424,10 @@ async function recordedCommand(recordStore: string, label: string, url: string):
     }
   }
   throw new Error(`No completed command execution for ${label} and ${url}`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function runNode(

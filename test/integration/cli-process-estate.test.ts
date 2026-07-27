@@ -384,6 +384,44 @@ test("built CLI recovers nested valid JSON through an unparseable balanced regio
   }
 });
 
+test("built CLI recovers a later answer after prose with an unmatched brace", async () => {
+  const fixture = await createProcessFixture(
+    "unmatched-brace-json",
+    'The template said "use {placeholder" here. Final answer: {"answer":"recovered"}',
+  );
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unmatched-brace-json-recovery",
+          description: "Final CLI consumer finds a later answer after realistic unmatched-brace prose"
+        };
+        return await agent("return the final answer", {
+          engine: "codex",
+          maxAttempts: 1,
+          schema: {
+            type: "object",
+            required: ["answer"],
+            additionalProperties: false,
+            properties: {
+              answer: { type: "string", enum: ["recovered"] }
+            }
+          }
+        });
+      `,
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `{"answer":"recovered"}\n`);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("ensemble agent stdout matches an equivalent one-call workflow", async () => {
   const workerOutput = {
     token: "SINGLE_AGENT_EQUIVALENCE",

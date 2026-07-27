@@ -42,6 +42,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   dispatchCount = 0;
   steerCount = 0;
   stopCount = 0;
+  transcriptReadsAfterSteer = 0;
   readonly dispatched: ClaudeDispatchOptions[] = [];
   readonly steered: string[] = [];
 
@@ -49,6 +50,8 @@ class FakeControlPlane implements ClaudeControlPlane {
   #turns: ScriptedTurn[];
   #tmux: boolean;
   #steerSucceeds: boolean;
+  #steerConsumesTurn: boolean;
+  #steered = false;
 
   #sessionSeq = 0;
   #handle: ClaudeSessionHandle | null = null;
@@ -57,11 +60,16 @@ class FakeControlPlane implements ClaudeControlPlane {
   #busyRemaining = 0;
   #outcome: "complete" | "blocked" = "complete";
 
-  constructor(dir: string, turns: ScriptedTurn[], options: { tmux?: boolean; steerSucceeds?: boolean } = {}) {
+  constructor(
+    dir: string,
+    turns: ScriptedTurn[],
+    options: { tmux?: boolean; steerSucceeds?: boolean; steerConsumesTurn?: boolean } = {}
+  ) {
     this.#dir = dir;
     this.#turns = [...turns];
     this.#tmux = options.tmux ?? true;
     this.#steerSucceeds = options.steerSucceeds ?? true;
+    this.#steerConsumesTurn = options.steerConsumesTurn ?? true;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -92,16 +100,22 @@ class FakeControlPlane implements ClaudeControlPlane {
   }
 
   async transcriptPath(): Promise<string | null> {
+    if (this.#steered) {
+      this.transcriptReadsAfterSteer += 1;
+    }
     return this.#path;
   }
 
   async steer(_handle: ClaudeSessionHandle, message: string): Promise<boolean> {
     this.steerCount += 1;
     this.steered.push(message);
+    this.#steered = true;
     if (!this.#steerSucceeds) {
       return false;
     }
-    await this.#consume("append");
+    if (this.#steerConsumesTurn) {
+      await this.#consume("append");
+    }
     return true;
   }
 
@@ -174,6 +188,7 @@ function makeRuntime(
     claudeBudget?: number;
     maxAttempts?: number;
     blockedRecoveryBound?: number;
+    receiptTimeoutMs?: number;
     turnTimeoutMs?: number;
     firstLifeTimeoutMs?: number;
   } = {}
@@ -187,6 +202,7 @@ function makeRuntime(
     config: {
       ...fastConfig,
       ...(options.blockedRecoveryBound !== undefined ? { blockedRecoveryBound: options.blockedRecoveryBound } : {}),
+      ...(options.receiptTimeoutMs !== undefined ? { receiptTimeoutMs: options.receiptTimeoutMs } : {}),
       ...(options.firstLifeTimeoutMs !== undefined ? { firstLifeTimeoutMs: options.firstLifeTimeoutMs } : {})
     }
   });
@@ -202,7 +218,7 @@ function makeRuntime(
 async function withControlPlane(
   turns: ScriptedTurn[],
   body: (controlPlane: FakeControlPlane) => Promise<void>,
-  options: { tmux?: boolean; steerSucceeds?: boolean } = {}
+  options: { tmux?: boolean; steerSucceeds?: boolean; steerConsumesTurn?: boolean } = {}
 ): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-engine-"));
   try {
@@ -332,6 +348,47 @@ test("a blocked worker is recovered with a bounded nudge through the valve", asy
         await runtime.close();
       }
     }
+  );
+});
+
+test("blocked recovery stops after a failed steer instead of claiming the nudge landed", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked" }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 2 });
+      try {
+        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+        assert.equal(result, null);
+        assert.equal(controlPlane.steerCount, 1);
+        assert.equal(controlPlane.stopCount, 1);
+      } finally {
+        await runtime.close();
+      }
+    },
+    { steerSucceeds: false }
+  );
+});
+
+test("blocked recovery requires a receipt before another nudge", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked" }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, {
+        maxAttempts: 1,
+        blockedRecoveryBound: 2,
+        receiptTimeoutMs: 10
+      });
+      try {
+        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+        assert.equal(result, null);
+        assert.equal(controlPlane.steerCount, 1);
+        assert.ok(controlPlane.transcriptReadsAfterSteer > 0);
+        assert.equal(controlPlane.stopCount, 1);
+      } finally {
+        await runtime.close();
+      }
+    },
+    { steerConsumesTurn: false }
   );
 });
 

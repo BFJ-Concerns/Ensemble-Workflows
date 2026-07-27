@@ -386,6 +386,56 @@ test("CLI records that --json-args supplied an array payload", async () => {
   assert.equal(manifest.cli_flags.jsonArgs, true);
 });
 
+test("ensemble agent records task identity when supplied and remains ungrouped when omitted", async () => {
+  const cwd = await gitRepo("ensemble-record-agent-");
+  const labelledStore = await mkdtemp(path.join(tmpdir(), "ensemble-record-labelled-"));
+  const unlabelledStore = await mkdtemp(path.join(tmpdir(), "ensemble-record-unlabelled-"));
+
+  const run = async (store: string, task?: string): Promise<string> => {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(
+      [
+        "agent",
+        "--engine=codex",
+        ...(task === undefined ? [] : [`--task=${task}`]),
+        "record this worker"
+      ],
+      {
+        cwd,
+        stdout,
+        stderr,
+        runRecordDir: store,
+        createRuntime: async () =>
+          new EnsembleRuntime({
+            engines: new EngineRegistry([new HangOnPromptEngine("codex", 1)]),
+            defaultMaxAttempts: 1
+          })
+      }
+    );
+    assert.equal(exitCode, 0, stderr.text());
+    assert.equal(stdout.text(), '"codex:record this worker"\n');
+    return findManifest(store);
+  };
+
+  const labelledManifest = JSON.parse(await readFile(await run(labelledStore, "bench-single"), "utf8")) as {
+    meta: { task: unknown };
+    workflow: { path: string; archive_path: string };
+    files: Array<{ path: string }>;
+  };
+  const unlabelledManifest = JSON.parse(await readFile(await run(unlabelledStore), "utf8")) as {
+    meta: { task: unknown };
+    files: Array<{ path: string }>;
+  };
+
+  assert.equal(labelledManifest.meta.task, "bench-single");
+  assert.match(labelledManifest.workflow.path, /<ensemble-agent>$/);
+  assert.equal(labelledManifest.workflow.archive_path, "workflow.js");
+  assert.ok(labelledManifest.files.some((entry) => entry.path === "agents/000001/agent.json"));
+  assert.equal(unlabelledManifest.meta.task, null);
+  assert.ok(unlabelledManifest.files.some((entry) => entry.path === "agents/000001/agent.json"));
+});
+
 test("child workflow agents are recorded in the parent's single durable run record", async () => {
   const cwd = await gitRepo("ensemble-record-child-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));

@@ -10,13 +10,14 @@ import { listSavedWorkflows } from "./workflow-registry.js";
 
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
-import type { EngineBudgetCeilings, EngineConcurrencyCaps, EngineName } from "./types.js";
-import type { Writable } from "node:stream";
+import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
+import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
 
 export interface EnsembleCliOptions {
   cwd?: string;
+  stdin?: Readable;
   stdout?: Writable;
   stderr?: Writable;
   createRuntime?: typeof createRuntime;
@@ -37,6 +38,7 @@ export interface EnsembleCliOptions {
 }
 
 export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions = {}): Promise<number> {
+  const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
@@ -60,14 +62,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   let invocation: ParsedInvocation;
   try {
-    invocation = await parseInvocation(argv, cwd);
+    invocation = await parseInvocation(argv, cwd, stdin);
   } catch (error) {
     stderr.write(`${formatError(error)}\n`);
     stderr.write(usage());
     return 2;
   }
 
-  if (invocation.scriptArg === undefined) {
+  if (invocation.kind === "workflow" && invocation.scriptArg === undefined) {
     stderr.write(usage());
     return 2;
   }
@@ -79,8 +81,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
 
   try {
-    const scriptPath = path.resolve(cwd, invocation.scriptArg);
-    const source = await readFile(scriptPath, "utf8");
+    const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
@@ -99,9 +100,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         storeDir: runRecordDir,
         cwd,
         runUuid: runtimeRunId,
-        workflowPath: scriptPath,
-        workflowSource: source,
-        args: invocation.args,
+        workflowPath: prepared.workflowPath,
+        workflowSource: prepared.source,
+        args: prepared.recordArgs,
         cliFlags: cliFlags(invocation)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -138,19 +139,27 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[run-record] failed to archive an agent record: ${message}\n`);
         return;
       }
-      if (event.method !== "worktree/finished" || event.params.changed !== true) {
+      if (event.method !== "worktree/finished") {
         return;
       }
       const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
       const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+      if (invocation.kind === "agent" && invocation.agentOptions.isolation === "worktree") {
+        const outcome = event.params.changed === true ? "changed" : "unchanged and removed";
+        stderr.write(`[worktree] ${outcome} ${worktreePath} (${branch})\n`);
+        return;
+      }
+      if (event.params.changed !== true) {
+        return;
+      }
       stderr.write(`[worktree] changed ${worktreePath} (${branch})\n`);
     });
     const runnerOptions = {
-      source,
-      filename: scriptPath,
+      source: prepared.source,
+      filename: prepared.workflowPath,
       cwd,
       runtime,
-      args: invocation.args,
+      args: prepared.runnerArgs,
       env,
       log: (message: string) => {
         stderr.write(`${message}\n`);
@@ -166,6 +175,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
+      if (invocation.kind === "agent" && result === null) {
+        throw new SingleAgentFailedError();
+      }
 
       stdout.write(`${serialiseResult(result)}\n`);
       finalRecord = { status: "complete", exitCode: 0, result };
@@ -229,14 +241,72 @@ function workflowName(meta: unknown): string | null {
   return null;
 }
 
-interface ParsedInvocation {
+interface InvocationTuning {
+  budgetCeilings?: EngineBudgetCeilings;
+  concurrencyCaps?: EngineConcurrencyCaps;
+  timeoutMs?: number;
+}
+
+interface ParsedWorkflowInvocation extends InvocationTuning {
+  kind: "workflow";
   scriptArg: string | undefined;
   args: unknown;
   /** Whether args came through --json-args, independent of the parsed value's shape. */
   jsonArgsProvided: boolean;
-  budgetCeilings?: EngineBudgetCeilings;
-  concurrencyCaps?: EngineConcurrencyCaps;
-  timeoutMs?: number;
+}
+
+interface ParsedAgentInvocation extends InvocationTuning {
+  kind: "agent";
+  prompt: string;
+  agentOptions: AgentOptions;
+  task?: string;
+}
+
+type ParsedInvocation = ParsedWorkflowInvocation | ParsedAgentInvocation;
+
+interface PreparedRun {
+  workflowPath: string;
+  source: string;
+  runnerArgs: unknown;
+  recordArgs: unknown;
+}
+
+async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<PreparedRun> {
+  if (invocation.kind === "agent") {
+    return {
+      workflowPath: path.join(cwd, "<ensemble-agent>"),
+      source: singleAgentWorkflowSource(invocation),
+      runnerArgs: [],
+      recordArgs: {
+        prompt: invocation.prompt,
+        options: invocation.agentOptions
+      }
+    };
+  }
+
+  if (invocation.scriptArg === undefined) {
+    throw new Error("workflow invocation has no script path");
+  }
+  const workflowPath = path.resolve(cwd, invocation.scriptArg);
+  return {
+    workflowPath,
+    source: await readFile(workflowPath, "utf8"),
+    runnerArgs: invocation.args,
+    recordArgs: invocation.args
+  };
+}
+
+function singleAgentWorkflowSource(invocation: ParsedAgentInvocation): string {
+  const meta = {
+    name: "ensemble-agent",
+    description: "Single worker invoked from the Ensemble CLI",
+    ...(invocation.task !== undefined ? { task: invocation.task } : {})
+  };
+  return [
+    `export const meta = ${JSON.stringify(meta)};`,
+    `return await agent(${JSON.stringify(invocation.prompt)}, ${JSON.stringify(invocation.agentOptions)});`,
+    ""
+  ].join("\n");
 }
 
 function cliFlags(invocation: ParsedInvocation): {
@@ -249,7 +319,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
-    jsonArgs: invocation.jsonArgsProvided
+    jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
 
@@ -296,7 +366,21 @@ function watchWorkflowInterrupts(): { promise: Promise<never>; dispose: () => vo
   };
 }
 
-async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvocation> {
+class SingleAgentFailedError extends Error {
+  constructor() {
+    super("Agent exhausted its attempts without producing a result");
+    this.name = new.target.name;
+  }
+}
+
+async function parseInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedInvocation> {
+  if (argv[0] === "agent") {
+    return parseAgentInvocation(argv.slice(1), cwd, stdin);
+  }
+  return parseWorkflowInvocation(argv, cwd);
+}
+
+async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv);
   const parsed = parseArgs({
     args: split.tuningArgs,
@@ -318,6 +402,7 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
 
   return {
+    kind: "workflow",
     scriptArg: split.scriptArg,
     args,
     jsonArgsProvided: jsonArgs !== undefined,
@@ -325,6 +410,90 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {})
   };
+}
+
+async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: {
+        engine: { type: "string" },
+        model: { type: "string" },
+        effort: { type: "string" },
+        cwd: { type: "string" },
+        isolation: { type: "string" },
+        schema: { type: "string" },
+        task: { type: "string" },
+        budget: { type: "string", multiple: true },
+        concurrency: { type: "string", multiple: true },
+        timeout: { type: "string" }
+      },
+      strict: true,
+      allowPositionals: true
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(message);
+  }
+
+  if (parsed.positionals.length > 1) {
+    throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
+  }
+  const prompt = parsed.positionals[0] ?? (await readPrompt(stdin));
+  if (prompt.length === 0) {
+    throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
+  }
+
+  const rawEngine = parsed.values.engine;
+  if (rawEngine === undefined) {
+    throw new CliUsageError("ensemble agent requires --engine");
+  }
+  const engine = parseEngineName(rawEngine, "--engine");
+  const isolation = parseIsolation(parsed.values.isolation);
+  const schema =
+    parsed.values.schema === undefined
+      ? undefined
+      : ((await parseJsonValue(parsed.values.schema, cwd, "--schema")) as JsonSchema);
+  const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
+  const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
+  const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const agentOptions: AgentOptions = {
+    engine,
+    ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
+    ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
+    ...(parsed.values.cwd !== undefined ? { cwd: parsed.values.cwd } : {}),
+    ...(isolation !== undefined ? { isolation } : {}),
+    ...(schema !== undefined ? { schema } : {})
+  };
+
+  return {
+    kind: "agent",
+    prompt,
+    agentOptions,
+    ...(parsed.values.task !== undefined ? { task: parsed.values.task } : {}),
+    ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
+    ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {})
+  };
+}
+
+async function readPrompt(stdin: Readable): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseIsolation(value: string | undefined): "worktree" | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value !== "worktree") {
+    throw new CliUsageError(`--isolation must be worktree, got ${value}`);
+  }
+  return value;
 }
 
 function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: string | undefined; scriptArgs: string[] } {
@@ -387,12 +556,16 @@ function isKnownInlineOption(value: string): boolean {
 }
 
 async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
+  return parseJsonValue(value, cwd, "--json-args");
+}
+
+async function parseJsonValue(value: string, cwd: string, flagName: "--json-args" | "--schema"): Promise<unknown> {
   let source = value;
   let sourceDescription = "the argument";
   if (value.startsWith("@")) {
     const filename = value.slice(1);
     if (filename.length === 0) {
-      throw new CliUsageError("--json-args @file requires a file path");
+      throw new CliUsageError(`${flagName} @file requires a file path`);
     }
     const filePath = path.resolve(cwd, filename);
     sourceDescription = filePath;
@@ -400,7 +573,7 @@ async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
       source = await readFile(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new CliUsageError(`--json-args could not read ${filePath}: ${message}`);
+      throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
     }
   }
 
@@ -408,7 +581,7 @@ async function parseJsonArgs(value: string, cwd: string): Promise<unknown> {
     return JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`--json-args ${sourceDescription} must contain valid JSON: ${message}`);
+    throw new CliUsageError(`${flagName} ${sourceDescription} must contain valid JSON: ${message}`);
   }
 }
 
@@ -476,6 +649,9 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 function usage(): string {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]",
+    "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]",
+    "                      [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""
   ].join("\n");

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { execFile, spawnSync } from "node:child_process";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
 import { EngineRegistry } from "../../src/engines.js";
@@ -14,8 +15,10 @@ import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
-import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
+import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
+
+const execFileAsync = promisify(execFile);
 
 class CaptureStream extends Writable {
   chunks: string[] = [];
@@ -114,6 +117,115 @@ test("CLI reads parsed JSON args from an @file path", async () => {
   assert.equal(stderr.text(), "");
 });
 
+test("ensemble agent preserves a stdin prompt and accepts the same schema inline or from a file", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-schema-"));
+  const schema = {
+    type: "object",
+    required: ["answer"],
+    additionalProperties: false,
+    properties: {
+      answer: { type: "string", enum: ["validated"] }
+    }
+  };
+  await writeFile(path.join(directory, "schema.json"), JSON.stringify(schema));
+  const prompt = "Quote-heavy: 'single' \"double\" $HOME `ticks`\nsecond line\\n";
+  const engine = new FixedResponseEngine("codex", JSON.stringify({ answer: "validated" }));
+
+  const inlineStdout = new CaptureStream();
+  const inlineStderr = new CaptureStream();
+  const inlineExit = await runEnsembleCli(
+    ["agent", "--engine=codex", `--schema=${JSON.stringify(schema)}`, prompt],
+    {
+      cwd: directory,
+      stdout: inlineStdout,
+      stderr: inlineStderr,
+      createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+    }
+  );
+
+  const fileStdout = new CaptureStream();
+  const fileStderr = new CaptureStream();
+  const fileExit = await runEnsembleCli(["agent", "--engine=codex", "--schema=@schema.json"], {
+    cwd: directory,
+    stdin: Readable.from([prompt]),
+    stdout: fileStdout,
+    stderr: fileStderr,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(inlineExit, 0, inlineStderr.text());
+  assert.equal(fileExit, 0, fileStderr.text());
+  assert.equal(inlineStdout.text(), '{"answer":"validated"}\n');
+  assert.equal(fileStdout.text(), inlineStdout.text());
+  assert.deepEqual(engine.prompts, [prompt, prompt]);
+});
+
+test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
+  const schema = {
+    type: "object",
+    required: ["answer"],
+    properties: { answer: { type: "string" } }
+  };
+  const engine = new FixedResponseEngine("codex", "not JSON");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", `--schema=${JSON.stringify(schema)}`, "return JSON"],
+    {
+      stdout,
+      stderr,
+      createRuntime: async () => fixedEngineRuntime(engine, 2)
+    }
+  );
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '{"partial":true,"reason":"failed","completed":[]}\n');
+  assert.doesNotMatch(stdout.text(), /^null/m);
+  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  assert.equal(engine.attempts, 2);
+});
+
+test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-worktree-"));
+  await execFileAsync("git", ["init"], { cwd: directory });
+  await execFileAsync("git", ["config", "user.email", "test@example.invalid"], { cwd: directory });
+  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: directory });
+  await writeFile(path.join(directory, "README.md"), "base\n");
+  await execFileAsync("git", ["add", "README.md"], { cwd: directory });
+  await execFileAsync("git", ["commit", "-m", "initial"], { cwd: directory });
+
+  const engine = new CommittingEngine();
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  try {
+    const exitCode = await runEnsembleCli(
+      ["agent", "--engine=codex", "--isolation=worktree", "commit the receipt"],
+      {
+        cwd: directory,
+        stdout,
+        stderr,
+        createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+      }
+    );
+
+    assert.equal(exitCode, 0, stderr.text());
+    assert.equal(stdout.text(), '"committed"\n');
+    const branch = stderr.text().match(/\((ensemble-workflows\/[^)]+)\)/)?.[1];
+    assert.ok(branch, stderr.text());
+    const { stdout: committed } = await execFileAsync("git", ["show", `${branch}:worker-receipt.txt`], {
+      cwd: directory
+    });
+    assert.equal(committed, "WORKER_COMMIT_RECEIPT\n");
+  } finally {
+    if (engine.cwd !== null) {
+      await execFileAsync("git", ["worktree", "remove", "--force", engine.cwd], { cwd: directory });
+      await rm(path.dirname(engine.cwd), { recursive: true, force: true });
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CLI reports an unreadable --json-args @file as a usage error", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-file-missing-"));
   const script = path.join(directory, "workflow.js");
@@ -148,6 +260,9 @@ test("CLI reports usage errors without a stack trace", async () => {
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
       "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
+      "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
+      "                      [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -533,6 +648,9 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(
     result.stderr,
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
+      "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
+      "                      [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -812,6 +930,79 @@ class ScheduledTextEngine implements EngineAdapter {
   async close(): Promise<void> {
     return Promise.resolve();
   }
+}
+
+class FixedResponseEngine implements EngineAdapter {
+  readonly concurrency = 1;
+  readonly scheduler = new Scheduler(1);
+  readonly prompts: string[] = [];
+  attempts = 0;
+
+  constructor(
+    readonly name: EngineName,
+    private readonly response: string
+  ) {}
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(prompt: string): EngineInvocation {
+    this.prompts.push(prompt);
+    return {
+      runAttempt: async () => {
+        this.attempts += 1;
+        return turn(this.response);
+      }
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class CommittingEngine implements EngineAdapter {
+  readonly name = "codex";
+  readonly concurrency = 1;
+  readonly scheduler = new Scheduler(1);
+  cwd: string | null = null;
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(_prompt: string, options: EngineTurnOptions): EngineInvocation {
+    const cwd = options.cwd;
+    if (cwd === undefined) {
+      throw new Error("test engine requires a cwd");
+    }
+    this.cwd = cwd;
+    return {
+      runAttempt: async () => {
+        await writeFile(path.join(cwd, "worker-receipt.txt"), "WORKER_COMMIT_RECEIPT\n");
+        await execFileAsync("git", ["add", "worker-receipt.txt"], { cwd });
+        await execFileAsync("git", ["commit", "-m", "worker commit"], { cwd });
+        return turn("committed");
+      }
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+function fixedEngineRuntime(
+  engine: EngineAdapter,
+  defaultMaxAttempts = 1,
+  options: RuntimeOptions = {}
+): EnsembleRuntime {
+  return new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    defaultMaxAttempts,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {})
+  });
 }
 
 // Resolves every turn immediately except for the "hang" prompt, which never

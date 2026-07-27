@@ -374,7 +374,14 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
   }
 });
 
-test("live bundled CLI starts a Codex worker in its per-call cwd", { skip: !isLive, timeout: 240_000 }, async () => {
+const placementScenarios = [
+  { engine: "codex" },
+  { engine: "claude" },
+  { engine: "opencode", model: "qwen-3-6-27b-heretic-neo-code" }
+] as const;
+
+for (const scenario of placementScenarios) {
+  test(`live bundled CLI starts a real ${scenario.engine} worker in its per-call cwd`, { skip: !isLive, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cwd-"));
   const targetCwd = path.join(directory, "target");
   const script = path.join(directory, "workflow.js");
@@ -388,15 +395,16 @@ test("live bundled CLI starts a Codex worker in its per-call cwd", { skip: !isLi
       script,
       `
         export const meta = {
-          name: "codex-per-call-cwd",
+          name: ${JSON.stringify(`${scenario.engine}-per-call-cwd`)},
           description: "Worker observation of its per-call starting directory"
         };
         return await agent(
           "Use the shell to run pwd and then cat placement-receipt.txt. Return the observed directory and file contents.",
           {
-            engine: "codex",
+            engine: ${JSON.stringify(scenario.engine)},
+            ${"model" in scenario ? `model: ${JSON.stringify(scenario.model)},` : ""}
             cwd: ${JSON.stringify(targetCwd)},
-            label: "per-call-cwd",
+            label: ${JSON.stringify(`per-call-cwd-${scenario.engine}`)},
             maxAttempts: 1,
             schema: {
               type: "object",
@@ -421,16 +429,18 @@ test("live bundled CLI starts a Codex worker in its per-call cwd", { skip: !isLi
       cwd: targetCwd,
       receipt
     });
-    const command = await recordedCommand(recordStore, "per-call-cwd", "placement-receipt.txt");
+    const command = await recordedCommand(recordStore, `per-call-cwd-${scenario.engine}`, "placement-receipt.txt");
     assert.equal(command.exitCode, 0);
     assert.match(command.aggregatedOutput ?? "", new RegExp(escapeRegExp(targetCwd)));
     assert.match(command.aggregatedOutput ?? "", new RegExp(receipt));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
+  });
+}
 
-test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive, timeout: 240_000 }, async () => {
+for (const scenario of placementScenarios) {
+  test(`live bundled CLI preserves a real ${scenario.engine} worker-created commit`, { skip: !isLive, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-worktree-commit-"));
   const repo = path.join(directory, "repo");
   const script = path.join(repo, "workflow.js");
@@ -447,7 +457,7 @@ test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive
       script,
       `
         export const meta = {
-          name: "codex-worktree-commit",
+          name: ${JSON.stringify(`${scenario.engine}-worktree-commit`)},
           description: "Final-consumer proof that an isolated worker can commit"
         };
         const agentResult = await agent(
@@ -455,9 +465,10 @@ test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive
             `Use the shell to create worker-commit.txt containing exactly ${receipt}, git add it, and commit it with message "worker commit". Then return the current branch and HEAD commit.`
           )},
           {
-            engine: "codex",
+            engine: ${JSON.stringify(scenario.engine)},
+            ${"model" in scenario ? `model: ${JSON.stringify(scenario.model)},` : ""}
             isolation: "worktree",
-            label: "worktree-commit",
+            label: ${JSON.stringify(`worktree-commit-${scenario.engine}`)},
             maxAttempts: 1,
             schema: {
               type: "object",
@@ -499,7 +510,7 @@ test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive
     assert.equal(parsed.agentResult.branch, worktree.branch);
     assert.equal(parsed.agentResult.commit, tip);
 
-    const { agent } = await recordedAgent(recordStore, "worktree-commit");
+    const { agent } = await recordedAgent(recordStore, `worktree-commit-${scenario.engine}`);
     assert.deepEqual(agent.worktree, {
       branch: worktree.branch,
       base_commit: worktree.baseCommit
@@ -507,7 +518,8 @@ test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
+  });
+}
 
 interface RecordedCommand {
   command: string;

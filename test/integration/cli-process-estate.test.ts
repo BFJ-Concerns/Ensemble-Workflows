@@ -422,6 +422,94 @@ test("built CLI recovers a later answer after prose with an unmatched brace", as
   }
 });
 
+test("built CLI fails loudly for an unparseable machine config before opening a worker", async () => {
+  const fixture = await createProcessFixture("unparseable-machine-config");
+  const configHome = path.join(path.dirname(fixture.script), "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+
+  try {
+    await mkdir(path.dirname(configFile), { recursive: true });
+    await writeFile(configFile, `{"schema_version": 1,`);
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unparseable-machine-config",
+          description: "Invalid ambient configuration must stop before worker admission"
+        };
+        return await agent("must not start", { engine: "codex", maxAttempts: 1 });
+      `,
+    );
+
+    const result = await fixture.runWithEnv({ XDG_CONFIG_HOME: configHome });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /config\.json/);
+    assert.match(result.stderr, /parse|JSON/i);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI names an unknown machine-config key and its source before opening a worker", async () => {
+  const fixture = await createProcessFixture("unknown-machine-config-key");
+  const configHome = path.join(path.dirname(fixture.script), "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+
+  try {
+    await mkdir(path.dirname(configFile), { recursive: true });
+    await writeFile(configFile, JSON.stringify({ schema_version: 1, maxAgent: 2 }));
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unknown-machine-config-key",
+          description: "Unknown ambient configuration must identify the key and file"
+        };
+        return await agent("must not start", { engine: "codex", maxAttempts: 1 });
+      `,
+    );
+
+    const result = await fixture.runWithEnv({ XDG_CONFIG_HOME: configHome });
+
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /maxAgent/);
+    assert.match(result.stderr, /config\.json/);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI treats an absent machine config as silent and normal", async () => {
+  const fixture = await createProcessFixture("absent-machine-config", "config-default-ok");
+  const configHome = path.join(path.dirname(fixture.script), "missing-config-home");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "absent-machine-config",
+          description: "No ambient config file falls through without a diagnostic"
+        };
+        return await agent("use built-in settings", { engine: "codex", maxAttempts: 1 });
+      `,
+    );
+
+    const result = await fixture.runWithEnv({ XDG_CONFIG_HOME: configHome });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"config-default-ok"\n`);
+    assert.doesNotMatch(result.stderr, /config/i);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("ensemble agent stdout matches an equivalent one-call workflow", async () => {
   const workerOutput = {
     token: "SINGLE_AGENT_EQUIVALENCE",
@@ -484,6 +572,7 @@ interface ProcessFixture {
   script: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runWithEnv: (overrides: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   messages: () => Promise<RecordedMessage[]>;
   cleanup: () => Promise<void>;
 }
@@ -510,6 +599,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
     script,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
+    runWithEnv: (overrides) => runNode([bundledCliPath, script], { ...env, ...overrides }),
     messages: async () =>
       (await readFile(capturePath, "utf8"))
         .split("\n")

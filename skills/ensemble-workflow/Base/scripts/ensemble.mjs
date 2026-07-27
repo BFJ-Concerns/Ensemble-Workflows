@@ -7734,9 +7734,15 @@ var ClaudeCliControlPlane = class {
         return false;
       }
       await delay(this.#valveAttachSettleMs);
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      if (!typed.ok) {
+        return false;
+      }
       await delay(this.#valveSubmitSettleMs);
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      if (!submitted.ok) {
+        return false;
+      }
       await delay(this.#valveKillSettleMs);
       return true;
     } finally {
@@ -8113,8 +8119,12 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        await delay2(this.#pollIntervalMs);
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!steered) {
+          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        }
+        await this.#awaitReceipt(handle, mark);
         continue;
       }
       if (status.status !== "busy") {
@@ -8931,55 +8941,110 @@ function parseJsonCandidates(source) {
     return [{ value: direct.value, source: "direct" }];
   }
   const candidates = [];
+  const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
     const open = trimmed[index];
     if (open !== "{" && open !== "[") {
       continue;
     }
-    const close = open === "{" ? "}" : "]";
-    const candidate = extractBalancedJsonAt(trimmed, index, open, close);
-    if (candidate === null) {
+    const region = regions.byStart.get(index);
+    if (region === void 0) {
       continue;
     }
-    const parsed = tryParse(candidate.text);
+    const alreadyClassified = region.parsed !== void 0;
+    const parsed = parseRegion(trimmed, region);
     if (parsed.ok) {
       candidates.push({
         value: parsed.value,
         source: open === "{" ? "object-fallback" : "array-fallback"
       });
+      index = region.end;
+    } else if (!alreadyClassified) {
+      classifyDescendants(trimmed, region);
     }
-    index = candidate.end;
   }
   return candidates;
 }
-function extractBalancedJsonAt(source, start, open, close) {
-  let depth = 0;
-  let isInString = false;
-  let isEscaped = false;
-  for (let index = start; index < source.length; index += 1) {
+function indexBalancedJsonRegions(source) {
+  const starts = {
+    "{": [[], []],
+    "[": [[], []]
+  };
+  const regions = [];
+  let quoteParity = 0;
+  let consecutiveBackslashes = 0;
+  for (let index = 0; index < source.length; index += 1) {
     const char = source[index];
-    if (isInString) {
-      if (isEscaped) {
-        isEscaped = false;
-      } else if (char === "\\") {
-        isEscaped = true;
-      } else if (char === '"') {
-        isInString = false;
-      }
+    if (char === "\\") {
+      consecutiveBackslashes += 1;
       continue;
     }
-    if (char === '"') {
-      isInString = true;
-    } else if (char === open) {
-      depth += 1;
-    } else if (char === close) {
-      depth -= 1;
-      if (depth === 0) {
-        return { text: source.slice(start, index + 1), end: index };
+    if (char === '"' && consecutiveBackslashes % 2 === 0) {
+      quoteParity = quoteParity === 0 ? 1 : 0;
+      consecutiveBackslashes = 0;
+      continue;
+    }
+    consecutiveBackslashes = 0;
+    if (char === "{" || char === "[") {
+      starts[char][quoteParity].push(index);
+      continue;
+    }
+    const open = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open !== null) {
+      const start = starts[open][quoteParity].pop();
+      if (start !== void 0) {
+        regions.push({ start, end: index, quoteParity, children: [] });
       }
     }
   }
-  return null;
+  const ordered = regions.sort((left, right) => left.start - right.start || right.end - left.end);
+  attachContainedRegions(ordered, 0);
+  attachContainedRegions(ordered, 1);
+  return { byStart: new Map(ordered.map((region) => [region.start, region])), ordered };
+}
+function attachContainedRegions(regions, quoteParity) {
+  const containers = [];
+  for (const region of regions) {
+    if (region.quoteParity !== quoteParity) {
+      continue;
+    }
+    while (containers.length > 0) {
+      const candidate = containers.at(-1);
+      if (candidate.end >= region.end) {
+        break;
+      }
+      containers.pop();
+    }
+    const parent = containers.at(-1);
+    if (parent !== void 0 && parent.start < region.start && region.end <= parent.end) {
+      parent.children.push(region);
+    }
+    containers.push(region);
+  }
+}
+function parseRegion(source, region) {
+  region.parsed ??= tryParse(source.slice(region.start, region.end + 1));
+  return region.parsed;
+}
+function classifyDescendants(source, region) {
+  const descendants = [];
+  const pending = [...region.children];
+  while (pending.length > 0) {
+    const descendant = pending.pop();
+    descendants.push(descendant);
+    pending.push(...descendant.children);
+  }
+  for (let index = descendants.length - 1; index >= 0; index -= 1) {
+    const descendant = descendants[index];
+    if (descendant.parsed !== void 0) {
+      continue;
+    }
+    if (descendant.children.some((child) => child.parsed?.ok === false)) {
+      descendant.parsed = { ok: false };
+    } else {
+      parseRegion(source, descendant);
+    }
+  }
 }
 
 // src/worktree-isolation.ts
@@ -10781,25 +10846,28 @@ function isOff(value) {
 }
 
 // src/status-file.ts
-import { mkdir as mkdir3, readFile as readFile5, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { link, readFile as readFile5, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
 import path7 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, rename: rename2, unlink, writeFile: writeFile2 };
 var StatusFileWriter = class {
   #progress;
   #dir;
   #onError;
+  #fileOperations;
   #unsubscribe;
   #writing = null;
   #dirty = false;
   #closed = false;
-  #ensuredDir = false;
   #tmpSeq = 0;
   #heartbeat;
   constructor(options) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
+    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
@@ -10836,36 +10904,59 @@ var StatusFileWriter = class {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      this.#onError?.(error);
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
     }
   }
   async #writeAtomic(snapshot) {
-    if (!this.#ensuredDir) {
-      await mkdir3(this.#dir, { recursive: true });
-      this.#ensuredDir = true;
-    }
     const target = path7.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    await writeFile2(tmp, `${JSON.stringify(snapshot)}
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
-    await rename2(tmp, target);
+    await this.#fileOperations.rename(tmp, target);
   }
   async #removeSnapshot() {
     const target = path7.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID4()}.remove`;
     try {
-      const current = JSON.parse(await readFile5(target, "utf8"));
-      if (typeof current.runId === "string" && current.runId !== this.#progress.runId) {
-        return;
-      }
-    } catch {
-    }
-    try {
-      await unlink(target);
+      await this.#fileOperations.rename(target, claim);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;
       }
+      this.#reportError(error);
+      return;
+    }
+    let belongsToAnotherRun = false;
+    try {
+      const current = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      belongsToAnotherRun = typeof current.runId === "string" && current.runId !== this.#progress.runId;
+    } catch {
+    }
+    if (belongsToAnotherRun) {
+      try {
+        await this.#fileOperations.link(claim, target);
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") {
+          this.#reportError(error);
+          return;
+        }
+      }
+    }
+    try {
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+    }
+  }
+  #reportError(error) {
+    try {
       this.#onError?.(error);
+    } catch {
     }
   }
 };
@@ -10884,13 +10975,16 @@ function resolveStatusDir(env, cwd) {
   }
   const explicit = env.ENSEMBLE_STATUS_DIR?.trim();
   if (explicit !== void 0 && explicit.length > 0) {
-    return explicit;
+    return isDirectory(explicit) ? explicit : null;
   }
   const localClaudeDir = path8.join(cwd, ".claude");
+  return isDirectory(localClaudeDir) ? localClaudeDir : null;
+}
+function isDirectory(candidate) {
   try {
-    return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
+    return statSync(candidate).isDirectory();
   } catch {
-    return null;
+    return false;
   }
 }
 

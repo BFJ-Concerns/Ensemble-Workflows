@@ -152,6 +152,39 @@ test("built CLI leaves a missing status namespace absent", async () => {
   }
 });
 
+test("built CLI shuts down cleanly when its status reporter throws", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-reporter-estate-"));
+  const script = path.join(directory, "workflow.js");
+  const statusTarget = path.join(directory, "status-target");
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "throwing-status-reporter",
+          description: "Process proof that observability cannot take shutdown down"
+        };
+        return { completed: true };
+      `
+    );
+    await writeFile(statusTarget, "not a directory\n");
+    const env = isolatedEnvironment(directory);
+    delete env.ENSEMBLE_STATUS;
+    env.ENSEMBLE_STATUS_DIR = statusTarget;
+    const preload = path.resolve("test/fixtures/status/throwing-reporter-preload.mjs");
+    env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${preload}`.trim();
+
+    const result = await runNode([bundledCliPath, script], env);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `{"completed":true}\n`);
+    assert.equal(result.stderr, "");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("built CLI propagates removed options from parallel before that worker spawns", async () => {
   const fixture = await createProcessFixture("parallel-option-rejection");
 

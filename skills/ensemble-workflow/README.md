@@ -15,6 +15,10 @@ older Nodes exit 1 with a version error):
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
   [--json-args '<json>'|@file] [--budget engine=N] [--concurrency engine=N] \
   [--timeout ms] <script.js> [args...]
+node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
+  --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>] \
+  [--isolation worktree] [--schema '<json>'|@file] [--task <identity>] \
+  [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 ```
 
@@ -24,15 +28,26 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   caps that engine's parallel workers. Both repeatable, one engine each.
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
   `timeoutMs` inside the script.
+- `agent` runs one worker without a script. Supply its prompt as the final
+  argument, or omit the argument and pipe the prompt on stdin. `--schema`
+  accepts inline JSON or `@file` and prints the same validated value that
+  `agent()` returns in a workflow. `--task` copies an optional identity into
+  the run record for benchmark grouping.
+- Direct-agent `--cwd` and `--isolation worktree` use the same placement
+  lifecycle as a scripted call. An isolated run reports its branch on stderr;
+  a branch containing changed work is retained for recovery.
 - `workflows` lists saved workflows from `.claude/ensemble/workflows/`
   (project) and `$XDG_DATA_HOME/ensemble/workflows/` (user); unparseable
   entries are noted on stderr and skipped.
 
-Exit 0 prints the script's return value as JSON on stdout (unserialisable
-values print as `null`). Exit 1 (failure, whole-workflow timeout, SIGINT or
-SIGTERM) prints a partial-result envelope instead:
+Exit 0 prints the script's return value, or the direct agent's return value, as
+JSON on stdout (unserialisable script values print as `null`). Exit 1 (failure,
+whole-workflow timeout, SIGINT or SIGTERM) prints a partial-result envelope
+instead:
 `{"partial":true,"reason":"failed"|"timed-out"|"interrupted","completed":[...]}`
-with every successfully finished worker's output. Exit 2 is a usage error.
+with every successfully finished worker's output. A schema agent that exhausts
+its attempts also exits 1 with this envelope rather than printing bare `null`.
+Exit 2 is a usage error.
 
 Environment: `ENSEMBLE_STATUS=off` disables the live status snapshot
 (`.claude/ensemble.local.json`), `ENSEMBLE_STATUS_DIR` redirects it;

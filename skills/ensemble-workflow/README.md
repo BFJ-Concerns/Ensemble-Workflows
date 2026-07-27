@@ -177,8 +177,8 @@ skipped so it cannot block another engine. One ceiling slot covers the complete
 logical `agent()` call, including retries, worktree finalisation, and archival.
 Child workflows share their parent's ceiling. The ceiling is machine/run policy
 and cannot be set by `agent()` or the script's `defaults`. If the runtime closes
-with accepted calls still queued, it releases them through closing adapters so
-every returned promise settles.
+with accepted calls still queued, those calls are released outside the
+admission gates during shutdown.
 
 The durable manifest records the effective ceiling and every registered
 engine's cap with the layer that supplied each value (`flag`, `env`,

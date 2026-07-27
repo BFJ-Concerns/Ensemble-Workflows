@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import test from "node:test";
+import { promisify } from "node:util";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const liveOptions = { skip: !isLive };
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const execFileAsync = promisify(execFile);
 
 test("live CLI runs a fan-out then compiler workflow and splits stdout from stderr", liveOptions, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-"));
@@ -372,6 +374,85 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
   }
 });
 
+test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-worktree-commit-"));
+  const repo = path.join(directory, "repo");
+  const script = path.join(repo, "workflow.js");
+  const recordStore = path.join(directory, "records");
+  const receipt = `WORKTREE_COMMIT_${randomUUID()}`;
+
+  try {
+    await mkdir(repo);
+    await git(repo, ["init"]);
+    await git(repo, ["config", "user.email", "ensemble-workflows@example.invalid"]);
+    await git(repo, ["config", "user.name", "Ensemble Workflows Test"]);
+    await writeFile(path.join(repo, "README.md"), "temporary worktree commit fixture\n");
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "codex-worktree-commit",
+          description: "Final-consumer proof that an isolated worker can commit"
+        };
+        const agentResult = await agent(
+          ${JSON.stringify(
+            `Use the shell to create worker-commit.txt containing exactly ${receipt}, git add it, and commit it with message "worker commit". Then return the current branch and HEAD commit.`
+          )},
+          {
+            engine: "codex",
+            isolation: "worktree",
+            label: "worktree-commit",
+            maxAttempts: 1,
+            schema: {
+              type: "object",
+              required: ["branch", "commit"],
+              additionalProperties: false,
+              properties: {
+                branch: { type: "string" },
+                commit: { type: "string" }
+              }
+            }
+          }
+        );
+        return { agentResult, worktrees };
+      `
+    );
+    await git(repo, ["add", "README.md", "workflow.js"]);
+    await git(repo, ["commit", "-m", "initial"]);
+
+    const result = await runNode([bundledCliPath, script], {
+      cwd: repo,
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout) as {
+      agentResult: { branch: string; commit: string };
+      worktrees: Array<{ path: string; branch: string; baseCommit: string; changed: boolean; removed: boolean }>;
+    };
+    assert.equal(parsed.worktrees.length, 1);
+    const worktree = parsed.worktrees[0];
+    assert.ok(worktree);
+    assert.equal(worktree.changed, true);
+    assert.equal(worktree.removed, false);
+    assert.equal(await readFile(path.join(worktree.path, "worker-commit.txt"), "utf8"), receipt);
+    assert.equal((await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"])).trim(), "");
+
+    const tip = (await git(repo, ["rev-parse", worktree.branch])).trim();
+    assert.notEqual(tip, worktree.baseCommit);
+    assert.equal(parsed.agentResult.branch, worktree.branch);
+    assert.equal(parsed.agentResult.commit, tip);
+
+    const { agent } = await recordedAgent(recordStore, "worktree-commit");
+    assert.deepEqual(agent.worktree, {
+      branch: worktree.branch,
+      base_commit: worktree.baseCommit
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 interface RecordedCommand {
   command: string;
   exitCode: number | null;
@@ -380,6 +461,7 @@ interface RecordedCommand {
 
 interface RecordedAgent {
   label: string | null;
+  worktree: { branch: string; base_commit: string } | null;
   raw_output: string | null;
   validated_output: unknown;
   attempts: Array<{ status: string; diagnostics: Record<string, unknown> }>;
@@ -432,10 +514,10 @@ function escapeRegExp(value: string): string {
 
 async function runNode(
   args: string[],
-  options: { env?: NodeJS.ProcessEnv } = {}
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd: process.cwd(), env: options.env ?? process.env });
+    const child = spawn(process.execPath, args, { cwd: options.cwd ?? process.cwd(), env: options.env ?? process.env });
     let stdout = "";
     let stderr = "";
 
@@ -450,4 +532,9 @@ async function runNode(
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd });
+  return stdout;
 }

@@ -374,6 +374,62 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
   }
 });
 
+test("live bundled CLI starts a Codex worker in its per-call cwd", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cwd-"));
+  const targetCwd = path.join(directory, "target");
+  const script = path.join(directory, "workflow.js");
+  const recordStore = path.join(directory, "records");
+  const receipt = `CWD_RECEIPT_${randomUUID()}`;
+
+  try {
+    await mkdir(targetCwd);
+    await writeFile(path.join(targetCwd, "placement-receipt.txt"), receipt);
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "codex-per-call-cwd",
+          description: "Worker observation of its per-call starting directory"
+        };
+        return await agent(
+          "Use the shell to run pwd and then cat placement-receipt.txt. Return the observed directory and file contents.",
+          {
+            engine: "codex",
+            cwd: ${JSON.stringify(targetCwd)},
+            label: "per-call-cwd",
+            maxAttempts: 1,
+            schema: {
+              type: "object",
+              required: ["cwd", "receipt"],
+              additionalProperties: false,
+              properties: {
+                cwd: { type: "string" },
+                receipt: { type: "string" }
+              }
+            }
+          }
+        );
+      `
+    );
+
+    const result = await runNode([bundledCliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      cwd: targetCwd,
+      receipt
+    });
+    const command = await recordedCommand(recordStore, "per-call-cwd", "placement-receipt.txt");
+    assert.equal(command.exitCode, 0);
+    assert.match(command.aggregatedOutput ?? "", new RegExp(escapeRegExp(targetCwd)));
+    assert.match(command.aggregatedOutput ?? "", new RegExp(receipt));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("live bundled CLI preserves a Codex worker-created commit", { skip: !isLive, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-worktree-commit-"));
   const repo = path.join(directory, "repo");

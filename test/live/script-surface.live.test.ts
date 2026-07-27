@@ -377,7 +377,7 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
 const placementScenarios = [
   { engine: "codex" },
   { engine: "claude" },
-  { engine: "opencode", model: "qwen-3-6-27b-heretic-neo-code" }
+  { engine: "opencode", model: "glm-5.2" }
 ] as const;
 
 for (const scenario of placementScenarios) {
@@ -429,10 +429,16 @@ for (const scenario of placementScenarios) {
       cwd: targetCwd,
       receipt
     });
-    const command = await recordedCommand(recordStore, `per-call-cwd-${scenario.engine}`, "placement-receipt.txt");
-    assert.equal(command.exitCode, 0);
-    assert.match(command.aggregatedOutput ?? "", new RegExp(escapeRegExp(targetCwd)));
-    assert.match(command.aggregatedOutput ?? "", new RegExp(receipt));
+    const { agent } = await recordedAgent(recordStore, `per-call-cwd-${scenario.engine}`);
+    assert.equal(agent.resolved_cwd, targetCwd);
+    assert.equal(agent.isolation, null);
+    assert.deepEqual(agent.validated_output, { cwd: targetCwd, receipt });
+    if (scenario.engine === "codex") {
+      const command = await recordedCommand(recordStore, `per-call-cwd-${scenario.engine}`, "placement-receipt.txt");
+      assert.equal(command.exitCode, 0);
+      assert.match(command.aggregatedOutput ?? "", new RegExp(escapeRegExp(targetCwd)));
+      assert.match(command.aggregatedOutput ?? "", new RegExp(receipt));
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -502,7 +508,7 @@ for (const scenario of placementScenarios) {
     assert.ok(worktree);
     assert.equal(worktree.changed, true);
     assert.equal(worktree.removed, false);
-    assert.equal(await readFile(path.join(worktree.path, "worker-commit.txt"), "utf8"), receipt);
+    assert.equal((await readFile(path.join(worktree.path, "worker-commit.txt"), "utf8")).trimEnd(), receipt);
     assert.equal((await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"])).trim(), "");
 
     const tip = (await git(repo, ["rev-parse", worktree.branch])).trim();
@@ -511,9 +517,13 @@ for (const scenario of placementScenarios) {
     assert.equal(parsed.agentResult.commit, tip);
 
     const { agent } = await recordedAgent(recordStore, `worktree-commit-${scenario.engine}`);
+    assert.equal(agent.resolved_cwd, worktree.path);
+    assert.equal(agent.isolation, "worktree");
     assert.deepEqual(agent.worktree, {
       branch: worktree.branch,
-      base_commit: worktree.baseCommit
+      base_commit: worktree.baseCommit,
+      changed: true,
+      removed: false
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -529,7 +539,14 @@ interface RecordedCommand {
 
 interface RecordedAgent {
   label: string | null;
-  worktree: { branch: string; base_commit: string } | null;
+  resolved_cwd: string;
+  isolation: "worktree" | null;
+  worktree: {
+    branch: string;
+    base_commit: string;
+    changed: boolean;
+    removed: boolean;
+  } | null;
   raw_output: string | null;
   validated_output: unknown;
   attempts: Array<{ status: string; diagnostics: Record<string, unknown> }>;

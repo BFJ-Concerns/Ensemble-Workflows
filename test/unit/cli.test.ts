@@ -624,6 +624,81 @@ test("CLI removes the live status snapshot after a run", async () => {
   await assert.rejects(access(path.join(statusDir, STATUS_FILENAME)));
 });
 
+test("CLI leaves a missing status namespace absent and silent", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-off-"));
+  const statusDir = path.join(directory, "missing-status");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "status-off" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    statusDir,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new ScheduledTextEngine("codex", 1), new ScheduledTextEngine("claude", 1)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stderr.text(), "");
+  await assert.rejects(access(statusDir));
+});
+
+test("a throwing status reporter cannot make CLI shutdown reject", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-error-"));
+  const blocker = path.join(directory, "blocker");
+  const statusDir = path.join(blocker, "status");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(blocker, "not a directory");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "status-error" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  let reportAttempts = 0;
+  const stderr = {
+    write(chunk: Buffer | string): boolean {
+      if (chunk.toString().startsWith("[status]")) {
+        reportAttempts += 1;
+        throw new Error("status reporter failed");
+      }
+      return true;
+    }
+  } as Writable;
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    statusDir,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([new ScheduledTextEngine("codex", 1), new ScheduledTextEngine("claude", 1)]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 0);
+  assert.ok(reportAttempts >= 1);
+});
+
 function fakeRuntime(): EnsembleRuntime {
   const budget: Budget = {
     spent: () => 0,

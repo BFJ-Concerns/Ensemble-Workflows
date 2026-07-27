@@ -26,6 +26,8 @@ test("resolveStatusDir keeps the environment controls", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
   const explicit = path.join(cwd, "custom-status");
 
+  assert.equal(resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd), null);
+  await mkdir(explicit);
   assert.equal(resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd), explicit);
   assert.equal(resolveStatusDir({ ENSEMBLE_STATUS: "off", ENSEMBLE_STATUS_DIR: explicit }, cwd), null);
   assert.equal(resolveStatusDir({ ENSEMBLE_STATUS: "0" }, cwd), null);

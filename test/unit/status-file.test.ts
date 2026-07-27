@@ -152,3 +152,31 @@ test("StatusFileWriter close leaves another run's snapshot in place", async () =
   const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
   assert.equal(survivor.runId, "another-run");
 });
+
+test("StatusFileWriter close cannot unlink a snapshot replaced after its ownership check", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
+  const progress = newProgress();
+  const other = { schema: 1, runId: "another-run", state: "running" };
+  let replaced = false;
+  const writer = new StatusFileWriter({
+    progress,
+    dir,
+    fileOperations: {
+      readFile: async (candidate, encoding) => {
+        const contents = await readFile(candidate, encoding);
+        if (!replaced) {
+          replaced = true;
+          await writeFile(file, `${JSON.stringify(other)}\n`);
+        }
+        return contents;
+      }
+    }
+  });
+  await waitForFile(file);
+
+  await writer.close();
+
+  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
+  assert.equal(survivor.runId, "another-run");
+});

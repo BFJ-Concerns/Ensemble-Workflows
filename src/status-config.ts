@@ -27,13 +27,17 @@ export function resolveStatusDir(env: NodeJS.ProcessEnv, cwd: string): string | 
 
   const explicit = env.ENSEMBLE_STATUS_DIR?.trim();
   if (explicit !== undefined && explicit.length > 0) {
-    return explicit;
+    return isDirectory(explicit) ? explicit : null;
   }
 
   const localClaudeDir = path.join(cwd, ".claude");
+  return isDirectory(localClaudeDir) ? localClaudeDir : null;
+}
+
+function isDirectory(candidate: string): boolean {
   try {
-    return statSync(localClaudeDir).isDirectory() ? localClaudeDir : null;
+    return statSync(candidate).isDirectory();
   } catch {
-    return null;
+    return false;
   }
 }

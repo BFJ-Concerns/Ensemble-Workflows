@@ -185,7 +185,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   #config: ClaudeEngineConfig | undefined;
 
   constructor(options: ClaudeEngineAdapterOptions = {}) {
-    this.concurrency = options.concurrency ?? 8;
+    this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
     this.#cwd = options.cwd ?? process.cwd();
     this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
@@ -328,6 +328,10 @@ function promptWithFailureFeedback(prompt: string, failure: EngineAttemptFailure
 
 export function defaultCodexConcurrency(): number {
   return Math.max(1, Math.min(16, cpus().length - 2));
+}
+
+export function defaultClaudeConcurrency(): number {
+  return 8;
 }
 
 export function defaultOpenCodeConcurrency(): number {

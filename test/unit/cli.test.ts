@@ -147,7 +147,7 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -253,6 +253,42 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
   assert.equal(stderr.text(), "");
 });
 
+test("CLI wires the whole-workflow agent ceiling into runtime construction", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-ceiling-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cli-agent-ceiling" }; return "done";`);
+  const observed: RuntimeOptions[] = [];
+
+  const exitCode = await runEnsembleCli(["--agent-ceiling=2", script], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream(),
+    runRecordDir: null,
+    createRuntime: async (options = {}) => {
+      observed.push(options);
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(observed[0]?.agentCeiling, 2);
+});
+
+test("CLI rejects a zero agent ceiling as a usage error", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["--agent-ceiling=0", "unused.js"], {
+    cwd: "/tmp",
+    stdout,
+    stderr,
+    env: { XDG_CONFIG_HOME: "/definitely/absent" }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /agent-ceiling.*positive integer/i);
+});
+
 test("CLI --timeout caps the whole-workflow run and times out a hanging script", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-"));
   const script = path.join(directory, "workflow.js");
@@ -352,6 +388,7 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
       cwd: directory,
       stdout,
       stderr,
+      runRecordDir: null,
       createRuntime: async () =>
         new EnsembleRuntime({
           engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
@@ -532,7 +569,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble workflows\n"
   );
 });

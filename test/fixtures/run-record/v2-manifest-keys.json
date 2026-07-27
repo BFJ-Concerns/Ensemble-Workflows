@@ -1,6 +1,7 @@
 [
   "args",
   "cli_flags",
+  "concurrency",
   "cost_rollup",
   "ended_at",
   "environment",

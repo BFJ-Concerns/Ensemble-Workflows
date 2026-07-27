@@ -37,9 +37,17 @@ export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, Workflow
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
 export { RunRecordWriter } from "./run-record.js";
-export { resolveRunRecordDir, RUN_RECORD_ENV, RUN_RECORD_DIR_ENV } from "./run-record-config.js";
+export {
+  AmbientConfigError,
+  CONFIG_SCHEMA_VERSION,
+  AGENT_CEILING_ENV,
+  RUN_RECORD_ENV,
+  RUN_RECORD_DIR_ENV,
+  resolveAmbientSettings,
+  resolveRunRecordDir,
+  resolveStatusDir
+} from "./ambient-settings.js";
 export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
-export { resolveStatusDir } from "./status-config.js";
 export {
   NestedWorkflowError,
   WorkflowResolutionError,
@@ -48,6 +56,12 @@ export {
   resolveWorkflowReference
 } from "./workflow-registry.js";
 export type { WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
+export type {
+  AmbientSettings,
+  AmbientSettingFlags,
+  Resolved,
+  SettingLayer
+} from "./ambient-settings.js";
 export type {
   AgentState,
   BudgetView,

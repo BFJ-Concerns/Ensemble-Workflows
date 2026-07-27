@@ -2,12 +2,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
+import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
 
+import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
 import type { EngineBudgetCeilings, EngineConcurrencyCaps, EngineName } from "./types.js";
@@ -24,12 +26,12 @@ export interface EnsembleCliOptions {
   /**
    * Directory for the live status side-channel. A non-empty string enables
    * writing the run's snapshot for external consumers to read directly.
-   * `null`/`undefined` disables it. Resolved from the environment at the bin.
+   * `null` disables it. `undefined` resolves the ambient setting in this call.
    */
   statusDir?: string | null;
   /**
    * Directory for the durable run archive. A non-empty string enables recording;
-   * null/undefined disables it. The bin resolves the default-on environment policy.
+   * null disables it. `undefined` resolves the default-on ambient policy.
    */
   runRecordDir?: string | null;
   /** Injectable environment for registry resolution; defaults to `process.env`. */
@@ -59,11 +61,22 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   let invocation: ParsedInvocation;
+  let ambientSettings: AmbientSettings;
   try {
     invocation = await parseInvocation(argv, cwd);
+    ambientSettings = resolveAmbientSettings({
+      env,
+      cwd,
+      flags: {
+        ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
+        ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
+      }
+    });
   } catch (error) {
     stderr.write(`${formatError(error)}\n`);
-    stderr.write(usage());
+    if (!(error instanceof AmbientConfigError)) {
+      stderr.write(usage());
+    }
     return 2;
   }
 
@@ -84,7 +97,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
-      ...(invocation.concurrencyCaps !== undefined ? { concurrencyCaps: invocation.concurrencyCaps } : {})
+      ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
     // feed the same whole-workflow ceiling in `runWorkflowScript`.
@@ -92,7 +105,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
 
-    const runRecordDir = options.runRecordDir ?? null;
+    const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
@@ -102,12 +115,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workflowPath: scriptPath,
         workflowSource: source,
         args: invocation.args,
-        cliFlags: cliFlags(invocation)
+        cliFlags: cliFlags(invocation),
+        concurrency: recordConcurrency(ambientSettings, progress)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
     }
 
-    const statusDir = options.statusDir ?? null;
+    const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
@@ -167,8 +181,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         interrupt.promise
       ]);
 
-      stdout.write(`${serialiseResult(result)}\n`);
-      finalRecord = { status: "complete", exitCode: 0, result };
+      const serialised = serialiseResult(result);
+      stdout.write(`${serialised}\n`);
+      finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
       return 0;
     } finally {
       interrupt.dispose();
@@ -182,8 +197,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const status =
       error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     const partial = partialResult(runtime, status);
-    stdout.write(`${serialiseResult(partial)}\n`);
-    finalRecord = { status, exitCode: 1, result: partial };
+    const serialised = serialiseResult(partial);
+    stdout.write(`${serialised}\n`);
+    finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
@@ -235,22 +251,63 @@ interface ParsedInvocation {
   /** Whether args came through --json-args, independent of the parsed value's shape. */
   jsonArgsProvided: boolean;
   budgetCeilings?: EngineBudgetCeilings;
+  agentCeiling?: number;
   concurrencyCaps?: EngineConcurrencyCaps;
   timeoutMs?: number;
 }
 
 function cliFlags(invocation: ParsedInvocation): {
   budget?: Record<string, number | null>;
+  agentCeiling?: number;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   jsonArgs: boolean;
 } {
   return {
     ...(invocation.budgetCeilings !== undefined ? { budget: invocation.budgetCeilings } : {}),
+    ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     jsonArgs: invocation.jsonArgsProvided
   };
+}
+
+function runtimeConcurrencyOptions(settings: AmbientSettings): {
+  agentCeiling?: number;
+  concurrencyCaps?: EngineConcurrencyCaps;
+} {
+  const concurrencyCaps: EngineConcurrencyCaps = {};
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    const resolved = settings.concurrencyCaps[engine];
+    if (resolved.layer !== "default") {
+      concurrencyCaps[engine] = resolved.value;
+    }
+  }
+  return {
+    ...(settings.agentCeiling.value !== null ? { agentCeiling: settings.agentCeiling.value } : {}),
+    ...(Object.keys(concurrencyCaps).length > 0 ? { concurrencyCaps } : {})
+  };
+}
+
+function recordConcurrency(
+  settings: AmbientSettings,
+  progress: RunProgress | undefined
+): {
+  agentCeiling: AmbientSettings["agentCeiling"];
+  engines: Partial<AmbientSettings["concurrencyCaps"]>;
+} {
+  const snapshot = progress?.snapshot();
+  if (snapshot === undefined) {
+    return { agentCeiling: settings.agentCeiling, engines: settings.concurrencyCaps };
+  }
+  const engines: Partial<AmbientSettings["concurrencyCaps"]> = {};
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    const cap = snapshot.engines[engine]?.cap;
+    if (cap !== null && cap !== undefined) {
+      engines[engine] = { value: cap, layer: settings.concurrencyCaps[engine].layer };
+    }
+  }
+  return { agentCeiling: settings.agentCeiling, engines };
 }
 
 class CliUsageError extends Error {
@@ -303,6 +360,7 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
     options: {
       "json-args": { type: "string" },
       budget: { type: "string", multiple: true },
+      "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" }
     },
@@ -314,6 +372,7 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
   const positionalArgs = split.scriptArg === undefined ? [] : split.scriptArgs;
   const args = jsonArgs === undefined ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
+  const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
 
@@ -322,6 +381,7 @@ async function parseInvocation(argv: string[], cwd: string): Promise<ParsedInvoc
     args,
     jsonArgsProvided: jsonArgs !== undefined,
     ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
+    ...(agentCeiling !== undefined ? { agentCeiling } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {})
   };
@@ -374,13 +434,20 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
 }
 
 function isKnownOption(value: string): boolean {
-  return value === "--json-args" || value === "--budget" || value === "--concurrency" || value === "--timeout";
+  return (
+    value === "--json-args" ||
+    value === "--budget" ||
+    value === "--agent-ceiling" ||
+    value === "--concurrency" ||
+    value === "--timeout"
+  );
 }
 
 function isKnownInlineOption(value: string): boolean {
   return (
     value.startsWith("--json-args=") ||
     value.startsWith("--budget=") ||
+    value.startsWith("--agent-ceiling=") ||
     value.startsWith("--concurrency=") ||
     value.startsWith("--timeout=")
   );
@@ -460,6 +527,17 @@ function parseConcurrencyCap(value: string): number {
   return cap;
 }
 
+function parseAgentCeiling(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const ceiling = Number(value);
+  if (!Number.isInteger(ceiling) || ceiling < 1) {
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer, got ${value}`);
+  }
+  return ceiling;
+}
+
 // Whole-workflow timeout in milliseconds (the `runWorkflowScript` ceiling),
 // distinct from the per-turn `agent()` timeoutMs set inside a script.
 function parseTimeoutMs(value: string | undefined): number | undefined {
@@ -475,7 +553,7 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");

@@ -230,26 +230,139 @@ function parseJsonCandidates(source: string): ParsedJson[] {
   }
 
   const candidates: ParsedJson[] = [];
+  const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
     const open = trimmed[index];
     if (open !== "{" && open !== "[") {
       continue;
     }
-    const close = open === "{" ? "}" : "]";
-    const candidate = extractBalancedJsonAt(trimmed, index, open, close);
-    if (candidate === null) {
+    const region = regions.byStart.get(index);
+    if (region === undefined) {
       continue;
     }
-    const parsed = tryParse(candidate.text);
+    const alreadyClassified = region.parsed !== undefined;
+    const parsed = parseRegion(trimmed, region);
     if (parsed.ok) {
       candidates.push({
         value: parsed.value,
         source: open === "{" ? "object-fallback" : "array-fallback"
       });
+      // A valid outer value already contains every nested value. Preserve the
+      // settled non-overlapping candidate rule by skipping its interior.
+      index = region.end;
+    } else if (!alreadyClassified) {
+      // Any invalid structural descendant makes every containing region invalid.
+      // Classify once inside-out so the outer scan can reuse that fact instead of
+      // repeatedly slicing and parsing the same hostile nested text.
+      classifyDescendants(trimmed, region);
     }
-    index = candidate.end;
   }
   return candidates;
+}
+
+type ParseResult = { ok: true; value: unknown } | { ok: false };
+
+interface IndexedJsonRegion {
+  start: number;
+  end: number;
+  quoteParity: 0 | 1;
+  children: IndexedJsonRegion[];
+  parsed?: ParseResult;
+}
+
+function indexBalancedJsonRegions(source: string): {
+  byStart: Map<number, IndexedJsonRegion>;
+  ordered: IndexedJsonRegion[];
+} {
+  const starts = {
+    "{": [[], []] as [number[], number[]],
+    "[": [[], []] as [number[], number[]]
+  };
+  const regions: IndexedJsonRegion[] = [];
+  let quoteParity: 0 | 1 = 0;
+  let consecutiveBackslashes = 0;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (char === "\\") {
+      consecutiveBackslashes += 1;
+      continue;
+    }
+
+    if (char === "\"" && consecutiveBackslashes % 2 === 0) {
+      quoteParity = quoteParity === 0 ? 1 : 0;
+      consecutiveBackslashes = 0;
+      continue;
+    }
+    consecutiveBackslashes = 0;
+
+    if (char === "{" || char === "[") {
+      starts[char][quoteParity].push(index);
+      continue;
+    }
+
+    const open = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open !== null) {
+      const start = starts[open][quoteParity].pop();
+      if (start !== undefined) {
+        regions.push({ start, end: index, quoteParity, children: [] });
+      }
+    }
+  }
+
+  const ordered = regions.sort((left, right) => left.start - right.start || right.end - left.end);
+  attachContainedRegions(ordered, 0);
+  attachContainedRegions(ordered, 1);
+  return { byStart: new Map(ordered.map((region) => [region.start, region])), ordered };
+}
+
+function attachContainedRegions(regions: IndexedJsonRegion[], quoteParity: 0 | 1): void {
+  const containers: IndexedJsonRegion[] = [];
+  for (const region of regions) {
+    if (region.quoteParity !== quoteParity) {
+      continue;
+    }
+    while (containers.length > 0) {
+      const candidate = containers.at(-1) as IndexedJsonRegion;
+      if (candidate.end >= region.end) {
+        break;
+      }
+      containers.pop();
+    }
+    const parent = containers.at(-1);
+    if (parent !== undefined && parent.start < region.start && region.end <= parent.end) {
+      parent.children.push(region);
+    }
+    containers.push(region);
+  }
+}
+
+function parseRegion(source: string, region: IndexedJsonRegion): ParseResult {
+  region.parsed ??= tryParse(source.slice(region.start, region.end + 1));
+  return region.parsed;
+}
+
+function classifyDescendants(source: string, region: IndexedJsonRegion): void {
+  const descendants: IndexedJsonRegion[] = [];
+  const pending = [...region.children];
+  while (pending.length > 0) {
+    const descendant = pending.pop() as IndexedJsonRegion;
+    descendants.push(descendant);
+    pending.push(...descendant.children);
+  }
+
+  for (let index = descendants.length - 1; index >= 0; index -= 1) {
+    const descendant = descendants[index] as IndexedJsonRegion;
+    if (descendant.parsed !== undefined) {
+      continue;
+    }
+    if (descendant.children.some((child) => child.parsed?.ok === false)) {
+      descendant.parsed = { ok: false };
+    } else {
+      parseRegion(source, descendant);
+    }
+  }
 }
 
 function extractBalancedJson(source: string, open: "{" | "[", close: "}" | "]"): string | null {

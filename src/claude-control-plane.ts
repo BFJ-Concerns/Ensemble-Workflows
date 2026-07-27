@@ -212,9 +212,15 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       await delay(this.#valveAttachSettleMs);
       // `-l` sends the message literally — no key-name interpretation, no quoting
       // hazards. Submit follows as its own keystroke.
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      if (!typed.ok) {
+        return false;
+      }
       await delay(this.#valveSubmitSettleMs);
-      await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      if (!submitted.ok) {
+        return false;
+      }
       await delay(this.#valveKillSettleMs);
       return true;
     } finally {

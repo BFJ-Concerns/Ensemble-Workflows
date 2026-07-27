@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { link, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
@@ -15,13 +16,25 @@ const DEFAULT_HEARTBEAT_MS = 10_000;
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
-  /** Directory to publish the snapshot into; created on first write. */
+  /** Existing opted-in directory to publish the snapshot into. Never created by the writer. */
   dir: string;
   /** Notified on write failure. Defaults to swallowing — status never breaks a run. */
   onError?: (error: unknown) => void;
   /** Interval for re-stamping a quiet run's snapshot. Tests inject a tiny value. */
   heartbeatMs?: number;
+  /** Filesystem boundary. Tests replace individual operations to force lifecycle races. */
+  fileOperations?: Partial<StatusFileOperations>;
 }
+
+export interface StatusFileOperations {
+  link(existingPath: string, newPath: string): Promise<void>;
+  readFile(file: string, encoding: "utf8"): Promise<string>;
+  rename(source: string, destination: string): Promise<void>;
+  unlink(file: string): Promise<void>;
+  writeFile(file: string, contents: string, encoding: "utf8"): Promise<void>;
+}
+
+const DEFAULT_FILE_OPERATIONS: StatusFileOperations = { link, readFile, rename, unlink, writeFile };
 
 /**
  * Serialises a {@link RunProgress} model to a single `ensemble.local.json` on every
@@ -42,12 +55,12 @@ export class StatusFileWriter {
   #progress: RunProgress;
   #dir: string;
   #onError: ((error: unknown) => void) | undefined;
+  #fileOperations: StatusFileOperations;
   #unsubscribe: () => void;
 
   #writing: Promise<void> | null = null;
   #dirty = false;
   #closed = false;
-  #ensuredDir = false;
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
 
@@ -55,6 +68,7 @@ export class StatusFileWriter {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
+    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     // markChanged() re-stamps updatedAt and notifies subscribers (i.e. this
     // writer), so a run with long quiet turns never reads as stale/absent.
@@ -100,41 +114,73 @@ export class StatusFileWriter {
     try {
       await this.#writeAtomic(this.#progress.snapshot());
     } catch (error) {
-      this.#onError?.(error);
+      // The opted-in namespace may disappear after configuration resolution.
+      // Treat that race as publication being off, without recreating or reporting it.
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
     }
   }
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
-    if (!this.#ensuredDir) {
-      await mkdir(this.#dir, { recursive: true });
-      this.#ensuredDir = true;
-    }
     const target = path.join(this.#dir, STATUS_FILENAME);
     // pid + sequence keep concurrent runs' temp files from colliding.
     const tmp = `${target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
-    await rename(tmp, target);
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
+    await this.#fileOperations.rename(tmp, target);
   }
 
   async #removeSnapshot(): Promise<void> {
     const target = path.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
     try {
-      // Two runs sharing a cwd share one snapshot path; whoever finishes first
-      // must not delete the other's live file. An unreadable file is removed.
-      const current = JSON.parse(await readFile(target, "utf8")) as { runId?: unknown };
-      if (typeof current.runId === "string" && current.runId !== this.#progress.runId) {
-        return;
-      }
-    } catch {
-      // Missing or corrupt → fall through; unlink handles ENOENT below.
-    }
-    try {
-      await unlink(target);
+      // Claim the exact inode before checking ownership. A concurrent publisher
+      // can replace the public name without becoming the target of a stale unlink.
+      await this.#fileOperations.rename(target, claim);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
         return;
       }
+      this.#reportError(error);
+      return;
+    }
+
+    let belongsToAnotherRun = false;
+    try {
+      const current = JSON.parse(await this.#fileOperations.readFile(claim, "utf8")) as { runId?: unknown };
+      belongsToAnotherRun = typeof current.runId === "string" && current.runId !== this.#progress.runId;
+    } catch {
+      // An unreadable snapshot has no defensible owner and is removed below.
+    }
+
+    if (belongsToAnotherRun) {
+      try {
+        // link() is an atomic no-clobber restore. EEXIST means a newer
+        // publication already owns the public name.
+        await this.#fileOperations.link(claim, target);
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") {
+          this.#reportError(error);
+          return;
+        }
+      }
+    }
+
+    try {
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+    }
+  }
+
+  #reportError(error: unknown): void {
+    try {
       this.#onError?.(error);
+    } catch {
+      // Error reporting is observability too; it cannot take down the run.
     }
   }
 }

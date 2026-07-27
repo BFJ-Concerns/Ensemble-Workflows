@@ -232,8 +232,12 @@ export class ClaudeEngineInvocation implements EngineInvocation {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        await delay(this.#pollIntervalMs);
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!steered) {
+          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        }
+        await this.#awaitReceipt(handle, mark);
         continue;
       }
 

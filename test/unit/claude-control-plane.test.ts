@@ -64,3 +64,64 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("steer returns false when either tmux delivery step fails", async (context) => {
+  for (const failedStep of ["literal", "enter"] as const) {
+    await context.test(failedStep, async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+      try {
+        const claudeStub = path.join(dir, "claude-stub.mjs");
+        const tmuxStub = path.join(dir, "tmux-stub.mjs");
+        const sessionId = "00000000-0000-4000-8000-000000000002";
+        await writeFile(
+          claudeStub,
+          `#!/usr/bin/env node
+            const args = process.argv.slice(2);
+            if (args[0] === "agents" && args[1] === "--json") {
+              process.stdout.write(JSON.stringify([{
+                id: "steer-1",
+                sessionId: ${JSON.stringify(sessionId)},
+                name: "steer-probe",
+                kind: "background",
+                cwd: ${JSON.stringify(dir)},
+                status: "idle",
+                state: "blocked"
+              }]));
+            }
+          `
+        );
+        await writeFile(
+          tmuxStub,
+          `#!/usr/bin/env node
+            const args = process.argv.slice(2);
+            const literal = args[0] === "send-keys" && args.includes("-l");
+            const enter = args[0] === "send-keys" && args.at(-1) === "Enter";
+            if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
+                (${JSON.stringify(failedStep)} === "enter" && enter)) {
+              process.exit(1);
+            }
+          `
+        );
+        await chmod(claudeStub, 0o755);
+        await chmod(tmuxStub, 0o755);
+
+        const controlPlane = new ClaudeCliControlPlane({
+          claudeBin: claudeStub,
+          tmuxBin: tmuxStub,
+          projectsDir: dir,
+          valveAttachSettleMs: 0,
+          valveSubmitSettleMs: 0,
+          valveKillSettleMs: 0
+        });
+        const steered = await controlPlane.steer(
+          { id: "steer-1", sessionId, name: "steer-probe", cwd: dir },
+          "continue"
+        );
+
+        assert.equal(steered, false);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  }
+});

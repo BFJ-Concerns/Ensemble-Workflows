@@ -382,6 +382,56 @@ test("built CLI recovers nested valid JSON through an unparseable balanced regio
   }
 });
 
+test("ensemble agent stdout matches an equivalent one-call workflow", async () => {
+  const workerOutput = {
+    token: "SINGLE_AGENT_EQUIVALENCE",
+    count: 7
+  };
+  const fixture = await createProcessFixture("single-agent-equivalence", JSON.stringify(workerOutput));
+  const prompt = "Return the fixed equivalence object.";
+  const schema = {
+    type: "object",
+    required: ["token", "count"],
+    additionalProperties: false,
+    properties: {
+      token: { type: "string", enum: ["SINGLE_AGENT_EQUIVALENCE"] },
+      count: { type: "integer", enum: [7] }
+    }
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "one-call-script-equivalence",
+          description: "Reference path for the single-agent CLI return contract"
+        };
+        return await agent(${JSON.stringify(prompt)}, {
+          engine: "codex",
+          maxAttempts: 1,
+          schema: ${JSON.stringify(schema)}
+        });
+      `
+    );
+
+    const scripted = await fixture.run();
+    const direct = await fixture.runArgs([
+      "agent",
+      "--engine=codex",
+      `--schema=${JSON.stringify(schema)}`,
+      prompt
+    ]);
+
+    assert.equal(scripted.code, 0, scripted.stderr);
+    assert.equal(direct.code, 0, direct.stderr);
+    assert.equal(direct.stdout, scripted.stdout);
+    assert.deepEqual(JSON.parse(direct.stdout), workerOutput);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 interface RecordedMessage {
   method?: string;
   params?: {
@@ -393,6 +443,7 @@ interface RecordedMessage {
 interface ProcessFixture {
   script: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   messages: () => Promise<RecordedMessage[]>;
   cleanup: () => Promise<void>;
 }
@@ -418,6 +469,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   return {
     script,
     run: () => runNode([bundledCliPath, script], env),
+    runArgs: (args) => runNode([bundledCliPath, ...args], env),
     messages: async () =>
       (await readFile(capturePath, "utf8"))
         .split("\n")

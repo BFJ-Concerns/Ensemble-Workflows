@@ -117,6 +117,7 @@ test("built CLI sends unrestricted posture on every Codex turn", async () => {
     assert.equal(threadStarts.length, 2);
     for (const threadStart of threadStarts) {
       assert.equal(threadStart.params?.sandbox, "danger-full-access");
+      assert.equal(Object.hasOwn(threadStart.params ?? {}, "config"), false);
     }
     const turnStarts = messages.filter((message) => message.method === "turn/start");
     assert.equal(turnStarts.length, 2);

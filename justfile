@@ -11,6 +11,9 @@ default:
 # The gate: lint, then the test suite (which builds first).
 verify: lint test
 
+# Alias for `verify`, kept for muscle memory.
+ci: verify
+
 # ESLint across the repo.
 lint:
     npm run lint

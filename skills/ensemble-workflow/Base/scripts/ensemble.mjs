@@ -12152,16 +12152,14 @@ function formatError3(error) {
   if (error instanceof AgentOptionRejectedError) {
     return `${error.name}: ${error.message}`;
   }
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  if (hasStack(error)) {
-    return error.stack;
+  if (isError(error)) {
+    const stack = error.stack;
+    return typeof stack === "string" && stack.trim().length > 0 ? stack : String(error);
   }
   return String(error);
 }
-function hasStack(error) {
-  return typeof error === "object" && error !== null && "stack" in error && typeof error.stack === "string";
+function isError(error) {
+  return Error.isError(error);
 }
 
 // src/node-version.ts

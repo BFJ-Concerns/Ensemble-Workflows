@@ -9,6 +9,7 @@ import { EngineRegistry } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
+  AgentOptionRejectedError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   FallbackModelUnsupportedError,
@@ -754,6 +755,85 @@ test("removed and unrecognised options fail before a Codex thread opens", async 
   await assert.rejects(() => unsafeAgent("typo", { engine: "codex", maxAttemps: 2 }), /Unrecognised.*maxAttemps/);
   assert.equal(transport.openedThreads.length, 0);
   assert.equal(transport.turns.length, 0);
+});
+
+test("an invalid isolation value fails before a Codex thread opens", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  await assert.rejects(
+    () => unsafeAgent("never starts", { engine: "codex", isolation: "wroktree" }),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentOptionRejectedError);
+      assert.match(error.message, /option "isolation"/);
+      assert.match(error.message, /value "wroktree"/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("invalid timeoutMs values fail before a Codex thread opens", async () => {
+  for (const timeoutMs of [0, -1, 1.5]) {
+    const transport = new FakeTransport([turn("unused")]);
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+      prompt: string,
+      options: Record<string, unknown>
+    ) => Promise<unknown>;
+
+    await assert.rejects(
+      () => unsafeAgent("never starts", { engine: "codex", timeoutMs }),
+      (error: unknown) => {
+        assert.ok(error instanceof AgentOptionRejectedError);
+        assert.match(error.message, /option "timeoutMs"/);
+        assert.match(error.message, new RegExp(`value ${timeoutMs}`));
+        return true;
+      }
+    );
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(transport.turns.length, 0);
+  }
+});
+
+test("invalid maxAttempts values fail before a Codex thread opens", async () => {
+  for (const maxAttempts of [0, -1, 1.5]) {
+    const transport = new FakeTransport([turn("unused")]);
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+      prompt: string,
+      options: Record<string, unknown>
+    ) => Promise<unknown>;
+
+    await assert.rejects(
+      () => unsafeAgent("never starts", { engine: "codex", maxAttempts }),
+      (error: unknown) => {
+        assert.ok(error instanceof AgentOptionRejectedError);
+        assert.match(error.message, /option "maxAttempts"/);
+        assert.match(error.message, new RegExp(`value ${maxAttempts}`));
+        return true;
+      }
+    );
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(transport.turns.length, 0);
+  }
 });
 
 test("agent requires an explicit engine", async () => {

@@ -1,5 +1,6 @@
 import {
   FallbackModelUnsupportedError,
+  InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
   UnrecognisedAgentOptionError
@@ -7,7 +8,7 @@ import {
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
-import type { EngineName } from "./types.js";
+import type { AgentOptions, EngineName } from "./types.js";
 
 interface EngineDefaultOptions {
   model?: string;
@@ -15,19 +16,19 @@ interface EngineDefaultOptions {
   fallbackModel?: string;
 }
 
-const AGENT_OPTION_KEYS = [
-  "engine",
-  "schema",
-  "model",
-  "effort",
-  "fallbackModel",
-  "cwd",
-  "isolation",
-  "timeoutMs",
-  "maxAttempts",
-  "label",
-  "phase"
-] as const;
+const AGENT_OPTION_KEYS = Object.keys({
+  engine: true,
+  schema: true,
+  model: true,
+  effort: true,
+  fallbackModel: true,
+  cwd: true,
+  isolation: true,
+  timeoutMs: true,
+  maxAttempts: true,
+  label: true,
+  phase: true
+} satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 
@@ -40,6 +41,13 @@ export function assertRecognisedAgentOptions(options: object): void {
       throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
     }
   }
+
+  const values = options as Record<string, unknown>;
+  if (values.isolation !== undefined && values.isolation !== "worktree") {
+    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  assertPositiveIntegerOption(values, "timeoutMs");
+  assertPositiveIntegerOption(values, "maxAttempts");
 }
 
 export function assertFallbackModelSupported(engine: EngineName, fallbackModel: string | undefined): void {
@@ -68,5 +76,15 @@ export function validateEngineDefaults(
   assertFallbackModelSupported(engine, defaults.fallbackModel);
   if (engine === "opencode" && defaults.model !== undefined) {
     requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+
+function assertPositiveIntegerOption(
+  options: Record<string, unknown>,
+  option: "timeoutMs" | "maxAttempts"
+): void {
+  const value = options[option];
+  if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
+    throw new InvalidAgentOptionValueError(option, value, "a positive integer");
   }
 }

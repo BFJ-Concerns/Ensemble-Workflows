@@ -6990,11 +6990,31 @@ var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
     );
   }
 };
-var InvalidAgentSchemaError = class extends EnsembleError {
+var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
+  constructor(option, value, expected) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)} value ${formatAgentOptionValue(value)}; expected ${expected}`
+    );
+  }
+};
+var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
   constructor(message, options) {
     super(`agent schema does not compile as JSON Schema: ${message}`, options);
   }
 };
+function formatAgentOptionValue(value) {
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "undefined") {
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n`;
+  }
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
 
 // src/worktree-isolation.ts
 var execFileAsync = promisify(execFile);
@@ -7404,19 +7424,19 @@ var StaticOpenCodeModelRegistry = class {
 var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
 
 // src/engine-option-validation.ts
-var AGENT_OPTION_KEYS = [
-  "engine",
-  "schema",
-  "model",
-  "effort",
-  "fallbackModel",
-  "cwd",
-  "isolation",
-  "timeoutMs",
-  "maxAttempts",
-  "label",
-  "phase"
-];
+var AGENT_OPTION_KEYS = Object.keys({
+  engine: true,
+  schema: true,
+  model: true,
+  effort: true,
+  fallbackModel: true,
+  cwd: true,
+  isolation: true,
+  timeoutMs: true,
+  maxAttempts: true,
+  label: true,
+  phase: true
+});
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
 function assertRecognisedAgentOptions(options) {
@@ -7428,6 +7448,12 @@ function assertRecognisedAgentOptions(options) {
       throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
     }
   }
+  const values = options;
+  if (values.isolation !== void 0 && values.isolation !== "worktree") {
+    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  assertPositiveIntegerOption(values, "timeoutMs");
+  assertPositiveIntegerOption(values, "maxAttempts");
 }
 function assertFallbackModelSupported(engine, fallbackModel) {
   if (fallbackModel !== void 0 && engine !== "claude") {
@@ -7445,6 +7471,12 @@ function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaul
   assertFallbackModelSupported(engine, defaults.fallbackModel);
   if (engine === "opencode" && defaults.model !== void 0) {
     requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+function assertPositiveIntegerOption(options, option) {
+  const value = options[option];
+  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
+    throw new InvalidAgentOptionValueError(option, value, "a positive integer");
   }
 }
 

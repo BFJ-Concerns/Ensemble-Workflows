@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -147,7 +147,7 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -272,6 +272,36 @@ test("CLI wires the whole-workflow agent ceiling into runtime construction", asy
 
   assert.equal(exitCode, 0);
   assert.equal(observed[0]?.agentCeiling, 2);
+});
+
+test("CLI null agent ceiling lifts a machine default for one run", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-unbounded-agent-ceiling-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const script = path.join(directory, "workflow.js");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(configFile, JSON.stringify({ schema_version: 1, agent_ceiling: 2 }));
+  await writeFile(script, `export const meta = { name: "cli-unbounded-agent-ceiling" }; return "done";`);
+  const observed: RuntimeOptions[] = [];
+
+  try {
+    const exitCode = await runEnsembleCli(["--agent-ceiling=null", script], {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      env: { XDG_CONFIG_HOME: configHome },
+      runRecordDir: null,
+      createRuntime: async (options = {}) => {
+        observed.push(options);
+        return fakeRuntime();
+      }
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(observed[0]?.agentCeiling, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("CLI rejects a zero agent ceiling as a usage error", async () => {
@@ -569,7 +599,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble workflows\n"
   );
 });

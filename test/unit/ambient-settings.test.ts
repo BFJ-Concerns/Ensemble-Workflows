@@ -39,6 +39,32 @@ test("ambient settings resolve every setting independently through all layers", 
   }
 });
 
+test("a higher layer can explicitly restore an unbounded agent ceiling", async () => {
+  const fixture = await configFixture({ schema_version: 1, agent_ceiling: 2 });
+  try {
+    const fromEnvironment = resolveAmbientSettings({
+      env: {
+        XDG_CONFIG_HOME: fixture.configHome,
+        ENSEMBLE_AGENT_CEILING: "null"
+      },
+      cwd: fixture.cwd
+    });
+    assert.deepEqual(fromEnvironment.agentCeiling, { value: null, layer: "env" });
+
+    const fromFlag = resolveAmbientSettings({
+      env: {
+        XDG_CONFIG_HOME: fixture.configHome,
+        ENSEMBLE_AGENT_CEILING: "6"
+      },
+      cwd: fixture.cwd,
+      flags: { agentCeiling: null }
+    });
+    assert.deepEqual(fromFlag.agentCeiling, { value: null, layer: "flag" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("an absent machine config is silent and resolves built-in defaults", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-ambient-"));
   const configHome = path.join(cwd, "missing-config-home");

@@ -251,14 +251,14 @@ interface ParsedInvocation {
   /** Whether args came through --json-args, independent of the parsed value's shape. */
   jsonArgsProvided: boolean;
   budgetCeilings?: EngineBudgetCeilings;
-  agentCeiling?: number;
+  agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
   timeoutMs?: number;
 }
 
 function cliFlags(invocation: ParsedInvocation): {
   budget?: Record<string, number | null>;
-  agentCeiling?: number;
+  agentCeiling?: number | null;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   jsonArgs: boolean;
@@ -273,7 +273,7 @@ function cliFlags(invocation: ParsedInvocation): {
 }
 
 function runtimeConcurrencyOptions(settings: AmbientSettings): {
-  agentCeiling?: number;
+  agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
 } {
   const concurrencyCaps: EngineConcurrencyCaps = {};
@@ -284,7 +284,7 @@ function runtimeConcurrencyOptions(settings: AmbientSettings): {
     }
   }
   return {
-    ...(settings.agentCeiling.value !== null ? { agentCeiling: settings.agentCeiling.value } : {}),
+    ...(settings.agentCeiling.layer !== "default" ? { agentCeiling: settings.agentCeiling.value } : {}),
     ...(Object.keys(concurrencyCaps).length > 0 ? { concurrencyCaps } : {})
   };
 }
@@ -527,13 +527,16 @@ function parseConcurrencyCap(value: string): number {
   return cap;
 }
 
-function parseAgentCeiling(value: string | undefined): number | undefined {
+function parseAgentCeiling(value: string | undefined): number | null | undefined {
   if (value === undefined) {
     return undefined;
   }
+  if (value.trim() === "null") {
+    return null;
+  }
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 1) {
-    throw new CliUsageError(`--agent-ceiling value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
   }
   return ceiling;
 }
@@ -553,7 +556,7 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");

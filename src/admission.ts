@@ -1,6 +1,7 @@
 import type { EngineName } from "./types.js";
 
 export type AdmissionEventKind = "queued" | "admitted" | "released" | "skipped";
+export type AdmissionSkipReason = "engine-cap";
 
 export interface AdmissionEvent {
   seq: number;
@@ -9,6 +10,8 @@ export interface AdmissionEvent {
   kind: AdmissionEventKind;
   ceilingHeld: number;
   engineHeld: number;
+  /** Present only for `skipped`: a later engine was admitted past this waiter. */
+  reason?: AdmissionSkipReason;
 }
 
 export interface AdmissionControllerOptions {
@@ -23,6 +26,7 @@ interface WaitingAdmission {
   task: () => Promise<unknown>;
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+  skipReported: boolean;
 }
 
 /**
@@ -69,7 +73,8 @@ export class AdmissionController {
         agentId,
         task: async () => task(),
         resolve: (value) => resolve(value as T),
-        reject
+        reject,
+        skipReported: false
       });
       this.#emit("queued", engine, agentId);
       this.#drain();
@@ -107,34 +112,32 @@ export class AdmissionController {
 
   #drain(): void {
     let index = 0;
+    const bypassed: WaitingAdmission[] = [];
     while (index < this.#waiting.length) {
-      if (this.#tryAdmitFrom(index)) {
-        index = 0;
-        continue;
+      if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
+        return;
       }
       const entry = this.#waiting[index];
-      if (entry !== undefined) {
-        this.#emit("skipped", entry.engine, entry.agentId);
+      if (entry === undefined) {
+        return;
       }
-      index += 1;
-    }
-  }
+      if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
+        bypassed.push(entry);
+        index += 1;
+        continue;
+      }
 
-  #tryAdmitFrom(index: number): boolean {
-    const entry = this.#waiting[index];
-    if (entry === undefined) {
-      return false;
-    }
-    if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
-      return false;
-    }
-    if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
-      return false;
-    }
+      for (const skipped of bypassed) {
+        if (!skipped.skipReported) {
+          skipped.skipReported = true;
+          this.#emit("skipped", skipped.engine, skipped.agentId, "engine-cap");
+        }
+      }
+      bypassed.length = 0;
 
-    this.#waiting.splice(index, 1);
-    this.#start(entry, false);
-    return true;
+      this.#waiting.splice(index, 1);
+      this.#start(entry, false);
+    }
   }
 
   #start(entry: WaitingAdmission, bypassGates: boolean): void {
@@ -169,7 +172,12 @@ export class AdmissionController {
     return this.#engineActive.get(engine) ?? 0;
   }
 
-  #emit(kind: AdmissionEventKind, engine: EngineName, agentId: number): void {
+  #emit(
+    kind: AdmissionEventKind,
+    engine: EngineName,
+    agentId: number,
+    reason?: AdmissionSkipReason
+  ): void {
     this.#eventSeq += 1;
     this.#onAdmission?.({
       seq: this.#eventSeq,
@@ -177,7 +185,8 @@ export class AdmissionController {
       agentId,
       kind,
       ceilingHeld: this.#ceilingActive,
-      engineHeld: this.#activeFor(engine)
+      engineHeld: this.#activeFor(engine),
+      ...(reason === undefined ? {} : { reason })
     });
   }
 }

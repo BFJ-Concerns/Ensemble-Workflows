@@ -27,7 +27,11 @@ test("admission acquires both counters atomically and skips an ineligible waiter
     events.filter((event) => event.kind === "admitted").map((event) => event.agentId),
     [1, 3]
   );
-  assert.ok(events.some((event) => event.kind === "skipped" && event.agentId === 2));
+  assert.ok(
+    events.some(
+      (event) => event.kind === "skipped" && event.agentId === 2 && event.reason === "engine-cap"
+    )
+  );
   for (const event of events.filter((candidate) => candidate.kind === "queued")) {
     assert.equal(
       events.some(
@@ -124,14 +128,23 @@ test("close releases waiting calls and balances every acquired slot", async () =
   });
   const active = controller.admit("codex", 1, () => activeGate.promise);
   const waiting = controller.admit("claude", 2, async () => undefined);
+  const sameEngineWaiting = controller.admit("codex", 3, async () => undefined);
   await drainMicrotasks();
 
   controller.close();
+  assert.deepEqual(controller.snapshot(), {
+    ceilingActive: 3,
+    engineActive: new Map([
+      ["codex", 2],
+      ["claude", 1]
+    ]),
+    waiting: 0
+  });
   activeGate.resolve(undefined);
-  await Promise.all([active, waiting]);
+  await Promise.all([active, waiting, sameEngineWaiting]);
 
-  assert.equal(events.filter((event) => event.kind === "admitted").length, 2);
-  assert.equal(events.filter((event) => event.kind === "released").length, 2);
+  assert.equal(events.filter((event) => event.kind === "admitted").length, 3);
+  assert.equal(events.filter((event) => event.kind === "released").length, 3);
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 0,
     engineActive: new Map([
@@ -140,6 +153,52 @@ test("close releases waiting calls and balances every acquired slot", async () =
     ]),
     waiting: 0
   });
+});
+
+test("skip events identify engine-cap arbitration without quadratic repeats", async () => {
+  const events: AdmissionEvent[] = [];
+  const activeGate = deferred<void>();
+  const controller = new AdmissionController({
+    ceiling: 2,
+    caps: caps({ codex: 1, claude: 1 }),
+    onAdmission: (event) => events.push(event)
+  });
+  const active = controller.admit("codex", 1, () => activeGate.promise);
+  const waiting = Array.from({ length: 200 }, (_, index) =>
+    controller.admit("codex", index + 2, async () => undefined)
+  );
+  await drainMicrotasks();
+
+  assert.equal(events.filter((event) => event.kind === "skipped").length, 0);
+
+  const verifier = controller.admit("claude", 202, async () => undefined);
+  await verifier;
+  const skipped = events.filter((event) => event.kind === "skipped");
+  assert.equal(skipped.length, 200);
+  assert.ok(skipped.every((event) => event.reason === "engine-cap"));
+
+  activeGate.resolve(undefined);
+  await Promise.all([active, ...waiting]);
+  assert.equal(events.filter((event) => event.kind === "skipped").length, 200);
+});
+
+test("routine ceiling saturation does not emit an anti-starvation skip", async () => {
+  const events: AdmissionEvent[] = [];
+  const activeGate = deferred<void>();
+  const controller = new AdmissionController({
+    ceiling: 1,
+    caps: caps({ codex: 2, claude: 2 }),
+    onAdmission: (event) => events.push(event)
+  });
+  const active = controller.admit("codex", 1, () => activeGate.promise);
+  const waiting = controller.admit("claude", 2, async () => undefined);
+  await drainMicrotasks();
+
+  assert.equal(events.filter((event) => event.kind === "skipped").length, 0);
+
+  activeGate.resolve(undefined);
+  await Promise.all([active, waiting]);
+  assert.equal(events.filter((event) => event.kind === "skipped").length, 0);
 });
 
 function caps(values: Partial<Record<EngineName, number>>): ReadonlyMap<EngineName, number> {

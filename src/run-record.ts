@@ -26,7 +26,7 @@ type AccountingSource = "provider-reported" | "estimated";
 
 export interface CliFlagsRecord {
   budget?: Record<string, number | null>;
-  agentCeiling?: number;
+  agentCeiling?: number | null;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   jsonArgs: boolean;

@@ -31,7 +31,7 @@ export interface AmbientSettings {
 }
 
 export interface AmbientSettingFlags {
-  agentCeiling?: number;
+  agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
 }
 
@@ -75,14 +75,11 @@ export function resolveAmbientSettings(input: {
 
   return {
     configFile,
-    agentCeiling: resolveNumber({
+    agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
-      envKey: AGENT_CEILING_ENV,
       file: config?.agent_ceiling,
-      fileKey: "agent_ceiling",
-      configFile,
-      fallback: null
+      configFile
     }),
     concurrencyCaps: Object.fromEntries(
       ENGINES.map((engine) => [
@@ -244,6 +241,33 @@ function resolveNumber<T extends number | null>(input: {
     return { value: input.file, layer: "config-file" };
   }
   return { value: input.fallback, layer: "default" };
+}
+
+function resolveAgentCeiling(input: {
+  flag: number | null | undefined;
+  env: string | undefined;
+  file: number | undefined;
+  configFile: string;
+}): Resolved<number | null> {
+  if (input.flag !== undefined) {
+    if (input.flag !== null) {
+      assertPositiveInteger(input.flag, "agent_ceiling", "CLI flags");
+    }
+    return { value: input.flag, layer: "flag" };
+  }
+  if (input.env !== undefined) {
+    if (input.env.trim() === "null") {
+      return { value: null, layer: "env" };
+    }
+    return {
+      value: parseEnvironmentInteger(input.env, AGENT_CEILING_ENV),
+      layer: "env"
+    };
+  }
+  if (input.file !== undefined) {
+    return { value: input.file, layer: "config-file" };
+  }
+  return { value: null, layer: "default" };
 }
 
 function resolveRunRecord(

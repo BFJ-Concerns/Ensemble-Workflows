@@ -526,10 +526,11 @@ test("status artefact sweep removes dead owners without touching a live run or l
   });
 
   const staleTmp = `${target}.${deadPid}.1.tmp`;
-  const staleRemove = `${target}.${deadPid}.dead-run.remove`;
+  const staleRemove = `${target}.${deadPid}.00000000-0000-4000-8000-000000000001.remove`;
   const liveTmp = `${target}.${livePid}.1.tmp`;
-  const liveRemove = `${target}.${livePid}.live-run.remove`;
+  const liveRemove = `${target}.${livePid}.00000000-0000-4000-8000-000000000002.remove`;
   const lookalike = `${target}.${deadPid}.1.tmp.backup`;
+  const postStartupTmp = `${target}.${deadPid}.2.tmp`;
 
   try {
     const staleSnapshot = `${JSON.stringify({ runId: "dead-run", pid: deadPid, state: "running" })}\n`;
@@ -544,6 +545,8 @@ test("status artefact sweep removes dead owners without touching a live run or l
 
     const progress = new RunProgress({ runId: "sweeper-run", budget: new UnboundedBudget() });
     const writer = new StatusFileWriter({ progress, dir: directory });
+    await waitForFile(target);
+    await writeFile(postStartupTmp, staleSnapshot);
     await writer.close();
 
     const survivors = new Set(await readdir(directory));
@@ -552,6 +555,7 @@ test("status artefact sweep removes dead owners without touching a live run or l
     assert.equal(survivors.has(path.basename(liveTmp)), true);
     assert.equal(survivors.has(path.basename(liveRemove)), true);
     assert.equal(survivors.has(path.basename(lookalike)), true);
+    assert.equal(survivors.has(path.basename(postStartupTmp)), true);
   } finally {
     liveOwner.kill("SIGTERM");
     await new Promise<void>((resolve) => {
@@ -986,6 +990,18 @@ async function findOnlyFile(root: string, basename: string): Promise<string> {
   const matches = entries.filter((entry) => path.basename(entry) === basename);
   assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
   return path.join(root, matches[0] ?? "");
+}
+
+async function waitForFile(file: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      await readFile(file);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+  throw new Error(`file never appeared: ${file}`);
 }
 
 async function runNode(

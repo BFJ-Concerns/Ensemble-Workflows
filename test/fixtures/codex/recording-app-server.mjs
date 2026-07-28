@@ -10,10 +10,22 @@ if (process.argv[2] !== "app-server") {
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
+const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 let threadCounter = 0;
+const pendingTurns = [];
 
 const reader = createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+const completeTurn = ({ threadId }) => {
+  send({
+    method: "item/completed",
+    params: {
+      threadId,
+      item: { itemType: "agentMessage", text: responseText }
+    }
+  });
+  send({ method: "turn/completed", params: { threadId } });
+};
 
 reader.on("line", (line) => {
   if (capturePath !== undefined) {
@@ -41,13 +53,11 @@ reader.on("line", (line) => {
     const { threadId } = message.params;
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
-    send({
-      method: "item/completed",
-      params: {
-        threadId,
-        item: { itemType: "agentMessage", text: responseText }
+    pendingTurns.push({ threadId });
+    if (pendingTurns.length >= barrierSize) {
+      for (const pending of pendingTurns.splice(0)) {
+        completeTurn(pending);
       }
-    });
-    send({ method: "turn/completed", params: { threadId } });
+    }
   }
 });

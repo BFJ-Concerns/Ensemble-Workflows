@@ -510,6 +510,65 @@ test("built CLI treats an absent machine config as silent and normal", async () 
   }
 });
 
+test("built CLI can lift a machine agent ceiling for one run without editing the config file", async () => {
+  const fixture = await createProcessFixture("unbounded-machine-ceiling", "unbounded-ok");
+  const directory = path.dirname(fixture.script);
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const recordStore = path.join(directory, "records");
+  const configSource = JSON.stringify({ schema_version: 1, agent_ceiling: 1 });
+
+  try {
+    await mkdir(path.dirname(configFile), { recursive: true });
+    await writeFile(configFile, configSource);
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unbounded-machine-ceiling",
+          description: "A one-run override restores unbounded cross-worker admission"
+        };
+        return await parallel([
+          () => agent("first barrier worker", { engine: "codex", maxAttempts: 1 }),
+          () => agent("second barrier worker", { engine: "codex", maxAttempts: 1 })
+        ]);
+      `,
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      ["--agent-ceiling=null", fixture.script],
+      {
+        XDG_CONFIG_HOME: configHome,
+        ENSEMBLE_FAKE_CODEX_BARRIER: "2",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore,
+      },
+      5_000,
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `["unbounded-ok","unbounded-ok"]\n`);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      2,
+    );
+    assert.equal(await readFile(configFile, "utf8"), configSource);
+
+    const manifestPath = await findOnlyFile(recordStore, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      concurrency: {
+        agent_ceiling: { value: number | null; layer: string };
+      };
+    };
+    assert.deepEqual(manifest.concurrency.agent_ceiling, {
+      value: null,
+      layer: "flag",
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("ensemble agent stdout matches an equivalent one-call workflow", async () => {
   const workerOutput = {
     token: "SINGLE_AGENT_EQUIVALENCE",
@@ -572,6 +631,11 @@ interface ProcessFixture {
   script: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runArgsWithEnv: (
+    args: string[],
+    overrides: NodeJS.ProcessEnv,
+    timeoutMs?: number,
+  ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runWithEnv: (overrides: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   messages: () => Promise<RecordedMessage[]>;
   cleanup: () => Promise<void>;
@@ -584,6 +648,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   const capturePath = path.join(directory, "codex-input.jsonl");
   const script = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
+  await writeFile(capturePath, "");
   await writeFile(
     fakeCodex,
     `#!/usr/bin/env node\nimport ${JSON.stringify(path.resolve("test/fixtures/codex/recording-app-server.mjs"))};\n`
@@ -599,6 +664,8 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
     script,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
+    runArgsWithEnv: (args, overrides, timeoutMs) =>
+      runNode([bundledCliPath, ...args], { ...env, ...overrides }, timeoutMs),
     runWithEnv: (overrides) => runNode([bundledCliPath, script], { ...env, ...overrides }),
     messages: async () =>
       (await readFile(capturePath, "utf8"))
@@ -627,12 +694,14 @@ async function findOnlyFile(root: string, basename: string): Promise<string> {
 
 async function runNode(
   args: string[],
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  timeoutMs?: number,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, {
       cwd: process.cwd(),
-      env
+      env,
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
     });
     let stdout = "";
     let stderr = "";

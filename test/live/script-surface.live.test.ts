@@ -135,7 +135,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   }
 });
 
-test("live built CLI honours a very large positive per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-large-turn-timeout-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
@@ -145,8 +145,8 @@ test("live built CLI honours a very large positive per-turn timeout as a long de
       script,
       `
         export const meta = {
-          name: "large-positive-turn-timeout",
-          description: "A valid large deadline must not be shortened by the host timer"
+          name: "maximum-faithful-turn-timeout",
+          description: "The largest faithfully representable deadline permits an ordinary worker"
         };
 
         return await agent(
@@ -154,7 +154,7 @@ test("live built CLI honours a very large positive per-turn timeout as a long de
           {
             engine: "codex",
             model: "gpt-5.6-terra",
-            timeoutMs: 1e12,
+            timeoutMs: 2147483647,
             maxAttempts: 1,
             schema: {
               type: "object",

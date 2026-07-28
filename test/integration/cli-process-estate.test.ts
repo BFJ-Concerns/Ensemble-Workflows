@@ -426,6 +426,40 @@ test("built CLI rejects harness-owned invalid values before worker creation with
   );
 });
 
+test("built CLI rejects a per-turn timeout above Node's faithful timer limit before worker creation", async () => {
+  const fixture = await createProcessFixture("oversized-turn-timeout");
+  const timeoutMs = 2_147_483_648;
+  const maximumTimeoutMs = 2_147_483_647;
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "oversized-turn-timeout",
+          description: "Unfaithful host timer values fail at the author boundary"
+        };
+        return await agent("must not open a worker", {
+          engine: "codex",
+          timeoutMs: ${timeoutMs}
+        });
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /timeoutMs/);
+    assert.match(result.stderr, new RegExp(String(timeoutMs)));
+    assert.match(result.stderr, new RegExp(String(maximumTimeoutMs)));
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI still collapses ordinary parallel and pipeline errors to null", async () => {
   const fixture = await createProcessFixture("ordinary-combinator-errors");
 

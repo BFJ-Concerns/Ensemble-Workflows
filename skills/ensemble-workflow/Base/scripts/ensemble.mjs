@@ -6855,19 +6855,6 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-// src/runtime.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-
-// src/agent-placement.ts
-import path3 from "node:path";
-
-// src/worktree-isolation.ts
-import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify } from "node:util";
-
 // src/errors.ts
 var EnsembleError = class extends Error {
   constructor(message, options) {
@@ -7016,7 +7003,18 @@ function formatAgentOptionValue(value) {
   }
 }
 
+// src/runtime.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/agent-placement.ts
+import path3 from "node:path";
+
 // src/worktree-isolation.ts
+import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import path2 from "node:path";
+import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 var GitWorktreeIsolationManager = class {
   #counter = 0;
@@ -7424,6 +7422,7 @@ var StaticOpenCodeModelRegistry = class {
 var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
 
 // src/engine-option-validation.ts
+var MAX_TIMER_DELAY_MS = 2147483647;
 var AGENT_OPTION_KEYS = Object.keys({
   engine: true,
   schema: true,
@@ -7452,7 +7451,7 @@ function assertRecognisedAgentOptions(options) {
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
-  assertPositiveIntegerOption(values, "timeoutMs");
+  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
 }
 function assertFallbackModelSupported(engine, fallbackModel) {
@@ -7473,10 +7472,11 @@ function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaul
     requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
   }
 }
-function assertPositiveIntegerOption(options, option) {
+function assertPositiveIntegerOption(options, option, maximum) {
   const value = options[option];
-  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
-    throw new InvalidAgentOptionValueError(option, value, "a positive integer");
+  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || maximum !== void 0 && value > maximum)) {
+    const expected = maximum === void 0 ? "a positive integer" : `a positive integer no greater than ${maximum}`;
+    throw new InvalidAgentOptionValueError(option, value, expected);
   }
 }
 
@@ -12149,10 +12149,19 @@ function formatError3(error) {
   if (error instanceof CliUsageError) {
     return error.message;
   }
+  if (error instanceof AgentOptionRejectedError) {
+    return `${error.name}: ${error.message}`;
+  }
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }
+  if (hasStack(error)) {
+    return error.stack;
+  }
   return String(error);
+}
+function hasStack(error) {
+  return typeof error === "object" && error !== null && "stack" in error && typeof error.stack === "string";
 }
 
 // src/node-version.ts

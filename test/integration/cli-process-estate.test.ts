@@ -282,6 +282,67 @@ test("built CLI accepts a comment between meta and defaults", async () => {
   }
 });
 
+test("built CLI defers awkward valid workflow bodies to V8 without false shape rejection", async () => {
+  const fixture = await createProcessFixture("awkward-valid-workflow");
+
+  try {
+    await writeFile(
+      fixture.script,
+      String.raw`
+        export const meta = {
+          name: "awkward-valid-workflow",
+          description: "Valid parser-edge syntax must not resemble a misplaced defaults export"
+        };
+
+        async function* syntaxTraps() {
+          yield /https?:\/\/[^"'{}[\]]+/u;
+          yield /export\s+const\s+defaults\s*=\s*\{/u;
+        }
+
+        class Matcher {
+          #defaultsLike = "export const defaults = { codex: {} }";
+          static parts;
+          static {
+            this.parts = ["export", /const/u, "defaults"];
+          }
+          matches(pattern) {
+            return pattern.test(this.#defaultsLike);
+          }
+        }
+
+        const matcher = new Matcher();
+        const results = [];
+        for await (const pattern of syntaxTraps()) {
+          results.push(matcher.matches(pattern));
+        }
+        const computed = {
+          ["export const defaults = {"]: { accepted: true }
+        };
+
+        return {
+          results,
+          staticParts: Matcher.parts.map(String),
+          computed: computed?.["export const defaults = {"]?.accepted ?? false,
+          division: 81 / 9 / 3
+        };
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      results: [false, true],
+      staticParts: ["export", "/const/u", "defaults"],
+      computed: true,
+      division: 3
+    });
+    assert.doesNotMatch(result.stderr, /defaults.*follow.*meta|SyntaxError/i);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI rejects a tuning flag after the script path and names the pass-through escape", async () => {
   const fixture = await createProcessFixture("misordered-tuning-flag");
 

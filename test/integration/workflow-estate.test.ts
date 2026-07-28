@@ -1062,6 +1062,46 @@ test("parallel and pipeline propagate rejected options before a worker opens", a
   }
 });
 
+test("parallel propagates repeated malformed schemas before a worker opens", async () => {
+  const { exitCode, stdout, stderr, transport } = await runScript(
+    `
+      export const meta = { name: "parallel-malformed-schema" };
+      const schema = { type: "object", properties: { answer: { type: "not-a-type" } } };
+      await parallel([
+        () => agent("never", { engine: "codex", schema }),
+        () => agent("never", { engine: "codex", schema }),
+        () => agent("never", { engine: "codex", schema })
+      ]);
+      return "survived";
+    `,
+    []
+  );
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
+  assert.equal(transport.openedThreads.length, 0);
+});
+
+test("pipeline propagates repeated malformed schemas before a worker opens", async () => {
+  const { exitCode, stdout, stderr, transport } = await runScript(
+    `
+      export const meta = { name: "pipeline-malformed-schema" };
+      const schema = { type: "object", properties: { answer: { type: "not-a-type" } } };
+      await pipeline(["first", "second", "third"], () =>
+        agent("never", { engine: "codex", schema })
+      );
+      return "survived";
+    `,
+    []
+  );
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
+  assert.equal(transport.openedThreads.length, 0);
+});
+
 test("schema retries, per-thunk failure, and budget ceiling survive a whole workflow", async () => {
   const { exitCode, stdout, stderr, transport } = await runScript(
     `

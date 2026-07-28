@@ -180,7 +180,7 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
  * not compile as JSON Schema. Failing fast here beats paying for a full turn
  * only to discover the schema at validation time.
  */
-export class InvalidAgentSchemaError extends EnsembleError {
+export class InvalidAgentSchemaError extends AgentOptionRejectedError {
   constructor(message: string, options?: ErrorOptions) {
     super(`agent schema does not compile as JSON Schema: ${message}`, options);
   }

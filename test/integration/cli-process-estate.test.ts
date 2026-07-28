@@ -5,7 +5,25 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { RunProgress } from "../../src/progress.js";
+import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
+
+import type { BudgetView } from "../../src/progress.js";
+import type { EngineName } from "../../src/types.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+
+class UnboundedBudget implements BudgetView {
+  readonly ceilings: Partial<Record<EngineName, number | null>> = {};
+
+  spent(): number {
+    return 0;
+  }
+
+  remaining(): number {
+    return Number.POSITIVE_INFINITY;
+  }
+}
 
 test("built CLI salvages a top-level failure with its recorder enabled by default", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-process-estate-"));
@@ -110,6 +128,36 @@ test("built CLI sends unrestricted posture on every Codex turn", async () => {
   }
 });
 
+test("built CLI round-trips Unicode line separators to the final Codex protocol consumer", async () => {
+  const fixture = await createProcessFixture("unicode-line-separators");
+  const prompt = "before\u2028between\u2029after";
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "unicode-line-separator-round-trip",
+          description: "Final protocol consumer reconstructs both JSON-valid Unicode separators"
+        };
+        return await agent(${JSON.stringify(prompt)}, {
+          engine: "codex",
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({ ENSEMBLE_FAKE_CODEX_UNICODE_LINES: "1" });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"worker-ok"\n`);
+    const turnStart = (await fixture.messages()).find((message) => message.method === "turn/start");
+    assert.equal(turnStart?.params?.input?.[0]?.text, prompt);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI rejects a removed agent option with its removal reason", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-removed-option-"));
   const script = path.join(directory, "workflow.js");
@@ -197,6 +245,66 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
     assert.equal(result.stderr, "");
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("built CLI accepts a comment between meta and defaults", async () => {
+  const fixture = await createProcessFixture("commented-defaults");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "commented-defaults",
+          description: "Comments may separate the two workflow policy exports"
+        };
+        // The model policy remains adjacent in meaning even with an explanation.
+        export const defaults = {
+          codex: { model: "gpt-estate-recorder" }
+        };
+        return await agent("run after commented defaults", {
+          engine: "codex",
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"worker-ok"\n`);
+    assert.doesNotMatch(result.stderr, /SyntaxError/);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI rejects a tuning flag after the script path and names the pass-through escape", async () => {
+  const fixture = await createProcessFixture("misordered-tuning-flag");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "misordered-tuning-flag",
+          description: "Known tuning flags retain their meaning or fail at the author boundary"
+        };
+        return args;
+      `
+    );
+
+    const result = await fixture.runArgs([fixture.script, "--json-args", '{"value":true}']);
+
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /--json-args/);
+    assert.match(result.stderr, /--/);
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+  } finally {
+    await fixture.cleanup();
   }
 });
 
@@ -350,6 +458,106 @@ test("built CLI propagates a computed removed option from pipeline", async () =>
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test("built CLI propagates malformed schemas from both combinators before opening a worker", async () => {
+  for (const scenario of [
+    {
+      name: "parallel",
+      body: `return await parallel([
+        () => agent("invalid parallel schema", {
+          engine: "codex",
+          schema: { type: "definitely-not-json-schema" }
+        })
+      ]);`
+    },
+    {
+      name: "pipeline",
+      body: `return await pipeline(["item"], () => agent("invalid pipeline schema", {
+        engine: "codex",
+        schema: { type: "definitely-not-json-schema" }
+      }));`
+    }
+  ]) {
+    const fixture = await createProcessFixture(`${scenario.name}-schema-author-error`);
+
+    try {
+      await writeFile(
+        fixture.script,
+        `
+          export const meta = {
+            name: "${scenario.name}-schema-author-error",
+            description: "Pre-spawn schema errors escape ${scenario.name}"
+          };
+          ${scenario.body}
+        `
+      );
+
+      const result = await fixture.run();
+
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assert.match(result.stderr, /InvalidAgentSchemaError/);
+      assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
+  const target = path.join(directory, STATUS_FILENAME);
+  const deadOwner = spawn(process.execPath, ["-e", ""]);
+  const deadPid = deadOwner.pid;
+  assert.ok(deadPid !== undefined);
+  await new Promise<void>((resolve, reject) => {
+    deadOwner.once("error", reject);
+    deadOwner.once("exit", () => resolve());
+  });
+
+  const liveOwner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"]);
+  const livePid = liveOwner.pid;
+  assert.ok(livePid !== undefined);
+  await new Promise<void>((resolve, reject) => {
+    liveOwner.once("error", reject);
+    liveOwner.once("spawn", () => resolve());
+  });
+
+  const staleTmp = `${target}.${deadPid}.1.tmp`;
+  const staleRemove = `${target}.${deadPid}.dead-run.remove`;
+  const liveTmp = `${target}.${livePid}.1.tmp`;
+  const liveRemove = `${target}.${livePid}.live-run.remove`;
+  const lookalike = `${target}.${deadPid}.1.tmp.backup`;
+
+  try {
+    const staleSnapshot = `${JSON.stringify({ runId: "dead-run", pid: deadPid, state: "running" })}\n`;
+    const liveSnapshot = `${JSON.stringify({ runId: "live-run", pid: livePid, state: "running" })}\n`;
+    await Promise.all([
+      writeFile(staleTmp, staleSnapshot),
+      writeFile(staleRemove, staleSnapshot),
+      writeFile(liveTmp, liveSnapshot),
+      writeFile(liveRemove, liveSnapshot),
+      writeFile(lookalike, "not a status artefact\n")
+    ]);
+
+    const progress = new RunProgress({ runId: "sweeper-run", budget: new UnboundedBudget() });
+    const writer = new StatusFileWriter({ progress, dir: directory });
+    await writer.close();
+
+    const survivors = new Set(await readdir(directory));
+    assert.equal(survivors.has(path.basename(staleTmp)), false);
+    assert.equal(survivors.has(path.basename(staleRemove)), false);
+    assert.equal(survivors.has(path.basename(liveTmp)), true);
+    assert.equal(survivors.has(path.basename(liveRemove)), true);
+    assert.equal(survivors.has(path.basename(lookalike)), true);
+  } finally {
+    liveOwner.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      liveOwner.once("exit", () => resolve());
+    });
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -711,6 +919,7 @@ interface RecordedMessage {
   params?: {
     sandbox?: unknown;
     sandboxPolicy?: unknown;
+    input?: Array<{ text?: unknown }>;
   };
 }
 

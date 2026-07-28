@@ -81,6 +81,60 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
   assert.match(parsed.compiled.summary, /LIVE_WORKFLOW_OK/);
 });
 
+test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-open-domain-options-"));
+  const script = path.join(directory, "workflow.js");
+  const token = `LIVE_OPEN_DOMAIN_${randomUUID()}`;
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "open-domain-option-pass-through",
+          description: "A current engine-owned model and unusual metadata still reach a real worker"
+        };
+
+        const model = "gpt-5.6-terra";
+        const metadata = {
+          effort: "ultra",
+          label: "release candidate: Δ / unusual",
+          phase: "verify → final consumer"
+        };
+        return await agent(
+          "Return exactly one JSON object with token ${token}.",
+          {
+            engine: "codex",
+            model,
+            effort: metadata.effort,
+            label: metadata.label,
+            phase: metadata.phase,
+            timeoutMs: 180_000,
+            maxAttempts: 1,
+            schema: {
+              type: "object",
+              required: ["token"],
+              additionalProperties: false,
+              properties: {
+                token: { type: "string", enum: ["${token}"] }
+              }
+            }
+          }
+        );
+      `
+    );
+
+    const result = await runNode([bundledCliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD: "0", ENSEMBLE_STATUS: "0" }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { token });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
   const script = path.join(directory, "workflow.js");

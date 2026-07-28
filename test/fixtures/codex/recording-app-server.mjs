@@ -14,7 +14,6 @@ const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 let threadCounter = 0;
 const pendingTurns = [];
 
-const reader = createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const completeTurn = ({ threadId }) => {
   send({
@@ -27,7 +26,7 @@ const completeTurn = ({ threadId }) => {
   send({ method: "turn/completed", params: { threadId } });
 };
 
-reader.on("line", (line) => {
+const handleLine = (line) => {
   if (capturePath !== undefined) {
     appendFileSync(capturePath, `${line}\n`);
   }
@@ -60,4 +59,20 @@ reader.on("line", (line) => {
       }
     }
   }
-});
+};
+
+if (process.env.ENSEMBLE_FAKE_CODEX_UNICODE_LINES === "1") {
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split(/\r\n|[\n\r\u2028\u2029]/u);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      handleLine(line);
+    }
+  });
+} else {
+  const reader = createInterface({ input: process.stdin });
+  reader.on("line", handleLine);
+}

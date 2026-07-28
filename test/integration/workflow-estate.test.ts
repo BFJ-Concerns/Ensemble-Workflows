@@ -1062,6 +1062,62 @@ test("parallel and pipeline propagate rejected options before a worker opens", a
   }
 });
 
+test("computed open-domain options reach the final engine invocation unchanged", async () => {
+  const model = "gpt-5.6-terra";
+  const effort = "ultra";
+  const label = "unusual label: Δ / release-candidate";
+  const phaseName = "verify → final consumer";
+  const { exitCode, stdout, stderr, codex } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "computed-open-domain-options" };
+
+      const selected = await agent("select an engine-owned option set", {
+        engine: "codex",
+        maxAttempts: 1,
+        schema: {
+          type: "object",
+          required: ["model", "effort", "label", "phase"],
+          additionalProperties: false,
+          properties: {
+            model: { type: "string" },
+            effort: { type: "string" },
+            label: { type: "string" },
+            phase: { type: "string" }
+          }
+        }
+      });
+
+      const options = {
+        engine: "codex",
+        model: selected.model,
+        effort: selected.effort,
+        label: selected.label,
+        phase: selected.phase,
+        timeoutMs: 12_345,
+        maxAttempts: 1
+      };
+      return await agent("run with the selected unusual values", options);
+    `,
+    {
+      codexResponses: [
+        { text: JSON.stringify({ model, effort, label, phase: phaseName }) },
+        { text: "OPEN_DOMAIN_OPTIONS_RAN" }
+      ],
+      claudeResponses: []
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.equal(stdout, `"OPEN_DOMAIN_OPTIONS_RAN"\n`);
+  assert.equal(codex.invocations.length, 2);
+  const finalInvocation = codex.invocations[1];
+  assert.ok(finalInvocation);
+  assert.equal(finalInvocation.options.model, model);
+  assert.equal(finalInvocation.options.effort, effort);
+  assert.equal(finalInvocation.options.timeoutMs, 12_345);
+  assert.equal(finalInvocation.contexts.length, 1);
+});
+
 test("schema retries, per-thunk failure, and budget ceiling survive a whole workflow", async () => {
   const { exitCode, stdout, stderr, transport } = await runScript(
     `

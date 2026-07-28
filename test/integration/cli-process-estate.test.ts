@@ -669,6 +669,43 @@ test("ensemble agent preserves a schema-valid null exactly like an equivalent sc
   }
 });
 
+test("ensemble agent reports retry exhaustion as a failed partial run through the built process", async () => {
+  const fixture = await createProcessFixture("single-agent-exhaustion", "not JSON");
+  const schema = {
+    anyOf: [
+      {
+        type: "object",
+        required: ["finding"],
+        additionalProperties: false,
+        properties: {
+          finding: { type: "string" },
+        },
+      },
+      { type: "null" },
+    ],
+  };
+
+  try {
+    const direct = await fixture.runArgs([
+      "agent",
+      "--engine=codex",
+      `--schema=${JSON.stringify(schema)}`,
+      "Return a finding or null.",
+    ]);
+
+    assert.equal(direct.code, 1);
+    assert.equal(direct.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.doesNotMatch(direct.stdout, /^null$/m);
+    assert.match(direct.stderr, /Agent exhausted its attempts without producing a result/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      3,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 interface RecordedMessage {
   method?: string;
   params?: {

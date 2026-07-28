@@ -152,10 +152,10 @@ unknown values throw before any worker spawns.
 | `effort` | passed to the turn | passed to the CLI | passed as the model variant |
 | `fallbackModel` | throws | supported (declared degradation) | throws |
 | `cwd` | worker working directory; defaults to the run cwd | same | same |
-| `isolation: 'worktree'` | fresh git worktree | same | same |
+| `isolation: 'worktree'` | fresh git worktree; any other defined value throws | same | same |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
-| `timeoutMs` | per-turn deadline; omitted → unbounded | same (poll deadline) | same (subprocess killed) |
-| `maxAttempts` | default 3 | default 3 | default 3 |
+| `timeoutMs` | positive integer per-turn deadline; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
+| `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
 
 Every worker is unrestricted: it can read and write wherever the user running
@@ -164,9 +164,12 @@ posture explicitly on every turn; Claude and opencode already run without an
 Ensemble-managed containment boundary. Backend web search remains available to
 Codex workers without an `agent()` option.
 
-An unrecognised option key throws before that call's worker spawns. The removed
-`sandbox`, `network`, and `webSearch` keys receive a specific removal error
-rather than being ignored.
+An unrecognised option key or invalid harness-owned value throws before that
+call's worker spawns. The checked value domains are `isolation`, `timeoutMs`,
+and `maxAttempts`; engine-owned and descriptive values such as `model`,
+`effort`, `label`, and `phase` pass through unchecked. The removed `sandbox`,
+`network`, and `webSearch` keys receive a specific removal error rather than
+being ignored.
 
 Placement is resolved once per `agent()` call and retained across all retries
 and in-session corrections. With `cwd` and worktree isolation together, `cwd`
@@ -253,6 +256,7 @@ existing attempt `duration_ms` retains its previous meaning.
   partial-result envelope described above; completed workers' outputs are not
   lost.
 
-Ordinary failures inside `parallel()` and `pipeline()` surface as `null`
-elements, so callers must null-check fan-in results. A rejected `agent()`
-option is the narrow exception: it propagates and fails the run.
+Ordinary errors thrown by `parallel()` thunks or `pipeline()` stage callbacks
+surface as `null` elements, so callers must null-check fan-in results. A
+pre-spawn author rejection from `agent()` — including a rejected option or
+malformed schema — is the narrow exception: it propagates and fails the run.

@@ -6625,14 +6625,11 @@ function resolveAmbientSettings(input) {
   };
   return {
     configFile,
-    agentCeiling: resolveNumber({
+    agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
-      envKey: AGENT_CEILING_ENV,
       file: config?.agent_ceiling,
-      fileKey: "agent_ceiling",
-      configFile,
-      fallback: null
+      configFile
     }),
     concurrencyCaps: Object.fromEntries(
       ENGINES.map((engine) => [
@@ -6743,6 +6740,27 @@ function resolveNumber(input) {
     return { value: input.file, layer: "config-file" };
   }
   return { value: input.fallback, layer: "default" };
+}
+function resolveAgentCeiling(input) {
+  if (input.flag !== void 0) {
+    if (input.flag !== null) {
+      assertPositiveInteger(input.flag, "agent_ceiling", "CLI flags");
+    }
+    return { value: input.flag, layer: "flag" };
+  }
+  if (input.env !== void 0) {
+    if (input.env.trim() === "null") {
+      return { value: null, layer: "env" };
+    }
+    return {
+      value: parseEnvironmentInteger(input.env, AGENT_CEILING_ENV),
+      layer: "env"
+    };
+  }
+  if (input.file !== void 0) {
+    return { value: input.file, layer: "config-file" };
+  }
+  return { value: null, layer: "default" };
 }
 function resolveRunRecord(config, env) {
   const enabled = resolveEnabled(env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
@@ -7132,7 +7150,8 @@ var AdmissionController = class {
         agentId,
         task: async () => task(),
         resolve: (value) => resolve(value),
-        reject
+        reject,
+        skipReported: false
       });
       this.#emit("queued", engine, agentId);
       this.#drain();
@@ -7163,32 +7182,30 @@ var AdmissionController = class {
   }
   #drain() {
     let index = 0;
+    const bypassed = [];
     while (index < this.#waiting.length) {
-      if (this.#tryAdmitFrom(index)) {
-        index = 0;
-        continue;
+      if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
+        return;
       }
       const entry = this.#waiting[index];
-      if (entry !== void 0) {
-        this.#emit("skipped", entry.engine, entry.agentId);
+      if (entry === void 0) {
+        return;
       }
-      index += 1;
+      if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
+        bypassed.push(entry);
+        index += 1;
+        continue;
+      }
+      for (const skipped of bypassed) {
+        if (!skipped.skipReported) {
+          skipped.skipReported = true;
+          this.#emit("skipped", skipped.engine, skipped.agentId, "engine-cap");
+        }
+      }
+      bypassed.length = 0;
+      this.#waiting.splice(index, 1);
+      this.#start(entry, false);
     }
-  }
-  #tryAdmitFrom(index) {
-    const entry = this.#waiting[index];
-    if (entry === void 0) {
-      return false;
-    }
-    if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
-      return false;
-    }
-    if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
-      return false;
-    }
-    this.#waiting.splice(index, 1);
-    this.#start(entry, false);
-    return true;
   }
   #start(entry, bypassGates) {
     this.#ceilingActive += 1;
@@ -7213,7 +7230,7 @@ var AdmissionController = class {
   #activeFor(engine) {
     return this.#engineActive.get(engine) ?? 0;
   }
-  #emit(kind, engine, agentId) {
+  #emit(kind, engine, agentId, reason) {
     this.#eventSeq += 1;
     this.#onAdmission?.({
       seq: this.#eventSeq,
@@ -7221,7 +7238,8 @@ var AdmissionController = class {
       agentId,
       kind,
       ceilingHeld: this.#ceilingActive,
-      engineHeld: this.#activeFor(engine)
+      engineHeld: this.#activeFor(engine),
+      ...reason === void 0 ? {} : { reason }
     });
   }
 };
@@ -11561,7 +11579,7 @@ function runtimeConcurrencyOptions(settings) {
     }
   }
   return {
-    ...settings.agentCeiling.value !== null ? { agentCeiling: settings.agentCeiling.value } : {},
+    ...settings.agentCeiling.layer !== "default" ? { agentCeiling: settings.agentCeiling.value } : {},
     ...Object.keys(concurrencyCaps).length > 0 ? { concurrencyCaps } : {}
   };
 }
@@ -11760,9 +11778,12 @@ function parseAgentCeiling(value) {
   if (value === void 0) {
     return void 0;
   }
+  if (value.trim() === "null") {
+    return null;
+  }
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 1) {
-    throw new CliUsageError(`--agent-ceiling value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
   }
   return ceiling;
 }
@@ -11778,7 +11799,7 @@ function parseTimeoutMs(value) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble workflows",
     ""
   ].join("\n");

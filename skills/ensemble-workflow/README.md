@@ -13,7 +13,7 @@ older Nodes exit 1 with a version error):
 
 ```
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
-  [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N] \
+  [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N|null] \
   [--concurrency engine=N] [--timeout ms] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 ```
@@ -23,7 +23,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 - `--budget engine=N` sets a per-engine token ceiling; `--concurrency engine=N`
   caps that engine's parallel workers. Both repeatable, one engine each.
 - `--agent-ceiling N` caps all workers in the run across every engine. It is
-  unset and unbounded by default.
+  unset and unbounded by default; `--agent-ceiling null` explicitly lifts a
+  lower-layer machine ceiling for one run.
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
   `timeoutMs` inside the script.
 - `workflows` lists saved workflows from `.claude/ensemble/workflows/`
@@ -78,6 +79,9 @@ Environment variables are `ENSEMBLE_AGENT_CEILING`,
 `ENSEMBLE_CONCURRENCY_CODEX`, `ENSEMBLE_CONCURRENCY_CLAUDE`,
 `ENSEMBLE_CONCURRENCY_OPENCODE`, `ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, and `ENSEMBLE_STATUS_DIR`.
+`ENSEMBLE_AGENT_CEILING=null` explicitly restores an unbounded run over a
+machine-file value. Other values that are not positive integers, including `0`,
+fail loudly.
 The record and status switches accept `on`/`off`, `true`/`false`, `yes`/`no`,
 or `1`/`0`; malformed values fail rather than falling back. The durable archive
 defaults to `$XDG_DATA_HOME/ensemble` (normally
@@ -179,6 +183,9 @@ Child workflows share their parent's ceiling. The ceiling is machine/run policy
 and cannot be set by `agent()` or the script's `defaults`. If the runtime closes
 with accepted calls still queued, those calls are released outside the
 admission gates during shutdown.
+This can make the internal active counters temporarily exceed both limits while
+shutdown settles; ordinary execution never exceeds them, and the counters
+return to zero as those calls finish.
 
 The durable manifest records the effective ceiling and every registered
 engine's cap with the layer that supplied each value (`flag`, `env`,

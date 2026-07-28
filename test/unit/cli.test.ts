@@ -160,6 +160,41 @@ test("ensemble agent preserves a stdin prompt and accepts the same schema inline
   assert.deepEqual(engine.prompts, [prompt, prompt]);
 });
 
+test("ensemble agent resolves run-wide concurrency through ambient settings", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-ambient-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(
+    configFile,
+    JSON.stringify({
+      schema_version: 1,
+      agent_ceiling: 7,
+      concurrency: { codex: 3 }
+    })
+  );
+  const observed: RuntimeOptions[] = [];
+
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--agent-ceiling=2", "use ambient settings"],
+    {
+      cwd: directory,
+      env: { XDG_CONFIG_HOME: configHome },
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      runRecordDir: null,
+      createRuntime: async (options = {}) => {
+        observed.push(options);
+        return fakeRuntime();
+      }
+    }
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(observed[0]?.agentCeiling, 2);
+  assert.deepEqual(observed[0]?.concurrencyCaps, { codex: 3 });
+});
+
 test("ensemble agent preserves successful schema-validated null stdout equivalence", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-null-"));
   const script = path.join(directory, "workflow.js");
@@ -355,10 +390,10 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
       "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
-      "                      [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
 });
@@ -464,6 +499,72 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
   assert.equal(stderr.text(), "");
 });
 
+test("CLI wires the whole-workflow agent ceiling into runtime construction", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-ceiling-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cli-agent-ceiling" }; return "done";`);
+  const observed: RuntimeOptions[] = [];
+
+  const exitCode = await runEnsembleCli(["--agent-ceiling=2", script], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream(),
+    runRecordDir: null,
+    createRuntime: async (options = {}) => {
+      observed.push(options);
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(observed[0]?.agentCeiling, 2);
+});
+
+test("CLI null agent ceiling lifts a machine default for one run", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-unbounded-agent-ceiling-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const script = path.join(directory, "workflow.js");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(configFile, JSON.stringify({ schema_version: 1, agent_ceiling: 2 }));
+  await writeFile(script, `export const meta = { name: "cli-unbounded-agent-ceiling" }; return "done";`);
+  const observed: RuntimeOptions[] = [];
+
+  try {
+    const exitCode = await runEnsembleCli(["--agent-ceiling=null", script], {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      env: { XDG_CONFIG_HOME: configHome },
+      runRecordDir: null,
+      createRuntime: async (options = {}) => {
+        observed.push(options);
+        return fakeRuntime();
+      }
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(observed[0]?.agentCeiling, null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI rejects a zero agent ceiling as a usage error", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["--agent-ceiling=0", "unused.js"], {
+    cwd: "/tmp",
+    stdout,
+    stderr,
+    env: { XDG_CONFIG_HOME: "/definitely/absent" }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /agent-ceiling.*positive integer/i);
+});
+
 test("CLI --timeout caps the whole-workflow run and times out a hanging script", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-"));
   const script = path.join(directory, "workflow.js");
@@ -563,6 +664,7 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
       cwd: directory,
       stdout,
       stderr,
+      runRecordDir: null,
       createRuntime: async () =>
         new EnsembleRuntime({
           engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
@@ -743,10 +845,10 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
       "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
-      "                      [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
 });

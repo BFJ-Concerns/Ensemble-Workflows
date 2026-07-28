@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -15,7 +15,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 
 import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
-import type { EngineName, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
+import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,7 +29,15 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
     workflowPath: path.join(cwd, "workflow.js"),
     workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
     args: { item: "one" },
-    cliFlags: { jsonArgs: true }
+    cliFlags: { jsonArgs: true },
+    concurrency: {
+      agentCeiling: { value: null, layer: "default" },
+      engines: {
+        codex: { value: 3, layer: "config-file" },
+        claude: { value: 8, layer: "default" },
+        opencode: { value: 2, layer: "flag" }
+      }
+    }
   });
   await writer.noteMeta({ task: { id: "task-one", family: "demo" } });
   await writer.recordAgent(agentRecord(1, "codex", null, 3));
@@ -47,6 +55,78 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(agent.schema_version, 2);
   assert.equal(agent.kind, "agent_record");
+  assert.deepEqual(manifest.concurrency, {
+    agent_ceiling: { value: null, layer: "default" },
+    engines: {
+      claude: { value: 8, layer: "default" },
+      codex: { value: 3, layer: "config-file" },
+      opencode: { value: 2, layer: "flag" }
+    }
+  });
+  assert.equal(agent.queued_ms, 0);
+  assert.equal(agent.execution_ms, 0);
+});
+
+test("CLI records effective concurrency values with mixed-layer provenance", async () => {
+  const cwd = await gitRepo("ensemble-record-concurrency-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const configHome = path.join(cwd, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const script = path.join(cwd, "workflow.js");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(
+    configFile,
+    JSON.stringify({
+      schema_version: 1,
+      agent_ceiling: 2,
+      concurrency: { opencode: 5 },
+      run_record: { enabled: true, dir: store },
+      status: { enabled: false }
+    })
+  );
+  await writeFile(script, `export const meta = { name: "mixed-concurrency" }; return await agent("ok", { engine: "codex" });`);
+
+  const observed: RuntimeOptions[] = [];
+  const exitCode = await runEnsembleCli(["--concurrency=codex=3", script], {
+    cwd,
+    env: {
+      XDG_CONFIG_HOME: configHome,
+      ENSEMBLE_AGENT_CEILING: "4"
+    },
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream(),
+    createRuntime: async (options = {}) => {
+      observed.push(options);
+      return new EnsembleRuntime({
+        engines: new EngineRegistry([
+          new HangOnPromptEngine("codex", options.concurrencyCaps?.codex ?? 99),
+          new HangOnPromptEngine("claude", 8),
+          new HangOnPromptEngine("opencode", options.concurrencyCaps?.opencode ?? 99)
+        ]),
+        ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
+        defaultMaxAttempts: 1
+      });
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(observed[0]?.agentCeiling, 4);
+  assert.deepEqual(observed[0]?.concurrencyCaps, { codex: 3, opencode: 5 });
+
+  const runDirectories = await readdir(path.join(store, "runs", "cwd"), { recursive: true });
+  const manifestRelative = runDirectories.find((entry) => entry.endsWith("manifest.json"));
+  assert.ok(manifestRelative);
+  const manifest = JSON.parse(
+    await readFile(path.join(store, "runs", "cwd", manifestRelative), "utf8")
+  ) as { concurrency: unknown };
+  assert.deepEqual(manifest.concurrency, {
+    agent_ceiling: { value: 4, layer: "env" },
+    engines: {
+      claude: { value: 8, layer: "default" },
+      codex: { value: 3, layer: "flag" },
+      opencode: { value: 5, layer: "config-file" }
+    }
+  });
 });
 
 test("files table hashes artefacts and cost roll-up stays per engine and per model", async () => {
@@ -521,6 +601,8 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
     schema: null,
     rawOutput: "ok",
     validatedOutput: "ok",
+    queuedMs: 0,
+    executionMs: 0,
     attempts: [
       {
         attempt: 1,

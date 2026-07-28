@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveStatusDir } from "../../src/status-config.js";
+import { resolveStatusDir } from "../../src/ambient-settings.js";
 
 test("resolveStatusDir uses the cwd .claude directory only when it already exists", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));

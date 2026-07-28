@@ -25,6 +25,7 @@ export interface AgentOptions {
 export interface RuntimeOptions {
   cwd?: string;
   codexBin?: string;
+  agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
   budgetCeilings?: EngineBudgetCeilings;
   requestTimeoutMs?: number;

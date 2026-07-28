@@ -13,12 +13,13 @@ older Nodes exit 1 with a version error):
 
 ```
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
-  [--json-args '<json>'|@file] [--budget engine=N] [--concurrency engine=N] \
-  [--timeout ms] <script.js> [args...]
+  [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N|null] \
+  [--concurrency engine=N] [--timeout ms] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>] \
   [--isolation worktree] [--schema '<json>'|@file] [--task <identity>] \
-  [--budget engine=N] [--concurrency engine=N] [--timeout ms] [prompt]
+  [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
+  [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 ```
 
@@ -26,6 +27,9 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   (`@file` reads the JSON from a file).
 - `--budget engine=N` sets a per-engine token ceiling; `--concurrency engine=N`
   caps that engine's parallel workers. Both repeatable, one engine each.
+- `--agent-ceiling N` caps all workers in the run across every engine. It is
+  unset and unbounded by default; `--agent-ceiling null` explicitly lifts a
+  lower-layer machine ceiling for one run.
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
   `timeoutMs` inside the script.
 - `agent` runs one worker without a script. Supply its prompt as the final
@@ -51,10 +55,57 @@ If the schema accepts JSON `null` and the worker returns it successfully, the
 direct command instead exits 0 and prints `null`.
 Exit 2 is a usage error.
 
-Environment: `ENSEMBLE_STATUS=off` disables the live status snapshot
-(`.claude/ensemble.local.json`), `ENSEMBLE_STATUS_DIR` redirects it;
-`ENSEMBLE_RUN_RECORD=off` disables the durable run archive,
-`ENSEMBLE_RUN_RECORD_DIR` redirects it (default `~/.local/share/ensemble`).
+## Ambient settings
+
+The agent ceiling, each engine's concurrency cap, the durable archive, and the
+live status snapshot resolve independently through these layers:
+
+1. CLI flag, for the ceiling and concurrency caps only.
+2. `ENSEMBLE_` environment variable.
+3. `$XDG_CONFIG_HOME/ensemble/config.json` (normally
+   `~/.config/ensemble/config.json`).
+4. Built-in default.
+
+The optional machine file uses schema version 1:
+
+```json
+{
+  "schema_version": 1,
+  "agent_ceiling": 2,
+  "concurrency": {
+    "codex": 4,
+    "claude": 2,
+    "opencode": 1
+  },
+  "run_record": {
+    "enabled": true,
+    "dir": "/path/to/records"
+  },
+  "status": {
+    "enabled": true,
+    "dir": "/path/to/existing/status-directory"
+  }
+}
+```
+
+Every numeric value must be an integer of at least 1. The file is strict: an
+unsupported `schema_version`, unknown key, invalid value, unreadable file, or
+invalid JSON stops the run before a worker starts and names the file and key
+where applicable. An absent file is normal and silent.
+
+Environment variables are `ENSEMBLE_AGENT_CEILING`,
+`ENSEMBLE_CONCURRENCY_CODEX`, `ENSEMBLE_CONCURRENCY_CLAUDE`,
+`ENSEMBLE_CONCURRENCY_OPENCODE`, `ENSEMBLE_RUN_RECORD`,
+`ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, and `ENSEMBLE_STATUS_DIR`.
+`ENSEMBLE_AGENT_CEILING=null` explicitly restores an unbounded run over a
+machine-file value. Other values that are not positive integers, including `0`,
+fail loudly.
+The record and status switches accept `on`/`off`, `true`/`false`, `yes`/`no`,
+or `1`/`0`; malformed values fail rather than falling back. The durable archive
+defaults to `$XDG_DATA_HOME/ensemble` (normally
+`~/.local/share/ensemble`). Status defaults to the run's `.claude` directory
+only when that directory already exists; an explicit status directory must also
+already exist.
 
 ## Script shape
 
@@ -139,6 +190,26 @@ Registered opencode model keys (also addressable by provider id):
 Default concurrency caps: codex `max(1, min(16, cpus − 2))`, claude 8,
 opencode 2.
 Calls beyond the cap queue per engine.
+
+During ordinary execution, the optional whole-run agent ceiling is enforced
+together with these caps. A worker takes both capacities in one admission
+decision or queues while holding neither. When capacity frees, the
+longest-waiting eligible worker starts; a worker whose engine remains full is
+skipped so it cannot block another engine. One ceiling slot covers the complete
+logical `agent()` call, including retries, worktree finalisation, and archival.
+Child workflows share their parent's ceiling. The ceiling is machine/run policy
+and cannot be set by `agent()` or the script's `defaults`. If the runtime closes
+with accepted calls still queued, those calls are released outside the
+admission gates during shutdown.
+This can make the internal active counters temporarily exceed both limits while
+shutdown settles; ordinary execution never exceeds them, and the counters
+return to zero as those calls finish.
+
+The durable manifest records the effective ceiling and every registered
+engine's cap with the layer that supplied each value (`flag`, `env`,
+`config-file`, or `default`). An unbounded ceiling is written explicitly as
+`null`. Every agent record separates `queued_ms` from `execution_ms`; the
+existing attempt `duration_ms` retains its previous meaning.
 
 ## Return contract and failure modes
 

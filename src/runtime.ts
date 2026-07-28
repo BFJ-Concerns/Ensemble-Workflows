@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
+import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
@@ -70,6 +71,7 @@ export class EnsembleRuntime {
   readonly progress: RunProgress;
 
   #engines: EngineRegistry;
+  #admission: AdmissionController;
   #placement: AgentPlacementManager;
   #defaultTurnTimeoutMs: number | undefined;
   #defaultMaxAttempts: number;
@@ -82,6 +84,7 @@ export class EnsembleRuntime {
     engines?: EngineRegistry;
     transport?: RuntimeTransport;
     cwd?: string;
+    agentCeiling?: number | null;
     concurrencyCaps?: EngineConcurrencyCaps;
     budgetCeilings?: EngineBudgetCeilings;
     defaultTurnTimeoutMs?: number;
@@ -116,6 +119,10 @@ export class EnsembleRuntime {
           ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {})
         })
       ]);
+    this.#admission = new AdmissionController({
+      ceiling: options.agentCeiling ?? null,
+      caps: this.#engineCaps()
+    });
     this.#registerEngineCaps();
   }
 
@@ -146,6 +153,7 @@ export class EnsembleRuntime {
       cwd,
       ...(options.budgetCeilings !== undefined ? { budgetCeilings: options.budgetCeilings } : {}),
       ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
+      ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3
     });
 
@@ -198,6 +206,7 @@ export class EnsembleRuntime {
     }
 
     const engine = this.#engineFor(options.engine);
+    const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
@@ -212,38 +221,47 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
-    return engine.schedule(async () => {
-      this.progress.startAgent(agentId);
-      try {
-        const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-        const outcome = execution.status === "complete" ? "done" : "failed";
-        this.progress.settleAgent(agentId, outcome);
-        agentRecord.status = outcome === "done" ? "complete" : "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = execution.value;
-        // Retain successful outputs so a timeout can surface completed work.
-        // This includes schema-valid JSON null; failure is carried separately
-        // by the execution status rather than inferred from the returned value.
-        if (outcome === "done") {
-          this.#completed.push({
-            id: agentId,
-            engine: engine.name,
-            label: options.label ?? null,
-            phase: options.phase ?? null,
-            output: execution.value
-          });
+    return this.#admission.admit(engine.name, agentId, () =>
+      engine.schedule(async () => {
+        const executionStartedAt = Date.now();
+        this.progress.startAgent(agentId);
+        try {
+          const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+          const outcome = execution.status === "complete" ? "done" : "failed";
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, outcome);
+          agentRecord.status = outcome === "done" ? "complete" : "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = execution.value;
+          // Retain successful outputs so a timeout can surface completed work.
+          // This includes schema-valid JSON null; failure is carried separately
+          // by the execution status rather than inferred from the returned value.
+          if (outcome === "done") {
+            this.#completed.push({
+              id: agentId,
+              engine: engine.name,
+              label: options.label ?? null,
+              phase: options.phase ?? null,
+              output: execution.value
+            });
+          }
+          await this.#recordAgentSafely(agentRecord);
+          return execution.value;
+        } catch (error) {
+          const executionEndedAt = Date.now();
+          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+          this.progress.settleAgent(agentId, "failed");
+          agentRecord.status = "failed";
+          agentRecord.rawOutput = lastRawOutput(agentRecord);
+          agentRecord.validatedOutput = null;
+          await this.#recordAgentSafely(agentRecord);
+          throw error;
         }
-        await this.#recordAgentSafely(agentRecord);
-        return execution.value;
-      } catch (error) {
-        this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = "failed";
-        agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = null;
-        await this.#recordAgentSafely(agentRecord);
-        throw error;
-      }
-    });
+      })
+    );
   }
 
   /**
@@ -277,6 +295,7 @@ export class EnsembleRuntime {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#admission.close();
     await this.#engines.close();
   }
 
@@ -491,6 +510,17 @@ export class EnsembleRuntime {
     }
   }
 
+  #engineCaps(): ReadonlyMap<EngineName, number> {
+    const caps = new Map<EngineName, number>();
+    for (const name of this.#engines.names()) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== undefined) {
+        caps.set(name, adapter.concurrency);
+      }
+    }
+    return caps;
+  }
+
   #engineFor(engine: unknown): EngineAdapter {
     if (engine === undefined) {
       throw new MissingEngineError();
@@ -536,6 +566,8 @@ export class EnsembleRuntime {
       schema: options.schema ?? null,
       rawOutput: null,
       validatedOutput: null,
+      queuedMs: 0,
+      executionMs: 0,
       attempts: []
     };
   }

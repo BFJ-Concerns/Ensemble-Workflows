@@ -14,6 +14,7 @@ import type {
   TokenUsageBreakdown,
   TokenUsageEvent
 } from "./types.js";
+import type { Resolved } from "./ambient-settings.js";
 
 const execFileAsync = promisify(execFile);
 const SCHEMA_VERSION = 2;
@@ -25,6 +26,7 @@ type AccountingSource = "provider-reported" | "estimated";
 
 export interface CliFlagsRecord {
   budget?: Record<string, number | null>;
+  agentCeiling?: number | null;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   jsonArgs: boolean;
@@ -38,7 +40,13 @@ export interface RunRecordStartOptions {
   workflowSource: string;
   args: unknown;
   cliFlags: CliFlagsRecord;
+  concurrency?: EffectiveConcurrencyRecord;
   startedAt?: string;
+}
+
+export interface EffectiveConcurrencyRecord {
+  agentCeiling: Resolved<number | null>;
+  engines: Partial<Record<EngineName, Resolved<number>>>;
 }
 
 export interface RuntimeAgentAttemptRecord {
@@ -79,6 +87,8 @@ export interface RuntimeAgentRecord {
   schema: JsonSchema | null;
   rawOutput: string | null;
   validatedOutput: unknown;
+  queuedMs: number;
+  executionMs: number;
   attempts: RuntimeAgentAttemptRecord[];
 }
 
@@ -132,6 +142,10 @@ interface Manifest {
     raw: unknown;
   };
   cli_flags: CliFlagsRecord;
+  concurrency: {
+    agent_ceiling: Resolved<number | null>;
+    engines: Partial<Record<EngineName, Resolved<number>>>;
+  };
   git: {
     start: GitState;
     end: GitState | null;
@@ -232,6 +246,10 @@ export class RunRecordWriter {
         raw: null
       },
       cli_flags: options.cliFlags,
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
       git: {
         start: gitStart,
         end: null
@@ -345,6 +363,8 @@ export class RunRecordWriter {
       schema: record.schema,
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
+      queued_ms: record.queuedMs,
+      execution_ms: record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,

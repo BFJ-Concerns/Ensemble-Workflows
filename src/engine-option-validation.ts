@@ -8,7 +8,7 @@ import {
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
-import type { EngineName } from "./types.js";
+import type { AgentOptions, EngineName } from "./types.js";
 
 interface EngineDefaultOptions {
   model?: string;
@@ -16,19 +16,19 @@ interface EngineDefaultOptions {
   fallbackModel?: string;
 }
 
-const AGENT_OPTION_KEYS = [
-  "engine",
-  "schema",
-  "model",
-  "effort",
-  "fallbackModel",
-  "cwd",
-  "isolation",
-  "timeoutMs",
-  "maxAttempts",
-  "label",
-  "phase"
-] as const;
+const AGENT_OPTION_KEYS = Object.keys({
+  engine: true,
+  schema: true,
+  model: true,
+  effort: true,
+  fallbackModel: true,
+  cwd: true,
+  isolation: true,
+  timeoutMs: true,
+  maxAttempts: true,
+  label: true,
+  phase: true
+} satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 

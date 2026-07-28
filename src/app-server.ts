@@ -303,8 +303,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (this.#hasExited) {
       throw new AppServerExitedError("codex app-server is not running");
     }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     await new Promise<void>((resolve, reject) => {
-      this.#process.stdin.write(`${line}\n`, (error) => {
+      this.#process.stdin.write(`${framedLine}\n`, (error) => {
         if (error !== null && error !== undefined) {
           reject(error);
           return;

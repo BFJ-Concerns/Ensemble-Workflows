@@ -167,6 +167,14 @@ export class UnrecognisedAgentOptionError extends AgentOptionRejectedError {
   }
 }
 
+export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
+  constructor(option: string, value: unknown, expected: string) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)} value ${formatAgentOptionValue(value)}; expected ${expected}`
+    );
+  }
+}
+
 /**
  * Thrown by `agent()` before any worker spawns when the requested schema does
  * not compile as JSON Schema. Failing fast here beats paying for a full turn
@@ -175,5 +183,19 @@ export class UnrecognisedAgentOptionError extends AgentOptionRejectedError {
 export class InvalidAgentSchemaError extends EnsembleError {
   constructor(message: string, options?: ErrorOptions) {
     super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  }
+}
+
+function formatAgentOptionValue(value: unknown): string {
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "undefined") {
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n`;
+  }
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
   }
 }

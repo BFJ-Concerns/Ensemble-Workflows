@@ -1,5 +1,6 @@
 import {
   FallbackModelUnsupportedError,
+  InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
   UnrecognisedAgentOptionError
@@ -40,6 +41,13 @@ export function assertRecognisedAgentOptions(options: object): void {
       throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
     }
   }
+
+  const values = options as Record<string, unknown>;
+  if (values.isolation !== undefined && values.isolation !== "worktree") {
+    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  assertPositiveIntegerOption(values, "timeoutMs");
+  assertPositiveIntegerOption(values, "maxAttempts");
 }
 
 export function assertFallbackModelSupported(engine: EngineName, fallbackModel: string | undefined): void {
@@ -68,5 +76,15 @@ export function validateEngineDefaults(
   assertFallbackModelSupported(engine, defaults.fallbackModel);
   if (engine === "opencode" && defaults.model !== undefined) {
     requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+
+function assertPositiveIntegerOption(
+  options: Record<string, unknown>,
+  option: "timeoutMs" | "maxAttempts"
+): void {
+  const value = options[option];
+  if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
+    throw new InvalidAgentOptionValueError(option, value, "a positive integer");
   }
 }

@@ -9945,41 +9945,95 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     let invocation;
+    let completion;
     try {
       invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== void 0) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
+        completion = {
+          ok: true,
+          execution: await this.#runSchemaAgent(
+            engine.name,
+            invocation,
+            { ...options, schema: options.schema },
+            agentId,
+            agentRecord
+          )
+        };
+      } else {
+        completion = {
+          ok: true,
+          execution: {
+            status: "complete",
+            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+          }
+        };
       }
-      return {
-        status: "complete",
-        value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
-      };
+    } catch (error) {
+      completion = { ok: false, error };
     } finally {
       try {
-        await invocation?.close?.();
+        try {
+          await invocation?.close?.();
+        } catch (error) {
+          completion = { ok: false, error };
+        }
       } finally {
-        const worktree = await this.#placement.close(placement);
-        if (worktree !== null) {
-          this.worktrees.push(worktree);
-          agentRecord.worktree = {
-            branch: worktree.branch,
-            baseCommit: worktree.baseCommit,
-            changed: worktree.changed,
-            removed: worktree.removed
-          };
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
+        try {
+          const worktree = await this.#placement.close(placement);
+          if (worktree !== null) {
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finished",
+              params: {
+                path: worktree.path,
+                branch: worktree.branch,
+                changed: worktree.changed,
+                removed: worktree.removed
+              },
+              receivedAt: Date.now()
+            });
+          }
+        } catch (error) {
+          if (placement.worktree !== void 0) {
+            const worktree = {
+              ...placement.worktree,
+              changed: true,
+              removed: false
+            };
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finalisationFailed",
+              params: {
+                agentId,
+                path: worktree.path,
+                branch: worktree.branch,
+                message: failureFromError(error).message
+              },
+              receivedAt: Date.now()
+            });
+          }
+          if (completion?.ok !== false) {
+            completion = { ok: false, error };
+          }
         }
       }
     }
+    if (completion === void 0) {
+      throw new Error("agent execution ended without a result");
+    }
+    if (!completion.ok) {
+      throw completion.error;
+    }
+    return completion.execution;
+  }
+  #publishWorktree(agentRecord, worktree) {
+    this.worktrees.push(worktree);
+    agentRecord.worktree = {
+      branch: worktree.branch,
+      baseCommit: worktree.baseCommit,
+      changed: worktree.changed,
+      removed: worktree.removed
+    };
   }
   async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
@@ -11495,6 +11549,14 @@ async function runEnsembleCli(argv, options = {}) {
       if (event.method === "runRecord/writeFailed") {
         const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
         stderr.write(`[run-record] failed to archive an agent record: ${message}
+`);
+        return;
+      }
+      if (event.method === "worktree/finalisationFailed") {
+        const worktreePath2 = typeof event.params.path === "string" ? event.params.path : "<unknown>";
+        const branch2 = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+        const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
+        stderr.write(`[worktree] finalisation failed for ${worktreePath2} (${branch2}): ${message}
 `);
         return;
       }

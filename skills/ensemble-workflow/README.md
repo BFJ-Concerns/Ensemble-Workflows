@@ -47,6 +47,8 @@ instead:
 `{"partial":true,"reason":"failed"|"timed-out"|"interrupted","completed":[...]}`
 with every successfully finished worker's output. A schema agent that exhausts
 its attempts also exits 1 with this envelope rather than printing bare `null`.
+If the schema accepts JSON `null` and the worker returns it successfully, the
+direct command instead exits 0 and prints `null`.
 Exit 2 is a usage error.
 
 Environment: `ENSEMBLE_STATUS=off` disables the live status snapshot
@@ -140,11 +142,14 @@ Calls beyond the cap queue per engine.
 
 ## Return contract and failure modes
 
-- **With `schema`**: returns the parsed object once an attempt's output
-  validates; returns **`null`** after `maxAttempts` failed attempts (empty
-  output, unparseable JSON, or schema-validation failure). A malformed schema
-  throws before the first attempt. Codex may additionally reject a schema
-  outside its `outputSchema` subset, with an error saying so.
+- **With `schema`**: returns the parsed JSON value once an attempt's output
+  validates. A schema-valid JSON `null` is a successful value. After
+  `maxAttempts` failed attempts (empty output, unparseable JSON, or
+  schema-validation failure), the call also returns **`null`**, but its
+  execution status is failed; `ensemble agent` uses that status to emit the
+  failure envelope and exit 1. A malformed schema throws before the first
+  attempt. Codex may additionally reject a schema outside its `outputSchema`
+  subset, with an error saying so.
 
   On Claude and opencode the schema rides the prompt, and the worker is asked
   for a conforming JSON value while being allowed to surround it with prose or

@@ -608,11 +608,15 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
       throw new CliUsageError(`Unknown option before script path: ${value}`);
     }
 
-    return {
-      tuningArgs,
-      scriptArg: value,
-      scriptArgs: argv.slice(index + 1)
-    };
+    const scriptArgs = argv.slice(index + 1);
+    const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
+    if (misplacedTuningFlag !== undefined) {
+      throw new CliUsageError(
+        `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
+      );
+    }
+
+    return { tuningArgs, scriptArg: value, scriptArgs };
   }
 
   return { tuningArgs, scriptArg: undefined, scriptArgs: [] };

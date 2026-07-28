@@ -276,37 +276,39 @@ test("built CLI rejects an unrecognised option before opening that worker", asyn
   }
 });
 
-test("built CLI rejects a per-turn timeout above Node's timer limit before opening a worker", async () => {
-  const fixture = await createProcessFixture("oversized-timeout-rejection");
+test("built CLI rejects a per-turn timeout above Node's timer limit on every affected engine", async () => {
+  for (const engine of ["codex", "opencode"]) {
+    const fixture = await createProcessFixture(`oversized-${engine}-timeout-rejection`);
 
-  try {
-    await writeFile(
-      fixture.script,
-      `
-        export const meta = {
-          name: "oversized-timeout-rejection",
-          description: "Unrepresentable turn deadlines fail before thread creation"
-        };
-        return await agent("must not open a worker", {
-          engine: "codex",
-          timeoutMs: 1000000000000,
-          maxAttempts: 1
-        });
-      `
-    );
+    try {
+      await writeFile(
+        fixture.script,
+        `
+          export const meta = {
+            name: "oversized-${engine}-timeout-rejection",
+            description: "Unrepresentable turn deadlines fail before worker creation"
+          };
+          return await agent("must not open a worker", {
+            engine: "${engine}",
+            timeoutMs: 1000000000000,
+            maxAttempts: 1
+          });
+        `
+      );
 
-    const result = await fixture.run();
+      const result = await fixture.run();
 
-    assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.equal(
-      result.stderr,
-      'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
-    );
-    const messages = await fixture.messages();
-    assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
-  } finally {
-    await fixture.cleanup();
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assert.equal(
+        result.stderr,
+        'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
+      );
+      const messages = await fixture.messages();
+      assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
+    } finally {
+      await fixture.cleanup();
+    }
   }
 });
 

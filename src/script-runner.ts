@@ -154,7 +154,7 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
 
   // Optional second export: `export const defaults = { \u2026 }` directly after meta.
   let defaultsSource: string | null = null;
-  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const afterMeta = skipWhitespaceAndComments(withoutBom, bodyStart);
   const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
   if (defaultsMatch !== null) {
     const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
@@ -169,10 +169,17 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
     }
   }
 
+  const bodySource = withoutBom.slice(bodyStart);
+  if (containsDefaultsExport(bodySource)) {
+    throw new WorkflowScriptError(
+      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them"
+    );
+  }
+
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource: withoutBom.slice(bodyStart)
+    bodySource
   };
 }
 
@@ -333,6 +340,67 @@ function skipWhitespace(source: string, start: number): number {
     index += 1;
   }
   return index;
+}
+
+function skipWhitespaceAndComments(source: string, start: number): number {
+  let index = start;
+  while (index < source.length) {
+    index = skipWhitespace(source, index);
+    if (source.startsWith("//", index)) {
+      index = skipLineComment(source, index);
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    return index;
+  }
+  return index;
+}
+
+function containsDefaultsExport(source: string): boolean {
+  let index = 0;
+  try {
+    while (index < source.length) {
+      const char = source[index];
+      if (char === "\"" || char === "'") {
+        index = skipQuotedString(source, index, char);
+        continue;
+      }
+      if (char === "`") {
+        index = skipTemplateLiteral(source, index);
+        continue;
+      }
+      if (char === "/" && source[index + 1] === "/") {
+        index = skipLineComment(source, index);
+        continue;
+      }
+      if (char === "/" && source[index + 1] === "*") {
+        index = skipBlockComment(source, index);
+        continue;
+      }
+      if (isStatementStart(source, index) && /^export\s+const\s+defaults\s*=/.test(source.slice(index))) {
+        return true;
+      }
+      index += 1;
+    }
+  } catch (error) {
+    if (error instanceof WorkflowScriptError) {
+      return false;
+    }
+    throw error;
+  }
+  return false;
+}
+
+function isStatementStart(source: string, index: number): boolean {
+  const lineStart = source.lastIndexOf("\n", index - 1) + 1;
+  if (source.slice(lineStart, index).trim().length === 0) {
+    return true;
+  }
+  const previous = source.slice(0, index).trimEnd().at(-1);
+  return previous === ";" || previous === "}";
 }
 
 function findBalancedObjectEnd(source: string, start: number): number {

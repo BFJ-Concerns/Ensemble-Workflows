@@ -383,6 +383,49 @@ test("built CLI rejects an unrecognised option before opening that worker", asyn
   }
 });
 
+test("built CLI rejects harness-owned invalid values before worker creation with clean diagnostics", async () => {
+  const diagnostics: string[] = [];
+  for (const scenario of [
+    { option: "isolation", value: "wroktree" },
+    { option: "timeoutMs", value: 0 },
+    { option: "maxAttempts", value: 1.5 }
+  ] as const) {
+    const fixture = await createProcessFixture(`invalid-${scenario.option}`);
+
+    try {
+      await writeFile(
+        fixture.script,
+        `
+          export const meta = {
+            name: "invalid-${scenario.option}",
+            description: "Harness-owned values fail at the author boundary"
+          };
+          return await agent("must not open a worker", {
+            engine: "codex",
+            ${scenario.option}: ${JSON.stringify(scenario.value)}
+          });
+        `
+      );
+
+      const result = await fixture.run();
+
+      assert.equal(result.code, 1);
+      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assert.match(result.stderr, new RegExp(scenario.option));
+      assert.ok(result.stderr.includes(JSON.stringify(scenario.value)));
+      diagnostics.push(result.stderr);
+      assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+  assert.equal(
+    diagnostics.every((diagnostic) => !/\n\s+at /.test(diagnostic)),
+    true,
+    diagnostics.join("\n--- next rejection ---\n")
+  );
+});
+
 test("built CLI still collapses ordinary parallel and pipeline errors to null", async () => {
   const fixture = await createProcessFixture("ordinary-combinator-errors");
 

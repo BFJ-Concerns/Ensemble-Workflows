@@ -9471,23 +9471,23 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
       try {
-        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-        const outcome = result === null ? "failed" : "done";
+        const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+        const outcome = execution.status === "complete" ? "done" : "failed";
         this.progress.settleAgent(agentId, outcome);
         agentRecord.status = outcome === "done" ? "complete" : "failed";
         agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = result;
+        agentRecord.validatedOutput = execution.value;
         if (outcome === "done") {
           this.#completed.push({
             id: agentId,
             engine: engine.name,
             label: options.label ?? null,
             phase: options.phase ?? null,
-            output: result
+            output: execution.value
           });
         }
         await this.#recordAgentSafely(agentRecord);
-        return result;
+        return execution.value;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         agentRecord.status = "failed";
@@ -9539,7 +9539,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (options.schema !== void 0) {
         return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
       }
-      return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
+      return {
+        status: "complete",
+        value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+      };
     } finally {
       try {
         await invocation?.close?.();
@@ -9650,7 +9653,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(
             attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
-          return selection.parsed.value;
+          return {
+            status: "complete",
+            value: selection.parsed.value
+          };
         }
         previousFailure = {
           kind: "schema-validation",
@@ -9665,7 +9671,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
       }
     }
-    return null;
+    return {
+      status: "failed",
+      value: null
+    };
   }
   #emitEvent(event) {
     for (const listener of this.#eventListeners) {
@@ -11134,7 +11143,7 @@ async function runEnsembleCli(argv, options = {}) {
         runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
-      if (invocation.kind === "agent" && result === null) {
+      if (invocation.kind === "agent" && result === null && !completedDirectAgentWithNull(runtime)) {
         throw new SingleAgentFailedError();
       }
       stdout.write(`${serialiseResult(result)}
@@ -11169,6 +11178,10 @@ async function runEnsembleCli(argv, options = {}) {
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
+}
+function completedDirectAgentWithNull(runtime) {
+  const completed = runtime.completedOutputs?.() ?? [];
+  return completed.some((agent) => agent.output === null);
 }
 function workflowName(meta) {
   if (typeof meta === "object" && meta !== null && "name" in meta) {

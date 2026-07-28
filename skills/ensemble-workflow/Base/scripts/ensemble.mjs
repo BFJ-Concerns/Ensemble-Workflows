@@ -10611,9 +10611,7 @@ async function runWorkflowScript(options) {
     }
   });
   const context = createSandboxContext(hooks);
-  const script = new vm.Script(buildWrappedSource(extracted), {
-    filename: options.filename
-  });
+  const script = compileWorkflowScript(extracted, options.filename);
   let runResult;
   try {
     runResult = options.timeoutMs === void 0 ? script.runInContext(context) : script.runInContext(context, { timeout: options.timeoutMs });
@@ -10674,16 +10672,10 @@ function extractWorkflowSource(source) {
       bodyStart += 1;
     }
   }
-  const bodySource = withoutBom.slice(bodyStart);
-  if (containsDefaultsExport(bodySource)) {
-    throw new WorkflowScriptError(
-      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them"
-    );
-  }
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource
+    bodySource: withoutBom.slice(bodyStart)
   };
 }
 function readWorkflowDefaults(defaultsSource, filename = "workflow.js") {
@@ -10732,6 +10724,34 @@ const __workflowPromise = (async () => {
 ${workflow.bodySource}
 })();
 ({ meta: __workflowMeta, promise: __workflowPromise });`;
+}
+function compileWorkflowScript(workflow, filename) {
+  try {
+    return new vm.Script(buildWrappedSource(workflow), { filename });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    const bodyWithoutDefaultsExport = workflow.bodySource.replace(
+      /\bexport(?=\s+const\s+defaults\s*=)/g,
+      "      "
+    );
+    if (bodyWithoutDefaultsExport === workflow.bodySource) {
+      throw error;
+    }
+    try {
+      new vm.Script(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), { filename });
+    } catch {
+      throw new WorkflowScriptError(
+        `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
+        { cause: error }
+      );
+    }
+    throw new WorkflowScriptError(
+      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them",
+      { cause: error }
+    );
+  }
 }
 function createSandboxContext(hooks) {
   return vm.createContext(
@@ -10833,48 +10853,6 @@ function skipWhitespaceAndComments(source, start) {
     return index;
   }
   return index;
-}
-function containsDefaultsExport(source) {
-  let index = 0;
-  try {
-    while (index < source.length) {
-      const char = source[index];
-      if (char === '"' || char === "'") {
-        index = skipQuotedString(source, index, char);
-        continue;
-      }
-      if (char === "`") {
-        index = skipTemplateLiteral(source, index);
-        continue;
-      }
-      if (char === "/" && source[index + 1] === "/") {
-        index = skipLineComment(source, index);
-        continue;
-      }
-      if (char === "/" && source[index + 1] === "*") {
-        index = skipBlockComment(source, index);
-        continue;
-      }
-      if (isStatementStart(source, index) && /^export\s+const\s+defaults\s*=/.test(source.slice(index))) {
-        return true;
-      }
-      index += 1;
-    }
-  } catch (error) {
-    if (error instanceof WorkflowScriptError) {
-      return false;
-    }
-    throw error;
-  }
-  return false;
-}
-function isStatementStart(source, index) {
-  const lineStart = source.lastIndexOf("\n", index - 1) + 1;
-  if (source.slice(lineStart, index).trim().length === 0) {
-    return true;
-  }
-  const previous = source.slice(0, index).trimEnd().at(-1);
-  return previous === ";" || previous === "}";
 }
 function findBalancedObjectEnd(source, start) {
   let depth = 0;

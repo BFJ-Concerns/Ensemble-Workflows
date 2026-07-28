@@ -117,10 +117,13 @@ as an object literal, optionally followed by
 `export const defaults = { <engine>: { model?, effort?, fallbackModel? } }`
 (per-engine defaults; defined per-call options win). Blank lines, `//` comments
 ending in LF or CRLF, and `/* ... */` comments may separate these exports; a
-`defaults` export declared later in the workflow body is rejected. The rest of
-the file is the workflow body, evaluated in a `node:vm` sandbox as an async
-function — `return` produces the run's result. The sandbox exposes only the
-hooks below: no `require`, no `import`, no dynamic code generation.
+`defaults` export declared later in the workflow body is rejected with a
+placement error. If another syntax error makes that placement check
+inconclusive, the runtime says so and preserves the original `SyntaxError` as
+its cause. The rest of the file is the workflow body, evaluated in a `node:vm`
+sandbox as an async function — `return` produces the run's result. The sandbox
+exposes only the hooks below: no `require`, no `import`, no dynamic code
+generation.
 
 ## Hooks
 

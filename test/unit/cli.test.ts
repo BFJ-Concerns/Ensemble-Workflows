@@ -850,6 +850,58 @@ test("CLI treats an option-looking token after the script path as a script arg",
   assert.equal(stdout.text(), "{\"args\":[\"--not-a-tuning-flag\"]}\n");
 });
 
+test("CLI rejects a tuning flag after the script path with pass-through guidance", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-misplaced-tuning-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "misplaced-tuning" };
+      return { args };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli([script, "--json-args", "@args.json"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.match(stderr.text(), /Tuning flag --json-args appears after the script path/);
+  assert.match(stderr.text(), /put `--` before the script path to pass it through/);
+});
+
+test("CLI passes a tuning-looking workflow argument through after --", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-tuning-pass-through-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "tuning-pass-through" };
+      return { args };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["--", script, "--json-args", "@args.json"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '{"args":["--json-args","@args.json"]}\n');
+});
+
 test("CLI prints null for a return value JSON.stringify cannot serialise", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-circular-"));
   const script = path.join(directory, "workflow.js");

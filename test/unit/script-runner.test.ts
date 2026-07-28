@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { WorkflowTimeoutError, extractWorkflowSource, runWorkflowScript } from "../../src/script-runner.js";
+import {
+  WorkflowScriptError,
+  WorkflowTimeoutError,
+  extractWorkflowSource,
+  runWorkflowScript
+} from "../../src/script-runner.js";
 import { TokenBudget } from "../../src/budget.js";
 import { FallbackModelUnsupportedError, OpenCodeModelNotRegisteredError } from "../../src/errors.js";
 
@@ -422,6 +427,130 @@ test("export const defaults supplies per-engine policy that call sites override"
   assert.deepEqual(seen[1], { engine: "claude", model: "sonnet", effort: "medium" });
   assert.deepEqual(seen[2], { engine: "codex", effort: "low" });
   assert.deepEqual(seen[3], { engine: "opencode", model: "glm-5.2" });
+});
+
+test("comments between meta and defaults preserve the defaults block", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const recordingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async (_prompt: string, options?: Record<string, unknown>) => {
+      seen.push({ ...(options ?? {}) });
+      return "done";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  const result = await runWorkflowScript({
+    filename: "commented-defaults.js",
+    runtime: recordingRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "commented-defaults" };
+      // Defaults remain the optional second export.
+      /* Both comment forms are valid in the gap. */
+      export const defaults = { codex: { effort: "low" } };
+
+      // A later "export const defaults =" mention is only prose.
+      await agent("uses defaults", { engine: "codex" });
+      return "ok";
+    `
+  });
+
+  assert.equal(result.result, "ok");
+  assert.deepEqual(seen, [{ engine: "codex", effort: "low" }]);
+});
+
+test("a misplaced defaults export reports the workflow shape", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "misplaced-defaults.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "misplaced-defaults" };
+          const reason = "defaults declared late";
+          export const defaults = { codex: { effort: "low" } };
+          return reason;
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /`export const defaults` must follow `meta`/);
+      assert.doesNotMatch(error.message, /Unexpected token/);
+      return true;
+    }
+  );
+});
+
+test("nested templates may contain child workflow defaults as template text", async () => {
+  const result = await runWorkflowScript({
+    filename: "nested-template-child.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "nested-template-child" };
+      const CHILD = \`
+      export const meta = { name: "child" };
+      \${ \`
+      export const defaults = { codex: { effort: "low" } };
+      \` }
+      return 1;
+      \`;
+      return CHILD;
+    `
+  });
+
+  assert.ok(typeof result.result === "string");
+  assert.match(result.result, /export const defaults = \{ codex:/);
+});
+
+test("odd quotes in regex literals do not hide a misplaced defaults export", async (t) => {
+  for (const pattern of ["/it's/", '/say "hi/', "/[']/"]) {
+    await t.test(pattern, async () => {
+      await assert.rejects(
+        () =>
+          runWorkflowScript({
+            filename: "regex-before-misplaced-defaults.js",
+            runtime,
+            log: () => {},
+            source: `
+              export const meta = { name: "regex-before-misplaced-defaults" };
+              ${pattern};
+              export const defaults = { codex: { effort: "low" } };
+              return "never";
+            `
+          }),
+        (error: unknown) => {
+          assert.ok(error instanceof WorkflowScriptError);
+          assert.match(error.message, /`export const defaults` must follow `meta`/);
+          assert.doesNotMatch(error.message, /Unexpected token/);
+          return true;
+        }
+      );
+    });
+  }
+});
+
+test("an inconclusive defaults placement check preserves the underlying syntax error", async () => {
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "inconclusive-defaults-placement.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "inconclusive-defaults-placement" };
+          // export const defaults = { codex: { effort: "low" } };
+          const broken = ;
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /defaults.*placement could not be checked/i);
+      assert.ok(error.cause instanceof SyntaxError);
+      return true;
+    }
+  );
 });
 
 test("child workflow defaults stay lexical and call sites still override them", async () => {

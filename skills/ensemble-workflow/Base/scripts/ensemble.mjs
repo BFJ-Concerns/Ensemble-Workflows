@@ -7872,8 +7872,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (this.#hasExited) {
       throw new AppServerExitedError("codex app-server is not running");
     }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${line}
+      this.#process.stdin.write(`${framedLine}
 `, (error) => {
         if (error !== null && error !== void 0) {
           reject(error);
@@ -10610,9 +10611,7 @@ async function runWorkflowScript(options) {
     }
   });
   const context = createSandboxContext(hooks);
-  const script = new vm.Script(buildWrappedSource(extracted), {
-    filename: options.filename
-  });
+  const script = compileWorkflowScript(extracted, options.filename);
   let runResult;
   try {
     runResult = options.timeoutMs === void 0 ? script.runInContext(context) : script.runInContext(context, { timeout: options.timeoutMs });
@@ -10659,7 +10658,7 @@ function extractWorkflowSource(source) {
     bodyStart += 1;
   }
   let defaultsSource = null;
-  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const afterMeta = skipWhitespaceAndComments(withoutBom, bodyStart);
   const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
   if (defaultsMatch !== null) {
     const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
@@ -10725,6 +10724,34 @@ const __workflowPromise = (async () => {
 ${workflow.bodySource}
 })();
 ({ meta: __workflowMeta, promise: __workflowPromise });`;
+}
+function compileWorkflowScript(workflow, filename) {
+  try {
+    return new vm.Script(buildWrappedSource(workflow), { filename });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    const bodyWithoutDefaultsExport = workflow.bodySource.replace(
+      /\bexport(?=\s+const\s+defaults\s*=)/g,
+      "      "
+    );
+    if (bodyWithoutDefaultsExport === workflow.bodySource) {
+      throw error;
+    }
+    try {
+      new vm.Script(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), { filename });
+    } catch {
+      throw new WorkflowScriptError(
+        `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
+        { cause: error }
+      );
+    }
+    throw new WorkflowScriptError(
+      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them",
+      { cause: error }
+    );
+  }
 }
 function createSandboxContext(hooks) {
   return vm.createContext(
@@ -10808,6 +10835,22 @@ function skipWhitespace(source, start) {
   let index = start;
   while (index < source.length && /\s/.test(source[index] ?? "")) {
     index += 1;
+  }
+  return index;
+}
+function skipWhitespaceAndComments(source, start) {
+  let index = start;
+  while (index < source.length) {
+    index = skipWhitespace(source, index);
+    if (source.startsWith("//", index)) {
+      index = skipLineComment(source, index);
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    return index;
   }
   return index;
 }
@@ -11979,11 +12022,14 @@ function splitTuningFlags(argv) {
     if (value.startsWith("-")) {
       throw new CliUsageError(`Unknown option before script path: ${value}`);
     }
-    return {
-      tuningArgs,
-      scriptArg: value,
-      scriptArgs: argv.slice(index + 1)
-    };
+    const scriptArgs = argv.slice(index + 1);
+    const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
+    if (misplacedTuningFlag !== void 0) {
+      throw new CliUsageError(
+        `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
+      );
+    }
+    return { tuningArgs, scriptArg: value, scriptArgs };
   }
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }

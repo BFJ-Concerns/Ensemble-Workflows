@@ -92,6 +92,28 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
   }
 });
 
+test("Codex app-server preserves Unicode line and paragraph separators in prompts", async () => {
+  const codexBin = await fakeCodexTurnServer({ returnPromptBase64: true });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+
+  try {
+    const prompt = "before\u2028between\u2029after";
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, prompt, {});
+
+    assert.equal(Buffer.from(result.text, "base64").toString("utf8"), prompt);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("Codex app-server sends full access explicitly on the thread and every turn", async () => {
   const codexBin = await fakeCodexTurnServer();
   const transport = await CodexAppServerTransport.start({
@@ -127,7 +149,7 @@ test("Codex app-server sends full access explicitly on the thread and every turn
 });
 
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
-async function fakeCodexTurnServer(): Promise<string> {
+async function fakeCodexTurnServer(options: { returnPromptBase64?: boolean } = {}): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
   await writeFile(
@@ -140,6 +162,7 @@ if (process.argv[2] !== "app-server") {
 }
 
 let threadCounter = 0;
+const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const reader = createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 
@@ -163,9 +186,12 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    const text = returnPromptBase64
+      ? Buffer.from(message.params.input[0].text, "utf8").toString("base64")
+      : "hello";
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
-    send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "hello" } } });
+    send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text } } });
     send({ method: "turn/completed", params: { threadId } });
   }
 });

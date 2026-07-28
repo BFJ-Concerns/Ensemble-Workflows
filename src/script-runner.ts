@@ -93,9 +93,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
           }
   });
   const context = createSandboxContext(hooks);
-  const script = new vm.Script(buildWrappedSource(extracted), {
-    filename: options.filename
-  });
+  const script = compileWorkflowScript(extracted, options.filename);
 
   let runResult: unknown;
   try {
@@ -154,7 +152,7 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
 
   // Optional second export: `export const defaults = { \u2026 }` directly after meta.
   let defaultsSource: string | null = null;
-  const afterMeta = skipWhitespace(withoutBom, bodyStart);
+  const afterMeta = skipWhitespaceAndComments(withoutBom, bodyStart);
   const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
   if (defaultsMatch !== null) {
     const defaultsStart = skipWhitespace(withoutBom, afterMeta + defaultsMatch[0].length);
@@ -228,6 +226,38 @@ const __workflowPromise = (async () => {
 ${workflow.bodySource}
 })();
 ({ meta: __workflowMeta, promise: __workflowPromise });`;
+}
+
+function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): vm.Script {
+  try {
+    return new vm.Script(buildWrappedSource(workflow), { filename });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    const bodyWithoutDefaultsExport = workflow.bodySource.replace(
+      /\bexport(?=\s+const\s+defaults\s*=)/g,
+      "      "
+    );
+    if (bodyWithoutDefaultsExport === workflow.bodySource) {
+      throw error;
+    }
+
+    try {
+      new vm.Script(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), { filename });
+    } catch {
+      throw new WorkflowScriptError(
+        `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
+        { cause: error }
+      );
+    }
+
+    throw new WorkflowScriptError(
+      "Workflow `export const defaults` must follow `meta`, with only whitespace or comments between them",
+      { cause: error }
+    );
+  }
 }
 
 function createSandboxContext(hooks: WorkflowHooks): vm.Context {
@@ -331,6 +361,23 @@ function skipWhitespace(source: string, start: number): number {
   let index = start;
   while (index < source.length && /\s/.test(source[index] ?? "")) {
     index += 1;
+  }
+  return index;
+}
+
+function skipWhitespaceAndComments(source: string, start: number): number {
+  let index = start;
+  while (index < source.length) {
+    index = skipWhitespace(source, index);
+    if (source.startsWith("//", index)) {
+      index = skipLineComment(source, index);
+      continue;
+    }
+    if (source.startsWith("/*", index)) {
+      index = skipBlockComment(source, index);
+      continue;
+    }
+    return index;
   }
   return index;
 }

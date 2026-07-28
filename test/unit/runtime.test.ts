@@ -140,6 +140,61 @@ test("schema agents retry invalid output and return null after the bounded attem
   assert.equal(transport.turns.length, 2);
 });
 
+test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {
+  const nullableSchema = { type: ["null", "string"] };
+  const completedRecords: Array<{ status: string; attempts: Array<{ status: string }> }> = [];
+  const completedRuntime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("null")]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  completedRuntime.setRunRecorder({
+    recordAgent: async (record) => {
+      completedRecords.push(record);
+    }
+  } as RunRecordWriter);
+
+  const completedResult = await completedRuntime.agent("return null", {
+    engine: "codex",
+    schema: nullableSchema
+  });
+
+  assert.equal(completedResult, null);
+  assert.equal(completedRecords[0]?.status, "complete");
+  assert.equal(completedRecords[0]?.attempts[0]?.status, "complete");
+  assert.deepEqual(completedRuntime.completedOutputs(), [
+    {
+      id: 1,
+      engine: "codex",
+      label: null,
+      phase: null,
+      output: null
+    }
+  ]);
+
+  const failedRecords: Array<{ status: string; attempts: Array<{ status: string }> }> = [];
+  const failedRuntime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("not json")]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  failedRuntime.setRunRecorder({
+    recordAgent: async (record) => {
+      failedRecords.push(record);
+    }
+  } as RunRecordWriter);
+
+  const failedResult = await failedRuntime.agent("return null", {
+    engine: "codex",
+    schema: nullableSchema
+  });
+
+  assert.equal(failedResult, null);
+  assert.equal(failedRecords[0]?.status, "failed");
+  assert.equal(failedRecords[0]?.attempts[0]?.status, "failed");
+  assert.deepEqual(failedRuntime.completedOutputs(), []);
+});
+
 test("schema agents return the validated object when a retry succeeds", async () => {
   const transport = new FakeTransport([turn("not json"), turn("{\"answer\":\"yes\"}")]);
   const runtime = new EnsembleRuntime({

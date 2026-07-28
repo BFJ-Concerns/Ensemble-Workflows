@@ -175,7 +175,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
-      if (invocation.kind === "agent" && result === null) {
+      if (invocation.kind === "agent" && result === null && !completedDirectAgentWithNull(runtime)) {
         throw new SingleAgentFailedError();
       }
 
@@ -231,6 +231,12 @@ function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["r
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
+}
+
+function completedDirectAgentWithNull(runtime: EnsembleRuntime): boolean {
+  const completed =
+    (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] }).completedOutputs?.() ?? [];
+  return completed.some((agent) => agent.output === null);
 }
 
 function workflowName(meta: unknown): string | null {

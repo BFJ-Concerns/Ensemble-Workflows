@@ -128,7 +128,7 @@ test("ensemble agent preserves a stdin prompt and accepts the same schema inline
     }
   };
   await writeFile(path.join(directory, "schema.json"), JSON.stringify(schema));
-  const prompt = "Quote-heavy: 'single' \"double\" $HOME `ticks`\nsecond line\\n";
+  const prompt = " \t\nQuote-heavy: 'single' \"double\" $HOME `ticks`\nsecond line\\n\n \t";
   const engine = new FixedResponseEngine("codex", JSON.stringify({ answer: "validated" }));
 
   const inlineStdout = new CaptureStream();
@@ -158,6 +158,50 @@ test("ensemble agent preserves a stdin prompt and accepts the same schema inline
   assert.equal(inlineStdout.text(), '{"answer":"validated"}\n');
   assert.equal(fileStdout.text(), inlineStdout.text());
   assert.deepEqual(engine.prompts, [prompt, prompt]);
+});
+
+test("ensemble agent preserves successful schema-validated null stdout equivalence", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-null-"));
+  const script = path.join(directory, "workflow.js");
+  const schema = { type: ["null", "string"] };
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "validated-null-script" };
+      return await agent("return null", {
+        engine: "codex",
+        schema: ${JSON.stringify(schema)}
+      });
+    `
+  );
+
+  const scriptedStdout = new CaptureStream();
+  const scriptedStderr = new CaptureStream();
+  const scriptedExit = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout: scriptedStdout,
+    stderr: scriptedStderr,
+    createRuntime: async (options) =>
+      fixedEngineRuntime(new FixedResponseEngine("codex", "null"), 1, options)
+  });
+
+  const directStdout = new CaptureStream();
+  const directStderr = new CaptureStream();
+  const directExit = await runEnsembleCli(
+    ["agent", "--engine=codex", `--schema=${JSON.stringify(schema)}`, "return null"],
+    {
+      cwd: directory,
+      stdout: directStdout,
+      stderr: directStderr,
+      createRuntime: async (options) =>
+        fixedEngineRuntime(new FixedResponseEngine("codex", "null"), 1, options)
+    }
+  );
+
+  assert.equal(scriptedExit, 0, scriptedStderr.text());
+  assert.equal(directExit, 0, directStderr.text());
+  assert.equal(scriptedStdout.text(), "null\n");
+  assert.equal(directStdout.text(), scriptedStdout.text());
 });
 
 test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
@@ -240,6 +284,41 @@ test("ensemble agent reports a recoverable branch carrying the worker commit", a
       await rm(path.dirname(engine.cwd), { recursive: true, force: true });
     }
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ensemble agent reports an unchanged worktree branch before removing it", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-clean-worktree-"));
+  await execFileAsync("git", ["init"], { cwd: directory });
+  await execFileAsync("git", ["config", "user.email", "test@example.invalid"], { cwd: directory });
+  await execFileAsync("git", ["config", "user.name", "Test"], { cwd: directory });
+  await writeFile(path.join(directory, "README.md"), "base\n");
+  await execFileAsync("git", ["add", "README.md"], { cwd: directory });
+  await execFileAsync("git", ["commit", "-m", "initial"], { cwd: directory });
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  try {
+    const exitCode = await runEnsembleCli(
+      ["agent", "--engine=codex", "--isolation=worktree", "read without changing anything"],
+      {
+        cwd: directory,
+        stdout,
+        stderr,
+        createRuntime: async (options) =>
+          fixedEngineRuntime(new FixedResponseEngine("codex", "unchanged"), 1, options)
+      }
+    );
+
+    assert.equal(exitCode, 0, stderr.text());
+    assert.equal(stdout.text(), '"unchanged"\n');
+    assert.match(
+      stderr.text(),
+      /\[worktree\] unchanged and removed .* \(ensemble-workflows\/[^)]+\)\n/
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(`${directory}.ensemble-workflows-worktrees`, { recursive: true, force: true });
   }
 });
 

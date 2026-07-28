@@ -58,6 +58,11 @@ export interface CompletedAgentOutput {
   output: unknown;
 }
 
+interface AgentExecutionResult {
+  status: "complete" | "failed";
+  value: unknown;
+}
+
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
@@ -210,26 +215,26 @@ export class EnsembleRuntime {
     return engine.schedule(async () => {
       this.progress.startAgent(agentId);
       try {
-        const result = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-        // A schema agent that exhausts its retries returns null: a graceful failure.
-        const outcome = result === null ? "failed" : "done";
+        const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+        const outcome = execution.status === "complete" ? "done" : "failed";
         this.progress.settleAgent(agentId, outcome);
         agentRecord.status = outcome === "done" ? "complete" : "failed";
         agentRecord.rawOutput = lastRawOutput(agentRecord);
-        agentRecord.validatedOutput = result;
-        // Retain successful outputs so a timeout can surface completed work. A
-        // null result carries nothing recoverable, so it is not recorded.
+        agentRecord.validatedOutput = execution.value;
+        // Retain successful outputs so a timeout can surface completed work.
+        // This includes schema-valid JSON null; failure is carried separately
+        // by the execution status rather than inferred from the returned value.
         if (outcome === "done") {
           this.#completed.push({
             id: agentId,
             engine: engine.name,
             label: options.label ?? null,
             phase: options.phase ?? null,
-            output: result
+            output: execution.value
           });
         }
         await this.#recordAgentSafely(agentRecord);
-        return result;
+        return execution.value;
       } catch (error) {
         this.progress.settleAgent(agentId, "failed");
         agentRecord.status = "failed";
@@ -281,7 +286,7 @@ export class EnsembleRuntime {
     options: Partial<AgentOptions>,
     agentId: number,
     agentRecord: RuntimeAgentRecord
-  ): Promise<string | unknown | null> {
+  ): Promise<AgentExecutionResult> {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
@@ -291,7 +296,10 @@ export class EnsembleRuntime {
       if (options.schema !== undefined) {
         return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
       }
-      return await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord);
+      return {
+        status: "complete",
+        value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+      };
     } finally {
       try {
         await invocation?.close?.();
@@ -378,7 +386,7 @@ export class EnsembleRuntime {
     options: Partial<AgentOptions> & { schema: JsonSchema },
     agentId: number,
     agentRecord: RuntimeAgentRecord
-  ): Promise<unknown | null> {
+  ): Promise<AgentExecutionResult> {
     const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
     let previousFailure: EngineAttemptFailure | undefined;
 
@@ -421,7 +429,10 @@ export class EnsembleRuntime {
           agentRecord.attempts.push(
             attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
-          return selection.parsed.value;
+          return {
+            status: "complete",
+            value: selection.parsed.value
+          };
         }
         previousFailure = {
           kind: "schema-validation",
@@ -437,7 +448,10 @@ export class EnsembleRuntime {
       }
     }
 
-    return null;
+    return {
+      status: "failed",
+      value: null
+    };
   }
 
   #emitEvent(event: RuntimeEvent): void {

@@ -135,6 +135,52 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   }
 });
 
+test("live built CLI honours a very large positive per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-large-turn-timeout-"));
+  const script = path.join(directory, "workflow.js");
+  const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
+
+  try {
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "large-positive-turn-timeout",
+          description: "A valid large deadline must not be shortened by the host timer"
+        };
+
+        return await agent(
+          "Return exactly one JSON object with token ${token}.",
+          {
+            engine: "codex",
+            model: "gpt-5.6-terra",
+            timeoutMs: 1e12,
+            maxAttempts: 1,
+            schema: {
+              type: "object",
+              required: ["token"],
+              additionalProperties: false,
+              properties: {
+                token: { type: "string", enum: ["${token}"] }
+              }
+            }
+          }
+        );
+      `
+    );
+
+    const result = await runNode([bundledCliPath, script], {
+      env: { ...process.env, ENSEMBLE_RUN_RECORD: "0", ENSEMBLE_STATUS: "0" }
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { token });
+    assert.doesNotMatch(result.stderr, /TimeoutOverflowWarning|TurnTimeoutError/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
   const script = path.join(directory, "workflow.js");

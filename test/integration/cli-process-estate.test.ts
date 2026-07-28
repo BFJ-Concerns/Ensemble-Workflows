@@ -619,6 +619,56 @@ test("ensemble agent stdout matches an equivalent one-call workflow", async () =
   }
 });
 
+test("ensemble agent preserves a schema-valid null exactly like an equivalent script", async () => {
+  const fixture = await createProcessFixture("single-agent-null-equivalence", "null");
+  const prompt = "Return null because there is no finding.";
+  const schema = {
+    anyOf: [
+      {
+        type: "object",
+        required: ["finding"],
+        additionalProperties: false,
+        properties: {
+          finding: { type: "string" },
+        },
+      },
+      { type: "null" },
+    ],
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "one-call-null-equivalence",
+          description: "A schema-valid null is a successful agent result"
+        };
+        return await agent(${JSON.stringify(prompt)}, {
+          engine: "codex",
+          maxAttempts: 1,
+          schema: ${JSON.stringify(schema)}
+        });
+      `,
+    );
+
+    const scripted = await fixture.run();
+    const direct = await fixture.runArgs([
+      "agent",
+      "--engine=codex",
+      `--schema=${JSON.stringify(schema)}`,
+      prompt,
+    ]);
+
+    assert.equal(scripted.code, 0, scripted.stderr);
+    assert.equal(scripted.stdout, "null\n");
+    assert.equal(direct.code, 0, direct.stderr);
+    assert.equal(direct.stdout, scripted.stdout);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 interface RecordedMessage {
   method?: string;
   params?: {

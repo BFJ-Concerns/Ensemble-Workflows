@@ -114,7 +114,12 @@ test("Codex app-server sends full access explicitly on the thread and every turn
     const threadStart = events.find((event) => event.method === "thread/start");
     const turnStart = events.find((event) => event.method === "turn/start");
 
-    assert.equal(threadStart?.params?.sandbox, "danger-full-access");
+    assert.deepEqual(threadStart?.params, {
+      cwd: process.cwd(),
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: true
+    });
     assert.deepEqual(turnStart?.params?.sandboxPolicy, { type: "dangerFullAccess" });
   } finally {
     await transport.close();

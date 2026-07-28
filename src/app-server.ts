@@ -127,8 +127,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      ephemeral: true,
-      config: {}
+      ephemeral: true
     };
     const result = await this.#request("thread/start", requestParams);
 

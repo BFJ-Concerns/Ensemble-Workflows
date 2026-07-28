@@ -7685,8 +7685,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      ephemeral: true,
-      config: {}
+      ephemeral: true
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -11319,11 +11318,12 @@ function safeName(filename, suffix) {
 
 // src/status-file.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { link, readFile as readFile5, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
+import { link, readFile as readFile5, readdir as readdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
 import path8 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, rename: rename2, unlink, writeFile: writeFile2 };
+var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename2, unlink, writeFile: writeFile2 };
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -11335,11 +11335,13 @@ var StatusFileWriter = class {
   #closed = false;
   #tmpSeq = 0;
   #heartbeat;
+  #initialSweep;
   constructor(options) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
@@ -11382,6 +11384,7 @@ var StatusFileWriter = class {
     }
   }
   async #writeAtomic(snapshot) {
+    await this.#initialSweep;
     const target = path8.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}
@@ -11412,7 +11415,6 @@ var StatusFileWriter = class {
       } catch (error) {
         if (!isNodeError2(error) || error.code !== "EEXIST") {
           this.#reportError(error);
-          return;
         }
       }
     }
@@ -11425,6 +11427,32 @@ var StatusFileWriter = class {
       this.#reportError(error);
     }
   }
+  async #sweepStaleArtifacts() {
+    let entries;
+    try {
+      entries = await this.#fileOperations.readdir(this.#dir);
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+      return;
+    }
+    for (const entry of entries) {
+      const prefix = `${STATUS_FILENAME}.`;
+      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
+      const ownerPid = Number(match?.[1]);
+      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+        continue;
+      }
+      try {
+        await this.#fileOperations.unlink(path8.join(this.#dir, entry));
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "ENOENT") {
+          this.#reportError(error);
+        }
+      }
+    }
+  }
   #reportError(error) {
     try {
       this.#onError?.(error);
@@ -11434,6 +11462,14 @@ var StatusFileWriter = class {
 };
 function isNodeError2(error) {
   return typeof error === "object" && error !== null && "code" in error;
+}
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isNodeError2(error) || error.code !== "ESRCH";
+  }
 }
 
 // src/index.ts

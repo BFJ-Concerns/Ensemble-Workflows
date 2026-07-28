@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -179,4 +179,55 @@ test("StatusFileWriter close cannot unlink a snapshot replaced after its ownersh
 
   const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
   assert.equal(survivor.runId, "another-run");
+});
+
+test("StatusFileWriter close removes its claim when restoring another run fails", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
+  const progress = newProgress();
+  const writer = new StatusFileWriter({
+    progress,
+    dir,
+    onError: () => {
+      throw new Error("reporter failed");
+    },
+    fileOperations: {
+      link: async () => {
+        throw Object.assign(new Error("forced restore failure"), { code: "EIO" });
+      }
+    }
+  });
+  await waitForFile(file);
+  await writeFile(file, `${JSON.stringify({ schema: 1, runId: "another-run", state: "running" })}\n`);
+
+  await assert.doesNotReject(writer.close());
+
+  const claims = (await readdir(dir)).filter((entry) => entry.endsWith(".remove"));
+  assert.deepEqual(claims, []);
+});
+
+test("StatusFileWriter sweeps dead-process artefacts without touching live-process artefacts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const target = path.join(dir, STATUS_FILENAME);
+  const deadPid = 2_147_483_647;
+  const stale = [
+    `${target}.${deadPid}.1.tmp`,
+    `${target}.${deadPid}.00000000-0000-4000-8000-000000000001.remove`
+  ];
+  const live = [
+    `${target}.${process.pid}.999.tmp`,
+    `${target}.${process.pid}.00000000-0000-4000-8000-000000000002.remove`
+  ];
+  await Promise.all([...stale, ...live].map(async (file) => writeFile(file, "status artefact")));
+
+  const writer = new StatusFileWriter({ progress: newProgress(), dir });
+  await waitForFile(target);
+  await writer.close();
+
+  for (const file of stale) {
+    assert.equal(await exists(file), false, `expected stale artefact to be swept: ${file}`);
+  }
+  for (const file of live) {
+    assert.equal(await exists(file), true, `expected live artefact to survive: ${file}`);
+  }
 });

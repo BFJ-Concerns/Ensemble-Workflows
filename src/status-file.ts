@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { link, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
@@ -13,6 +13,8 @@ export const STATUS_FILENAME = "ensemble.local.json";
  * blank the line mid-run; the heartbeat re-stamps well inside that window.
  */
 const DEFAULT_HEARTBEAT_MS = 10_000;
+const STATUS_ARTIFACT_SUFFIX_PATTERN =
+  /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
@@ -29,12 +31,13 @@ export interface StatusFileWriterOptions {
 export interface StatusFileOperations {
   link(existingPath: string, newPath: string): Promise<void>;
   readFile(file: string, encoding: "utf8"): Promise<string>;
+  readdir(directory: string): Promise<string[]>;
   rename(source: string, destination: string): Promise<void>;
   unlink(file: string): Promise<void>;
   writeFile(file: string, contents: string, encoding: "utf8"): Promise<void>;
 }
 
-const DEFAULT_FILE_OPERATIONS: StatusFileOperations = { link, readFile, rename, unlink, writeFile };
+const DEFAULT_FILE_OPERATIONS: StatusFileOperations = { link, readFile, readdir, rename, unlink, writeFile };
 
 /**
  * Serialises a {@link RunProgress} model to a single `ensemble.local.json` on every
@@ -63,12 +66,14 @@ export class StatusFileWriter {
   #closed = false;
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
+  #initialSweep: Promise<void>;
 
   constructor(options: StatusFileWriterOptions) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     // markChanged() re-stamps updatedAt and notifies subscribers (i.e. this
     // writer), so a run with long quiet turns never reads as stale/absent.
@@ -123,6 +128,7 @@ export class StatusFileWriter {
   }
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
+    await this.#initialSweep;
     const target = path.join(this.#dir, STATUS_FILENAME);
     // pid + sequence keep concurrent runs' temp files from colliding.
     const tmp = `${target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
@@ -161,7 +167,6 @@ export class StatusFileWriter {
       } catch (error) {
         if (!isNodeError(error) || error.code !== "EEXIST") {
           this.#reportError(error);
-          return;
         }
       }
     }
@@ -176,6 +181,35 @@ export class StatusFileWriter {
     }
   }
 
+  async #sweepStaleArtifacts(): Promise<void> {
+    let entries: string[];
+    try {
+      entries = await this.#fileOperations.readdir(this.#dir);
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+      return;
+    }
+
+    for (const entry of entries) {
+      const prefix = `${STATUS_FILENAME}.`;
+      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
+      const ownerPid = Number(match?.[1]);
+      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+        continue;
+      }
+
+      try {
+        await this.#fileOperations.unlink(path.join(this.#dir, entry));
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ENOENT") {
+          this.#reportError(error);
+        }
+      }
+    }
+  }
+
   #reportError(error: unknown): void {
     try {
       this.#onError?.(error);
@@ -187,4 +221,13 @@ export class StatusFileWriter {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error !== null && "code" in error;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isNodeError(error) || error.code !== "ESRCH";
+  }
 }

@@ -267,8 +267,69 @@ test("built CLI rejects an unrecognised option before opening that worker", asyn
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
     assert.match(result.stderr, /unrecognised agent\(\) option[\s\S]*typoedLabel/i);
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+    assert.equal(result.stderr.trim().split("\n").length, 1);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI rejects a per-turn timeout above Node's timer limit before opening a worker", async () => {
+  const fixture = await createProcessFixture("oversized-timeout-rejection");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "oversized-timeout-rejection",
+          description: "Unrepresentable turn deadlines fail before thread creation"
+        };
+        return await agent("must not open a worker", {
+          engine: "codex",
+          timeoutMs: 1000000000000,
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.equal(
+      result.stderr,
+      'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
+    );
+    const messages = await fixture.messages();
+    assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI keeps a stack for an ordinary workflow-body error", async () => {
+  const fixture = await createProcessFixture("ordinary-workflow-error-stack");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "ordinary-workflow-error-stack",
+          description: "Workflow bugs retain their debugging trace"
+        };
+        throw new Error("ordinary workflow bug");
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /^Error: ordinary workflow bug\n\s+at /);
   } finally {
     await fixture.cleanup();
   }

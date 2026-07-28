@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
+import { AgentOptionRejectedError } from "./errors.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -774,8 +775,18 @@ function formatError(error: unknown): string {
   if (error instanceof CliUsageError) {
     return error.message;
   }
+  if (error instanceof AgentOptionRejectedError) {
+    return `${error.name}: ${error.message}`;
+  }
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }
+  if (hasStack(error)) {
+    return error.stack;
+  }
   return String(error);
+}
+
+function hasStack(error: unknown): error is { stack: string } {
+  return typeof error === "object" && error !== null && "stack" in error && typeof error.stack === "string";
 }

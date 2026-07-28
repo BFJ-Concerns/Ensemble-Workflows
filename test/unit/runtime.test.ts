@@ -783,7 +783,7 @@ test("an invalid isolation value fails before a Codex thread opens", async () =>
 });
 
 test("invalid timeoutMs values fail before a Codex thread opens", async () => {
-  for (const timeoutMs of [0, -1, 1.5]) {
+  for (const timeoutMs of [0, -1, 1.5, 2_147_483_648]) {
     const transport = new FakeTransport([turn("unused")]);
     const runtime = new EnsembleRuntime({
       transport,

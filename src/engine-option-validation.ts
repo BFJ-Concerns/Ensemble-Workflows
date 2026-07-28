@@ -10,6 +10,8 @@ import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { AgentOptions, EngineName } from "./types.js";
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 interface EngineDefaultOptions {
   model?: string;
   effort?: string;
@@ -46,7 +48,7 @@ export function assertRecognisedAgentOptions(options: object): void {
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
-  assertPositiveIntegerOption(values, "timeoutMs");
+  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
 }
 
@@ -81,10 +83,15 @@ export function validateEngineDefaults(
 
 function assertPositiveIntegerOption(
   options: Record<string, unknown>,
-  option: "timeoutMs" | "maxAttempts"
+  option: "timeoutMs" | "maxAttempts",
+  maximum?: number
 ): void {
   const value = options[option];
-  if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value <= 0)) {
-    throw new InvalidAgentOptionValueError(option, value, "a positive integer");
+  if (
+    value !== undefined &&
+    (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || (maximum !== undefined && value > maximum))
+  ) {
+    const expected = maximum === undefined ? "a positive integer" : `a positive integer no greater than ${maximum}`;
+    throw new InvalidAgentOptionValueError(option, value, expected);
   }
 }

@@ -153,6 +153,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         stderr.write(`[run-record] failed to archive an agent record: ${message}\n`);
         return;
       }
+      if (event.method === "worktree/finalisationFailed") {
+        const worktreePath = typeof event.params.path === "string" ? event.params.path : "<unknown>";
+        const branch = typeof event.params.branch === "string" ? event.params.branch : "<unknown>";
+        const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
+        stderr.write(`[worktree] finalisation failed for ${worktreePath} (${branch}): ${message}\n`);
+        return;
+      }
       if (event.method !== "worktree/finished") {
         return;
       }

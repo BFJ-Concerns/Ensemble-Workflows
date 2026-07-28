@@ -176,6 +176,12 @@ and its temporary branch are removed. Changed work is preserved and reported,
 never auto-merged: committed work is recoverable through the reported branch,
 while dirty uncommitted work is not recoverable through that branch and
 requires the preserved linked worktree and its metadata.
+If finalisation fails, the call still fails and the CLI reports the
+finalisation error. Ensemble also reports the created branch through
+`worktrees` and the durable agent record as changed and retained because
+finalisation did not prove that it was unchanged or removed. If the worker
+failed and invocation shutdown succeeded, the worker error remains the one
+that propagates.
 A linked worktree shares its repository's object store and refs, so this
 isolates the checkout rather than containing the worker or repository.
 

@@ -64,6 +64,10 @@ interface AgentExecutionResult {
   value: unknown;
 }
 
+type AgentExecutionCompletion =
+  | { ok: true; execution: AgentExecutionResult }
+  | { ok: false; error: unknown };
+
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
@@ -310,41 +314,101 @@ export class EnsembleRuntime {
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     let invocation: EngineInvocation | undefined;
+    let completion: AgentExecutionCompletion | undefined;
     try {
       invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== undefined) {
-        return await this.#runSchemaAgent(engine.name, invocation, { ...options, schema: options.schema }, agentId, agentRecord);
+        completion = {
+          ok: true,
+          execution: await this.#runSchemaAgent(
+            engine.name,
+            invocation,
+            { ...options, schema: options.schema },
+            agentId,
+            agentRecord
+          )
+        };
+      } else {
+        completion = {
+          ok: true,
+          execution: {
+            status: "complete",
+            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+          }
+        };
       }
-      return {
-        status: "complete",
-        value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
-      };
+    } catch (error) {
+      completion = { ok: false, error };
     } finally {
       try {
-        await invocation?.close?.();
+        try {
+          await invocation?.close?.();
+        } catch (error) {
+          // Preserve the established rule that invocation shutdown replaces
+          // the worker completion; finalisation must not replace either one.
+          completion = { ok: false, error };
+        }
       } finally {
-        const worktree = await this.#placement.close(placement);
-        if (worktree !== null) {
-          this.worktrees.push(worktree);
-          agentRecord.worktree = {
-            branch: worktree.branch,
-            baseCommit: worktree.baseCommit,
-            changed: worktree.changed,
-            removed: worktree.removed
-          };
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
+        try {
+          const worktree = await this.#placement.close(placement);
+          if (worktree !== null) {
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finished",
+              params: {
+                path: worktree.path,
+                branch: worktree.branch,
+                changed: worktree.changed,
+                removed: worktree.removed
+              },
+              receivedAt: Date.now()
+            });
+          }
+        } catch (error) {
+          if (placement.worktree !== undefined) {
+            // Finalisation did not prove that the branch was unchanged or
+            // removed. Retain the recoverable identity conservatively.
+            const worktree = {
+              ...placement.worktree,
+              changed: true,
+              removed: false
+            };
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finalisationFailed",
+              params: {
+                agentId,
+                path: worktree.path,
+                branch: worktree.branch,
+                message: failureFromError(error).message
+              },
+              receivedAt: Date.now()
+            });
+          }
+          if (completion?.ok !== false) {
+            completion = { ok: false, error };
+          }
         }
       }
     }
+
+    if (completion === undefined) {
+      throw new Error("agent execution ended without a result");
+    }
+    if (!completion.ok) {
+      throw completion.error;
+    }
+    return completion.execution;
+  }
+
+  #publishWorktree(agentRecord: RuntimeAgentRecord, worktree: IsolatedWorktreeRecord): void {
+    this.worktrees.push(worktree);
+    agentRecord.worktree = {
+      branch: worktree.branch,
+      baseCommit: worktree.baseCommit,
+      changed: worktree.changed,
+      removed: worktree.removed
+    };
   }
 
   async #runTextAgent(

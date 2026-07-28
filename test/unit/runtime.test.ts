@@ -17,7 +17,7 @@ import {
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
-import type { RunRecordWriter } from "../../src/run-record.js";
+import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import type { EngineAdapter } from "../../src/engines.js";
 
 import type {
@@ -113,6 +113,24 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
       changed: this.#changed,
       removed: !this.#changed
     };
+  }
+}
+
+class FailingWorktreeManager implements WorktreeIsolationManager {
+  readonly finished: IsolatedWorktree[] = [];
+
+  constructor(
+    private readonly worktree: IsolatedWorktree,
+    private readonly error: Error
+  ) {}
+
+  async create(): Promise<IsolatedWorktree> {
+    return this.worktree;
+  }
+
+  async finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord> {
+    this.finished.push(worktree);
+    throw this.error;
   }
 }
 
@@ -521,6 +539,110 @@ test("a failed worker still finishes and records its changed worktree", async ()
     changed: true,
     removed: false
   });
+});
+
+test("a missing worktree path remains discoverable and reports its finalisation failure", async () => {
+  const worktree = {
+    path: "/missing/fake-worktree",
+    branch: "ensemble-workflows/missing-worktree",
+    baseCommit: "missing-base"
+  };
+  const finalisationError = new Error(`git status failed in ${worktree.path}: ENOENT`);
+  const worktreeManager = new FailingWorktreeManager(worktree, finalisationError);
+  const records: RuntimeAgentRecord[] = [];
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("committed")]),
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  runtime.onEvent((event) => {
+    if (event.method === "worktree/finalisationFailed") {
+      events.push({ method: event.method, params: event.params });
+    }
+  });
+
+  const propagated = await runtime
+    .agent("commit before removing the worktree path", { engine: "codex", isolation: "worktree" })
+    .then(
+      () => assert.fail("finalisation failure must reject the agent"),
+      (error: unknown) => error
+    );
+
+  assert.strictEqual(propagated, finalisationError);
+  assert.deepEqual(worktreeManager.finished, [worktree]);
+  assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
+  assert.deepEqual(records[0]?.worktree, {
+    branch: worktree.branch,
+    baseCommit: worktree.baseCommit,
+    changed: true,
+    removed: false
+  });
+  assert.deepEqual(events, [
+    {
+      method: "worktree/finalisationFailed",
+      params: {
+        agentId: 1,
+        path: worktree.path,
+        branch: worktree.branch,
+        message: finalisationError.message
+      }
+    }
+  ]);
+});
+
+test("a worker error remains primary when worktree finalisation also fails", async () => {
+  const worktree = {
+    path: "/fake/failed-worktree",
+    branch: "ensemble-workflows/failed-worktree",
+    baseCommit: "failed-base"
+  };
+  const workerError = new Error("worker failed after commit");
+  const finalisationError = new Error("manager failed while inspecting the worktree");
+  const worktreeManager = new FailingWorktreeManager(worktree, finalisationError);
+  const records: RuntimeAgentRecord[] = [];
+  const events: Array<{ method: string; message: unknown }> = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(workerError),
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  runtime.onEvent((event) => {
+    if (event.method === "worktree/finalisationFailed") {
+      events.push({ method: event.method, message: event.params.message });
+    }
+  });
+
+  const propagated = await runtime
+    .agent("commit then fail", { engine: "codex", isolation: "worktree" })
+    .then(
+      () => assert.fail("worker failure must reject the agent"),
+      (error: unknown) => error
+    );
+
+  assert.strictEqual(propagated, workerError);
+  assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
+  assert.equal(records[0]?.worktree?.branch, worktree.branch);
+  assert.deepEqual(events, [
+    {
+      method: "worktree/finalisationFailed",
+      message: finalisationError.message
+    }
+  ]);
 });
 
 test("placement closes a worktree when invocation option validation rejects the call", async () => {

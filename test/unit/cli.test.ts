@@ -60,6 +60,50 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
   assert.equal(stderr.text(), "hello stderr\n");
 });
 
+test("CLI reports a worktree finalisation failure through the operator log", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worktree-finalisation-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "worktree-finalisation" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const runtime = fakeRuntime();
+  runtime.onEvent = (listener) => {
+    listener({
+      method: "worktree/finalisationFailed",
+      params: {
+        agentId: 1,
+        path: "/missing/worktree",
+        branch: "ensemble-workflows/recover-me",
+        message: "git status failed: ENOENT"
+      },
+      receivedAt: 0
+    });
+    return () => {};
+  };
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir: null,
+    createRuntime: async () => runtime
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stdout.text(), "\"ok\"\n");
+  assert.equal(
+    stderr.text(),
+    "[worktree] finalisation failed for /missing/worktree (ensemble-workflows/recover-me): git status failed: ENOENT\n"
+  );
+});
+
 test("CLI passes parsed JSON as args when --json-args is set", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-"));
   const script = path.join(directory, "workflow.js");

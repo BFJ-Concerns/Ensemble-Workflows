@@ -337,6 +337,59 @@ test("built CLI keeps a stack for an ordinary workflow-body error", async () => 
   }
 });
 
+test("built CLI falls back to an ordinary error's name and message when its stack is empty", async () => {
+  const fixture = await createProcessFixture("ordinary-workflow-error-empty-stack");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "ordinary-workflow-error-empty-stack",
+          description: "An empty stack cannot erase an ordinary workflow error"
+        };
+        const error = new Error("stackless error");
+        error.stack = "";
+        throw error;
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.equal(result.stderr, "Error: stackless error\n");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI does not trust a stack field on a thrown non-Error object", async () => {
+  const fixture = await createProcessFixture("ordinary-workflow-non-error-stack");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "ordinary-workflow-non-error-stack",
+          description: "Non-Error values cannot masquerade as runtime stacks"
+        };
+        throw { message: "real problem", stack: "not actually a stack trace" };
+      `
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.equal(result.stderr, "[object Object]\n");
+    assert.doesNotMatch(result.stderr, /not actually a stack trace/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI still collapses ordinary parallel and pipeline errors to null", async () => {
   const fixture = await createProcessFixture("ordinary-combinator-errors");
 

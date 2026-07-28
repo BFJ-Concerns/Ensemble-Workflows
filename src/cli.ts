@@ -778,15 +778,13 @@ function formatError(error: unknown): string {
   if (error instanceof AgentOptionRejectedError) {
     return `${error.name}: ${error.message}`;
   }
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  if (hasStack(error)) {
-    return error.stack;
+  if (isError(error)) {
+    const stack: unknown = error.stack;
+    return typeof stack === "string" && stack.trim().length > 0 ? stack : String(error);
   }
   return String(error);
 }
 
-function hasStack(error: unknown): error is { stack: string } {
-  return typeof error === "object" && error !== null && "stack" in error && typeof error.stack === "string";
+function isError(error: unknown): error is Error {
+  return (Error as ErrorConstructor & { isError(value: unknown): value is Error }).isError(error);
 }

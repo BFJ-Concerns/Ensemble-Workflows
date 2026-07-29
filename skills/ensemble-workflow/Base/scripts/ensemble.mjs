@@ -8008,7 +8008,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "error") {
-      turn.reject(appServerErrorFromPayload("turn notification", errorPayloadFromNotification(params)));
+      if (params.willRetry === true) {
+        return;
+      }
+      turn.reject(appServerErrorFromNotification(params));
       this.#turns.delete(threadId);
       this.#transcripts.delete(threadId);
       clearTimeout(turn.timeout);
@@ -8127,33 +8130,25 @@ function appServerErrorFromPayload(method, errorPayload) {
   if (errorPayload.code === -32001) {
     return new AppServerBackpressureError(method, errorPayload);
   }
-  if (errorPayload.code === "server_is_overloaded") {
-    return new AppServerOverloadedError(method, errorPayload);
-  }
   return new AppServerRequestError(method, errorPayload);
 }
-function errorPayloadFromNotification(params) {
-  const notificationError = asJsonObject(params.error) ?? params;
-  const embedded = parseEmbeddedDiagnostic(notificationError.message);
-  const diagnostic = asJsonObject(embedded?.error) ?? embedded ?? notificationError;
-  const code = typeof diagnostic.code === "string" || typeof diagnostic.code === "number" ? diagnostic.code : void 0;
-  const message = typeof diagnostic.message === "string" ? diagnostic.message : typeof notificationError.message === "string" ? notificationError.message : void 0;
-  const renderedDiagnostic = [code, message].filter((value) => value !== void 0).map(String).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  return {
+function appServerErrorFromNotification(params) {
+  const turnError = asJsonObject(params.error);
+  const codexErrorInfo = turnError?.codexErrorInfo;
+  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
+  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : JSON.stringify(codexErrorInfo));
+  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
+  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
+  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  const errorPayload = {
     code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
     data: params
   };
-}
-function parseEmbeddedDiagnostic(value) {
-  if (typeof value !== "string") {
-    return null;
+  if (code === "serverOverloaded") {
+    return new AppServerOverloadedError("turn notification", errorPayload);
   }
-  try {
-    return asJsonObject(JSON.parse(value));
-  } catch {
-    return null;
-  }
+  return new AppServerRequestError("turn notification", errorPayload);
 }
 function payloadContainsInvalidJsonSchema(value) {
   if (typeof value === "string") {

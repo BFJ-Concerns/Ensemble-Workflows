@@ -1175,11 +1175,12 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
   const fixture = await createProcessFixture("scoped-overload-retry", "recovered");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const overload = {
-    message: JSON.stringify({
-      type: "error",
-      code: "server_is_overloaded",
-      message: "Upstream capacity is temporarily exhausted"
-    })
+    error: {
+      message: "Upstream capacity is temporarily exhausted; invalid_json_schema is not the cause",
+      additionalDetails: "gateway detail: server_is_overloaded",
+      codexErrorInfo: "serverOverloaded"
+    },
+    willRetry: false
   };
 
   try {
@@ -1213,8 +1214,9 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
     const agent = await loadOnlyAgentRecord(recordStore);
     assert.equal(agent.attempts.length, 2);
     assert.equal(agent.attempts[0]?.failure?.kind, "AppServerOverloadedError");
-    assert.match(agent.attempts[0]?.failure?.message ?? "", /server_is_overloaded/);
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /serverOverloaded/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /Upstream capacity is temporarily exhausted/);
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /gateway detail: server_is_overloaded/);
     assert.equal(agent.attempts[1]?.status, "complete");
   } finally {
     await fixture.cleanup();
@@ -1225,9 +1227,12 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
   const fixture = await createProcessFixture("scoped-terminal-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const terminal = {
-    type: "error",
-    code: "provider_authentication_failed",
-    message: "Provider credentials were rejected"
+    error: {
+      message: "Provider credentials were rejected",
+      additionalDetails: "server_is_overloaded appeared only in unstructured detail",
+      codexErrorInfo: "unauthorized"
+    },
+    willRetry: false
   };
 
   try {
@@ -1253,7 +1258,7 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
 
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.match(result.stderr, /provider_authentication_failed/);
+    assert.match(result.stderr, /unauthorized/);
     assert.match(result.stderr, /Provider credentials were rejected/);
     assert.equal(
       (await fixture.messages()).filter((message) => message.method === "turn/start").length,
@@ -1263,7 +1268,7 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
     const agent = await loadOnlyAgentRecord(recordStore);
     assert.equal(agent.attempts.length, 1);
     assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
-    assert.match(agent.attempts[0]?.failure?.message ?? "", /provider_authentication_failed/);
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /unauthorized/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /Provider credentials were rejected/);
   } finally {
     await fixture.cleanup();
@@ -1274,11 +1279,12 @@ test("built CLI throws a scoped overload after the bounded attempts", async () =
   const fixture = await createProcessFixture("scoped-overload-exhaustion");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const overload = {
-    message: JSON.stringify({
-      type: "error",
-      code: "server_is_overloaded",
-      message: "Upstream remained overloaded"
-    })
+    error: {
+      message: "Upstream remained overloaded",
+      additionalDetails: null,
+      codexErrorInfo: "serverOverloaded"
+    },
+    willRetry: false
   };
 
   try {
@@ -1313,7 +1319,7 @@ test("built CLI throws a scoped overload after the bounded attempts", async () =
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
     assert.match(result.stderr, /AppServerOverloadedError/);
-    assert.match(result.stderr, /server_is_overloaded/);
+    assert.match(result.stderr, /serverOverloaded/);
     assert.match(result.stderr, /Upstream remained overloaded/);
     assert.equal(
       (await fixture.messages()).filter((message) => message.method === "turn/start").length,
@@ -1324,9 +1330,101 @@ test("built CLI throws a scoped overload after the bounded attempts", async () =
     assert.equal(agent.attempts.length, 2);
     for (const attempt of agent.attempts) {
       assert.equal(attempt.failure?.kind, "AppServerOverloadedError");
-      assert.match(attempt.failure?.message ?? "", /server_is_overloaded/);
+      assert.match(attempt.failure?.message ?? "", /serverOverloaded/);
       assert.match(attempt.failure?.message ?? "", /Upstream remained overloaded/);
     }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI lets the app-server complete a turn when its notification says it will retry", async () => {
+  const fixture = await createProcessFixture("scoped-internal-retry", "internally-recovered");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const overload = {
+    error: {
+      message: "The app-server is retrying this turn",
+      additionalDetails: null,
+      codexErrorInfo: "serverOverloaded"
+    },
+    willRetry: true
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "scoped-internal-retry",
+          description: "Do not multiply an app-server-owned retry"
+        };
+        return await agent("let the current turn recover", {
+          engine: "codex",
+          maxAttempts: 2
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([overload]),
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"internally-recovered"\n`);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      1
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 1);
+    assert.equal(agent.attempts[0]?.status, "complete");
+    assert.equal(agent.attempts[0]?.failure, null);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI does not promote a schema-forbidden notification code into JSON-RPC backpressure", async () => {
+  const fixture = await createProcessFixture("scoped-numeric-code");
+  const numericCode = {
+    error: {
+      message: "A non-schema notification carried a JSON-RPC code",
+      additionalDetails: null,
+      codexErrorInfo: null,
+      code: -32001
+    },
+    willRetry: false
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "scoped-numeric-code",
+          description: "Keep JSON-RPC response codes out of notification classification"
+        };
+        return await agent("must remain terminal", {
+          engine: "codex",
+          maxAttempts: 2
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([numericCode])
+    });
+
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /AppServerRequestError/);
+    assert.match(result.stderr, /A non-schema notification carried a JSON-RPC code/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      1
+    );
   } finally {
     await fixture.cleanup();
   }

@@ -17,13 +17,7 @@ let turnCounter = 0;
 const pendingTurns = [];
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-const completeTurn = ({ threadId }) => {
-  const error = errorSequence[turnCounter];
-  turnCounter += 1;
-  if (error !== undefined) {
-    send({ method: "error", params: { threadId, error } });
-    return;
-  }
+const finishTurn = (threadId) => {
   send({
     method: "item/completed",
     params: {
@@ -32,6 +26,25 @@ const completeTurn = ({ threadId }) => {
     }
   });
   send({ method: "turn/completed", params: { threadId } });
+};
+const completeTurn = ({ threadId }) => {
+  const errorNotification = errorSequence[turnCounter];
+  turnCounter += 1;
+  if (errorNotification !== undefined) {
+    send({
+      method: "error",
+      params: {
+        ...errorNotification,
+        threadId,
+        turnId: `turn-${turnCounter}`
+      }
+    });
+    if (errorNotification.willRetry === true) {
+      finishTurn(threadId);
+    }
+    return;
+  }
+  finishTurn(threadId);
 };
 
 const handleLine = (line) => {

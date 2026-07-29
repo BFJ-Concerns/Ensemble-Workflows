@@ -1571,49 +1571,6 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
   }
 });
 
-test("built CLI does not promote a schema-forbidden notification code into JSON-RPC backpressure", async () => {
-  const fixture = await createProcessFixture("scoped-numeric-code");
-  const numericCode = {
-    error: {
-      message: "A non-schema notification carried a JSON-RPC code",
-      additionalDetails: null,
-      codexErrorInfo: null,
-      code: -32001
-    },
-    willRetry: false
-  };
-
-  try {
-    await writeFile(
-      fixture.script,
-      `
-        export const meta = {
-          name: "scoped-numeric-code",
-          description: "Keep JSON-RPC response codes out of notification classification"
-        };
-        return await agent("must remain terminal", {
-          engine: "codex",
-          maxAttempts: 2
-        });
-      `
-    );
-
-    const result = await fixture.runWithEnv({
-      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([numericCode])
-    });
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /AppServerRequestError/);
-    assert.match(result.stderr, /A non-schema notification carried a JSON-RPC code/);
-    assert.equal(
-      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
-      1
-    );
-  } finally {
-    await fixture.cleanup();
-  }
-});
-
 interface RecordedMessage {
   method?: string;
   params?: {

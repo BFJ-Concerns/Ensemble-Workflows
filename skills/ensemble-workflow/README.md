@@ -257,10 +257,13 @@ existing attempt `duration_ms` retains its previous meaning.
   timed out, transcript unreadable, subprocess killed on deadline) degrade to
   an empty attempt inside the retry loop — they consume attempts rather than
   hanging or throwing. A Codex turn timeout or non-retryable app-server error
-  **throws** out of `agent()`. App-server backpressure during a turn and a
-  turn-scoped overload reported as `server_is_overloaded` retry within the
-  attempt bound; either throws if it survives the final attempt. A turn-scoped
-  app-server error retains the provider's code and message in the thrown error
+  **throws** out of `agent()`. JSON-RPC backpressure while starting a turn and
+  a terminal notification whose `error.codexErrorInfo` is
+  `serverOverloaded` retry within the attempt bound; either throws if it
+  survives the final attempt. A notification with `willRetry: true` leaves the
+  current turn open for the app-server's own retry and does not consume an
+  Ensemble attempt. A terminal turn notification retains its
+  `codexErrorInfo`, message, and string `additionalDetails` in the thrown error
   and the failed attempt record.
 - **Budget**: each attempt checks the engine's ceiling first; once spend
   reaches it, `agent()` throws a budget-exhausted error. Ceilings are

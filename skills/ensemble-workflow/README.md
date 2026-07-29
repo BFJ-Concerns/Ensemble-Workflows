@@ -261,10 +261,14 @@ existing attempt `duration_ms` retains its previous meaning.
   a terminal notification whose `error.codexErrorInfo` is
   `serverOverloaded` retry within the attempt bound; either throws if it
   survives the final attempt. A notification with `willRetry: true` leaves the
-  current turn open for the app-server's own retry and does not consume an
-  Ensemble attempt. A terminal turn notification retains its
-  `codexErrorInfo`, message, and string `additionalDetails` in the thrown error
-  and the failed attempt record.
+  current turn open for the app-server's own retry. A `turn/started`, turn
+  diff or plan update, or any `item/*` notification resets Ensemble's count of
+  those promises; a sixth consecutive notification without such progress
+  rejects the turn as a retryable operational failure rather than waiting
+  indefinitely. The rejection retains the last error notification's rendered
+  diagnostic in the thrown error and failed attempt record. A
+  `thread/status/changed` notification with `status.type: "systemError"`
+  rejects the live turn immediately and records `systemError`.
 - **Budget**: each attempt checks the engine's ceiling first; once spend
   reaches it, `agent()` throws a budget-exhausted error. Ceilings are
   enforced at turn start, so a ceiling can be overshot by the turn in flight.

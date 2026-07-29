@@ -256,9 +256,12 @@ existing attempt `duration_ms` retains its previous meaning.
 - **Operational worker failures** on Claude and opencode (dispatch died, poll
   timed out, transcript unreadable, subprocess killed on deadline) degrade to
   an empty attempt inside the retry loop — they consume attempts rather than
-  hanging or throwing. A Codex turn timeout or app-server error **throws** out
-  of `agent()` (app-server backpressure alone is retried within the attempt
-  bound first).
+  hanging or throwing. A Codex turn timeout or non-retryable app-server error
+  **throws** out of `agent()`. App-server backpressure during a turn and a
+  turn-scoped overload reported as `server_is_overloaded` retry within the
+  attempt bound; either throws if it survives the final attempt. A turn-scoped
+  app-server error retains the provider's code and message in the thrown error
+  and the failed attempt record.
 - **Budget**: each attempt checks the engine's ceiling first; once spend
   reaches it, `agent()` throws a budget-exhausted error. Ceilings are
   enforced at turn start, so a ceiling can be overshot by the turn in flight.

@@ -7,6 +7,7 @@ import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
   AppServerOverloadedError,
+  AppServerRetryPromiseBrokenError,
   EmptyAgentOutputError,
   MissingEngineError,
   UnknownEngineError
@@ -649,7 +650,11 @@ export function defaultConcurrency(): number {
 export type { Budget, TokenUsageEvent };
 
 function isRetryableError(error: unknown): boolean {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError;
+  return (
+    error instanceof AppServerBackpressureError ||
+    error instanceof AppServerOverloadedError ||
+    error instanceof AppServerRetryPromiseBrokenError
+  );
 }
 
 function requireTransport(transport: RuntimeTransport | undefined): RuntimeTransport {

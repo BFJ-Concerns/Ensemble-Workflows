@@ -1349,6 +1349,10 @@ test("built CLI lets the app-server complete a turn when its notification says i
     },
     willRetry: true
   };
+  const internalRetrySequence = [
+    { method: "error", params: overload },
+    { method: "error", params: overload },
+  ];
 
   try {
     await writeFile(
@@ -1365,11 +1369,15 @@ test("built CLI lets the app-server complete a turn when its notification says i
       `
     );
 
-    const result = await fixture.runWithEnv({
-      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([overload]),
-      ENSEMBLE_RUN_RECORD: "1",
-      ENSEMBLE_RUN_RECORD_DIR: recordStore
-    });
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([internalRetrySequence]),
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      3_000,
+    );
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `"internally-recovered"\n`);
@@ -1382,6 +1390,182 @@ test("built CLI lets the app-server complete a turn when its notification says i
     assert.equal(agent.attempts.length, 1);
     assert.equal(agent.attempts[0]?.status, "complete");
     assert.equal(agent.attempts[0]?.failure, null);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI rejects a broken app-server retry promise with its last diagnostic", async () => {
+  const fixture = await createProcessFixture("broken-internal-retry");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const brokenPromise = {
+    error: {
+      message: "BROKEN_PROMISE_DIAGNOSTIC_91",
+      additionalDetails: "provider retry stream went quiet",
+      codexErrorInfo: "serverOverloaded"
+    },
+    willRetry: true
+  };
+  const brokenSequence = Array.from(
+    { length: 6 },
+    () => ({ method: "error", params: brokenPromise }),
+  );
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "broken-internal-retry",
+          description: "Bound an app-server retry promise by its notifications"
+        };
+        return await agent("reject instead of waiting forever", {
+          engine: "codex",
+          maxAttempts: 2
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([
+          brokenSequence,
+          brokenSequence
+        ]),
+        ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE: "1",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      3_000,
+    );
+
+    assert.equal(result.code, 1, `guard did not reject before the test kill switch\n${result.stderr}`);
+    assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.match(result.stderr, /BROKEN_PROMISE_DIAGNOSTIC_91/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      2
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 2);
+    for (const attempt of agent.attempts) {
+      assert.equal(attempt.failure?.kind, "AppServerRetryPromiseBrokenError");
+      assert.match(attempt.failure?.message ?? "", /serverOverloaded/);
+      assert.match(attempt.failure?.message ?? "", /BROKEN_PROMISE_DIAGNOSTIC_91/);
+      assert.match(attempt.failure?.message ?? "", /provider retry stream went quiet/);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI resets the app-server retry-promise count on turn progress", async () => {
+  const fixture = await createProcessFixture("internal-retry-progress", "progress-recovered");
+  const retrying = {
+    error: {
+      message: "Retrying after partial progress",
+      additionalDetails: null,
+      codexErrorInfo: "serverOverloaded"
+    },
+    willRetry: true
+  };
+  const progressSequence = Array.from({ length: 6 }, (_, index) => [
+    { method: "error", params: retrying },
+    {
+      method: "item/agentMessage/delta",
+      params: {
+        delta: `progress-${index}`,
+        itemId: "progress-message"
+      }
+    }
+  ]).flat();
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "internal-retry-progress",
+          description: "Reset retry promises when the live turn progresses"
+        };
+        return await agent("survive retries separated by progress", {
+          engine: "codex",
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([progressSequence])
+      },
+      3_000,
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"progress-recovered"\n`);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      1
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI rejects a live turn when its thread enters systemError", async () => {
+  const fixture = await createProcessFixture("thread-system-error");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const systemErrorSequence = [
+    {
+      method: "thread/status/changed",
+      params: {
+        status: { type: "systemError" }
+      }
+    }
+  ];
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "thread-system-error",
+          description: "Reject a live turn when its thread dies"
+        };
+        return await agent("must not wait on a dead thread", {
+          engine: "codex",
+          maxAttempts: 1
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([systemErrorSequence]),
+        ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE: "1",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      3_000,
+    );
+
+    assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
+    assert.match(result.stderr, /AppServerRequestError/);
+    assert.match(result.stderr, /systemError/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      1
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 1);
+    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /systemError/);
   } finally {
     await fixture.cleanup();
   }

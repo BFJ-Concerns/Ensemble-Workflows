@@ -6879,6 +6879,8 @@ var AppServerBackpressureError = class extends AppServerRequestError {
 };
 var AppServerOverloadedError = class extends AppServerRequestError {
 };
+var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -7673,6 +7675,7 @@ function rank(state) {
 // src/app-server.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var CodexAppServerTransport = class _CodexAppServerTransport {
   cwd;
   #process;
@@ -7961,6 +7964,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
     if (method === "turn/started") {
       return;
     }
@@ -8002,6 +8008,21 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       return;
     }
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#rejectTurn(
+          threadId,
+          turn,
+          new AppServerRequestError(method, {
+            code: "systemError",
+            message: "systemError",
+            data: params
+          })
+        );
+      }
+      return;
+    }
     if (method === "turn/completed") {
       turn.completedAt = now;
       this.#completeTurn(threadId, turn);
@@ -8009,13 +8030,24 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     if (method === "error") {
       if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          this.#rejectTurn(
+            threadId,
+            turn,
+            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+          );
+        }
         return;
       }
-      turn.reject(appServerErrorFromNotification(params));
-      this.#turns.delete(threadId);
-      this.#transcripts.delete(threadId);
-      clearTimeout(turn.timeout);
+      this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
+  }
+  #rejectTurn(threadId, turn, error) {
+    turn.reject(error);
+    this.#turns.delete(threadId);
+    this.#transcripts.delete(threadId);
+    clearTimeout(turn.timeout);
   }
   #completeTurn(threadId, turn) {
     this.#turns.delete(threadId);
@@ -8077,6 +8109,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       deltaText: "",
       items: /* @__PURE__ */ new Map(),
       tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -8133,6 +8166,13 @@ function appServerErrorFromPayload(method, errorPayload) {
   return new AppServerRequestError(method, errorPayload);
 }
 function appServerErrorFromNotification(params) {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return new AppServerOverloadedError("turn notification", errorPayload);
+  }
+  return new AppServerRequestError("turn notification", errorPayload);
+}
+function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
   const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
@@ -8140,15 +8180,14 @@ function appServerErrorFromNotification(params) {
   const message = typeof turnError?.message === "string" ? turnError.message : void 0;
   const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
   const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  const errorPayload = {
+  return {
     code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
     data: params
   };
-  if (code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+}
+function isTurnProgressNotification(method) {
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || method.startsWith("item/");
 }
 function payloadContainsInvalidJsonSchema(value) {
   if (typeof value === "string") {
@@ -10281,7 +10320,7 @@ async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
 function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError;
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
 }
 function requireTransport(transport) {
   if (transport === void 0) {

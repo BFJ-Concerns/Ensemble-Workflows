@@ -12,24 +12,71 @@ const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
+const notificationSequences = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES ?? "[]");
+const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE === "1";
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-const finishTurn = (threadId) => {
+const finishTurn = (threadId, turnId) => {
+  const item = {
+    id: `agent-message-${turnId}`,
+    type: "agentMessage",
+    text: responseText
+  };
   send({
     method: "item/completed",
     params: {
       threadId,
-      item: { itemType: "agentMessage", text: responseText }
+      turnId,
+      item,
+      completedAtMs: Date.now()
     }
   });
-  send({ method: "turn/completed", params: { threadId } });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: {
+        id: turnId,
+        items: [item],
+        status: "completed"
+      }
+    }
+  });
 };
-const completeTurn = ({ threadId }) => {
-  const errorNotification = errorSequence[turnCounter];
-  turnCounter += 1;
+const notificationParamsForTurn = (notification, threadId, turnId) => {
+  const params = {
+    ...notification.params,
+    threadId
+  };
+  if (
+    notification.method === "error" ||
+    notification.method.startsWith("item/") ||
+    notification.method === "turn/diff/updated" ||
+    notification.method === "turn/plan/updated"
+  ) {
+    params.turnId = turnId;
+  }
+  return params;
+};
+const completeTurn = ({ threadId, turnId, turnIndex }) => {
+  const notificationSequence = notificationSequences[turnIndex];
+  if (notificationSequence !== undefined) {
+    for (const notification of notificationSequence) {
+      send({
+        method: notification.method,
+        params: notificationParamsForTurn(notification, threadId, turnId)
+      });
+    }
+    if (!stallAfterNotificationSequence) {
+      finishTurn(threadId, turnId);
+    }
+    return;
+  }
+
+  const errorNotification = errorSequence[turnIndex];
   if (errorNotification !== undefined) {
     send({
       method: "error",
@@ -40,11 +87,11 @@ const completeTurn = ({ threadId }) => {
       }
     });
     if (errorNotification.willRetry === true) {
-      finishTurn(threadId);
+      finishTurn(threadId, turnId);
     }
     return;
   }
-  finishTurn(threadId);
+  finishTurn(threadId, turnId);
 };
 
 const handleLine = (line) => {
@@ -71,9 +118,21 @@ const handleLine = (line) => {
   }
   if (message.method === "turn/start") {
     const { threadId } = message.params;
+    turnCounter += 1;
+    const turnId = `turn-${turnCounter}`;
     send({ id: message.id, result: {} });
-    send({ method: "turn/started", params: { threadId } });
-    pendingTurns.push({ threadId });
+    send({
+      method: "turn/started",
+      params: {
+        threadId,
+        turn: {
+          id: turnId,
+          items: [],
+          status: "inProgress"
+        }
+      }
+    });
+    pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {
       for (const pending of pendingTurns.splice(0)) {
         completeTurn(pending);

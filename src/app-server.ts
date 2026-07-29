@@ -6,6 +6,7 @@ import {
   AppServerExitedError,
   AppServerOverloadedError,
   AppServerRequestError,
+  AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
@@ -52,11 +53,14 @@ interface TurnState {
   itemText?: string;
   items: Map<string, number>;
   tokenUsageEvents: TokenUsageEvent[];
+  consecutiveRetryPromises: number;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
   timeout: NodeJS.Timeout | undefined;
 }
+
+const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -407,6 +411,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
+
     if (method === "turn/started") {
       return;
     }
@@ -454,6 +462,22 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
 
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#rejectTurn(
+          threadId,
+          turn,
+          new AppServerRequestError(method, {
+            code: "systemError",
+            message: "systemError",
+            data: params
+          })
+        );
+      }
+      return;
+    }
+
     if (method === "turn/completed") {
       turn.completedAt = now;
       this.#completeTurn(threadId, turn);
@@ -462,13 +486,25 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     if (method === "error") {
       if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          this.#rejectTurn(
+            threadId,
+            turn,
+            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+          );
+        }
         return;
       }
-      turn.reject(appServerErrorFromNotification(params));
-      this.#turns.delete(threadId);
-      this.#transcripts.delete(threadId);
-      clearTimeout(turn.timeout);
+      this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
+  }
+
+  #rejectTurn(threadId: string, turn: TurnState, error: Error): void {
+    turn.reject(error);
+    this.#turns.delete(threadId);
+    this.#transcripts.delete(threadId);
+    clearTimeout(turn.timeout);
   }
 
   #completeTurn(threadId: string, turn: TurnState): void {
@@ -540,6 +576,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       deltaText: "",
       items: new Map<string, number>(),
       tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -604,6 +641,14 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
 }
 
 function appServerErrorFromNotification(params: JsonObject): Error {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return new AppServerOverloadedError("turn notification", errorPayload);
+  }
+  return new AppServerRequestError("turn notification", errorPayload);
+}
+
+function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
   const code = typeof codexErrorInfo === "string" ? codexErrorInfo : undefined;
@@ -617,15 +662,20 @@ function appServerErrorFromNotification(params: JsonObject): Error {
     .filter((value, index, values) => values.indexOf(value) === index)
     .join(": ");
 
-  const errorPayload: RpcErrorPayload = {
+  return {
     code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
     data: params
   };
-  if (code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+}
+
+function isTurnProgressNotification(method: string): boolean {
+  return (
+    method === "turn/started" ||
+    method === "turn/diff/updated" ||
+    method === "turn/plan/updated" ||
+    method.startsWith("item/")
+  );
 }
 
 function payloadContainsInvalidJsonSchema(value: unknown): boolean {

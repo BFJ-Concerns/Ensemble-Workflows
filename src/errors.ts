@@ -25,6 +25,8 @@ export class AppServerBackpressureError extends AppServerRequestError {}
 
 export class AppServerOverloadedError extends AppServerRequestError {}
 
+export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);

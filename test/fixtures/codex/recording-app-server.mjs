@@ -11,11 +11,19 @@ if (process.argv[2] !== "app-server") {
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
+const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
 let threadCounter = 0;
+let turnCounter = 0;
 const pendingTurns = [];
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const completeTurn = ({ threadId }) => {
+  const error = errorSequence[turnCounter];
+  turnCounter += 1;
+  if (error !== undefined) {
+    send({ method: "error", params: { threadId, error } });
+    return;
+  }
   send({
     method: "item/completed",
     params: {

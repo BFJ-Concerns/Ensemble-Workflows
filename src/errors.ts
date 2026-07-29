@@ -11,10 +11,10 @@ export class AgentOptionRejectedError extends EnsembleError {}
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {
-  readonly code: number | undefined;
+  readonly code: number | string | undefined;
   readonly data?: unknown;
 
-  constructor(method: string, error: { code: number | undefined; message: string | undefined; data?: unknown }) {
+  constructor(method: string, error: { code: number | string | undefined; message: string | undefined; data?: unknown }) {
     super(`${method} failed: ${error.message ?? "unknown app-server error"}`);
     this.code = error.code;
     this.data = error.data;
@@ -22,6 +22,8 @@ export class AppServerRequestError extends EnsembleError {
 }
 
 export class AppServerBackpressureError extends AppServerRequestError {}
+
+export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
@@ -35,10 +37,10 @@ export class AppServerStartupTimeoutError extends EnsembleError {
  * not satisfy the user's schema, so keep it loud and distinguishable.
  */
 export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
-  readonly code: number | undefined;
+  readonly code: number | string | undefined;
   readonly data?: unknown;
 
-  constructor(error: { code: number | undefined; message: string | undefined; data?: unknown }) {
+  constructor(error: { code: number | string | undefined; message: string | undefined; data?: unknown }) {
     super(
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " +
         "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",

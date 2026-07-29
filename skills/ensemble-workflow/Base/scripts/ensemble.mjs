@@ -6877,6 +6877,8 @@ var AppServerRequestError = class extends EnsembleError {
 };
 var AppServerBackpressureError = class extends AppServerRequestError {
 };
+var AppServerOverloadedError = class extends AppServerRequestError {
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -8006,13 +8008,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "error") {
-      turn.reject(
-        appServerErrorFromPayload("turn notification", {
-          code: void 0,
-          message: "received scoped error notification",
-          data: params
-        })
-      );
+      turn.reject(appServerErrorFromPayload("turn notification", errorPayloadFromNotification(params)));
       this.#turns.delete(threadId);
       this.#transcripts.delete(threadId);
       clearTimeout(turn.timeout);
@@ -8131,7 +8127,33 @@ function appServerErrorFromPayload(method, errorPayload) {
   if (errorPayload.code === -32001) {
     return new AppServerBackpressureError(method, errorPayload);
   }
+  if (errorPayload.code === "server_is_overloaded") {
+    return new AppServerOverloadedError(method, errorPayload);
+  }
   return new AppServerRequestError(method, errorPayload);
+}
+function errorPayloadFromNotification(params) {
+  const notificationError = asJsonObject(params.error) ?? params;
+  const embedded = parseEmbeddedDiagnostic(notificationError.message);
+  const diagnostic = asJsonObject(embedded?.error) ?? embedded ?? notificationError;
+  const code = typeof diagnostic.code === "string" || typeof diagnostic.code === "number" ? diagnostic.code : void 0;
+  const message = typeof diagnostic.message === "string" ? diagnostic.message : typeof notificationError.message === "string" ? notificationError.message : void 0;
+  const renderedDiagnostic = [code, message].filter((value) => value !== void 0).map(String).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  return {
+    code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
+    data: params
+  };
+}
+function parseEmbeddedDiagnostic(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    return asJsonObject(JSON.parse(value));
+  } catch {
+    return null;
+  }
 }
 function payloadContainsInvalidJsonSchema(value) {
   if (typeof value === "string") {
@@ -10264,7 +10286,7 @@ async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
 function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError;
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError;
 }
 function requireTransport(transport) {
   if (transport === void 0) {

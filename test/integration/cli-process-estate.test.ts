@@ -1171,6 +1171,167 @@ test("ensemble agent reports retry exhaustion as a failed partial run through th
   }
 });
 
+test("built CLI retries a scoped overload and archives the provider diagnostic", async () => {
+  const fixture = await createProcessFixture("scoped-overload-retry", "recovered");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const overload = {
+    message: JSON.stringify({
+      type: "error",
+      code: "server_is_overloaded",
+      message: "Upstream capacity is temporarily exhausted"
+    })
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "scoped-overload-retry",
+          description: "Retry an in-band provider overload"
+        };
+        return await agent("return recovered", {
+          engine: "codex",
+          maxAttempts: 2
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([overload]),
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"recovered"\n`);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      2
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 2);
+    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerOverloadedError");
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /server_is_overloaded/);
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /Upstream capacity is temporarily exhausted/);
+    assert.equal(agent.attempts[1]?.status, "complete");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI keeps a non-overload notification terminal and renders its diagnostic", async () => {
+  const fixture = await createProcessFixture("scoped-terminal-error");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const terminal = {
+    type: "error",
+    code: "provider_authentication_failed",
+    message: "Provider credentials were rejected"
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "scoped-terminal-error",
+          description: "Surface a terminal in-band provider error"
+        };
+        return await agent("must fail immediately", {
+          engine: "codex",
+          maxAttempts: 3
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([terminal]),
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore
+    });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /provider_authentication_failed/);
+    assert.match(result.stderr, /Provider credentials were rejected/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      1
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 1);
+    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /provider_authentication_failed/);
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /Provider credentials were rejected/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI throws a scoped overload after the bounded attempts", async () => {
+  const fixture = await createProcessFixture("scoped-overload-exhaustion");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const overload = {
+    message: JSON.stringify({
+      type: "error",
+      code: "server_is_overloaded",
+      message: "Upstream remained overloaded"
+    })
+  };
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "scoped-overload-exhaustion",
+          description: "Bound repeated in-band provider overloads"
+        };
+        return await agent("must throw after two overloads", {
+          engine: "codex",
+          maxAttempts: 2,
+          schema: {
+            type: "object",
+            required: ["ok"],
+            additionalProperties: false,
+            properties: {
+              ok: { type: "boolean" }
+            }
+          }
+        });
+      `
+    );
+
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([overload, overload]),
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore
+    });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /AppServerOverloadedError/);
+    assert.match(result.stderr, /server_is_overloaded/);
+    assert.match(result.stderr, /Upstream remained overloaded/);
+    assert.equal(
+      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
+      2
+    );
+
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.attempts.length, 2);
+    for (const attempt of agent.attempts) {
+      assert.equal(attempt.failure?.kind, "AppServerOverloadedError");
+      assert.match(attempt.failure?.message ?? "", /server_is_overloaded/);
+      assert.match(attempt.failure?.message ?? "", /Upstream remained overloaded/);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 interface RecordedMessage {
   method?: string;
   params?: {
@@ -1178,6 +1339,13 @@ interface RecordedMessage {
     sandboxPolicy?: unknown;
     input?: Array<{ text?: unknown }>;
   };
+}
+
+interface RecordedAgent {
+  attempts: Array<{
+    status: "complete" | "failed";
+    failure: { kind: string; message: string } | null;
+  }>;
 }
 
 interface ProcessFixture {
@@ -1243,6 +1411,11 @@ async function findOnlyFile(root: string, basename: string): Promise<string> {
   const matches = entries.filter((entry) => path.basename(entry) === basename);
   assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
   return path.join(root, matches[0] ?? "");
+}
+
+async function loadOnlyAgentRecord(recordStore: string): Promise<RecordedAgent> {
+  const agentPath = await findOnlyFile(recordStore, "agent.json");
+  return JSON.parse(await readFile(agentPath, "utf8")) as RecordedAgent;
 }
 
 async function waitForFile(file: string): Promise<void> {

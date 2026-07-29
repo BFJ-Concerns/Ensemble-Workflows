@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerOverloadedError,
   AppServerRequestError,
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
@@ -29,7 +30,7 @@ interface PendingRequest {
 }
 
 export interface RpcErrorPayload {
-  code: number | undefined;
+  code: number | string | undefined;
   message: string | undefined;
   data?: unknown;
 }
@@ -460,13 +461,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "error") {
-      turn.reject(
-        appServerErrorFromPayload("turn notification", {
-          code: undefined,
-          message: "received scoped error notification",
-          data: params
-        })
-      );
+      turn.reject(appServerErrorFromPayload("turn notification", errorPayloadFromNotification(params)));
       this.#turns.delete(threadId);
       this.#transcripts.delete(threadId);
       clearTimeout(turn.timeout);
@@ -602,7 +597,45 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
   if (errorPayload.code === -32001) {
     return new AppServerBackpressureError(method, errorPayload);
   }
+  if (errorPayload.code === "server_is_overloaded") {
+    return new AppServerOverloadedError(method, errorPayload);
+  }
   return new AppServerRequestError(method, errorPayload);
+}
+
+function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
+  const notificationError = asJsonObject(params.error) ?? params;
+  const embedded = parseEmbeddedDiagnostic(notificationError.message);
+  const diagnostic = asJsonObject(embedded?.error) ?? embedded ?? notificationError;
+  const code = typeof diagnostic.code === "string" || typeof diagnostic.code === "number" ? diagnostic.code : undefined;
+  const message =
+    typeof diagnostic.message === "string"
+      ? diagnostic.message
+      : typeof notificationError.message === "string"
+        ? notificationError.message
+        : undefined;
+  const renderedDiagnostic = [code, message]
+    .filter((value): value is string | number => value !== undefined)
+    .map(String)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join(": ");
+
+  return {
+    code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
+    data: params
+  };
+}
+
+function parseEmbeddedDiagnostic(value: unknown): JsonObject | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    return asJsonObject(JSON.parse(value) as unknown);
+  } catch {
+    return null;
+  }
 }
 
 function payloadContainsInvalidJsonSchema(value: unknown): boolean {

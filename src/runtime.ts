@@ -6,6 +6,7 @@ import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
+  AppServerOverloadedError,
   EmptyAgentOutputError,
   MissingEngineError,
   UnknownEngineError
@@ -648,7 +649,7 @@ export function defaultConcurrency(): number {
 export type { Budget, TokenUsageEvent };
 
 function isRetryableError(error: unknown): boolean {
-  return error instanceof AppServerBackpressureError;
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError;
 }
 
 function requireTransport(transport: RuntimeTransport | undefined): RuntimeTransport {

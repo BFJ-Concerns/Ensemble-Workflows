@@ -264,9 +264,14 @@ existing attempt `duration_ms` retains its previous meaning.
   current turn open for the app-server's own retry. A `turn/started`, turn
   diff or plan update, or any `item/*` notification resets Ensemble's count of
   those promises; a sixth consecutive notification without such progress
-  rejects the turn as a retryable operational failure rather than waiting
-  indefinitely. The rejection retains the last error notification's rendered
-  diagnostic in the thrown error and failed attempt record. A
+  rejects the turn — as a **retryable** operational failure whatever the
+  underlying diagnostic, since the app-server itself labelled the error
+  transient. The rejection retains the last error notification's rendered
+  diagnostic in the thrown error and failed attempt record. **This bound counts
+  messages, not time:** between one and five retry promises followed by no
+  further notification from a still-running app-server leave the turn open
+  indefinitely, because nothing in the transport measures elapsed silence. Pass
+  `--timeout` if a run needs a backstop against that. A
   `thread/status/changed` notification with `status.type: "systemError"`
   rejects the live turn immediately and records `systemError`.
 - **Budget**: each attempt checks the engine's ceiling first; once spend

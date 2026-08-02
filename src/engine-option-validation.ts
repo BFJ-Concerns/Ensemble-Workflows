@@ -10,7 +10,8 @@ import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { AgentOptions, EngineName } from "./types.js";
 
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/** Node's 32-bit setTimeout ceiling: above it the platform's timer silently misbehaves. */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 interface EngineDefaultOptions {
   model?: string;

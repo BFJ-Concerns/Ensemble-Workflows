@@ -310,6 +310,58 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   assert.equal(engine.attempts, 2);
 });
 
+test("ensemble agent honours --max-attempts and rejects invalid values before any worker runs", async () => {
+  // An engine that always returns empty text exhausts the attempt budget, so
+  // the attempt count observed at the engine is the flag's honoured value —
+  // the run's default (3) would show three attempts.
+  const engine = new FixedResponseEngine("codex", "");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--max-attempts=2", "empty answers"], {
+    stdout,
+    stderr,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 3, options)
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(engine.attempts, 2);
+
+  // The rejection path: an invalid value is a usage error before worker
+  // creation — exit 2, one clean line, nothing dispatched.
+  const rejectedEngine = new FixedResponseEngine("codex", "never reached");
+  const rejectedStdout = new CaptureStream();
+  const rejectedStderr = new CaptureStream();
+  const rejectedExit = await runEnsembleCli(["agent", "--engine=codex", "--max-attempts=0", "prompt"], {
+    stdout: rejectedStdout,
+    stderr: rejectedStderr,
+    createRuntime: async (options) => fixedEngineRuntime(rejectedEngine, 3, options)
+  });
+
+  assert.equal(rejectedExit, 2);
+  assert.equal(rejectedEngine.attempts, 0);
+  assert.match(rejectedStderr.text(), /--max-attempts value must be a positive integer, got 0/);
+  assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
+});
+
+test("--timeout above the 32-bit timer bound is a usage error, not a platform surprise", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["--timeout=2147483648", "workflow.js"], { stdout, stderr });
+
+  assert.equal(exitCode, 2);
+  assert.match(stderr.text(), /--timeout value must be at most 2147483647 milliseconds, got 2147483648/);
+
+  // The bound is inclusive: the maximum representable delay is accepted (and
+  // then fails on the missing script, which is the next check in line).
+  const boundaryStderr = new CaptureStream();
+  const boundaryExit = await runEnsembleCli(["--timeout=2147483647", "no-such-workflow.js"], {
+    stdout: new CaptureStream(),
+    stderr: boundaryStderr
+  });
+  assert.equal(boundaryExit, 1);
+  assert.doesNotMatch(boundaryStderr.text(), /--timeout value/);
+});
+
 test("ensemble agent reports option mistakes as stack-free usage errors", async () => {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -437,7 +489,7 @@ test("CLI reports usage errors without a stack trace", async () => {
     "Unknown option before script path: --unknown\n" +
       "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
@@ -944,7 +996,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
     result.stderr,
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );

@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
+import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { AgentOptionRejectedError } from "./errors.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
@@ -498,6 +499,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
         cwd: { type: "string" },
         isolation: { type: "string" },
         schema: { type: "string" },
+        "max-attempts": { type: "string" },
         task: { type: "string" },
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
@@ -534,13 +536,15 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
     ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
     ...(parsed.values.cwd !== undefined ? { cwd: parsed.values.cwd } : {}),
     ...(isolation !== undefined ? { isolation } : {}),
-    ...(schema !== undefined ? { schema } : {})
+    ...(schema !== undefined ? { schema } : {}),
+    ...(maxAttempts !== undefined ? { maxAttempts } : {})
   };
 
   return {
@@ -745,14 +749,31 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
   }
+  // Same 32-bit timer bound the per-agent timeoutMs enforces: above it the
+  // platform coerces the delay (~1ms) or throws from Node internals — a limit
+  // the author set but did not get, which is the fail-loud invariant's case.
+  if (timeoutMs > MAX_TIMER_DELAY_MS) {
+    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds, got ${value}`);
+  }
   return timeoutMs;
+}
+
+function parseMaxAttempts(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const maxAttempts = Number(value);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new CliUsageError(`--max-attempts value must be a positive integer, got ${value}`);
+  }
+  return maxAttempts;
 }
 
 function usage(): string {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]",
-    "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]",
+    "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

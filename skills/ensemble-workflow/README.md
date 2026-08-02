@@ -17,7 +17,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
   [--concurrency engine=N] [--timeout ms] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>] \
-  [--isolation worktree] [--schema '<json>'|@file] [--task <identity>] \
+  [--isolation worktree] [--schema '<json>'|@file] [--max-attempts N] \
+  [--task <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
@@ -34,12 +35,14 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   unset and unbounded by default; `--agent-ceiling null` explicitly lifts a
   lower-layer machine ceiling for one run.
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
-  `timeoutMs` inside the script.
+  `timeoutMs` inside the script. At most 2147483647 (the 32-bit timer bound);
+  a larger value is a usage error.
 - `agent` runs one worker without a script. Supply its prompt as the final
   argument, or omit the argument and pipe the prompt on stdin. `--schema`
   accepts inline JSON or `@file` and prints the same validated value that
-  `agent()` returns in a workflow. `--task` copies an optional identity into
-  the run record for benchmark grouping.
+  `agent()` returns in a workflow. `--max-attempts` overrides the per-call
+  retry bound (default 3), as `maxAttempts` does in a script. `--task` copies
+  an optional identity into the run record for benchmark grouping.
 - Direct-agent `--cwd` and `--isolation worktree` use the same placement
   lifecycle as a scripted call. An isolated run reports its branch on stderr;
   a branch containing changed work is retained for recovery.

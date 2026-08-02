@@ -13425,6 +13425,152 @@ function formatAgentOptionValue(value) {
   }
 }
 
+// src/opencode-model-registry.ts
+var MODELS = [
+  {
+    key: "glm-5.2",
+    providerModel: "openrouter/z-ai/glm-5.2",
+    displayName: "GLM 5.2",
+    provider: "openrouter",
+    family: "glm",
+    capabilities: {
+      vision: false
+    },
+    billing: {
+      mode: "pay-as-you-go"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-standard",
+    providerModel: "local/Gemma-4-31B-QAT-Standard",
+    displayName: "Gemma 4 31B QAT Standard",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "gemma-4-31b-qat-heretic",
+    providerModel: "local/Gemma-4-31B-QAT-Heretic",
+    displayName: "Gemma 4 31B QAT Heretic",
+    provider: "local",
+    family: "gemma",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-standard",
+    providerModel: "local/Qwen3.6-27B-Standard",
+    displayName: "Qwen 3.6 27B Standard",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  },
+  {
+    key: "qwen-3-6-27b-heretic-neo-code",
+    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
+    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    provider: "local",
+    family: "qwen",
+    capabilities: {
+      vision: true
+    },
+    billing: {
+      mode: "self-hosted"
+    }
+  }
+];
+var StaticOpenCodeModelRegistry = class {
+  #models = /* @__PURE__ */ new Map();
+  #names;
+  constructor(models) {
+    for (const model of models) {
+      this.#models.set(model.key, model);
+      this.#models.set(model.providerModel, model);
+    }
+    this.#names = models.map((model) => model.key);
+  }
+  get(model) {
+    return this.#models.get(model);
+  }
+  names() {
+    return [...this.#names];
+  }
+};
+var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+
+// src/engine-option-validation.ts
+var MAX_TIMER_DELAY_MS = 2147483647;
+var AGENT_OPTION_KEYS = Object.keys({
+  engine: true,
+  schema: true,
+  model: true,
+  effort: true,
+  fallbackModel: true,
+  cwd: true,
+  isolation: true,
+  timeoutMs: true,
+  maxAttempts: true,
+  label: true,
+  phase: true
+});
+var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
+var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+function assertRecognisedAgentOptions(options) {
+  for (const key of Object.keys(options)) {
+    if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
+      throw new RemovedAgentOptionError(key);
+    }
+    if (!AGENT_OPTION_KEY_SET.has(key)) {
+      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+    }
+  }
+  const values = options;
+  if (values.isolation !== void 0 && values.isolation !== "worktree") {
+    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
+  assertPositiveIntegerOption(values, "maxAttempts");
+}
+function assertFallbackModelSupported(engine, fallbackModel) {
+  if (fallbackModel !== void 0 && engine !== "claude") {
+    throw new FallbackModelUnsupportedError(engine);
+  }
+}
+function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
+  const registered = registry.get(model);
+  if (registered === void 0) {
+    throw new OpenCodeModelNotRegisteredError(model, registry.names());
+  }
+  return registered;
+}
+function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
+  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  if (engine === "opencode" && defaults.model !== void 0) {
+    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+  }
+}
+function assertPositiveIntegerOption(options, option, maximum) {
+  const value = options[option];
+  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || maximum !== void 0 && value > maximum)) {
+    const expected = maximum === void 0 ? "a positive integer" : `a positive integer no greater than ${maximum}`;
+    throw new InvalidAgentOptionValueError(option, value, expected);
+  }
+}
+
 // src/runtime.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
@@ -13755,152 +13901,6 @@ function numericField(source, key) {
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/opencode-model-registry.ts
-var MODELS = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-standard",
-    providerModel: "local/Gemma-4-31B-QAT-Standard",
-    displayName: "Gemma 4 31B QAT Standard",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "gemma-4-31b-qat-heretic",
-    providerModel: "local/Gemma-4-31B-QAT-Heretic",
-    displayName: "Gemma 4 31B QAT Heretic",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-standard",
-    providerModel: "local/Qwen3.6-27B-Standard",
-    displayName: "Qwen 3.6 27B Standard",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-heretic-neo-code",
-    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
-    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  }
-];
-var StaticOpenCodeModelRegistry = class {
-  #models = /* @__PURE__ */ new Map();
-  #names;
-  constructor(models) {
-    for (const model of models) {
-      this.#models.set(model.key, model);
-      this.#models.set(model.providerModel, model);
-    }
-    this.#names = models.map((model) => model.key);
-  }
-  get(model) {
-    return this.#models.get(model);
-  }
-  names() {
-    return [...this.#names];
-  }
-};
-var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
-
-// src/engine-option-validation.ts
-var MAX_TIMER_DELAY_MS = 2147483647;
-var AGENT_OPTION_KEYS = Object.keys({
-  engine: true,
-  schema: true,
-  model: true,
-  effort: true,
-  fallbackModel: true,
-  cwd: true,
-  isolation: true,
-  timeoutMs: true,
-  maxAttempts: true,
-  label: true,
-  phase: true
-});
-var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
-var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
-function assertRecognisedAgentOptions(options) {
-  for (const key of Object.keys(options)) {
-    if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
-      throw new RemovedAgentOptionError(key);
-    }
-    if (!AGENT_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
-    }
-  }
-  const values = options;
-  if (values.isolation !== void 0 && values.isolation !== "worktree") {
-    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-  }
-  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
-  assertPositiveIntegerOption(values, "maxAttempts");
-}
-function assertFallbackModelSupported(engine, fallbackModel) {
-  if (fallbackModel !== void 0 && engine !== "claude") {
-    throw new FallbackModelUnsupportedError(engine);
-  }
-}
-function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
-  const registered = registry.get(model);
-  if (registered === void 0) {
-    throw new OpenCodeModelNotRegisteredError(model, registry.names());
-  }
-  return registered;
-}
-function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
-  assertFallbackModelSupported(engine, defaults.fallbackModel);
-  if (engine === "opencode" && defaults.model !== void 0) {
-    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
-  }
-}
-function assertPositiveIntegerOption(options, option, maximum) {
-  const value = options[option];
-  if (value !== void 0 && (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || maximum !== void 0 && value > maximum)) {
-    const expected = maximum === void 0 ? "a positive integer" : `a positive integer no greater than ${maximum}`;
-    throw new InvalidAgentOptionValueError(option, value, expected);
-  }
 }
 
 // src/progress.ts
@@ -18792,6 +18792,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
         cwd: { type: "string" },
         isolation: { type: "string" },
         schema: { type: "string" },
+        "max-attempts": { type: "string" },
         task: { type: "string" },
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
@@ -18823,13 +18824,15 @@ async function parseAgentInvocation(argv, cwd, stdin) {
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
     ...parsed.values.effort !== void 0 ? { effort: parsed.values.effort } : {},
     ...parsed.values.cwd !== void 0 ? { cwd: parsed.values.cwd } : {},
     ...isolation !== void 0 ? { isolation } : {},
-    ...schema !== void 0 ? { schema } : {}
+    ...schema !== void 0 ? { schema } : {},
+    ...maxAttempts !== void 0 ? { maxAttempts } : {}
   };
   return {
     kind: "agent",
@@ -18991,13 +18994,26 @@ function parseTimeoutMs(value) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
   }
+  if (timeoutMs > MAX_TIMER_DELAY_MS) {
+    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds, got ${value}`);
+  }
   return timeoutMs;
+}
+function parseMaxAttempts(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  const maxAttempts = Number(value);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new CliUsageError(`--max-attempts value must be a positive integer, got ${value}`);
+  }
+  return maxAttempts;
 }
 function usage() {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]",
-    "                      [--isolation worktree] [--schema '<json>|@file'] [--task <identity>]",
+    "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

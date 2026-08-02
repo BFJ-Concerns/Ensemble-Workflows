@@ -414,6 +414,27 @@ test("binds the enumerated side-effect-free platform globals", async () => {
   });
 });
 
+test("accepts this expressions that V8 resolves lexically", async () => {
+  const result = await runWorkflowScript({
+    filename: "lexical-this.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "lexical-this" };
+
+      class Matcher {
+        static {
+          this.parts = ["accepted"];
+        }
+      }
+
+      return Matcher.parts;
+    `
+  });
+
+  assert.deepEqual(result.result, ["accepted"]);
+});
+
 test("an unknown free identifier fails at load, before any worker spawns", async () => {
   let agentCalls = 0;
   const countingRuntime: WorkflowRuntime = {

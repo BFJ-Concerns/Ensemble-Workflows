@@ -4,9 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CodexAppServerTransport, LazyCodexAppServerTransport } from "../../src/app-server.js";
+import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
-import { AppServerExitedError, AppServerStartupTimeoutError, TurnTimeoutError } from "../../src/errors.js";
+import {
+  AppServerBackpressureError,
+  AppServerExitedError,
+  AppServerStartupTimeoutError,
+  CodexSchemaSubsetUnsupportedError,
+  TurnTimeoutError,
+  partialWorkerTextOf
+} from "../../src/errors.js";
 
 test("default engine registry performs no Codex I/O at construction or unused close", async () => {
   // The binary does not exist; construction and close must not care.
@@ -79,6 +86,131 @@ test("concurrent first Codex uses share a single app-server handshake", async ()
     assert.equal(new Set(threadIds).size, 2);
     const methods = (await readFile(capturePath, "utf8")).trim().split("\n");
     assert.equal(methods.filter((method) => method === "initialize").length, 1);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("every failing terminal path carries the worker's partial text", async () => {
+  // One fake per path: each streams a delta and then ends the turn a
+  // different way. The invariant is unconditional, so every rejection must
+  // carry the streamed text — a path that loses it is the regression.
+  const paths = [
+    { name: "error notification", mode: "error-notification" },
+    { name: "systemError status", mode: "system-error" },
+    { name: "process exit mid-turn", mode: "exit-mid-turn" }
+  ] as const;
+
+  for (const terminal of paths) {
+    const codexBin = await fakeCodexFailingTurnServer(terminal.mode);
+    const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+    try {
+      const threadId = await transport.openThread({});
+      await assert.rejects(
+        () => transport.runTurn(threadId, "stream then die", {}),
+        (error: unknown) => {
+          assert.equal(
+            partialWorkerTextOf(error),
+            "nine tenths of an answer",
+            `${terminal.name} lost the worker's partial text`
+          );
+          return true;
+        }
+      );
+    } finally {
+      await transport.close();
+    }
+  }
+});
+
+test("per-turn timeout carries the worker's partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "stream then hang", { timeoutMs: 300 }),
+      (error: unknown) => {
+        assert.ok(error instanceof TurnTimeoutError);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("transport close carries each live turn's own partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
+  let deltaArrived: () => void = () => undefined;
+  const deltaSeen = new Promise<void>((resolve) => {
+    deltaArrived = resolve;
+  });
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => {
+      if (event.method === "item/agentMessage/delta") {
+        deltaArrived();
+      }
+    }
+  });
+  const threadId = await transport.openThread({});
+  const turn = transport.runTurn(threadId, "stream then hang", {});
+  // The rejection lands during close(), before assert.rejects attaches its
+  // handler — pre-attach a no-op catch so it is never counted unhandled.
+  turn.catch(() => undefined);
+  await deltaSeen;
+  await transport.close();
+  await assert.rejects(
+    () => turn,
+    (error: unknown) => {
+      assert.ok(error instanceof AppServerExitedError);
+      assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+      return true;
+    }
+  );
+});
+
+test("exact -32001 backpressure outranks an incidental invalid_json_schema mention", () => {
+  const error = appServerErrorFromPayload("turn/start", {
+    code: -32001,
+    message: "backpressure while validating invalid_json_schema payloads",
+    data: { note: "mentions invalid_json_schema in passing" }
+  });
+  assert.ok(error instanceof AppServerBackpressureError);
+  assert.ok(!(error instanceof CodexSchemaSubsetUnsupportedError));
+});
+
+test("a pathologically nested payload classifies without crashing", () => {
+  let nested: unknown = "leaf";
+  for (let i = 0; i < 20_000; i += 1) {
+    nested = { error: nested };
+  }
+  const error = appServerErrorFromPayload("turn/start", {
+    code: -32602,
+    message: "broken payload",
+    data: nested
+  });
+  // Depth-capped scan: the classification lands (as the generic request
+  // error) instead of a RangeError killing the process.
+  assert.ok(!(error instanceof CodexSchemaSubsetUnsupportedError));
+});
+
+test("an undecodable inbound frame leaves a decode diagnostic event", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("garbage-line");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "emit garbage", {}));
+    const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
+    assert.equal(decodeFailures.length, 1);
+    assert.match(String(decodeFailures[0]?.params.linePrefix), /^this is not JSON/);
+    assert.ok(Number(decodeFailures[0]?.params.byteLength) > 0);
   } finally {
     await transport.close();
   }
@@ -277,6 +409,71 @@ reader.on("line", (line) => {
     send({ method: "turn/started", params: { threadId } });
     send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text } } });
     send({ method: "turn/completed", params: { threadId } });
+  }
+});
+`
+  );
+  await chmod(bin, 0o755);
+  return bin;
+}
+
+/**
+ * A fake app-server that streams one agent-message delta ("nine tenths of an
+ * answer") and then ends the turn per the requested failure mode.
+ */
+async function fakeCodexFailingTurnServer(
+  mode: "error-notification" | "system-error" | "exit-mid-turn" | "hang-after-delta" | "garbage-line"
+): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
+  const bin = path.join(directory, "codex");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+
+if (process.argv[2] !== "app-server") {
+  process.exit(2);
+}
+
+const mode = ${JSON.stringify(mode)};
+let threadCounter = 0;
+const reader = createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/start") {
+    threadCounter += 1;
+    send({ id: message.id, result: { thread: { id: "thread-" + threadCounter } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    const threadId = message.params.threadId;
+    send({ id: message.id, result: {} });
+    send({ method: "turn/started", params: { threadId } });
+    if (mode === "exit-mid-turn") {
+      // Exit only after the delta has flushed, or the partial text never
+      // reaches the transport and the test measures the pipe, not the code.
+      process.stdout.write(
+        JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } }) + "\\n",
+        () => process.exit(7)
+      );
+      return;
+    }
+    send({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } });
+    if (mode === "error-notification") {
+      send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
+    } else if (mode === "system-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "garbage-line") {
+      process.stdout.write("this is not JSON at all\\n");
+      send({ method: "error", params: { threadId, willRetry: false, error: { message: "and then it failed" } } });
+    }
+    // hang-after-delta: send nothing further.
   }
 });
 `

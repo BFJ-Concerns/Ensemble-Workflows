@@ -10,6 +10,7 @@ import {
   AppServerRetryPromiseBrokenError,
   EmptyAgentOutputError,
   MissingEngineError,
+  partialWorkerTextOf,
   UnknownEngineError
 } from "./errors.js";
 import { RunProgress } from "./progress.js";
@@ -493,7 +494,11 @@ export class EnsembleRuntime {
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const failure = failureFromError(error);
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
+        // Terminalisation invariant: a failed turn's attempt record carries
+        // whatever the worker had said before it died, not a bare null.
+        agentRecord.attempts.push(
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+        );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -565,7 +570,11 @@ export class EnsembleRuntime {
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
         const failure = failureFromError(error);
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
+        // Terminalisation invariant: a failed turn's attempt record carries
+        // whatever the worker had said before it died, not a bare null.
+        agentRecord.attempts.push(
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+        );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }

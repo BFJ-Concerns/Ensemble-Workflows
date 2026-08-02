@@ -8,6 +8,35 @@ export class EnsembleError extends Error {
 /** A workflow-authored agent option that the runtime cannot honour. */
 export class AgentOptionRejectedError extends EnsembleError {}
 
+/**
+ * Terminalisation invariant: whatever ends a turn, the text the worker had
+ * produced travels with the failure instead of dying with the turn state.
+ * The carrier is a plain property so any error class can carry it without
+ * changing its hierarchy; attachment never overwrites an earlier value, so
+ * the text closest to the turn wins over a later re-wrap.
+ */
+interface PartialWorkerTextCarrier {
+  partialWorkerText?: string;
+}
+
+export function attachPartialWorkerText<T extends Error>(error: T, text: string): T {
+  const carrier = error as T & PartialWorkerTextCarrier;
+  if (text.length > 0 && carrier.partialWorkerText === undefined) {
+    carrier.partialWorkerText = text;
+  }
+  return error;
+}
+
+export function partialWorkerTextOf(error: unknown): string | null {
+  if (error instanceof Error) {
+    const text = (error as PartialWorkerTextCarrier).partialWorkerText;
+    if (typeof text === "string" && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

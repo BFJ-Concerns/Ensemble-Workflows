@@ -8,6 +8,7 @@ import {
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
+  attachPartialWorkerText,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
@@ -263,11 +264,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
       await this.#request("turn/start", params);
       return await state.promise;
     } catch (error) {
-      this.#turns.delete(threadId);
-      // A failed turn's transcript has no reader (failed attempts archive no
-      // transcripts), so drop it rather than let the map grow.
-      this.#transcripts.delete(threadId);
-      clearTimeout(state.timeout);
+      // A turn/start request failure is a terminal path like any other; a
+      // rejection of state.promise itself already came through #rejectTurn,
+      // for which this cleanup is an idempotent no-op. Failed attempts
+      // archive no transcripts, so the transcript is dropped either way.
+      if (this.#turns.get(threadId) === state) {
+        // The caller receives the thrown error below, so nothing awaits
+        // state.promise: swallow its rejection to keep the terminal path
+        // from raising an unhandled rejection of its own.
+        state.promise.catch(() => undefined);
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+      }
       throw error;
     }
   }
@@ -288,9 +295,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
       pending.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#pending.clear();
-    for (const turn of this.#turns.values()) {
-      clearTimeout(turn.timeout);
-      turn.reject(new AppServerExitedError("codex app-server closed"));
+    // One error instance per turn: the partial-text carrier is per-worker
+    // state, so a shared instance would smear one turn's text across all.
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
     }
     this.#turns.clear();
     this.#transcripts.clear();
@@ -398,6 +406,18 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     const parsed = parseRpcMessage(line);
     if (parsed === null) {
+      // Failures carry their evidence: an inbound frame the harness cannot
+      // decode must be visible as a decode failure, not resurface later as
+      // an unattributable turn timeout. The line is retained bounded — the
+      // point is attribution, not archiving an arbitrarily large payload.
+      this.#onEvent?.({
+        method: "transport/decodeFailed",
+        params: {
+          byteLength: Buffer.byteLength(line, "utf8"),
+          linePrefix: line.slice(0, 512)
+        },
+        receivedAt: Date.now()
+      });
       return;
     }
 
@@ -551,8 +571,16 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
   #rejectTurn(threadId: string, turn: TurnState, error: Error): void {
-    turn.reject(error);
+    turn.reject(attachPartialWorkerText(error, turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
@@ -637,9 +665,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
         timeoutMs === undefined
           ? undefined
           : setTimeout(() => {
-              this.#turns.delete(threadId);
-              this.#transcripts.delete(threadId);
-              state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
+              this.#rejectTurn(
+                threadId,
+                state,
+                new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
+              );
             }, timeoutMs)
     };
     return state;
@@ -672,9 +702,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     this.#pending.clear();
 
-    for (const turn of this.#turns.values()) {
-      clearTimeout(turn.timeout);
-      turn.reject(wrapped);
+    // One error instance per turn: the partial-text carrier is per-worker
+    // state, so the shared `wrapped` would smear one turn's text across all.
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
     }
     this.#turns.clear();
     this.#transcripts.clear();
@@ -682,11 +713,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
 }
 
 export function appServerErrorFromPayload(method: string, errorPayload: RpcErrorPayload): Error {
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
+  // Exact code matches outrank the substring scan: a payload that merely
+  // *mentions* invalid_json_schema (say, inside a backpressure diagnostic)
+  // must not be reclassified as a terminal schema rejection.
   if (errorPayload.code === -32001) {
     return new AppServerBackpressureError(method, errorPayload);
+  }
+  if (payloadContainsInvalidJsonSchema(errorPayload)) {
+    return new CodexSchemaSubsetUnsupportedError(errorPayload);
   }
   return new AppServerRequestError(method, errorPayload);
 }
@@ -715,9 +749,23 @@ function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
 
   return {
     code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
     data: params
   };
+}
+
+/**
+ * Renders a payload for a diagnostic message without letting the payload's
+ * own shape break the diagnostic: JSON.stringify throws on cycles and
+ * overflows the stack on pathological nesting — inside error handling,
+ * where a second failure would replace the first with a crash.
+ */
+function renderPayloadSafely(payload: unknown): string {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
 }
 
 function isTurnProgressNotification(method: string): boolean {
@@ -729,18 +777,29 @@ function isTurnProgressNotification(method: string): boolean {
   );
 }
 
-function payloadContainsInvalidJsonSchema(value: unknown): boolean {
+/**
+ * Depth cap for walks over inbound payload structure. Real protocol frames
+ * nest a handful of levels; the cap exists so a hostile or broken provider
+ * payload becomes an ordinary miss instead of a stack overflow that kills
+ * the process with no salvage envelope.
+ */
+const MAX_INBOUND_PAYLOAD_DEPTH = 64;
+
+function payloadContainsInvalidJsonSchema(value: unknown, depth = 0): boolean {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
   if (typeof value === "string") {
     return value.includes("invalid_json_schema");
   }
   if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item));
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
   }
   const object = asJsonObject(value);
   if (object === null) {
     return false;
   }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item));
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
 }
 
 function parseRpcMessage(line: string): RpcMessage | null {

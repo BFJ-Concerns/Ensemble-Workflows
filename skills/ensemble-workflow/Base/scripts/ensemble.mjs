@@ -6864,6 +6864,22 @@ var EnsembleError = class extends Error {
 };
 var AgentOptionRejectedError = class extends EnsembleError {
 };
+function attachPartialWorkerText(error, text) {
+  const carrier = error;
+  if (text.length > 0 && carrier.partialWorkerText === void 0) {
+    carrier.partialWorkerText = text;
+  }
+  return error;
+}
+function partialWorkerTextOf(error) {
+  if (error instanceof Error) {
+    const text = error.partialWorkerText;
+    if (typeof text === "string" && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -7833,9 +7849,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       await this.#request("turn/start", params);
       return await state.promise;
     } catch (error) {
-      this.#turns.delete(threadId);
-      this.#transcripts.delete(threadId);
-      clearTimeout(state.timeout);
+      if (this.#turns.get(threadId) === state) {
+        state.promise.catch(() => void 0);
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+      }
       throw error;
     }
   }
@@ -7853,9 +7870,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       pending.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#pending.clear();
-    for (const turn of this.#turns.values()) {
-      clearTimeout(turn.timeout);
-      turn.reject(new AppServerExitedError("codex app-server closed"));
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
     }
     this.#turns.clear();
     this.#transcripts.clear();
@@ -7952,6 +7968,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     const parsed = parseRpcMessage(line);
     if (parsed === null) {
+      this.#onEvent?.({
+        method: "transport/decodeFailed",
+        params: {
+          byteLength: Buffer.byteLength(line, "utf8"),
+          linePrefix: line.slice(0, 512)
+        },
+        receivedAt: Date.now()
+      });
       return;
     }
     const id = typeof parsed.id === "number" ? parsed.id : null;
@@ -8082,8 +8106,16 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
   }
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
   #rejectTurn(threadId, turn, error) {
-    turn.reject(error);
+    turn.reject(attachPartialWorkerText(error, turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
@@ -8155,9 +8187,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       // No timeoutMs → no per-turn deadline; the turn runs until it completes or
       // the run is stopped. A backstop is the orchestrator's responsibility.
       timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        this.#turns.delete(threadId);
-        this.#transcripts.delete(threadId);
-        state.reject(new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`));
+        this.#rejectTurn(
+          threadId,
+          state,
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
+        );
       }, timeoutMs)
     };
     return state;
@@ -8187,20 +8221,19 @@ ${this.#stderrTail.join("\n")}` : "";
       pending.reject(wrapped);
     }
     this.#pending.clear();
-    for (const turn of this.#turns.values()) {
-      clearTimeout(turn.timeout);
-      turn.reject(wrapped);
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
     }
     this.#turns.clear();
     this.#transcripts.clear();
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
   if (errorPayload.code === -32001) {
     return new AppServerBackpressureError(method, errorPayload);
+  }
+  if (payloadContainsInvalidJsonSchema(errorPayload)) {
+    return new CodexSchemaSubsetUnsupportedError(errorPayload);
   }
   return new AppServerRequestError(method, errorPayload);
 }
@@ -8221,25 +8254,36 @@ function errorPayloadFromNotification(params) {
   const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
   return {
     code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : JSON.stringify(params),
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
     data: params
   };
+}
+function renderPayloadSafely(payload) {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
 }
 function isTurnProgressNotification(method) {
   return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || method.startsWith("item/");
 }
-function payloadContainsInvalidJsonSchema(value) {
+var MAX_INBOUND_PAYLOAD_DEPTH = 64;
+function payloadContainsInvalidJsonSchema(value, depth = 0) {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
   if (typeof value === "string") {
     return value.includes("invalid_json_schema");
   }
   if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item));
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
   }
   const object = asJsonObject(value);
   if (object === null) {
     return false;
   }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item));
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
 }
 function parseRpcMessage(line) {
   try {
@@ -10337,7 +10381,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const failure = failureFromError(error);
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
+        agentRecord.attempts.push(
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+        );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }
@@ -10398,7 +10444,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
         const failure = failureFromError(error);
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", failure, null, null, startedAt, null));
+        agentRecord.attempts.push(
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+        );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
         }

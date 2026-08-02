@@ -7,7 +7,8 @@ import {
   ClaudeTranscriptError,
   ClaudeValveError,
   ClaudeWorkerError,
-  EngineShutdownError
+  EngineShutdownError,
+  attachPartialWorkerText
 } from "./errors.js";
 import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
 
@@ -70,9 +71,8 @@ const MAX_CONSECUTIVE_ABSENCES = 3;
  * - **Without the valve** (no tmux), correction degrades to a fresh re-dispatch
  *   whose prompt carries the prior failure; the engine never depends on the valve.
  * - **Operational failures** (dispatch died, poll timed out, blocked past the
- *   bound, valve refused, transcript unreadable) become a graceful empty turn:
- *   the session is torn down and the shared loop turns the empty result into
- *   `null` (schema) or the empty-output error after the bound (text). It never hangs.
+ *   bound, valve refused, transcript unreadable) retain their typed diagnostic
+ *   and the latest transcript text before the session is torn down. They never hang.
  *
  * `close()` (called by the shared loop in `finally`) stops and removes the session.
  */
@@ -142,14 +142,14 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       }
       return await this.#dispatchAndCollect(previousFailure);
     } catch (error) {
+      if (error instanceof Error) {
+        await this.#attachLatestWorkerText(error);
+      }
       if (error instanceof ClaudeWorkerError) {
-        // Graceful degradation: a stalled or failed worker is an empty turn, not a
-        // hang. Drop the session so the next attempt re-dispatches fresh.
+        // Preserve the operational failure itself. The shared runtime records
+        // its diagnostic and any attached transcript text before deciding
+        // whether the agent can continue.
         await this.#teardown();
-        if (error instanceof ClaudeFirstLifeTimeoutError) {
-          return emptyTurnResult({ kind: "claude-first-life-timeout", message: error.message });
-        }
-        return emptyTurnResult();
       }
       throw error;
     }
@@ -160,8 +160,8 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       this.#closed = true;
       this.#abortController.abort();
       try {
-        await this.#teardown();
         await this.#settlement?.catch(() => undefined);
+        await this.#teardown();
       } finally {
         this.#onClose?.(this);
       }
@@ -356,6 +356,18 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
   }
 
+  async #attachLatestWorkerText(error: Error): Promise<void> {
+    const handle = this.#handle;
+    if (handle === null) {
+      return;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    const text = transcript === null ? null : finalAssistantText(transcript.entries, 0);
+    if (text !== null) {
+      attachPartialWorkerText(error, text);
+    }
+  }
+
   /**
    * Feed best-effort transcript-derived usage through the same event shape Codex
    * emits. The adapter registration labels it as Claude before the runtime records
@@ -450,18 +462,6 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     dispatchCounter += 1;
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
-}
-
-function emptyTurnResult(attemptFailure?: EngineAttemptFailure): EngineAttemptResult {
-  return {
-    text: "",
-    ...(attemptFailure !== undefined ? { attemptFailure } : {}),
-    deltaText: "",
-    durationMs: null,
-    firstDeltaMs: null,
-    items: {},
-    tokenUsageEvents: []
-  };
 }
 
 function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {

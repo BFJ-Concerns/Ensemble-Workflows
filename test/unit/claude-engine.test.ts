@@ -5,7 +5,14 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { EngineShutdownError } from "../../src/errors.js";
+import {
+  ClaudeBlockedError,
+  ClaudeFirstLifeTimeoutError,
+  ClaudePollTimeoutError,
+  ClaudeValveError,
+  EngineShutdownError,
+  partialWorkerTextOf
+} from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -229,7 +236,7 @@ async function withControlPlane(
 }
 
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {
-  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
+  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "partial from Claude", stop: "tool_use" } }], async (controlPlane) => {
     // A long poll interval: without the abortable delay, close() would sit
     // out the full minute before the loop noticed anything.
     const adapter = new ClaudeEngineAdapter({
@@ -244,7 +251,11 @@ test("Claude adapter close stops an active session and winds down its poll loop"
 
     await adapter.close();
 
-    await assert.rejects(attempt, EngineShutdownError);
+    await assert.rejects(attempt, (error: unknown) => {
+      assert.ok(error instanceof EngineShutdownError);
+      assert.equal(partialWorkerTextOf(error), "partial from Claude");
+      return true;
+    });
     assert.equal(controlPlane.stopCount, 1);
     assert.equal(controlPlane.pollCount, 1);
   });
@@ -406,8 +417,7 @@ test("blocked recovery stops after a failed steer instead of claiming the nudge 
     async (controlPlane) => {
       const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 2 });
       try {
-        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
-        assert.equal(result, null);
+        await assert.rejects(runtime.agent("decide", { engine: "claude", schema: okSchema }), ClaudeValveError);
         assert.equal(controlPlane.steerCount, 1);
         assert.equal(controlPlane.stopCount, 1);
       } finally {
@@ -428,8 +438,7 @@ test("blocked recovery requires a receipt before another nudge", async () => {
         receiptTimeoutMs: 10
       });
       try {
-        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
-        assert.equal(result, null);
+        await assert.rejects(runtime.agent("decide", { engine: "claude", schema: okSchema }), ClaudeValveError);
         assert.equal(controlPlane.steerCount, 1);
         assert.ok(controlPlane.transcriptReadsAfterSteer > 0);
         assert.equal(controlPlane.stopCount, 1);
@@ -441,19 +450,47 @@ test("blocked recovery requires a receipt before another nudge", async () => {
   );
 });
 
-test("a worker blocked past the recovery bound fails gracefully to null, never hangs", async () => {
+test("a worker blocked past the recovery bound reports its diagnostic and never hangs", async () => {
   await withControlPlane(
     [
       { outcome: "blocked" },
-      { outcome: "blocked" }
+      { outcome: "blocked", assistant: { text: "still blocked", stop: "tool_use" } }
     ],
     async (controlPlane) => {
       const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 1 });
       try {
-        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
-        assert.equal(result, null);
+        await assert.rejects(runtime.agent("decide", { engine: "claude", schema: okSchema }), ClaudeBlockedError);
         assert.equal(controlPlane.steerCount, 1); // one nudge, then gave up
         assert.equal(controlPlane.stopCount, 1); // torn down on graceful failure
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a blocked Claude worker preserves transcript text and its diagnostic in the attempt record", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked", assistant: { text: "Claude reached the evidence", stop: "tool_use" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 0 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        await assert.rejects(
+          runtime.agent("decide", { engine: "claude" }),
+          (error: unknown) => {
+            assert.ok(error instanceof ClaudeBlockedError);
+            assert.match(error.message, /blocked awaiting input/);
+            assert.equal(partialWorkerTextOf(error), "Claude reached the evidence");
+            return true;
+          }
+        );
+        assert.equal(records[0]?.attempts[0]?.rawOutput, "Claude reached the evidence");
+        assert.equal(records[0]?.attempts[0]?.failure?.kind, "ClaudeBlockedError");
+        assert.match(records[0]?.attempts[0]?.failure?.message ?? "", /blocked awaiting input/);
       } finally {
         await runtime.close();
       }
@@ -544,14 +581,13 @@ test("the budget ceiling blocks a later Claude agent once exhausted", async () =
   );
 });
 
-test("an unreadable transcript fails gracefully rather than throwing out of agent()", async () => {
+test("an unreadable transcript preserves the terminal poll diagnostic", async () => {
   // A worker that settles (status idle) but exposes no transcript file → the
-  // turn never reads complete → bounded poll timeout → empty turn → null, no throw.
+  // turn never reads complete → bounded poll timeout with the native diagnostic.
   const controlPlane = new MissingTranscriptControlPlane();
   const runtime = makeRuntime(controlPlane, { maxAttempts: 1, turnTimeoutMs: 50 });
   try {
-    const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
-    assert.equal(result, null);
+    await assert.rejects(runtime.agent("decide", { engine: "claude", schema: okSchema }), ClaudePollTimeoutError);
     assert.ok(controlPlane.stopCount >= 1);
   } finally {
     await runtime.close();
@@ -574,10 +610,9 @@ test("a worker that never shows life fails fast with a distinct recorded failure
 
   const startedAt = Date.now();
   try {
-    const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
-    assert.equal(result, null);
+    await assert.rejects(runtime.agent("decide", { engine: "claude", schema: okSchema }), ClaudeFirstLifeTimeoutError);
     assert.ok(Date.now() - startedAt < 500, "mute worker should not consume the full turn timeout");
-    assert.equal(records[0]?.attempts[0]?.failure?.kind, "claude-first-life-timeout");
+    assert.equal(records[0]?.attempts[0]?.failure?.kind, "ClaudeFirstLifeTimeoutError");
     assert.match(records[0]?.attempts[0]?.failure?.message ?? "", /no sign of life/);
   } finally {
     await runtime.close();

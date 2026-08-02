@@ -367,6 +367,8 @@ test("exact -32001 backpressure outranks an incidental invalid_json_schema menti
   });
   assert.ok(error instanceof AppServerBackpressureError);
   assert.ok(!(error instanceof CodexSchemaSubsetUnsupportedError));
+  assert.match(error.message, /-32001/);
+  assert.match(error.message, /mentions invalid_json_schema in passing/);
 });
 
 test("a pathologically nested payload classifies without crashing", () => {

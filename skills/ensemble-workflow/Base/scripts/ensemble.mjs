@@ -10266,7 +10266,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    await this.#recordAgentSafely(agentRecord);
     return this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
   }
   async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
@@ -10626,10 +10627,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, options) {
+  #newAgentRecord(id, engine, prompt, options) {
     return {
       id,
       engine,
+      prompt,
+      options: {
+        timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,
+        maxAttempts: options.maxAttempts ?? this.#defaultMaxAttempts
+      },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
@@ -11487,6 +11493,11 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      prompt: record.prompt,
+      options: {
+        timeout_ms: record.options.timeoutMs,
+        max_attempts: record.options.maxAttempts
+      },
       model: record.model,
       effort: record.effort,
       fallback_model: record.fallbackModel,

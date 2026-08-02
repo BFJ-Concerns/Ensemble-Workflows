@@ -230,7 +230,11 @@ export class EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    // Dispatch-time record: persisted in-progress before the engine is
+    // called, so a worker that dies uncleanly still leaves evidence it was
+    // asked. Settlement overwrites this same record (last write wins).
+    await this.#recordAgentSafely(agentRecord);
     return this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
   }
 
@@ -664,10 +668,20 @@ export class EnsembleRuntime {
     };
   }
 
-  #newAgentRecord(id: number, engine: EngineName, options: Partial<AgentOptions>): RuntimeAgentRecord {
+  #newAgentRecord(
+    id: number,
+    engine: EngineName,
+    prompt: string,
+    options: Partial<AgentOptions>
+  ): RuntimeAgentRecord {
     return {
       id,
       engine,
+      prompt,
+      options: {
+        timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,
+        maxAttempts: options.maxAttempts ?? this.#defaultMaxAttempts
+      },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,

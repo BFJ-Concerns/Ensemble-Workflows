@@ -67,6 +67,13 @@ export interface RuntimeAgentAttemptRecord {
 export interface RuntimeAgentRecord {
   id: number;
   engine: EngineName;
+  /** The dispatched prompt, recorded before the engine is called. */
+  prompt: string;
+  /** Options as the runtime resolved them at dispatch (defaults applied). */
+  options: {
+    timeoutMs: number | null;
+    maxAttempts: number;
+  };
   model: string | null;
   effort: string | null;
   fallbackModel: string | null;
@@ -340,6 +347,11 @@ export class RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      prompt: record.prompt,
+      options: {
+        timeout_ms: record.options.timeoutMs,
+        max_attempts: record.options.maxAttempts
+      },
       model: record.model,
       effort: record.effort,
       fallback_model: record.fallbackModel,

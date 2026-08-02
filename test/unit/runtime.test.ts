@@ -179,8 +179,11 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
   });
 
   assert.equal(completedResult, null);
-  assert.equal(completedRecords[0]?.status, "complete");
-  assert.equal(completedRecords[0]?.attempts[0]?.status, "complete");
+  // First record is the dispatch-time in-progress write; the settlement
+  // record with the outcome is the last.
+  assert.equal(completedRecords[0]?.status, "in-progress");
+  assert.equal(completedRecords.at(-1)?.status, "complete");
+  assert.equal(completedRecords.at(-1)?.attempts[0]?.status, "complete");
   assert.deepEqual(completedRuntime.completedOutputs(), [
     {
       id: 1,
@@ -209,8 +212,8 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
   });
 
   assert.equal(failedResult, null);
-  assert.equal(failedRecords[0]?.status, "failed");
-  assert.equal(failedRecords[0]?.attempts[0]?.status, "failed");
+  assert.equal(failedRecords.at(-1)?.status, "failed");
+  assert.equal(failedRecords.at(-1)?.attempts[0]?.status, "failed");
   assert.deepEqual(failedRuntime.completedOutputs(), []);
 });
 
@@ -534,7 +537,7 @@ test("a failed worker still finishes and records its changed worktree", async ()
 
   assert.equal(worktreeManager.finished.length, 1);
   assert.equal(runtime.worktrees[0]?.changed, true);
-  assert.deepEqual((records[0] as { worktree: unknown }).worktree, {
+  assert.deepEqual((records.at(-1) as { worktree: unknown }).worktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
     changed: true,
@@ -580,7 +583,7 @@ test("a missing worktree path remains discoverable and reports its finalisation 
   assert.strictEqual(propagated, finalisationError);
   assert.deepEqual(worktreeManager.finished, [worktree]);
   assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
-  assert.deepEqual(records[0]?.worktree, {
+  assert.deepEqual(records.at(-1)?.worktree, {
     branch: worktree.branch,
     baseCommit: worktree.baseCommit,
     changed: true,
@@ -637,7 +640,7 @@ test("a worker error remains primary when worktree finalisation also fails", asy
 
   assert.strictEqual(propagated, workerError);
   assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
-  assert.equal(records[0]?.worktree?.branch, worktree.branch);
+  assert.equal(records.at(-1)?.worktree?.branch, worktree.branch);
   assert.deepEqual(events, [
     {
       method: "worktree/finalisationFailed",
@@ -931,6 +934,58 @@ test("a schema that does not compile fails before any worker spawns", async () =
     }
   );
   assert.equal(transport.openedThreads.length, 0);
+});
+
+test("an agent's record exists from dispatch, in-progress with prompt and resolved options", async () => {
+  // The contract: recording intent before delivery, so a worker that dies
+  // uncleanly still leaves evidence it was asked. The first write must land
+  // before the engine runs and already carry the prompt and the options as
+  // resolved (defaults applied), not as authored.
+  const records: Array<{ status: string; prompt: string; options: { timeoutMs: number | null; maxAttempts: number } }> = [];
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("ok")]),
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 3
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await runtime.agent("what was asked", { engine: "codex", maxAttempts: 2 });
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.status, "in-progress");
+  assert.equal(records[0]?.prompt, "what was asked");
+  // maxAttempts as authored per call; timeoutMs resolved from the runtime default.
+  assert.deepEqual(records[0]?.options, { timeoutMs: 1_000, maxAttempts: 2 });
+  assert.equal(records.at(-1)?.status, "complete");
+  assert.equal(records.at(-1)?.prompt, "what was asked");
+});
+
+test("a worker that dies uncleanly leaves its dispatch-time record", async () => {
+  const records: Array<{ status: string; prompt: string }> = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(new Error("engine fell over")),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(() => runtime.agent("doomed prompt", { engine: "codex" }), /engine fell over/);
+
+  // Even with the settlement write present, the dispatch-time write is the
+  // evidence a crash-before-settlement scenario relies on: it must be the
+  // in-progress record carrying the prompt.
+  assert.equal(records[0]?.status, "in-progress");
+  assert.equal(records[0]?.prompt, "doomed prompt");
+  assert.equal(records.at(-1)?.status, "failed");
 });
 
 test("a run-record write failure surfaces as an event and never fails the agent", async () => {

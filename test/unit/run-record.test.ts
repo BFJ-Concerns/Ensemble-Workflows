@@ -586,6 +586,8 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
   return {
     id,
     engine,
+    prompt: "fixture prompt",
+    options: { timeoutMs: null, maxAttempts: 3 },
     model,
     effort: null,
     fallbackModel: null,

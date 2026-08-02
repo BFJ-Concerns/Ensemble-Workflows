@@ -119,7 +119,8 @@ A workflow script must begin with `export const meta = { name, description }`
 as an object literal, optionally followed by
 `export const defaults = { <engine>: { model?, effort?, fallbackModel? } }`
 (per-engine defaults; defined per-call options win). Blank lines, `//` comments
-ending in LF or CRLF, and `/* ... */` comments may separate these exports; a
+ending in LF, CR, CRLF, U+2028 LINE SEPARATOR, or U+2029 PARAGRAPH SEPARATOR,
+and `/* ... */` comments may separate these exports; a
 `defaults` export declared later in the workflow body is rejected with a
 placement error. If another syntax error makes that placement check
 inconclusive, the runtime says so and preserves the original `SyntaxError` as

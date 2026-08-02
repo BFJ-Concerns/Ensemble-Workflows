@@ -640,6 +640,33 @@ test("comments between meta and defaults preserve the defaults block", async () 
   assert.deepEqual(seen, [{ engine: "codex", effort: "low" }]);
 });
 
+test("line comments between meta and defaults end at every JavaScript line terminator", async (t) => {
+  const terminators = [
+    ["LF", "\n"],
+    ["lone CR", "\r"],
+    ["CRLF", "\r\n"],
+    ["LINE SEPARATOR", "\u2028"],
+    ["PARAGRAPH SEPARATOR", "\u2029"]
+  ] as const;
+
+  for (const [name, terminator] of terminators) {
+    await t.test(name, async () => {
+      const result = await runWorkflowScript({
+        filename: `comment-${name}.js`,
+        runtime,
+        log: () => {},
+        source:
+          'export const meta = { name: "comment-terminator" };' +
+          `// Defaults follow${terminator}` +
+          'export const defaults = { codex: { effort: "low" } };' +
+          `return ${JSON.stringify(`${name} code ran`)};`
+      });
+
+      assert.equal(result.result, `${name} code ran`);
+    });
+  }
+});
+
 test("a misplaced defaults export reports the workflow shape", async () => {
   await assert.rejects(
     () =>

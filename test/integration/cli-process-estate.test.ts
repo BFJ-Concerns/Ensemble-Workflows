@@ -282,6 +282,43 @@ test("built CLI accepts a comment between meta and defaults", async () => {
   }
 });
 
+test("built CLI executes code after every JavaScript line-comment terminator", async (t) => {
+  const terminators = [
+    ["lf", "\n"],
+    ["lone-cr", "\r"],
+    ["crlf", "\r\n"],
+    ["line-separator", "\u2028"],
+    ["paragraph-separator", "\u2029"]
+  ] as const;
+
+  for (const [name, terminator] of terminators) {
+    await t.test(name, async () => {
+      const fixture = await createProcessFixture(`comment-${name}`);
+
+      try {
+        await writeFile(
+          fixture.script,
+          'export const meta = {' +
+            ` name: ${JSON.stringify(`comment-${name}`)},` +
+            ' description: "Every JavaScript line terminator ends a line comment"' +
+            ' };' +
+            `// Defaults follow${terminator}` +
+            'export const defaults = { codex: { effort: "low" } };' +
+            `return ${JSON.stringify(`${name}-code-ran`)};`
+        );
+
+        const result = await fixture.run();
+
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stdout, `${JSON.stringify(`${name}-code-ran`)}\n`);
+        assert.equal(result.stderr, "");
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
 test("built CLI defers awkward valid workflow bodies to V8 without false shape rejection", async () => {
   const fixture = await createProcessFixture("awkward-valid-workflow");
 

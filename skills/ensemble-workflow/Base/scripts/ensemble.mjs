@@ -17825,8 +17825,18 @@ function skipTemplateLiteral(source, start) {
   throw new WorkflowScriptError("Workflow meta template string is not terminated");
 }
 function skipLineComment(source, start) {
-  const end = source.indexOf("\n", start + 2);
-  return end === -1 ? source.length : end + 1;
+  let index = start + 2;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === "\r") {
+      return source[index + 1] === "\n" ? index + 2 : index + 1;
+    }
+    if (char === "\n" || char === "\u2028" || char === "\u2029") {
+      return index + 1;
+    }
+    index += 1;
+  }
+  return source.length;
 }
 function skipBlockComment(source, start) {
   const end = source.indexOf("*/", start + 2);

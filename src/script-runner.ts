@@ -413,6 +413,9 @@ function assertKnownFreeIdentifiers(wrappedSource: string, context: vm.Context, 
     );
   }
   const unknown = found
+    // acorn-globals reports ThisExpression as a free name, but `this` is
+    // syntax whose value V8 supplies wherever the compiled script permits it.
+    .filter((global) => global.name !== "this")
     .filter((global) => !knownGlobals.has(global.name))
     .filter(
       (global) =>

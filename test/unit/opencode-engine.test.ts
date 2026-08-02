@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,7 +13,9 @@ import {
   EngineShutdownError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
-  OpenCodeModelRequiredError
+  OpenCodeModelRequiredError,
+  OpenCodeRunError,
+  partialWorkerTextOf
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -95,6 +97,53 @@ test("opencode adapter close aborts the active runner and awaits settlement", as
   assert.equal(runner.signal?.aborted, true);
   // A cancelled worker is a shutdown, not an opencode run failure.
   await assert.rejects(attempt, EngineShutdownError);
+});
+
+test("opencode run failure preserves stream text and the engine diagnostic in the attempt record", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-failure-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-failure-store-"));
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_failed" }),
+    JSON.stringify({ type: "text", part: { type: "text", text: "partial from opencode" } }),
+    JSON.stringify({ type: "error", error: { data: { message: "provider connection lost" } } })
+  ].join("\n");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { exitCode: 7, stdout: stream, stderr: "wrapper stderr" },
+    exportResult: { status: "command-failed", exitCode: 7, signal: null, stderr: "export unavailable" }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-failure",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-failure' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  try {
+    await assert.rejects(runtime.agent("fail after writing", { engine: "opencode", model: "glm-5.2" }), (error: unknown) => {
+      assert.ok(error instanceof OpenCodeRunError);
+      assert.match(error.message, /provider connection lost/);
+      assert.equal(partialWorkerTextOf(error), "partial from opencode");
+      return true;
+    });
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      attempts: Array<{ raw_output: string | null; failure: { kind: string; message: string } }>;
+    };
+    assert.equal(agent.attempts[0]?.raw_output, "partial from opencode");
+    assert.equal(agent.attempts[0]?.failure.kind, "OpenCodeRunError");
+    assert.match(agent.attempts[0]?.failure.message ?? "", /provider connection lost/);
+  } finally {
+    await runtime.close();
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
 });
 
 test("opencode invocation and adapter close terminate their real child processes", async () => {

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { EngineShutdownError } from "../../src/errors.js";
+import { EmptyAgentOutputError, EngineShutdownError, partialWorkerTextOf } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -229,7 +229,7 @@ async function withControlPlane(
 }
 
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {
-  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
+  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "partial from Claude", stop: "tool_use" } }], async (controlPlane) => {
     // A long poll interval: without the abortable delay, close() would sit
     // out the full minute before the loop noticed anything.
     const adapter = new ClaudeEngineAdapter({
@@ -244,7 +244,11 @@ test("Claude adapter close stops an active session and winds down its poll loop"
 
     await adapter.close();
 
-    await assert.rejects(attempt, EngineShutdownError);
+    await assert.rejects(attempt, (error: unknown) => {
+      assert.ok(error instanceof EngineShutdownError);
+      assert.equal(partialWorkerTextOf(error), "partial from Claude");
+      return true;
+    });
     assert.equal(controlPlane.stopCount, 1);
     assert.equal(controlPlane.pollCount, 1);
   });
@@ -458,6 +462,83 @@ test("a worker blocked past the recovery bound fails gracefully to null, never h
         await runtime.close();
       }
     }
+  );
+});
+
+test("a blocked Claude worker preserves transcript text and its diagnostic in the attempt record", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked", assistant: { text: "Claude reached the evidence", stop: "tool_use" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 0 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        const settledRecord = records.at(-1);
+        assert.equal(settledRecord?.attempts[0]?.rawOutput, "Claude reached the evidence");
+        assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-blocked");
+        assert.match(settledRecord?.attempts[0]?.failure?.message ?? "", /blocked awaiting input/);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("Claude operational failures retain partial text across three governed attempts", async () => {
+  await withControlPlane(
+    [
+      { outcome: "blocked", assistant: { text: "partial one", stop: "tool_use" } },
+      { outcome: "blocked", assistant: { text: "partial two", stop: "tool_use" } },
+      { outcome: "blocked", assistant: { text: "partial three", stop: "tool_use" } }
+    ],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 3, blockedRecoveryBound: 0 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+        assert.equal(result, null);
+        assert.equal(controlPlane.dispatchCount, 3);
+        assert.deepEqual(
+          records.at(-1)?.attempts.map((attempt) => attempt.rawOutput),
+          ["partial one", "partial two", "partial three"]
+        );
+        assert.deepEqual(
+          records.at(-1)?.attempts.map((attempt) => attempt.failure?.kind),
+          ["claude-blocked", "claude-blocked", "claude-blocked"]
+        );
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a failed correction does not attach text from the previous turn", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "stale previous answer" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 2 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
+        assert.equal(result, null);
+        const settledRecord = records.at(-1);
+        assert.equal(settledRecord?.attempts[0]?.rawOutput, "stale previous answer");
+        assert.equal(settledRecord?.attempts[1]?.rawOutput, "");
+      } finally {
+        await runtime.close();
+      }
+    },
+    { steerSucceeds: false }
   );
 });
 

@@ -44,7 +44,9 @@ export class AppServerRequestError extends EnsembleError {
   readonly data?: unknown;
 
   constructor(method: string, error: { code: number | string | undefined; message: string | undefined; data?: unknown }) {
-    super(`${method} failed: ${error.message ?? "unknown app-server error"}`);
+    const code = error.code === undefined ? "" : ` (${String(error.code)})`;
+    const data = error.data === undefined ? "" : `; data: ${renderDiagnostic(error.data)}`;
+    super(`${method} failed${code}: ${error.message ?? "unknown app-server error"}${data}`, { cause: error });
     this.code = error.code;
     this.data = error.data;
   }
@@ -115,10 +117,10 @@ export class EmptyAgentOutputError extends EnsembleError {}
  * Base for *operational* failures of a Claude background worker — dispatch
  * died, polling timed out, the worker stalled past the recovery bound, the
  * valve couldn't inject, the transcript couldn't be read. The Claude engine
- * catches these and degrades to a graceful empty turn (→ the shared loop turns
+ * catches these and degrades to a graceful failed turn (the shared loop turns
  * that into `null` for a schema agent, or the empty-output error after the
- * bounded attempts for a text agent). It never lets one hang the run. A failure
- * that is *not* a `ClaudeWorkerError` is a genuine bug and propagates.
+ * bounded attempts for a text agent). It never lets one hang. A failure that
+ * is *not* a `ClaudeWorkerError` is a genuine bug and propagates.
  */
 export class ClaudeWorkerError extends EnsembleError {}
 
@@ -158,6 +160,14 @@ export class OpenCodeWorkerError extends EnsembleError {}
 export class OpenCodeRunError extends OpenCodeWorkerError {
   constructor(message: string) {
     super(message);
+  }
+}
+
+function renderDiagnostic(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable diagnostic: ${error instanceof Error ? error.message : String(error)}]`;
   }
 }
 

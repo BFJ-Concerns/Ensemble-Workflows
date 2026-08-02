@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
-import { EngineShutdownError, OpenCodeRunError } from "./errors.js";
+import { EngineShutdownError, OpenCodeRunError, attachPartialWorkerText } from "./errors.js";
 
 import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
 import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
@@ -177,23 +177,28 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       signal: this.#abortController.signal
     });
+    const parsedRun = parseRunEvents(run.stdout);
+    const fallback = fallbackText(parsedRun.events);
     if (this.#abortController.signal.aborted) {
       // A cancelled worker is a shutdown, not an opencode failure — and a
       // cancelled invocation must not fork a fresh export subprocess just
       // to learn what its killed run had said.
-      throw new EngineShutdownError("opencode");
+      throw attachPartialWorkerText(new EngineShutdownError("opencode"), fallback);
     }
-    const parsedRun = parseRunEvents(run.stdout);
     let exportData: OpenCodeExport | null = null;
     let exportDiagnostic: OpenCodeExportDiagnostic;
     if (parsedRun.sessionId === null) {
       exportDiagnostic = { status: "no-session-id" };
     } else {
-      const exportResult = await this.#runner.exportSession(
-        parsedRun.sessionId,
-        this.#cwd,
-        this.#abortController.signal
-      );
+      let exportResult: OpenCodeSessionExportResult;
+      try {
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+      } catch (error) {
+        if (error instanceof Error) {
+          attachPartialWorkerText(error, fallback);
+        }
+        throw error;
+      }
       if (exportResult.status === "command-failed") {
         exportDiagnostic = {
           status: "command-failed",
@@ -211,7 +216,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         }
       }
     }
-    const fallback = fallbackText(parsedRun.events);
     let text = fallback;
     if (exportData !== null) {
       const exportedText = finalAssistantText(exportData);
@@ -243,7 +247,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     ];
 
     if (run.exitCode !== 0) {
-      throw new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events));
+      throw attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text);
     }
 
     return {
@@ -505,6 +509,10 @@ function fallbackText(events: unknown[]): string {
   }
   if (finalStoppedStepText.length > 0) {
     return finalStoppedStepText;
+  }
+  const inProgressText = currentStepText?.join("") ?? "";
+  if (inProgressText.length > 0) {
+    return inProgressText;
   }
 
   // Retain compatibility with older event shapes after trying the current

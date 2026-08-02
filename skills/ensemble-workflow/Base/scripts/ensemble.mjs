@@ -13283,7 +13283,9 @@ var AppServerRequestError = class extends EnsembleError {
   code;
   data;
   constructor(method, error) {
-    super(`${method} failed: ${error.message ?? "unknown app-server error"}`);
+    const code = error.code === void 0 ? "" : ` (${String(error.code)})`;
+    const data = error.data === void 0 ? "" : `; data: ${renderDiagnostic(error.data)}`;
+    super(`${method} failed${code}: ${error.message ?? "unknown app-server error"}${data}`, { cause: error });
     this.code = error.code;
     this.data = error.data;
   }
@@ -13368,6 +13370,13 @@ var OpenCodeRunError = class extends OpenCodeWorkerError {
     super(message);
   }
 };
+function renderDiagnostic(value) {
+  try {
+    return JSON.stringify(value) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable diagnostic: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
 var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
   constructor(cwd, options) {
     super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
@@ -15205,23 +15214,26 @@ var ClaudeEngineInvocation = class {
   }
   async #runAttempt(context) {
     this.#assertOpen();
+    let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
-        return await this.#correctInSession(this.#handle, previousFailure);
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex);
       }
       if (this.#handle !== null) {
         await this.#teardown();
       }
       return await this.#dispatchAndCollect(previousFailure);
     } catch (error) {
+      if (error instanceof Error) {
+        await this.#attachLatestWorkerText(error, fromIndex);
+      }
       if (error instanceof ClaudeWorkerError) {
         await this.#teardown();
-        if (error instanceof ClaudeFirstLifeTimeoutError) {
-          return emptyTurnResult({ kind: "claude-first-life-timeout", message: error.message });
-        }
-        return emptyTurnResult();
+        return failedTurnResult(error);
       }
       throw error;
     }
@@ -15231,8 +15243,8 @@ var ClaudeEngineInvocation = class {
       this.#closed = true;
       this.#abortController.abort();
       try {
-        await this.#teardown();
         await this.#settlement?.catch(() => void 0);
+        await this.#teardown();
       } finally {
         this.#onClose?.(this);
       }
@@ -15256,15 +15268,14 @@ var ClaudeEngineInvocation = class {
     const transcript = await this.#runToCompletion(handle, 0);
     return this.#buildResult(handle, transcript, 0);
   }
-  async #correctInSession(handle, previousFailure) {
-    const mark = (await this.#readTranscript(handle)).entries.length;
+  async #correctInSession(handle, previousFailure, fromIndex) {
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
       throw new ClaudeValveError("reply valve failed to inject the correction");
     }
-    await this.#awaitReceipt(handle, mark);
-    const transcript = await this.#runToCompletion(handle, mark);
-    return this.#buildResult(handle, transcript, mark);
+    await this.#awaitReceipt(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex);
+    return this.#buildResult(handle, transcript, fromIndex);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
   async #awaitReceipt(handle, mark) {
@@ -15398,6 +15409,17 @@ var ClaudeEngineInvocation = class {
       throw error;
     }
   }
+  async #attachLatestWorkerText(error, fromIndex) {
+    const handle = this.#handle;
+    if (handle === null) {
+      return;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
+    if (text !== null) {
+      attachPartialWorkerText(error, text);
+    }
+  }
   /**
    * Feed best-effort transcript-derived usage through the same event shape Codex
    * emits. The adapter registration labels it as Claude before the runtime records
@@ -15478,16 +15500,35 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID2().slice(0, 8)}`;
   }
 };
-function emptyTurnResult(attemptFailure) {
+function failedTurnResult(error) {
+  const text = partialWorkerTextOf(error) ?? "";
   return {
-    text: "",
-    ...attemptFailure !== void 0 ? { attemptFailure } : {},
-    deltaText: "",
+    text,
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
     durationMs: null,
     firstDeltaMs: null,
     items: {},
     tokenUsageEvents: []
   };
+}
+function claudeAttemptFailure(error) {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  return { kind: "claude-dispatch-error", message: error.message };
 }
 function delay2(ms, signal, abortError) {
   return new Promise((resolve, reject) => {
@@ -15588,20 +15629,25 @@ var OpenCodeEngineInvocation = class {
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
       signal: this.#abortController.signal
     });
-    if (this.#abortController.signal.aborted) {
-      throw new EngineShutdownError("opencode");
-    }
     const parsedRun = parseRunEvents(run.stdout);
+    const fallback = fallbackText(parsedRun.events);
+    if (this.#abortController.signal.aborted) {
+      throw attachPartialWorkerText(new EngineShutdownError("opencode"), fallback);
+    }
     let exportData = null;
     let exportDiagnostic;
     if (parsedRun.sessionId === null) {
       exportDiagnostic = { status: "no-session-id" };
     } else {
-      const exportResult = await this.#runner.exportSession(
-        parsedRun.sessionId,
-        this.#cwd,
-        this.#abortController.signal
-      );
+      let exportResult;
+      try {
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+      } catch (error) {
+        if (error instanceof Error) {
+          attachPartialWorkerText(error, fallback);
+        }
+        throw error;
+      }
       if (exportResult.status === "command-failed") {
         exportDiagnostic = {
           status: "command-failed",
@@ -15619,7 +15665,6 @@ var OpenCodeEngineInvocation = class {
         }
       }
     }
-    const fallback = fallbackText(parsedRun.events);
     let text = fallback;
     if (exportData !== null) {
       const exportedText = finalAssistantText2(exportData);
@@ -15644,7 +15689,7 @@ var OpenCodeEngineInvocation = class {
       }
     ];
     if (run.exitCode !== 0) {
-      throw new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events));
+      throw attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text);
     }
     return {
       text,
@@ -15875,6 +15920,10 @@ function fallbackText(events) {
   }
   if (finalStoppedStepText.length > 0) {
     return finalStoppedStepText;
+  }
+  const inProgressText = currentStepText?.join("") ?? "";
+  if (inProgressText.length > 0) {
+    return inProgressText;
   }
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];

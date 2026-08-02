@@ -2,6 +2,8 @@ import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import detectGlobals from "acorn-globals";
+
 import { validateEngineDefaults } from "./engine-option-validation.js";
 import { createWorkflowHooks } from "./hooks.js";
 import {
@@ -92,8 +94,12 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
             throw new NestedWorkflowError();
           }
   });
-  const context = createSandboxContext(hooks);
+  // Meta is evaluated ahead of the body so the sandbox can bind it read-only:
+  // the script may read the object it was required to declare, never mutate it.
+  const declaredMeta = readWorkflowMeta(options.source, options.filename);
+  const context = createSandboxContext(hooks, declaredMeta);
   const script = compileWorkflowScript(extracted, options.filename);
+  assertKnownFreeIdentifiers(buildWrappedSource(extracted), context, options.filename);
 
   let runResult: unknown;
   try {
@@ -260,7 +266,7 @@ function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): v
   }
 }
 
-function createSandboxContext(hooks: WorkflowHooks): vm.Context {
+function createSandboxContext(hooks: WorkflowHooks, meta: unknown): vm.Context {
   return vm.createContext(
     {
       agent: hooks.agent,
@@ -271,7 +277,29 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
       log: hooks.log,
       budget: hooks.budget,
       worktrees: hooks.worktrees,
-      args: hooks.args
+      args: hooks.args,
+      // The script's own declared meta, readable without redeclaring it.
+      // Frozen: the body runs in strict mode, so a write throws rather than
+      // silently mutating what the archive already recorded.
+      meta: deepFreeze(structuredClone(meta)),
+      // Side-effect-free platform globals, bound explicitly because scripts
+      // demonstrably reach for them. Pure computation over values — no
+      // filesystem, process, or network reach — so they widen convenience,
+      // not capability. `Buffer` stays out: TextEncoder covers the
+      // byte-length case without dragging Node-API expectations in.
+      TextEncoder,
+      TextDecoder,
+      structuredClone,
+      URL,
+      URLSearchParams,
+      atob,
+      btoa,
+      crypto: Object.freeze({
+        randomUUID: () => crypto.randomUUID(),
+        subtle: Object.freeze({
+          digest: (algorithm: AlgorithmIdentifier, data: BufferSource) => crypto.subtle.digest(algorithm, data)
+        })
+      })
     },
     {
       name: "ensemble-workflow-script",
@@ -281,6 +309,75 @@ function createSandboxContext(hooks: WorkflowHooks): vm.Context {
       }
     }
   );
+}
+
+function deepFreeze(value: unknown): unknown {
+  if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The identifiers a bare vm context supplies on its own — the ECMAScript
+ * intrinsics (`JSON`, `Promise`, `Map`, …) plus vm's own scaffolding.
+ * Enumerated from a real empty context rather than hand-listed, so the set
+ * cannot drift from what the sandbox actually resolves; memoised because it
+ * is identical for every script. Node globals (`Buffer`, `process`,
+ * `setTimeout`, `fetch`) are absent from a vm context, which is exactly why
+ * they must not be read from the host's `globalThis` here.
+ */
+let sandboxIntrinsics: Set<string> | undefined;
+
+function vmIntrinsicNames(): Set<string> {
+  if (sandboxIntrinsics === undefined) {
+    const probe = vm.createContext({});
+    const names = vm.runInContext(
+      "Object.getOwnPropertyNames(globalThis)",
+      probe
+    ) as string[];
+    sandboxIntrinsics = new Set(names);
+  }
+  return sandboxIntrinsics;
+}
+
+/**
+ * Fail-loud-before-spend: a free identifier the sandbox does not bind fails
+ * at load with the unknown names, instead of as a `ReferenceError` after
+ * paid agent phases. `typeof`-only references are exempt — probing for an
+ * absent global is the defensive idiom this check must not punish.
+ */
+function assertKnownFreeIdentifiers(wrappedSource: string, context: vm.Context, filename: string): void {
+  const knownGlobals = new Set([...vmIntrinsicNames(), ...Object.keys(context as object)]);
+  let found: ReturnType<typeof detectGlobals>;
+  try {
+    found = detectGlobals(wrappedSource);
+  } catch {
+    // The source already compiled under vm.Script; a parser disagreement here
+    // must not reject a script the runtime can execute.
+    return;
+  }
+  const unknown = found
+    .filter((global) => !knownGlobals.has(global.name))
+    .filter(
+      (global) =>
+        !global.nodes.every((node) => {
+          const parents = (node as { parents?: Array<{ type?: string; operator?: string }> }).parents ?? [];
+          const parent = parents[parents.length - 2];
+          return parent?.type === "UnaryExpression" && parent.operator === "typeof";
+        })
+    )
+    .map((global) => global.name);
+  if (unknown.length > 0) {
+    throw new WorkflowScriptError(
+      `Workflow ${filename} references identifiers the sandbox does not provide: ${unknown.join(", ")}. ` +
+        "Scripts run without Node globals (no require, process, or Buffer); the available hooks and " +
+        "platform globals are listed in the runtime README."
+    );
+  }
 }
 
 function asWorkflowReference(value: unknown): WorkflowReference {

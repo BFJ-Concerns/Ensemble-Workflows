@@ -318,6 +318,134 @@ test("denies ambient Node, filesystem-shaped, and network globals while permitti
   );
 });
 
+test("binds the script's own meta read-only in the body", async () => {
+  const result = await runWorkflowScript({
+    filename: "meta-read.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "meta-read", description: "reads itself", task: { id: "t-1" } };
+      return { name: meta.name, task: meta.task.id };
+    `
+  });
+  assert.deepEqual(result.result, { name: "meta-read", task: "t-1" });
+
+  // Strict-mode body + frozen binding: a write throws rather than silently
+  // diverging from what the archive recorded.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "meta-write.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "meta-write" };
+          meta.name = "something else";
+          return meta.name;
+        `
+      }),
+    /Cannot assign to read only property/
+  );
+});
+
+test("binds the enumerated side-effect-free platform globals", async () => {
+  const result = await runWorkflowScript({
+    filename: "platform-globals.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "platform-globals" };
+
+      const bytes = new TextEncoder().encode("abc").length;
+      const round = new TextDecoder().decode(new TextEncoder().encode("xyz"));
+      const clone = structuredClone({ nested: { ok: true } });
+      const host = new URL("https://example.test/path?q=1").host;
+      const q = new URLSearchParams("a=1&b=2").get("b");
+      const b64 = btoa("hi");
+      const back = atob(b64);
+      const uuid = crypto.randomUUID().length;
+      const digest = (await crypto.subtle.digest("SHA-256", new TextEncoder().encode("x"))).byteLength;
+      return { bytes, round, clone: clone.nested.ok, host, q, b64, back, uuid, digest };
+    `
+  });
+  assert.deepEqual(result.result, {
+    bytes: 3,
+    round: "xyz",
+    clone: true,
+    host: "example.test",
+    q: "2",
+    b64: "aGk=",
+    back: "hi",
+    uuid: 36,
+    digest: 32
+  });
+});
+
+test("an unknown free identifier fails at load, before any worker spawns", async () => {
+  let agentCalls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    async agent(prompt: string) {
+      agentCalls += 1;
+      return `agent:${prompt}`;
+    }
+  };
+
+  // Buffer is the documented absence; the reference sits *after* an agent
+  // call, which is exactly the late-ReferenceError-after-paid-spend failure
+  // the load-time check exists to prevent.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "uses-buffer.js",
+        runtime: countingRuntime,
+        log: () => {},
+        source: `
+          export const meta = { name: "uses-buffer" };
+          const found = await agent("survey", { engine: "codex" });
+          return Buffer.byteLength(found);
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /identifiers the sandbox does not provide: Buffer/);
+      return true;
+    }
+  );
+  assert.equal(agentCalls, 0, "the load-time check must fire before any worker spawns");
+
+  // A typo'd hook is the other common shape; the diagnostic names it.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "typo.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "typo" };
+          return await agnet("x", { engine: "codex" });
+        `
+      }),
+    /identifiers the sandbox does not provide: agnet/
+  );
+});
+
+test("a typeof probe for an absent global passes the load-time check", async () => {
+  const result = await runWorkflowScript({
+    filename: "typeof-probe.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "typeof-probe" };
+      // The defensive idiom: feature-probe, then use only what exists.
+      const hasBuffer = typeof Buffer !== "undefined";
+      const hasDecoder = typeof TextDecoder !== "undefined";
+      return { hasBuffer, hasDecoder };
+    `
+  });
+  assert.deepEqual(result.result, { hasBuffer: false, hasDecoder: true });
+});
+
 test("times out runaway async scripts", async () => {
   await assert.rejects(
     () =>

@@ -29,6 +29,12 @@ export interface RuntimeOptions {
   concurrencyCaps?: EngineConcurrencyCaps;
   budgetCeilings?: EngineBudgetCeilings;
   requestTimeoutMs?: number;
+  /**
+   * Bounds total Codex silence after an in-band retry promise; expiry
+   * terminalises the turn. A library-level option like `requestTimeoutMs` —
+   * deliberately not a CLI flag or ambient setting. Defaults to 15 minutes.
+   */
+  retryPromiseSilenceTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;

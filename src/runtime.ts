@@ -140,6 +140,9 @@ export class EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
+      ...(options.retryPromiseSilenceTimeoutMs !== undefined
+        ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
+        : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",

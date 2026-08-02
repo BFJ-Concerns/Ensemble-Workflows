@@ -6,9 +6,11 @@ import test from "node:test";
 
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
+import { createRuntime } from "../../src/runtime.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
@@ -223,6 +225,129 @@ test("itemText reaches the terminal rejection when no deltas were streamed", asy
     );
   } finally {
     await transport.close();
+  }
+});
+
+test("permanent silence after a retry promise terminalises at the deadline with partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("promise-then-silence");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    retryPromiseSilenceTimeoutMs: 250
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "promise then vanish", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerRetryPromiseBrokenError);
+        assert.match(error.message, /silent for 250ms after a promised retry/);
+        // The expiry rejection carries the promise's own diagnostic and the
+        // worker's accumulated text — the terminalisation invariant.
+        assert.match(error.message, /serverOverloaded|stream disconnected/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("an inbound frame after the promise disarms the deadline and the recovered answer returns", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("promise-then-delta-recovery");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    // Shorter than the 150ms recovery gap: only the disarm keeps the turn alive.
+    retryPromiseSilenceTimeoutMs: 3_000
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "promise then recover", {});
+    assert.equal(result.text, "the recovered whole answer");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a turn-scoped server request disarms the silence deadline", async () => {
+  // The request is answered (denied) before #handleNotification is ever
+  // reached, so this exercises the request path's own disarm: with a 250ms
+  // deadline and the completion arriving at ~450ms, only the approval frame
+  // at ~100ms keeps the turn alive.
+  const codexBin = await fakeCodexFailingTurnServer("promise-then-server-request-recovery");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    retryPromiseSilenceTimeoutMs: 250
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "promise then approval then answer", {});
+    assert.equal(result.text, "answered after approval");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a frame naming a different turn does not disarm the deadline", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("promise-foreign-frame-then-silence");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    retryPromiseSilenceTimeoutMs: 300
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "promise then stale straggler", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerRetryPromiseBrokenError);
+        assert.match(error.message, /silent for 300ms/);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("MCP tool-call progress does not reset the consecutive-promise bound", async () => {
+  // 40 promise/heartbeat pairs at 5ms: without the exclusion the counter
+  // resets every pair and the alternation runs without limit; with it the
+  // sixth promise trips the bound in well under a second.
+  const codexBin = await fakeCodexFailingTurnServer("promise-mcp-alternation");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => transport.runTurn(threadId, "promise and heartbeat for ever", {}),
+      AppServerRetryPromiseBrokenError
+    );
+    assert.ok(Date.now() - startedAt < 1_000, "the bound should trip on the sixth promise, not run the alternation out");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("retryPromiseSilenceTimeoutMs threads from RuntimeOptions to the live transport", async () => {
+  // The whole option seam at once — RuntimeOptions → registry → lazy
+  // transport — so the deadline is reachable from a programmatic caller, not
+  // only at the transport constructor. maxAttempts 1: the expiry error is
+  // retryable by design, and one attempt is enough to prove the threading.
+  const codexBin = await fakeCodexFailingTurnServer("promise-then-silence");
+  const runtime = await createRuntime({
+    codexBin,
+    retryPromiseSilenceTimeoutMs: 250,
+    requestTimeoutMs: 2_000
+  });
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => runtime.agent("promise then vanish", { engine: "codex", maxAttempts: 1 }),
+      AppServerRetryPromiseBrokenError
+    );
+    assert.ok(Date.now() - startedAt < 5_000, "the configured 250ms deadline should fire, not the 15-minute default");
+  } finally {
+    await runtime.close();
   }
 });
 
@@ -484,6 +609,11 @@ async function fakeCodexFailingTurnServer(
     | "garbage-line"
     | "delta-no-turn-start-ack"
     | "item-then-error"
+    | "promise-then-silence"
+    | "promise-then-delta-recovery"
+    | "promise-then-server-request-recovery"
+    | "promise-foreign-frame-then-silence"
+    | "promise-mcp-alternation"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -539,7 +669,7 @@ reader.on("line", (line) => {
       );
       return;
     }
-    send({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } });
+    send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
     if (mode === "error-notification") {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
@@ -547,6 +677,50 @@ reader.on("line", (line) => {
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all\\n");
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "and then it failed" } } });
+    } else if (mode === "promise-then-silence") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion", codexErrorInfo: "serverOverloaded" } } });
+      // Then nothing at all: the silence deadline is the only way out.
+    } else if (mode === "promise-then-delta-recovery") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
+      setTimeout(() => {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " and the last tenth" } });
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the recovered whole answer" } } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+      }, 150);
+    } else if (mode === "promise-then-server-request-recovery") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
+      // A turn-scoped server request (an approval) after the promise: it must
+      // disarm the clock. The turn then completes normally well after the
+      // short test deadline would have fired.
+      setTimeout(() => {
+        send({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId, turnId: "turn-1", itemId: "item-1", startedAtMs: Date.now() } });
+      }, 100);
+      setTimeout(() => {
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "answered after approval" } } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+      }, 450);
+    } else if (mode === "promise-foreign-frame-then-silence") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
+      // A straggler naming a different turn: it must NOT disarm the clock,
+      // so the deadline still fires despite this frame arriving after the
+      // promise.
+      setTimeout(() => {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-0-stale", delta: "stale text from an abandoned turn" } });
+      }, 100);
+    } else if (mode === "promise-mcp-alternation") {
+      // Alternate retry promises with MCP tool-call heartbeats. The heartbeat
+      // must not reset the consecutive-promise counter, so the sixth promise
+      // trips the bound; without the exclusion this alternation runs without
+      // limit.
+      let round = 0;
+      const tick = setInterval(() => {
+        round += 1;
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
+        send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "item-1", message: "tool still alive" } });
+        if (round >= 40) {
+          clearInterval(tick);
+        }
+      }, 5);
     }
     // hang-after-delta: send nothing further.
   }

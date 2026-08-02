@@ -7698,6 +7698,7 @@ function rank(state) {
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -7740,6 +7741,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   cwd;
   #process;
   #requestTimeoutMs;
+  #retryPromiseSilenceTimeoutMs;
   #startupHandshakeTimeoutMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
@@ -7751,6 +7753,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   constructor(options) {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -7992,6 +7995,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         params: { requestId: id, requestMethod: method },
         receivedAt: Date.now()
       });
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== void 0) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+        }
+      }
       this.#sendApprovalDenial(id);
       return;
     }
@@ -8031,6 +8041,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const turn = this.#turns.get(threadId);
     if (turn === void 0) {
       return;
+    }
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
     }
     const now = Date.now();
     if (isTurnProgressNotification(method)) {
@@ -8106,11 +8120,65 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
             turn,
             new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
           );
+          return;
+        }
+        if (speaksForTurn) {
+          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
         }
         return;
       }
       this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
+  }
+  /**
+   * Whether an inbound frame speaks for this turn's silence clock. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must not disarm
+   * the live turn's deadline. Frames carrying no turn identity are
+   * thread-scoped and count: ephemeral threads run one turn, so the thread
+   * speaking is the turn's server speaking.
+   */
+  #correlatesWithTurn(turn, params) {
+    const turnId = turnIdFromParams(params);
+    if (turnId === void 0) {
+      return true;
+    }
+    if (turn.turnId === void 0) {
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params) {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return void 0;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
+      return void 0;
+    }
+    return turn;
+  }
+  #disarmRetryPromiseSilenceDeadline(turn) {
+    if (turn.retryPromiseSilenceDeadline !== void 0) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = void 0;
+    }
+  }
+  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      this.#rejectTurn(
+        threadId,
+        turn,
+        new AppServerRetryPromiseBrokenError(
+          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+          diagnostic
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
   }
   /**
    * The single terminal path for a failing turn. Every way a turn can end
@@ -8125,10 +8193,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
   }
   #completeTurn(threadId, turn) {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result = {
@@ -8180,6 +8250,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
     const state = {
       threadId,
+      turnId: void 0,
       startedAt: Date.now(),
       firstDeltaAt: null,
       completedAt: null,
@@ -8187,6 +8258,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       items: /* @__PURE__ */ new Map(),
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: void 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -8272,7 +8344,17 @@ function renderPayloadSafely(payload) {
   }
 }
 function isTurnProgressNotification(method) {
-  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || method.startsWith("item/");
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
+  // resuming — the reset set's rationale. Counting it would let a
+  // promise/heartbeat alternation defeat the consecutive-promise bound.
+  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function turnIdFromParams(params) {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : void 0;
 }
 var MAX_INBOUND_PAYLOAD_DEPTH = 64;
 function payloadContainsInvalidJsonSchema(value, depth = 0) {
@@ -10023,6 +10105,7 @@ async function createDefaultEngineRegistry(options) {
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,
+    ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
@@ -10110,6 +10193,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
+      ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",

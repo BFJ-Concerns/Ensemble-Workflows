@@ -47,6 +47,8 @@ interface RpcMessage {
 
 interface TurnState {
   threadId: string;
+  /** Learned from the first turn-correlated inbound frame; ephemeral threads run one turn. */
+  turnId: string | undefined;
   startedAt: number;
   firstDeltaAt: number | null;
   completedAt: number | null;
@@ -55,6 +57,7 @@ interface TurnState {
   items: Map<string, number>;
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
+  retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
@@ -62,6 +65,13 @@ interface TurnState {
 }
 
 const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+/**
+ * Bounds total silence after an unfulfilled in-band retry promise. A genuine
+ * server-side retry backs off in seconds, so minutes of nothing at all means
+ * the promise is broken; 15 minutes prefers never killing a theoretically
+ * alive turn over freeing its slot promptly.
+ */
+const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -73,6 +83,7 @@ export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
   requestTimeoutMs: number;
+  retryPromiseSilenceTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -142,6 +153,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
+  #retryPromiseSilenceTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
@@ -154,6 +166,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
   private constructor(options: CodexAppServerTransportOptions) {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs =
+      options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -440,6 +454,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
         params: { requestId: id, requestMethod: method },
         receivedAt: Date.now()
       });
+      // A turn-scoped server request is the server speaking as surely as a
+      // notification: it must disarm the silence clock
+      // even though it is answered here and never reaches
+      // #handleNotification, where disarming otherwise lives.
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== undefined) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+        }
+      }
       this.#sendApprovalDenial(id);
       return;
     }
@@ -489,6 +514,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const turn = this.#turns.get(threadId);
     if (turn === undefined) {
       return;
+    }
+
+    // Correlation is deliberately narrow: it decides only whether this frame
+    // speaks for the live turn's silence clock. Every other behaviour below
+    // handles the frame as before — a gate ahead of all handlers would
+    // silently drop text, usage, and completion on any identity mismatch.
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
     }
 
     const now = Date.now();
@@ -574,11 +608,76 @@ export class CodexAppServerTransport implements RuntimeTransport {
             turn,
             new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
           );
+          return;
+        }
+        // The promise is now the most recent frame on the turn — the only
+        // state in which the silence clock runs. The disarm above cleared any
+        // earlier deadline, so this cannot stack timers. Correlation gates
+        // arming exactly as it gates disarming: the clock is the one
+        // behaviour turn identity decides.
+        if (speaksForTurn) {
+          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
         }
         return;
       }
       this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
+  }
+
+  /**
+   * Whether an inbound frame speaks for this turn's silence clock. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must not disarm
+   * the live turn's deadline. Frames carrying no turn identity are
+   * thread-scoped and count: ephemeral threads run one turn, so the thread
+   * speaking is the turn's server speaking.
+   */
+  #correlatesWithTurn(turn: TurnState, params: JsonObject): boolean {
+    const turnId = turnIdFromParams(params);
+    if (turnId === undefined) {
+      return true;
+    }
+    if (turn.turnId === undefined) {
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params: JsonObject): TurnState | undefined {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return undefined;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === undefined || !this.#correlatesWithTurn(turn, params)) {
+      return undefined;
+    }
+    return turn;
+  }
+
+  #disarmRetryPromiseSilenceDeadline(turn: TurnState): void {
+    if (turn.retryPromiseSilenceDeadline !== undefined) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = undefined;
+    }
+  }
+
+  #armRetryPromiseSilenceDeadline(threadId: string, turn: TurnState, promiseParams: JsonObject): void {
+    // Capture the promise diagnostic now: expiry must report the retry the
+    // server announced and then abandoned, not a generic timeout.
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      this.#rejectTurn(
+        threadId,
+        turn,
+        new AppServerRetryPromiseBrokenError(
+          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+          diagnostic
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
   }
 
   /**
@@ -596,11 +695,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
   }
 
   #completeTurn(threadId: string, turn: TurnState): void {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
@@ -661,6 +762,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     const state: TurnState = {
       threadId,
+      turnId: undefined,
       startedAt: Date.now(),
       firstDeltaAt: null,
       completedAt: null,
@@ -668,6 +770,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       items: new Map<string, number>(),
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: undefined,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -785,8 +888,24 @@ function isTurnProgressNotification(method: string): boolean {
     method === "turn/started" ||
     method === "turn/diff/updated" ||
     method === "turn/plan/updated" ||
-    method.startsWith("item/")
+    // MCP progress is a tool saying it is alive, not the response stream
+    // resuming — the reset set's rationale. Counting it would let a
+    // promise/heartbeat alternation defeat the consecutive-promise bound.
+    (method.startsWith("item/") && method !== "item/mcpToolCall/progress")
   );
+}
+
+/**
+ * Turn identity from an inbound frame's params. Most turn-scoped frames carry
+ * a flat `turnId`; `turn/started` and `turn/completed` instead nest the id as
+ * `turn.id` (v2 schema, 0.146.0).
+ */
+function turnIdFromParams(params: JsonObject): string | undefined {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : undefined;
 }
 
 /**

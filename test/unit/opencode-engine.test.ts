@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -61,6 +61,83 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
   async exportSession(sessionId: string): Promise<OpenCodeSessionExportResult> {
     this.exports.push(sessionId);
     return this.#exportResult;
+  }
+}
+
+class HangingOpenCodeRunner implements OpenCodeRunner {
+  signal: AbortSignal | undefined;
+
+  run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
+    this.signal = options.signal;
+    return new Promise((resolve) => {
+      options.signal?.addEventListener(
+        "abort",
+        () => resolve({ exitCode: null, signal: "SIGTERM", stdout: "", stderr: "", durationMs: 0 }),
+        { once: true }
+      );
+    });
+  }
+
+  async exportSession(): Promise<OpenCodeSessionExportResult> {
+    throw new Error("a cancelled run must not export");
+  }
+}
+
+test("opencode adapter close aborts the active runner and awaits settlement", async () => {
+  const runner = new HangingOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ runner });
+  const invocation = adapter.createInvocation("keep working", { model: "glm-5.2" });
+  const attempt = invocation.runAttempt({ attempt: 1 });
+
+  await adapter.close();
+
+  assert.equal(runner.signal?.aborted, true);
+  await assert.rejects(attempt, /signal SIGTERM/);
+});
+
+test("opencode invocation and adapter close terminate their real child processes", async () => {
+  for (const closeThrough of ["invocation", "adapter"] as const) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-opencode-close-${closeThrough}-`));
+    const bin = path.join(directory, "opencode");
+    const ready = path.join(directory, "ready");
+    // Signals readiness by file so the test never sleeps on a wall clock, and
+    // ignores SIGTERM so the SIGKILL escalation path is what ends it.
+    await writeFile(
+      bin,
+      `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(ready)}, "ready");
+setInterval(() => {}, 1000);
+`
+    );
+    await chmod(bin, 0o755);
+    const adapter = new OpenCodeEngineAdapter({
+      cwd: directory,
+      runner: new OpenCodeCliRunner(bin, { killGraceMs: 10 })
+    });
+    const invocation = adapter.createInvocation("hang forever", { model: "glm-5.2" });
+    const attempt = invocation.runAttempt({ attempt: 1 });
+    await waitForFile(ready);
+
+    if (closeThrough === "invocation") {
+      await invocation.close?.();
+    } else {
+      await adapter.close();
+    }
+
+    await assert.rejects(attempt, /signal SIGKILL/);
+  }
+});
+
+async function waitForFile(filename: string): Promise<void> {
+  for (;;) {
+    try {
+      await access(filename);
+      return;
+    } catch {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
 }
 

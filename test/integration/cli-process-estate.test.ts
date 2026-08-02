@@ -444,6 +444,44 @@ test("built CLI rejects an unrecognised option before opening that worker", asyn
   }
 });
 
+test("built CLI reports an author error without Codex on PATH", async () => {
+  // The lazy-substrate journey: validation needs no engine substrate, so an
+  // author error must surface cleanly on a machine with no codex binary at
+  // all — this is also what CI (no codex in the container) exercises.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-no-codex-validation-estate-"));
+  const emptyBinDirectory = path.join(directory, "bin");
+  const script = path.join(directory, "workflow.js");
+
+  try {
+    await mkdir(emptyBinDirectory);
+    await writeFile(
+      script,
+      `
+        export const meta = {
+          name: "unknown-option-without-codex",
+          description: "Author errors do not require an unused engine substrate"
+        };
+        return await agent("must not open a worker", {
+          engine: "codex",
+          typoedLabel: "mistake",
+          maxAttempts: 1
+        });
+      `
+    );
+    const env = isolatedEnvironment(directory);
+    env.PATH = emptyBinDirectory;
+
+    const result = await runNode([bundledCliPath, script], env);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /unrecognised agent\(\) option[\s\S]*typoedLabel/i);
+    assert.doesNotMatch(result.stderr, /spawn codex ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("built CLI rejects harness-owned invalid values before worker creation with clean diagnostics", async () => {
   const diagnostics: string[] = [];
   for (const scenario of [

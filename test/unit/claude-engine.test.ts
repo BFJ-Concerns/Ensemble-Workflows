@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -39,6 +40,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   dispatchCount = 0;
   steerCount = 0;
   stopCount = 0;
+  pollCount = 0;
   transcriptReadsAfterSteer = 0;
   readonly dispatched: ClaudeDispatchOptions[] = [];
   readonly steered: string[] = [];
@@ -82,6 +84,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   }
 
   async poll(): Promise<ClaudeSessionStatus> {
+    this.pollCount += 1;
     if (!this.#present) {
       return { status: "absent", state: "unknown", present: false };
     }
@@ -224,6 +227,43 @@ async function withControlPlane(
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("Claude adapter close stops an active session and winds down its poll loop", async () => {
+  await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER }], async (controlPlane) => {
+    // A long poll interval: without the abortable delay, close() would sit
+    // out the full minute before the loop noticed anything.
+    const adapter = new ClaudeEngineAdapter({
+      controlPlane,
+      config: { pollIntervalMs: 60_000 }
+    });
+    const invocation = adapter.createInvocation("keep working", {});
+    const attempt = invocation.runAttempt({ attempt: 1 });
+    while (controlPlane.pollCount === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    await adapter.close();
+
+    await assert.rejects(attempt, EngineShutdownError);
+    assert.equal(controlPlane.stopCount, 1);
+    assert.equal(controlPlane.pollCount, 1);
+  });
+});
+
+test("Claude adapter forgets an invocation once its own close completes", async () => {
+  await withControlPlane([{ assistant: { text: "done" } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("finish", {});
+
+    assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "done");
+    await invocation.close?.();
+    assert.equal(controlPlane.stopCount, 1);
+
+    // Adapter close finds nothing left to cancel: no second stop.
+    await adapter.close();
+    assert.equal(controlPlane.stopCount, 1);
+  });
+});
 
 test("completion is read from the transcript even when state never reports done", async () => {
   // The worker settles to status:idle / state:working (the live quirk) after one

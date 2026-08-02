@@ -227,47 +227,86 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, options);
-    return this.#admission.admit(engine.name, agentId, () =>
-      engine.schedule(async () => {
-        const executionStartedAt = Date.now();
-        this.progress.startAgent(agentId);
-        try {
-          const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
-          const outcome = execution.status === "complete" ? "done" : "failed";
-          const executionEndedAt = Date.now();
-          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
-          this.progress.settleAgent(agentId, outcome);
-          agentRecord.status = outcome === "done" ? "complete" : "failed";
-          agentRecord.rawOutput = lastRawOutput(agentRecord);
-          agentRecord.validatedOutput = execution.value;
-          // Retain successful outputs so a timeout can surface completed work.
-          // This includes schema-valid JSON null; failure is carried separately
-          // by the execution status rather than inferred from the returned value.
-          if (outcome === "done") {
-            this.#completed.push({
-              id: agentId,
-              engine: engine.name,
-              label: options.label ?? null,
-              phase: options.phase ?? null,
-              output: execution.value
-            });
-          }
-          await this.#recordAgentSafely(agentRecord);
-          return execution.value;
-        } catch (error) {
-          const executionEndedAt = Date.now();
-          agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-          agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
-          this.progress.settleAgent(agentId, "failed");
-          agentRecord.status = "failed";
-          agentRecord.rawOutput = lastRawOutput(agentRecord);
-          agentRecord.validatedOutput = null;
-          await this.#recordAgentSafely(agentRecord);
-          throw error;
-        }
-      })
-    );
+    return this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+  }
+
+  async #runAdmitted(
+    engine: EngineAdapter,
+    prompt: string,
+    options: Partial<AgentOptions>,
+    agentId: number,
+    agentRecord: RuntimeAgentRecord,
+    queuedAt: number
+  ): Promise<unknown> {
+    let started = false;
+    try {
+      return await this.#admission.admit(engine.name, agentId, () =>
+        engine.schedule(async () => {
+          started = true;
+          return this.#executeAgent(engine, prompt, options, agentId, agentRecord, queuedAt);
+        })
+      );
+    } catch (error) {
+      // A rejection before the task started (admission or scheduler shutdown)
+      // bypasses #executeAgent's own settlement: settle the progress entry and
+      // persist the record here so a cancelled queued worker is not left
+      // counted as queued for ever.
+      if (!started) {
+        this.progress.settleAgent(agentId, "failed");
+        agentRecord.status = "failed";
+        agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
+        agentRecord.executionMs = 0;
+        await this.#recordAgentSafely(agentRecord);
+      }
+      throw error;
+    }
+  }
+
+  async #executeAgent(
+    engine: EngineAdapter,
+    prompt: string,
+    options: Partial<AgentOptions>,
+    agentId: number,
+    agentRecord: RuntimeAgentRecord,
+    queuedAt: number
+  ): Promise<unknown> {
+    const executionStartedAt = Date.now();
+    this.progress.startAgent(agentId);
+    try {
+      const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+      const outcome = execution.status === "complete" ? "done" : "failed";
+      const executionEndedAt = Date.now();
+      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      this.progress.settleAgent(agentId, outcome);
+      agentRecord.status = outcome === "done" ? "complete" : "failed";
+      agentRecord.rawOutput = lastRawOutput(agentRecord);
+      agentRecord.validatedOutput = execution.value;
+      // Retain successful outputs so a timeout can surface completed work.
+      // This includes schema-valid JSON null; failure is carried separately
+      // by the execution status rather than inferred from the returned value.
+      if (outcome === "done") {
+        this.#completed.push({
+          id: agentId,
+          engine: engine.name,
+          label: options.label ?? null,
+          phase: options.phase ?? null,
+          output: execution.value
+        });
+      }
+      await this.#recordAgentSafely(agentRecord);
+      return execution.value;
+    } catch (error) {
+      const executionEndedAt = Date.now();
+      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      this.progress.settleAgent(agentId, "failed");
+      agentRecord.status = "failed";
+      agentRecord.rawOutput = lastRawOutput(agentRecord);
+      agentRecord.validatedOutput = null;
+      await this.#recordAgentSafely(agentRecord);
+      throw error;
+    }
   }
 
   /**

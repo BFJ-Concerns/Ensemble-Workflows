@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AdmissionController } from "../../src/admission.js";
+import { EngineShutdownError } from "../../src/errors.js";
 
 import type { AdmissionEvent } from "../../src/admission.js";
 import type { EngineName } from "../../src/types.js";
@@ -118,7 +119,7 @@ test("null and thrown failures release a slot to the next waiter", async () => {
   );
 });
 
-test("close releases waiting calls and balances every acquired slot", async () => {
+test("close rejects waiting calls without acquiring their slots", async () => {
   const events: AdmissionEvent[] = [];
   const activeGate = deferred<void>();
   const controller = new AdmissionController({
@@ -132,25 +133,27 @@ test("close releases waiting calls and balances every acquired slot", async () =
   await drainMicrotasks();
 
   controller.close();
+  // Shutdown is a cancellation, not a dispatch: the queued entries reject
+  // and the ceiling never exceeds its limit — only the already-admitted
+  // worker holds a slot until it settles. The rejected claude entry never
+  // acquired a counter, so its engine never appears in the snapshot.
   assert.deepEqual(controller.snapshot(), {
-    ceilingActive: 3,
-    engineActive: new Map([
-      ["codex", 2],
-      ["claude", 1]
-    ]),
+    ceilingActive: 1,
+    engineActive: new Map([["codex", 1]]),
     waiting: 0
   });
-  activeGate.resolve(undefined);
-  await Promise.all([active, waiting, sameEngineWaiting]);
+  await assert.rejects(waiting, EngineShutdownError);
+  await assert.rejects(sameEngineWaiting, EngineShutdownError);
 
-  assert.equal(events.filter((event) => event.kind === "admitted").length, 3);
-  assert.equal(events.filter((event) => event.kind === "released").length, 3);
+  activeGate.resolve(undefined);
+  await active;
+  await drainMicrotasks();
+
+  assert.equal(events.filter((event) => event.kind === "admitted").length, 1);
+  assert.equal(events.filter((event) => event.kind === "released").length, 1);
   assert.deepEqual(controller.snapshot(), {
     ceilingActive: 0,
-    engineActive: new Map([
-      ["codex", 0],
-      ["claude", 0]
-    ]),
+    engineActive: new Map([["codex", 0]]),
     waiting: 0
   });
 });

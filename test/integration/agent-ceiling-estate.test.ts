@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngineRegistry } from "../../src/engines.js";
+import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { runWorkflowScript } from "../../src/script-runner.js";
@@ -263,16 +264,18 @@ test(
     await runtime.close();
     const settlements = await Promise.allSettled([admitted, queued]);
 
-    assert.deepEqual(
-      settlements.map((settlement) => settlement.status),
-      ["fulfilled", "fulfilled"],
+    // Shutdown cancels rather than dispatches: the admitted worker settles
+    // through its engine's own close, and the queued one rejects without
+    // ever taking a slot — the ceiling is never exceeded during close.
+    assert.equal(settlements[0]?.status, "fulfilled");
+    assert.equal(settlements[1]?.status, "rejected");
+    assert.ok(
+      settlements[1]?.status === "rejected" && settlements[1].reason instanceof EngineShutdownError
     );
-    assert.deepEqual(runtime.progress.snapshot().totals, {
-      active: 0,
-      queued: 0,
-      done: 2,
-      failed: 0,
-    });
+    const totals = runtime.progress.snapshot().totals;
+    assert.equal(totals.active, 0);
+    assert.equal(totals.queued, 0);
+    assert.equal(totals.done, 1);
   },
 );
 

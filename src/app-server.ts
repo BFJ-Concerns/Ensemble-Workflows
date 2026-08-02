@@ -78,6 +78,57 @@ export interface CodexAppServerTransportOptions {
   onEvent?: (event: RuntimeEvent) => void;
 }
 
+/**
+ * Defers app-server startup to the first worker that names Codex, so a run
+ * pays the startup cost — and the requirement that the `codex` CLI exists —
+ * only for the engines its script actually uses. Startup is single-flight
+ * and memoised, failures included: concurrent first users share one
+ * handshake, and a failed spawn rejects every later use with the original
+ * cause instead of respawning a binary that is not there.
+ */
+export class LazyCodexAppServerTransport implements RuntimeTransport {
+  readonly cwd: string;
+
+  #options: CodexAppServerTransportOptions;
+  #transportPromise: Promise<CodexAppServerTransport> | undefined;
+
+  constructor(options: CodexAppServerTransportOptions) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+
+  async openThread(options: ThreadStartOptions): Promise<string> {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+
+  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+
+  async close(): Promise<void> {
+    if (this.#transportPromise === undefined) {
+      return;
+    }
+
+    let transport: CodexAppServerTransport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      // The startup failure already rejected the worker that triggered it;
+      // closing a substrate that never came up has nothing left to do.
+      return;
+    }
+    await transport.close();
+  }
+
+  #transport(): Promise<CodexAppServerTransport> {
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    return this.#transportPromise;
+  }
+}
+
 export class CodexAppServerTransport implements RuntimeTransport {
   readonly cwd: string;
 

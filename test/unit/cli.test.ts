@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
 import { EngineRegistry } from "../../src/engines.js";
+import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
@@ -701,26 +702,26 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
-  const interrupt = setTimeout(() => process.emit("SIGINT"), 50);
+  // Interrupt only once the worker is genuinely hanging, and assert its
+  // cancellation: the envelope alone would pass even with the worker left
+  // running behind it, which is the exact failure this journey guards.
+  const hangingEngine = new HangOnPromptEngine("codex", 4, () => process.emit("SIGINT"));
 
-  try {
-    const exitCode = await runEnsembleCli([script], {
-      cwd: directory,
-      stdout,
-      stderr,
-      runRecordDir: null,
-      createRuntime: async () =>
-        new EnsembleRuntime({
-          engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
-          defaultTurnTimeoutMs: 1_000,
-          defaultMaxAttempts: 1
-        })
-    });
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir: null,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([hangingEngine]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
 
-    assert.equal(exitCode, 1);
-  } finally {
-    clearTimeout(interrupt);
-  }
+  assert.equal(exitCode, 1);
+  assert.equal(hangingEngine.cancelCount, 1);
 
   const envelope = JSON.parse(stdout.text()) as {
     partial: boolean;
@@ -1304,10 +1305,13 @@ function fixedEngineRuntime(
 class HangOnPromptEngine implements EngineAdapter {
   readonly concurrency: number;
   readonly scheduler: Scheduler;
+  cancelCount = 0;
+  #activeInvocations = new Set<EngineInvocation>();
 
   constructor(
     readonly name: EngineName,
-    concurrency: number
+    concurrency: number,
+    private readonly onHangStarted: () => void = () => {}
   ) {
     this.concurrency = concurrency;
     this.scheduler = new Scheduler(concurrency);
@@ -1318,18 +1322,33 @@ class HangOnPromptEngine implements EngineAdapter {
   }
 
   createInvocation(prompt: string): EngineInvocation {
-    return {
+    let rejectHang: ((error: Error) => void) | undefined;
+    const invocation: EngineInvocation = {
       runAttempt: async () => {
         if (prompt === "hang") {
-          await new Promise<never>(() => {});
+          this.onHangStarted();
+          await new Promise<never>((_resolve, reject) => {
+            rejectHang = reject;
+          });
         }
         return turn(`${this.name}:${prompt}`);
+      },
+      close: async () => {
+        this.#activeInvocations.delete(invocation);
+        if (rejectHang !== undefined) {
+          this.cancelCount += 1;
+          rejectHang(new EngineShutdownError(this.name));
+          rejectHang = undefined;
+        }
       }
     };
+    this.#activeInvocations.add(invocation);
+    return invocation;
   }
 
   async close(): Promise<void> {
-    return Promise.resolve();
+    this.scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close?.()));
   }
 }
 

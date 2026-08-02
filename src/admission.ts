@@ -1,3 +1,5 @@
+import { EngineShutdownError } from "./errors.js";
+
 import type { EngineName } from "./types.js";
 
 export type AdmissionEventKind = "queued" | "admitted" | "released" | "skipped";
@@ -83,9 +85,10 @@ export class AdmissionController {
 
   /**
    * Settles every promise already accepted by the runtime. Waiting tasks are
-   * released through their engine adapters without enforcing admission gates:
-   * engine shutdown immediately follows and is responsible for making those
-   * already-accepted calls return without dispatching further live work.
+   * rejected without ever acquiring a slot — shutdown is a cancellation, not
+   * a dispatch, and starting them with gates bypassed was observed pushing
+   * the ceiling past its limit. Tasks already admitted keep their slots and
+   * release them through #start's finally as they settle.
    */
   close(): void {
     if (this.#closed) {
@@ -94,7 +97,7 @@ export class AdmissionController {
     this.#closed = true;
     const waiting = this.#waiting.splice(0);
     for (const entry of waiting) {
-      this.#start(entry, true);
+      entry.reject(new EngineShutdownError(entry.engine));
     }
   }
 
@@ -136,11 +139,11 @@ export class AdmissionController {
       bypassed.length = 0;
 
       this.#waiting.splice(index, 1);
-      this.#start(entry, false);
+      this.#start(entry);
     }
   }
 
-  #start(entry: WaitingAdmission, bypassGates: boolean): void {
+  #start(entry: WaitingAdmission): void {
     // This is the only counter-acquisition point: both counters move in the
     // same synchronous turn, with no await or callback between them.
     this.#ceilingActive += 1;
@@ -154,7 +157,7 @@ export class AdmissionController {
         this.#ceilingActive -= 1;
         this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) - 1);
         this.#emit("released", entry.engine, entry.agentId);
-        if (!bypassGates && !this.#closed) {
+        if (!this.#closed) {
           this.#drain();
         }
       });

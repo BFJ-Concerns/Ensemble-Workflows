@@ -1,8 +1,14 @@
+interface QueuedTask {
+  run: () => void;
+  reject: (reason: unknown) => void;
+}
+
 export class Scheduler {
   readonly concurrency: number;
 
   #active = 0;
-  #queue: Array<() => void> = [];
+  #queue: QueuedTask[] = [];
+  #shutdownError: Error | null = null;
 
   constructor(concurrency: number) {
     if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -20,6 +26,9 @@ export class Scheduler {
   }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
+    if (this.#shutdownError !== null) {
+      return Promise.reject(this.#shutdownError);
+    }
     return new Promise<T>((resolve, reject) => {
       const run = (): void => {
         this.#active += 1;
@@ -32,9 +41,25 @@ export class Scheduler {
           });
       };
 
-      this.#queue.push(run);
+      this.#queue.push({ run, reject });
       this.#drain();
     });
+  }
+
+  /**
+   * Rejects everything still queued and refuses new work. Active tasks are
+   * untouched — cancelling started work is the adapter's job, since only it
+   * knows how to reach a live session or child process.
+   */
+  close(rejection: Error): void {
+    if (this.#shutdownError !== null) {
+      return;
+    }
+    this.#shutdownError = rejection;
+    const queued = this.#queue.splice(0);
+    for (const task of queued) {
+      task.reject(rejection);
+    }
   }
 
   #drain(): void {
@@ -43,7 +68,7 @@ export class Scheduler {
       if (next === undefined) {
         return;
       }
-      next();
+      next.run();
     }
   }
 }

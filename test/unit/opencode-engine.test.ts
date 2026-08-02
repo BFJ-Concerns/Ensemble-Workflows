@@ -10,6 +10,7 @@ import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
   EmptyAgentOutputError,
+  EngineShutdownError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
@@ -92,7 +93,8 @@ test("opencode adapter close aborts the active runner and awaits settlement", as
   await adapter.close();
 
   assert.equal(runner.signal?.aborted, true);
-  await assert.rejects(attempt, /signal SIGTERM/);
+  // A cancelled worker is a shutdown, not an opencode run failure.
+  await assert.rejects(attempt, EngineShutdownError);
 });
 
 test("opencode invocation and adapter close terminate their real child processes", async () => {
@@ -126,7 +128,9 @@ setInterval(() => {}, 1000);
       await adapter.close();
     }
 
-    await assert.rejects(attempt, /signal SIGKILL/);
+    // The child is SIGKILLed (close awaited its settlement), and the
+    // attempt rejects as a shutdown rather than an opencode run failure.
+    await assert.rejects(attempt, EngineShutdownError);
   }
 });
 

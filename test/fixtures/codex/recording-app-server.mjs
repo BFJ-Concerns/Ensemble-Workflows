@@ -14,6 +14,7 @@ const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
 const notificationSequences = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES ?? "[]");
 const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE === "1";
+const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -114,6 +115,14 @@ const handleLine = (line) => {
         reasoningEffort: "medium"
       }
     });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    if (rejectInterrupt) {
+      send({ id: message.id, error: { code: -32000, message: "turn already finished" } });
+    } else {
+      send({ id: message.id, result: {} });
+    }
     return;
   }
   if (message.method === "turn/start") {

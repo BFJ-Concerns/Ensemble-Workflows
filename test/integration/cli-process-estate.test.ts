@@ -1261,6 +1261,65 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
   }
 });
 
+test("built CLI interrupts an abandoned turn before replacement without awaiting acceptance", async () => {
+  const overloadSequence = [
+    [
+      { method: "item/agentMessage/delta", params: { delta: "partial before overload" } },
+      {
+        method: "error",
+        params: {
+          error: { message: "capacity exhausted", codexErrorInfo: "serverOverloaded" },
+          willRetry: false
+        }
+      }
+    ]
+  ];
+
+  for (const rejectInterrupt of [false, true]) {
+    const fixture = await createProcessFixture(`interrupt-before-replacement-${String(rejectInterrupt)}`, "recovered");
+    const recordStore = path.join(path.dirname(fixture.script), "records");
+    try {
+      await writeFile(
+        fixture.script,
+        `
+          export const meta = {
+            name: "interrupt-before-replacement",
+            description: "Record abandoned-turn wire ordering"
+          };
+          return await agent("return recovered", {
+            engine: "codex",
+            maxAttempts: 2
+          });
+        `
+      );
+
+      const result = await fixture.runWithEnv({
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
+        ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: rejectInterrupt ? "1" : "0",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      });
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stdout, `"recovered"\n`);
+      const messages = await fixture.messages();
+      assert.deepEqual(
+        messages.map((message) => message.method),
+        ["initialize", "initialized", "thread/start", "turn/start", "turn/interrupt", "thread/start", "turn/start"]
+      );
+      const interrupt = messages.find((message) => message.method === "turn/interrupt");
+      assert.deepEqual(interrupt?.params, { threadId: "thread-1", turnId: "turn-1" });
+
+      const agent = await loadOnlyAgentRecord(recordStore);
+      assert.equal(agent.attempts.length, 2);
+      assert.equal(agent.attempts[0]?.raw_output, "partial before overload");
+      assert.equal(agent.attempts[1]?.status, "complete");
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
 test("built CLI keeps a non-overload notification terminal and renders its diagnostic", async () => {
   const fixture = await createProcessFixture("scoped-terminal-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
@@ -1615,6 +1674,8 @@ interface RecordedMessage {
     sandbox?: unknown;
     sandboxPolicy?: unknown;
     input?: Array<{ text?: unknown }>;
+    threadId?: unknown;
+    turnId?: unknown;
   };
 }
 
@@ -1622,6 +1683,7 @@ interface RecordedAgent {
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
+    raw_output: string | null;
   }>;
 }
 

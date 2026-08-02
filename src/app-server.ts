@@ -292,7 +292,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     } catch (error) {
       // A turn/start request failure is a terminal path like any other.
       if (this.#turns.get(threadId) === state) {
-        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        await this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
         throw error;
       }
       // The turn already terminalised through #rejectTurn (or completed)
@@ -321,9 +321,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#pending.clear();
     // One error instance per turn: the partial-text carrier is per-worker
     // state, so a shared instance would smear one turn's text across all.
-    for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
-    }
+    await Promise.all(
+      [...this.#turns].map(([threadId, turn]) =>
+        this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"))
+      )
+    );
     this.#turns.clear();
     this.#transcripts.clear();
 
@@ -385,6 +387,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   #sendNotification(method: string, params: JsonObject): void {
     void this.#writeLine(JSON.stringify({ method, params }));
+  }
+
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method: string, params: JsonObject): Promise<void> {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
   }
 
   async #writeLine(line: string): Promise<void> {
@@ -580,7 +589,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        this.#rejectTurn(
+        void this.#rejectTurn(
           threadId,
           turn,
           new AppServerRequestError(method, {
@@ -603,7 +612,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          this.#rejectTurn(
+          void this.#rejectTurn(
             threadId,
             turn,
             new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
@@ -620,7 +629,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         }
         return;
       }
-      this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
   }
 
@@ -669,7 +678,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // server announced and then abandoned, not a generic timeout.
     const diagnostic = errorPayloadFromNotification(promiseParams);
     turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      this.#rejectTurn(
+      void this.#rejectTurn(
         threadId,
         turn,
         new AppServerRetryPromiseBrokenError(
@@ -688,14 +697,28 @@ export class CodexAppServerTransport implements RuntimeTransport {
    * worker's accumulated text rides the rejection instead of being deleted
    * with the turn state.
    */
-  #rejectTurn(threadId: string, turn: TurnState, error: Error): void {
+  async #rejectTurn(threadId: string, turn: TurnState, error: Error): Promise<void> {
     // itemText first, mirroring #completeTurn: a worker whose text arrived
     // as a completed item rather than deltas has still said it.
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    if (turn.turnId !== undefined) {
+      try {
+        // Delivery is the ordering boundary: a retry may open its replacement
+        // thread once stdin has accepted this request, without waiting for an
+        // app-server acknowledgement that may be slow or rejected.
+        await this.#sendUnacknowledgedRequest("turn/interrupt", {
+          threadId,
+          turnId: turn.turnId
+        });
+      } catch {
+        // Interruption is best-effort. The original turn failure remains the
+        // terminal cause and replacement attempts must still be able to run.
+      }
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
   }
 
   #completeTurn(threadId: string, turn: TurnState): void {
@@ -780,7 +803,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         timeoutMs === undefined
           ? undefined
           : setTimeout(() => {
-              this.#rejectTurn(
+              void this.#rejectTurn(
                 threadId,
                 state,
                 new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
@@ -820,7 +843,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // One error instance per turn: the partial-text carrier is per-worker
     // state, so the shared `wrapped` would smear one turn's text across all.
     for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
+      void this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
     }
     this.#turns.clear();
     this.#transcripts.clear();

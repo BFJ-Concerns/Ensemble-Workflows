@@ -14261,7 +14261,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         params,
         recordedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
-      await this.#request("turn/start", params);
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
       return await state.promise;
     } catch (error) {
       if (this.#turns.get(threadId) === state) {
@@ -14342,6 +14346,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   #sendNotification(method, params) {
     void this.#writeLine(JSON.stringify({ method, params }));
+  }
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method, params) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
   }
   async #writeLine(line) {
     if (this.#hasExited) {
@@ -14500,7 +14510,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        this.#rejectTurn(
+        void this.#rejectTurn(
           threadId,
           turn,
           new AppServerRequestError(method, {
@@ -14521,7 +14531,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          this.#rejectTurn(
+          void this.#rejectTurn(
             threadId,
             turn,
             new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
@@ -14533,7 +14543,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         }
         return;
       }
-      this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
   }
   /**
@@ -14576,7 +14586,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
     const diagnostic = errorPayloadFromNotification(promiseParams);
     turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      this.#rejectTurn(
+      void this.#rejectTurn(
         threadId,
         turn,
         new AppServerRetryPromiseBrokenError(
@@ -14595,11 +14605,18 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    * with the turn state.
    */
   #rejectTurn(threadId, turn, error) {
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    if (turn.turnId !== void 0) {
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
   }
   #completeTurn(threadId, turn) {
     this.#turns.delete(threadId);
@@ -14671,7 +14688,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       // No timeoutMs → no per-turn deadline; the turn runs until it completes or
       // the run is stopped. A backstop is the orchestrator's responsibility.
       timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        this.#rejectTurn(
+        void this.#rejectTurn(
           threadId,
           state,
           new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
@@ -14706,7 +14723,7 @@ ${this.#stderrTail.join("\n")}` : "";
     }
     this.#pending.clear();
     for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
+      void this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
     }
     this.#turns.clear();
     this.#transcripts.clear();

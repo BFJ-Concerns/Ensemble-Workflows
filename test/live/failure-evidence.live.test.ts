@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,8 +12,7 @@ const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FA
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const scenario of [
-  { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ },
-  { engine: "opencode", model: "glm-5.2", error: /OpenCodeRunError/ }
+  { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ }
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,
@@ -25,7 +24,7 @@ for (const scenario of [
       const token = `LIVE_${scenario.engine.toUpperCase()}_PARTIAL_${randomUUID()}`;
       const model = scenario.model === null ? "" : `model: ${JSON.stringify(scenario.model)},`;
       const startedAt = Date.now();
-      let env: NodeJS.ProcessEnv = {
+      const env: NodeJS.ProcessEnv = {
         ...process.env,
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
@@ -34,15 +33,7 @@ for (const scenario of [
       let terminateWorker: () => Promise<void>;
 
       try {
-        if (scenario.engine === "claude") {
-          terminateWorker = async () => stopClaudeWorkerAfterText(token, startedAt);
-        } else {
-          const observer = path.join(directory, "opencode-stream.jsonl");
-          const wrapperDirectory = path.join(directory, "bin");
-          await setupOpenCodeObserver(wrapperDirectory, observer);
-          env = { ...env, PATH: `${wrapperDirectory}:${env.PATH ?? ""}` };
-          terminateWorker = async () => stopOpenCodeWorkerAfterText(observer, token, directory);
-        }
+        terminateWorker = async () => stopClaudeWorkerAfterText(token, startedAt);
 
         await writeFile(
           script,
@@ -80,6 +71,14 @@ for (const scenario of [
     }
   );
 }
+
+test.skip(
+  "live opencode partial-text retention cannot be observed before turn completion",
+  {
+    skip: "opencode run emits step_start before completion, but emits the answer as one completed text part at turn end"
+  },
+  () => undefined
+);
 
 interface RecordedAgent {
   label: string | null;
@@ -136,26 +135,6 @@ async function stopClaudeWorkerAfterText(token: string, startedAt: number): Prom
   await execFileOutput("claude", ["stop", id]);
 }
 
-async function setupOpenCodeObserver(wrapperDirectory: string, observer: string): Promise<void> {
-  const realOpenCode = (await execFileOutput("which", ["opencode"])).stdout.trim();
-  assert.ok(realOpenCode.length > 0, "opencode was not found on PATH");
-  await mkdir(wrapperDirectory, { recursive: true });
-  const wrapper = path.join(wrapperDirectory, "opencode");
-  const fifo = path.join(path.dirname(observer), "opencode-stream.fifo");
-  await writeFile(
-    wrapper,
-    `#!/usr/bin/env bash\nset -o pipefail\nworker=\ntrap '[[ -n "$worker" ]] && kill -TERM "$worker" 2>/dev/null || true' TERM INT\nmkfifo ${shellQuote(fifo)}\n${shellQuote(realOpenCode)} "$@" > ${shellQuote(fifo)} &\nworker=$!\nprintf '%s\\n' "$worker" > ${shellQuote(path.join(path.dirname(observer), "opencode-worker.pid"))}\ntee -a ${shellQuote(observer)} < ${shellQuote(fifo)}\nwait "$worker"\nstatus=$?\nrm -f ${shellQuote(fifo)}\nexit "$status"\n`
-  );
-  await chmod(wrapper, 0o755);
-}
-
-async function stopOpenCodeWorkerAfterText(observer: string, token: string, directory: string): Promise<void> {
-  await waitForFileContaining(observer, token);
-  const pid = Number.parseInt(await readFile(path.join(directory, "opencode-worker.pid"), "utf8"), 10);
-  assert.ok(Number.isSafeInteger(pid) && pid > 1, "opencode observer did not record a valid worker PID");
-  process.kill(pid, "SIGTERM");
-}
-
 async function waitForRecentFileContaining(root: string, token: string, startedAt: number): Promise<string> {
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
@@ -206,22 +185,6 @@ function isClaudeAssistantTextContaining(entry: unknown, token: string): boolean
   );
 }
 
-async function waitForFileContaining(file: string, token: string): Promise<void> {
-  const deadline = Date.now() + 150_000;
-  while (Date.now() < deadline) {
-    try {
-      const events = parsedJsonLines(await readFile(file, "utf8"));
-      if (events.some((event) => isOpenCodeTextEventContaining(event, token))) {
-        return;
-      }
-    } catch {
-      // The observer file appears only after opencode emits its first event.
-    }
-    await delay(250);
-  }
-  throw new Error(`The live opencode stream did not contain ${token}`);
-}
-
 function parsedJsonLines(text: string): unknown[] {
   const values: unknown[] = [];
   for (const line of text.split(/\r?\n/)) {
@@ -237,24 +200,6 @@ function parsedJsonLines(text: string): unknown[] {
   return values;
 }
 
-function isOpenCodeTextEventContaining(event: unknown, token: string): boolean {
-  if (typeof event !== "object" || event === null || !("part" in event)) {
-    return false;
-  }
-  const part = event.part;
-  return (
-    "type" in event &&
-    event.type === "text" &&
-    typeof part === "object" &&
-    part !== null &&
-    "type" in part &&
-    part.type === "text" &&
-    "text" in part &&
-    typeof part.text === "string" &&
-    part.text.includes(token)
-  );
-}
-
 function execFileOutput(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, stdout, stderr) => {
@@ -265,10 +210,6 @@ function execFileOutput(file: string, args: string[]): Promise<{ stdout: string;
       resolve({ stdout, stderr });
     });
   });
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function delay(ms: number): Promise<void> {

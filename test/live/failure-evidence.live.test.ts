@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,7 +12,8 @@ const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FA
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const scenario of [
-  { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ }
+  { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ },
+  { engine: "opencode", model: "glm-5.2", error: /OpenCodeRunError/ }
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,
@@ -23,17 +24,32 @@ for (const scenario of [
       const recordStore = path.join(directory, "records");
       const token = `LIVE_${scenario.engine.toUpperCase()}_PARTIAL_${randomUUID()}`;
       const model = scenario.model === null ? "" : `model: ${JSON.stringify(scenario.model)},`;
-      const startedAt = Date.now();
-      const env: NodeJS.ProcessEnv = {
+      const prompt =
+        scenario.engine === "claude"
+          ? `Say ${token} on its own line, then in the same turn use the Bash tool to run sleep 120. After the command returns, continue with a detailed numbered analysis.`
+          : `Output ${token} immediately on its own line, then write a detailed numbered analysis. Keep expanding the analysis for at least two minutes without ending the answer.`;
+      let env: NodeJS.ProcessEnv = {
         ...process.env,
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
         ENSEMBLE_STATUS: "0"
       };
       let terminateWorker: () => Promise<void>;
+      let observedWorkerText = token;
 
       try {
-        terminateWorker = async () => stopClaudeWorkerAfterText(token, startedAt);
+        if (scenario.engine === "claude") {
+          const existingSessions = new Set((await claudeRoster()).map((entry) => entry.sessionId));
+          terminateWorker = async () => stopClaudeWorkerAfterText(token, existingSessions);
+        } else {
+          const observer = path.join(directory, "opencode-stream.jsonl");
+          const wrapperDirectory = path.join(directory, "bin");
+          await setupOpenCodeObserver(wrapperDirectory, observer);
+          env = { ...env, PATH: `${wrapperDirectory}:${env.PATH ?? ""}` };
+          terminateWorker = async () => {
+            observedWorkerText = await stopOpenCodeWorkerAfterText(observer, directory);
+          };
+        }
 
         await writeFile(
           script,
@@ -45,7 +61,7 @@ for (const scenario of [
 
             return await agent(
               ${JSON.stringify(
-                `Write a detailed numbered analysis headed ${token}. Keep expanding the analysis for at least two minutes without ending the answer.`
+                prompt
               )},
               {
                 engine: ${JSON.stringify(scenario.engine)},
@@ -63,7 +79,10 @@ for (const scenario of [
         assert.equal(result.code, 1, result.stderr);
         assert.match(result.stderr, scenario.error);
         const agent = await recordedAgent(recordStore, `failure-evidence-${scenario.engine}`);
-        assert.match(agent.attempts[0]?.raw_output ?? "", new RegExp(token));
+        assert.ok(
+          (agent.attempts[0]?.raw_output ?? "").includes(observedWorkerText),
+          "The archived attempt omitted text observed from the live worker"
+        );
         assert.match(agent.attempts[0]?.failure?.message ?? "", /left the roster|SIG(?:TERM|KILL)|exit code|terminated/i);
       } finally {
         await rm(directory, { recursive: true, force: true });
@@ -71,14 +90,6 @@ for (const scenario of [
     }
   );
 }
-
-test.skip(
-  "live opencode partial-text retention cannot be observed before turn completion",
-  {
-    skip: "opencode run emits step_start before completion, but emits the answer as one completed text part at turn end"
-  },
-  () => undefined
-);
 
 interface RecordedAgent {
   label: string | null;
@@ -121,45 +132,72 @@ function runNode(
   });
 }
 
-async function stopClaudeWorkerAfterText(token: string, startedAt: number): Promise<void> {
-  const transcript = await waitForRecentFileContaining(path.join(homedir(), ".claude", "projects"), token, startedAt);
-  const sessionId = path.basename(transcript, ".jsonl");
-  const roster = JSON.parse((await execFileOutput("claude", ["agents", "--json", "--all"])).stdout) as unknown;
-  assert.ok(Array.isArray(roster), "Claude roster was not an array");
-  const worker = roster.find(
-    (entry): entry is Record<string, unknown> =>
-      typeof entry === "object" && entry !== null && entry.sessionId === sessionId
-  );
-  assert.ok(worker !== undefined, `Claude worker ${sessionId} was absent after its text was observed`);
-  const id = typeof worker.id === "string" && worker.id.length > 0 ? worker.id : sessionId;
-  await execFileOutput("claude", ["stop", id]);
+interface ClaudeRosterEntry {
+  id: string;
+  sessionId: string;
+  name: string | null;
+  cwd: string | null;
 }
 
-async function waitForRecentFileContaining(root: string, token: string, startedAt: number): Promise<string> {
+async function stopClaudeWorkerAfterText(token: string, existingSessions: ReadonlySet<string>): Promise<void> {
+  const worker = await waitForNewClaudeWorker(existingSessions);
+  const transcript = await waitForClaudeTranscript(worker.sessionId);
+  await waitForFileContaining(
+    transcript,
+    (events) => events.some((event) => isClaudeAssistantTextContaining(event, token)) && !isClaudeTurnComplete(events)
+  );
+  await execFileOutput("claude", ["stop", worker.id]);
+}
+
+async function claudeRoster(): Promise<ClaudeRosterEntry[]> {
+  const roster = JSON.parse((await execFileOutput("claude", ["agents", "--json", "--all"])).stdout) as unknown;
+  assert.ok(Array.isArray(roster), "Claude roster was not an array");
+  return roster.flatMap((entry): ClaudeRosterEntry[] => {
+    if (typeof entry !== "object" || entry === null || !("sessionId" in entry) || typeof entry.sessionId !== "string") {
+      return [];
+    }
+    const id = "id" in entry && typeof entry.id === "string" && entry.id.length > 0 ? entry.id : entry.sessionId;
+    const name = "name" in entry && typeof entry.name === "string" ? entry.name : null;
+    const cwd = "cwd" in entry && typeof entry.cwd === "string" ? entry.cwd : null;
+    return [{ id, sessionId: entry.sessionId, name, cwd }];
+  });
+}
+
+async function waitForNewClaudeWorker(existingSessions: ReadonlySet<string>): Promise<ClaudeRosterEntry> {
   const deadline = Date.now() + 150_000;
   while (Date.now() < deadline) {
-    for (const entry of await readdir(root, { recursive: true })) {
-      if (!entry.endsWith(".jsonl")) {
-        continue;
-      }
-      const candidate = path.join(root, entry);
-      try {
-        const metadata = await stat(candidate);
-        if (
-          metadata.mtimeMs >= startedAt - 1_000 &&
-          parsedJsonLines(await readFile(candidate, "utf8")).some((entry) =>
-            isClaudeAssistantTextContaining(entry, token)
-          )
-        ) {
-          return candidate;
-        }
-      } catch {
-        // Transcripts can be replaced while the live worker is writing them.
-      }
+    const worker = (await claudeRoster()).find(
+      (entry) =>
+        !existingSessions.has(entry.sessionId) && entry.name?.startsWith("ensemble-") === true && entry.cwd === process.cwd()
+    );
+    if (worker !== undefined) {
+      return worker;
     }
     await delay(500);
   }
-  throw new Error(`No recent live transcript contained ${token}`);
+  throw new Error("No new live Claude worker registered");
+}
+
+async function waitForClaudeTranscript(sessionId: string): Promise<string> {
+  const projectsRoot = path.join(homedir(), ".claude", "projects");
+  const filename = `${sessionId}.jsonl`;
+  const projectDirectories = await readdir(projectsRoot, { withFileTypes: true });
+  const candidates = projectDirectories
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(projectsRoot, entry.name, filename));
+  const deadline = Date.now() + 150_000;
+  while (Date.now() < deadline) {
+    for (const candidate of candidates) {
+      try {
+        await readFile(candidate, "utf8");
+        return candidate;
+      } catch {
+        // The exact session transcript has not appeared in this project directory yet.
+      }
+    }
+    await delay(250);
+  }
+  throw new Error(`No transcript appeared for live Claude worker ${sessionId}`);
 }
 
 function isClaudeAssistantTextContaining(entry: unknown, token: string): boolean {
@@ -185,6 +223,22 @@ function isClaudeAssistantTextContaining(entry: unknown, token: string): boolean
   );
 }
 
+function isClaudeTurnComplete(entries: unknown[]): boolean {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (typeof entry !== "object" || entry === null || !("type" in entry) || entry.type !== "assistant") {
+      continue;
+    }
+    if (!("message" in entry) || typeof entry.message !== "object" || entry.message === null) {
+      return false;
+    }
+    const message = entry.message;
+    const stopReason = "stop_reason" in message ? message.stop_reason : null;
+    return typeof stopReason === "string" && stopReason !== "tool_use";
+  }
+  return false;
+}
+
 function parsedJsonLines(text: string): unknown[] {
   const values: unknown[] = [];
   for (const line of text.split(/\r?\n/)) {
@@ -200,6 +254,89 @@ function parsedJsonLines(text: string): unknown[] {
   return values;
 }
 
+async function setupOpenCodeObserver(wrapperDirectory: string, observer: string): Promise<void> {
+  const realOpenCode = (await execFileOutput("which", ["opencode"])).stdout.trim();
+  assert.ok(realOpenCode.length > 0, "opencode was not found on PATH");
+  await mkdir(wrapperDirectory, { recursive: true });
+  const wrapper = path.join(wrapperDirectory, "opencode");
+  const fifo = path.join(path.dirname(observer), "opencode-stream.fifo");
+  const killedMarker = path.join(path.dirname(observer), "opencode-worker-killed");
+  await writeFile(
+    wrapper,
+    `#!/usr/bin/env bash\nset -o pipefail\nworker=\nkilled=\ntrap '[[ -n "$worker" ]] && kill -TERM "$worker" 2>/dev/null || true' TERM INT\nmkfifo ${shellQuote(fifo)}\n${shellQuote(realOpenCode)} "$@" > ${shellQuote(fifo)} &\nworker=$!\nprintf '%s\\n' "$worker" > ${shellQuote(path.join(path.dirname(observer), "opencode-worker.pid"))}\nwhile IFS= read -r line; do\n  printf '%s\\n' "$line" | tee -a ${shellQuote(observer)}\n  if [[ -z "$killed" && "$line" == *'"type":"text"'* ]]; then\n    kill -TERM "$worker" 2>/dev/null || true\n    killed=1\n    : > ${shellQuote(killedMarker)}\n  fi\ndone < ${shellQuote(fifo)}\nwait "$worker"\nstatus=$?\nrm -f ${shellQuote(fifo)}\nexit "$status"\n`
+  );
+  await chmod(wrapper, 0o755);
+}
+
+async function stopOpenCodeWorkerAfterText(observer: string, directory: string): Promise<string> {
+  let observedText = "";
+  await waitForFileContaining(observer, (events) => {
+    const textIndex = events.findIndex((event) => {
+      const text = openCodeTextOf(event);
+      if (text === null) {
+        return false;
+      }
+      observedText = text;
+      return true;
+    });
+    return textIndex >= 0 && !events.slice(textIndex + 1).some(isOpenCodeStepFinish);
+  });
+  await waitForFile(path.join(directory, "opencode-worker-killed"));
+  return observedText;
+}
+
+async function waitForFile(file: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(file, "utf8");
+      return;
+    } catch {
+      await delay(25);
+    }
+  }
+  throw new Error(`Expected live-worker signal file ${file} did not appear`);
+}
+
+async function waitForFileContaining(file: string, matches: (events: unknown[]) => boolean): Promise<void> {
+  const deadline = Date.now() + 150_000;
+  while (Date.now() < deadline) {
+    try {
+      if (matches(parsedJsonLines(await readFile(file, "utf8")))) {
+        return;
+      }
+    } catch {
+      // Observer files and live transcripts appear asynchronously.
+    }
+    await delay(100);
+  }
+  throw new Error(`Live worker output in ${file} did not reach the required pre-completion state`);
+}
+
+function openCodeTextOf(event: unknown): string | null {
+  if (
+    typeof event !== "object" ||
+    event === null ||
+    !("type" in event) ||
+    event.type !== "text" ||
+    !("part" in event) ||
+    typeof event.part !== "object" ||
+    event.part === null ||
+    !("type" in event.part) ||
+    event.part.type !== "text" ||
+    !("text" in event.part) ||
+    typeof event.part.text !== "string" ||
+    event.part.text.length === 0
+  ) {
+    return null;
+  }
+  return event.part.text;
+}
+
+function isOpenCodeStepFinish(event: unknown): boolean {
+  return typeof event === "object" && event !== null && "type" in event && event.type === "step_finish";
+}
+
 function execFileOutput(file: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(file, args, (error, stdout, stderr) => {
@@ -210,6 +347,10 @@ function execFileOutput(file: string, args: string[]): Promise<{ stdout: string;
       resolve({ stdout, stderr });
     });
   });
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function delay(ms: number): Promise<void> {

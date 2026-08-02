@@ -286,6 +286,7 @@ test("built CLI executes code after every JavaScript line-comment terminator", a
   const terminators = [
     ["lf", "\n"],
     ["lone-cr", "\r"],
+    ["crlf", "\r\n"],
     ["line-separator", "\u2028"],
     ["paragraph-separator", "\u2029"]
   ] as const;

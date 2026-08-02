@@ -644,6 +644,7 @@ test("line comments between meta and defaults end at every JavaScript line termi
   const terminators = [
     ["LF", "\n"],
     ["lone CR", "\r"],
+    ["CRLF", "\r\n"],
     ["LINE SEPARATOR", "\u2028"],
     ["PARAGRAPH SEPARATOR", "\u2029"]
   ] as const;

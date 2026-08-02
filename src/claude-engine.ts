@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
+  EngineShutdownError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
   ClaudeTranscriptError,
@@ -45,6 +46,7 @@ export interface ClaudeEngineInvocationOptions {
   controlPlane: ClaudeControlPlane;
   onEvent?: (event: RuntimeEvent) => void;
   config?: ClaudeEngineConfig;
+  onClose?: (invocation: ClaudeEngineInvocation) => void;
 }
 
 let dispatchCounter = 0;
@@ -88,6 +90,11 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   #handle: ClaudeSessionHandle | null = null;
   #budgetEventCounter = 0;
+  #abortController = new AbortController();
+  #closed = false;
+  #closePromise: Promise<void> | null = null;
+  #settlement: Promise<EngineAttemptResult> | null = null;
+  #onClose: ((invocation: ClaudeEngineInvocation) => void) | undefined;
 
   constructor(options: ClaudeEngineInvocationOptions) {
     this.#prompt = options.prompt;
@@ -95,6 +102,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     this.#options = options.options;
     this.#controlPlane = options.controlPlane;
     this.#onEvent = options.onEvent;
+    this.#onClose = options.onClose;
 
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2_000;
@@ -104,7 +112,18 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     this.#namePrefix = config.namePrefix ?? "ensemble";
   }
 
-  async runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+  runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+    const settlement = this.#runAttempt(context);
+    this.#settlement = settlement;
+    return settlement.finally(() => {
+      if (this.#settlement === settlement) {
+        this.#settlement = null;
+      }
+    });
+  }
+
+  async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+    this.#assertOpen();
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== undefined && this.#handle !== null;
@@ -134,7 +153,17 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   }
 
   async close(): Promise<void> {
-    await this.#teardown();
+    this.#closePromise ??= (async () => {
+      this.#closed = true;
+      this.#abortController.abort();
+      try {
+        await this.#teardown();
+        await this.#settlement?.catch(() => undefined);
+      } finally {
+        this.#onClose?.(this);
+      }
+    })();
+    await this.#closePromise;
   }
 
   async #dispatchAndCollect(previousFailure: EngineAttemptFailure | undefined): Promise<TurnResult> {
@@ -171,7 +200,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   async #awaitReceipt(handle: ClaudeSessionHandle, mark: number): Promise<void> {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (;;) {
+      this.#assertOpen();
       const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
       if (status.status === "busy") {
         return;
       }
@@ -182,7 +213,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (Date.now() >= deadline) {
         throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
       }
-      await delay(this.#pollIntervalMs);
+      await delay(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
     }
   }
 
@@ -205,7 +236,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     let absences = 0;
 
     for (;;) {
+      this.#assertOpen();
       const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
 
       if (!sawLife) {
         sawLife = (await this.#tryReadTranscript(handle)) !== null;
@@ -221,7 +254,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
-        await delay(this.#pollIntervalMs);
+        await delay(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
         continue;
       }
       absences = 0;
@@ -253,7 +286,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (Date.now() >= deadline) {
         throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
       }
-      await delay(this.#pollIntervalMs);
+      await delay(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+    }
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) {
+      throw new EngineShutdownError("claude");
     }
   }
 
@@ -410,8 +449,20 @@ function emptyTurnResult(attemptFailure?: EngineAttemptFailure): EngineAttemptRe
   };
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
+function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }

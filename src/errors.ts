@@ -73,6 +73,12 @@ export class UnknownEngineError extends AgentOptionRejectedError {
 
 export class EngineNotImplementedError extends EnsembleError {}
 
+export class EngineShutdownError extends EnsembleError {
+  constructor(engine: string) {
+    super(`${engine} engine is shutting down`);
+  }
+}
+
 export class EmptyAgentOutputError extends EnsembleError {}
 
 /**

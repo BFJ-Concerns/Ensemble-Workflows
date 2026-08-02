@@ -314,7 +314,7 @@ test("denies ambient Node, filesystem-shaped, and network globals while permitti
           return await import("node:fs");
         `
       }),
-    /dynamic import|importModuleDynamically|not supported|A dynamic import callback/
+    /uses dynamic import\(\), which the sandbox does not provide/
   );
 });
 
@@ -346,6 +346,39 @@ test("binds the script's own meta read-only in the body", async () => {
       }),
     /Cannot assign to read only property/
   );
+
+  // Wholesale rebinding is the other route to the same divergence: the
+  // binding itself is locked, not just the object it points at.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "meta-rebind.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "meta-rebind" };
+          meta = { name: "impostor" };
+          return meta.name;
+        `
+      }),
+    /Cannot assign to read only property|Assignment to constant/
+  );
+});
+
+test("a cyclic meta loads read-only instead of overflowing the stack", async () => {
+  // A self-referential getter is the one way an object literal can produce a
+  // cycle, and structuredClone preserves it — the freeze must tolerate that
+  // rather than recurse without termination.
+  const result = await runWorkflowScript({
+    filename: "meta-cycle.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "meta-cycle", get self() { return this; } };
+      return meta.self.self.name;
+    `
+  });
+  assert.equal(result.result, "meta-cycle");
 });
 
 test("binds the enumerated side-effect-free platform globals", async () => {
@@ -428,6 +461,26 @@ test("an unknown free identifier fails at load, before any worker spawns", async
       }),
     /identifiers the sandbox does not provide: agnet/
   );
+
+  // Dynamic import introduces no free identifier, so it needs its own
+  // load-time rejection — after an agent call it would otherwise be the
+  // paid-work-then-fail path.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "dynamic-import-late.js",
+        runtime: countingRuntime,
+        log: () => {},
+        source: `
+          export const meta = { name: "dynamic-import-late" };
+          const found = await agent("survey", { engine: "codex" });
+          const fs = await import("node:fs");
+          return fs.readFileSync ? "reached" : found;
+        `
+      }),
+    /uses dynamic import\(\), which the sandbox does not provide/
+  );
+  assert.equal(agentCalls, 0, "the import() rejection must also fire before any worker spawns");
 });
 
 test("a typeof probe for an absent global passes the load-time check", async () => {

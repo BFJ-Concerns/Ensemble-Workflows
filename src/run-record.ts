@@ -310,11 +310,17 @@ export class RunRecordWriter {
   }
 
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
+    // Snapshot at the boundary: the runtime keeps mutating its live record
+    // between the dispatch-time write and settlement, and the manifest
+    // roll-up is recomputed from #agents on every later write — a retained
+    // alias would let the manifest publish usage the agent's own persisted
+    // JSON does not yet contain.
+    const snapshot = structuredClone(record);
     await this.#serialise(async () => {
       if (this.#sealed) {
         return;
       }
-      await this.#recordAgent(record);
+      await this.#recordAgent(snapshot);
     });
   }
 

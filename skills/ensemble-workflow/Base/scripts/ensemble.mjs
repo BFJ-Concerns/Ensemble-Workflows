@@ -17551,56 +17551,84 @@ function compileWorkflowScript(workflow, filename) {
   }
 }
 function createSandboxContext(hooks, meta) {
-  return vm.createContext(
-    {
-      agent: hooks.agent,
-      workflow: hooks.workflow,
-      parallel: hooks.parallel,
-      pipeline: hooks.pipeline,
-      phase: hooks.phase,
-      log: hooks.log,
-      budget: hooks.budget,
-      worktrees: hooks.worktrees,
-      args: hooks.args,
-      // The script's own declared meta, readable without redeclaring it.
-      // Frozen: the body runs in strict mode, so a write throws rather than
-      // silently mutating what the archive already recorded.
-      meta: deepFreeze(structuredClone(meta)),
-      // Side-effect-free platform globals, bound explicitly because scripts
-      // demonstrably reach for them. Pure computation over values — no
-      // filesystem, process, or network reach — so they widen convenience,
-      // not capability. `Buffer` stays out: TextEncoder covers the
-      // byte-length case without dragging Node-API expectations in.
-      TextEncoder,
-      TextDecoder,
-      structuredClone,
-      URL,
-      URLSearchParams,
-      atob,
-      btoa,
-      crypto: Object.freeze({
-        randomUUID: () => crypto.randomUUID(),
-        subtle: Object.freeze({
-          digest: (algorithm, data) => crypto.subtle.digest(algorithm, data)
-        })
+  const bindings = {
+    agent: hooks.agent,
+    workflow: hooks.workflow,
+    parallel: hooks.parallel,
+    pipeline: hooks.pipeline,
+    phase: hooks.phase,
+    log: hooks.log,
+    budget: hooks.budget,
+    worktrees: hooks.worktrees,
+    args: hooks.args,
+    // The script's own declared meta, readable without redeclaring it.
+    // Frozen: the body runs in strict mode, so a write throws rather than
+    // silently mutating what the archive already recorded.
+    meta: deepFreeze(structuredClone(meta)),
+    // Side-effect-free platform globals, bound explicitly because scripts
+    // demonstrably reach for them. Pure computation over values — no
+    // filesystem, process, or network reach — so they widen convenience,
+    // not capability. `Buffer` stays out: TextEncoder covers the
+    // byte-length case without dragging Node-API expectations in.
+    TextEncoder,
+    TextDecoder,
+    structuredClone,
+    URL,
+    URLSearchParams,
+    atob,
+    btoa,
+    crypto: Object.freeze({
+      randomUUID: () => crypto.randomUUID(),
+      subtle: Object.freeze({
+        digest: (algorithm, data) => crypto.subtle.digest(algorithm, data)
       })
-    },
-    {
-      name: "ensemble-workflow-script",
-      codeGeneration: {
-        strings: false,
-        wasm: false
-      }
+    })
+  };
+  const context = vm.createContext(bindings, {
+    name: "ensemble-workflow-script",
+    codeGeneration: {
+      strings: false,
+      wasm: false
     }
+  });
+  for (const name of Object.keys(bindings)) {
+    vm.runInContext(
+      `Object.defineProperty(globalThis, ${JSON.stringify(name)}, { value: globalThis[${JSON.stringify(
+        name
+      )}], writable: false, configurable: false, enumerable: true });`,
+      context
+    );
+  }
+  return context;
+}
+function containsImportExpression(node) {
+  if (typeof node !== "object" || node === null) {
+    return false;
+  }
+  if (Array.isArray(node)) {
+    return node.some(containsImportExpression);
+  }
+  const record = node;
+  if (record.type === "ImportExpression") {
+    return true;
+  }
+  return Object.entries(record).some(
+    ([key, child]) => key !== "parents" && typeof child === "object" && containsImportExpression(child)
   );
 }
 function deepFreeze(value) {
-  if (typeof value === "object" && value !== null) {
-    for (const child of Object.values(value)) {
-      deepFreeze(child);
+  const seen = /* @__PURE__ */ new Set();
+  const freeze = (candidate) => {
+    if (typeof candidate !== "object" || candidate === null || seen.has(candidate)) {
+      return;
     }
-    Object.freeze(value);
-  }
+    seen.add(candidate);
+    for (const child of Object.values(candidate)) {
+      freeze(child);
+    }
+    Object.freeze(candidate);
+  };
+  freeze(value);
   return value;
 }
 var sandboxIntrinsics;
@@ -17618,10 +17646,17 @@ function vmIntrinsicNames() {
 function assertKnownFreeIdentifiers(wrappedSource, context, filename) {
   const knownGlobals = /* @__PURE__ */ new Set([...vmIntrinsicNames(), ...Object.keys(context)]);
   let found;
+  let ast;
   try {
-    found = (0, import_acorn_globals.default)(wrappedSource);
+    ast = import_acorn_globals.default.parse(wrappedSource);
+    found = (0, import_acorn_globals.default)(ast);
   } catch {
     return;
+  }
+  if (containsImportExpression(ast)) {
+    throw new WorkflowScriptError(
+      `Workflow ${filename} uses dynamic import(), which the sandbox does not provide. Scripts cannot load modules; the available hooks and platform globals are listed in the runtime README.`
+    );
   }
   const unknown = found.filter((global) => !knownGlobals.has(global.name)).filter(
     (global) => !global.nodes.every((node) => {
@@ -17923,11 +17958,12 @@ var RunRecordWriter = class _RunRecordWriter {
     });
   }
   async recordAgent(record) {
+    const snapshot = structuredClone(record);
     await this.#serialise(async () => {
       if (this.#sealed) {
         return;
       }
-      await this.#recordAgent(record);
+      await this.#recordAgent(snapshot);
     });
   }
   async #recordAgent(record) {

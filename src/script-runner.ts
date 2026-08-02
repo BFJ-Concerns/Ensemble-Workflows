@@ -267,57 +267,97 @@ function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): v
 }
 
 function createSandboxContext(hooks: WorkflowHooks, meta: unknown): vm.Context {
-  return vm.createContext(
-    {
-      agent: hooks.agent,
-      workflow: hooks.workflow,
-      parallel: hooks.parallel,
-      pipeline: hooks.pipeline,
-      phase: hooks.phase,
-      log: hooks.log,
-      budget: hooks.budget,
-      worktrees: hooks.worktrees,
-      args: hooks.args,
-      // The script's own declared meta, readable without redeclaring it.
-      // Frozen: the body runs in strict mode, so a write throws rather than
-      // silently mutating what the archive already recorded.
-      meta: deepFreeze(structuredClone(meta)),
-      // Side-effect-free platform globals, bound explicitly because scripts
-      // demonstrably reach for them. Pure computation over values — no
-      // filesystem, process, or network reach — so they widen convenience,
-      // not capability. `Buffer` stays out: TextEncoder covers the
-      // byte-length case without dragging Node-API expectations in.
-      TextEncoder,
-      TextDecoder,
-      structuredClone,
-      URL,
-      URLSearchParams,
-      atob,
-      btoa,
-      crypto: Object.freeze({
-        randomUUID: () => crypto.randomUUID(),
-        subtle: Object.freeze({
-          digest: (algorithm: AlgorithmIdentifier, data: BufferSource) => crypto.subtle.digest(algorithm, data)
-        })
+  const bindings: Record<string, unknown> = {
+    agent: hooks.agent,
+    workflow: hooks.workflow,
+    parallel: hooks.parallel,
+    pipeline: hooks.pipeline,
+    phase: hooks.phase,
+    log: hooks.log,
+    budget: hooks.budget,
+    worktrees: hooks.worktrees,
+    args: hooks.args,
+    // The script's own declared meta, readable without redeclaring it.
+    // Frozen: the body runs in strict mode, so a write throws rather than
+    // silently mutating what the archive already recorded.
+    meta: deepFreeze(structuredClone(meta)),
+    // Side-effect-free platform globals, bound explicitly because scripts
+    // demonstrably reach for them. Pure computation over values — no
+    // filesystem, process, or network reach — so they widen convenience,
+    // not capability. `Buffer` stays out: TextEncoder covers the
+    // byte-length case without dragging Node-API expectations in.
+    TextEncoder,
+    TextDecoder,
+    structuredClone,
+    URL,
+    URLSearchParams,
+    atob,
+    btoa,
+    crypto: Object.freeze({
+      randomUUID: () => crypto.randomUUID(),
+      subtle: Object.freeze({
+        digest: (algorithm: AlgorithmIdentifier, data: BufferSource) => crypto.subtle.digest(algorithm, data)
       })
-    },
-    {
-      name: "ensemble-workflow-script",
-      codeGeneration: {
-        strings: false,
-        wasm: false
-      }
+    })
+  };
+  const context = vm.createContext(bindings, {
+    name: "ensemble-workflow-script",
+    codeGeneration: {
+      strings: false,
+      wasm: false
     }
+  });
+  // The values are frozen or facades, but the *bindings* would still be
+  // writable: `meta = {...}` would silently rebind the global. Lock every
+  // binding so reassignment throws under strict mode. The explicit `value`
+  // matters: inside a vm context, defineProperty without one clears the
+  // binding instead of preserving it.
+  for (const name of Object.keys(bindings)) {
+    vm.runInContext(
+      `Object.defineProperty(globalThis, ${JSON.stringify(name)}, { value: globalThis[${JSON.stringify(
+        name
+      )}], writable: false, configurable: false, enumerable: true });`,
+      context
+    );
+  }
+  return context;
+}
+
+/** Walks the parsed AST for any ImportExpression node (depth-first, cycle-free by construction). */
+function containsImportExpression(node: unknown): boolean {
+  if (typeof node !== "object" || node === null) {
+    return false;
+  }
+  if (Array.isArray(node)) {
+    return node.some(containsImportExpression);
+  }
+  const record = node as Record<string, unknown>;
+  if (record.type === "ImportExpression") {
+    return true;
+  }
+  return Object.entries(record).some(
+    ([key, child]) => key !== "parents" && typeof child === "object" && containsImportExpression(child)
   );
 }
 
+/**
+ * Freeze without assuming acyclicity: meta is script-authored, and
+ * `structuredClone` preserves cycles, so a naive recursion would overflow
+ * the stack on a self-referential meta instead of loading it read-only.
+ */
 function deepFreeze(value: unknown): unknown {
-  if (typeof value === "object" && value !== null) {
-    for (const child of Object.values(value)) {
-      deepFreeze(child);
+  const seen = new Set<object>();
+  const freeze = (candidate: unknown): void => {
+    if (typeof candidate !== "object" || candidate === null || seen.has(candidate)) {
+      return;
     }
-    Object.freeze(value);
-  }
+    seen.add(candidate);
+    for (const child of Object.values(candidate)) {
+      freeze(child);
+    }
+    Object.freeze(candidate);
+  };
+  freeze(value);
   return value;
 }
 
@@ -353,12 +393,24 @@ function vmIntrinsicNames(): Set<string> {
 function assertKnownFreeIdentifiers(wrappedSource: string, context: vm.Context, filename: string): void {
   const knownGlobals = new Set([...vmIntrinsicNames(), ...Object.keys(context as object)]);
   let found: ReturnType<typeof detectGlobals>;
+  let ast: ReturnType<typeof detectGlobals.parse>;
   try {
-    found = detectGlobals(wrappedSource);
+    ast = detectGlobals.parse(wrappedSource);
+    found = detectGlobals(ast);
   } catch {
     // The source already compiled under vm.Script; a parser disagreement here
     // must not reject a script the runtime can execute.
     return;
+  }
+  // Dynamic import is denied by the sandbox but introduces no free
+  // identifier, so without this walk it would surface only at execution —
+  // after paid agent phases, the exact late failure this check exists to
+  // prevent.
+  if (containsImportExpression(ast)) {
+    throw new WorkflowScriptError(
+      `Workflow ${filename} uses dynamic import(), which the sandbox does not provide. ` +
+        "Scripts cannot load modules; the available hooks and platform globals are listed in the runtime README."
+    );
   }
   const unknown = found
     .filter((global) => !knownGlobals.has(global.name))

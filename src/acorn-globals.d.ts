@@ -12,5 +12,9 @@ declare module "acorn-globals" {
   }
 
   function detectGlobals(source: string | Node): DetectedGlobal[];
+  namespace detectGlobals {
+    /** acorn.parse with acorn-globals' own options (latest ecmaVersion, return/import anywhere). */
+    function parse(source: string): Node;
+  }
   export = detectGlobals;
 }

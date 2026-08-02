@@ -257,8 +257,10 @@ test("an inbound frame after the promise disarms the deadline and the recovered 
   const codexBin = await fakeCodexFailingTurnServer("promise-then-delta-recovery");
   const transport = await CodexAppServerTransport.start({
     ...defaultTransportOptions(codexBin),
-    // Shorter than the 150ms recovery gap: only the disarm keeps the turn alive.
-    retryPromiseSilenceTimeoutMs: 3_000
+    // The disarm delta arrives at ~100ms and the completion at ~450ms, so a
+    // 250ms deadline expires between them unless the delta genuinely
+    // disarmed it — the test fails if the notification-path disarm is lost.
+    retryPromiseSilenceTimeoutMs: 250
   });
   try {
     const threadId = await transport.openThread({});
@@ -312,9 +314,15 @@ test("a frame naming a different turn does not disarm the deadline", async () =>
 test("MCP tool-call progress does not reset the consecutive-promise bound", async () => {
   // 40 promise/heartbeat pairs at 5ms: without the exclusion the counter
   // resets every pair and the alternation runs without limit; with it the
-  // sixth promise trips the bound in well under a second.
+  // sixth promise trips the bound in well under a second. The short silence
+  // deadline makes a regression fail the elapsed-time assertion promptly
+  // (~2.2s) instead of hanging on the 15-minute default after the fake goes
+  // quiet.
   const codexBin = await fakeCodexFailingTurnServer("promise-mcp-alternation");
-  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    retryPromiseSilenceTimeoutMs: 2_000
+  });
   try {
     const threadId = await transport.openThread({});
     const startedAt = Date.now();
@@ -682,11 +690,16 @@ reader.on("line", (line) => {
       // Then nothing at all: the silence deadline is the only way out.
     } else if (mode === "promise-then-delta-recovery") {
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
+      // Disarm delta well before the test's deadline; completion well after
+      // it. Only the notification-path disarm carries the turn across the
+      // gap — with it removed, the deadline fires before the completion.
       setTimeout(() => {
         send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " and the last tenth" } });
+      }, 100);
+      setTimeout(() => {
         send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the recovered whole answer" } } });
         send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
-      }, 150);
+      }, 450);
     } else if (mode === "promise-then-server-request-recovery") {
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion" } } });
       // A turn-scoped server request (an approval) after the promise: it must

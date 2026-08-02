@@ -1010,7 +1010,12 @@ test("a run-record write failure surfaces as an event and never fails the agent"
   const result = await runtime.agent("read", { engine: "codex" });
 
   assert.equal(result, "ok");
-  assert.deepEqual(events, [{ method: "runRecord/writeFailed", message: "disk full" }]);
+  // Two writes per agent now — dispatch-time and settlement — so a recorder
+  // that always throws surfaces two failures, and neither fails the agent.
+  assert.deepEqual(events, [
+    { method: "runRecord/writeFailed", message: "disk full" },
+    { method: "runRecord/writeFailed", message: "disk full" }
+  ]);
 });
 
 // The Claude engine is now implemented; it is driven through the runtime with a

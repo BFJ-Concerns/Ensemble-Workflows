@@ -1293,6 +1293,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
         `
       );
 
+      const startedAt = performance.now();
       const result = await fixture.runWithEnv({
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
         ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: interruptResponse === "rejected" ? "1" : "0",
@@ -1300,9 +1301,16 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
+      const elapsedMs = performance.now() - startedAt;
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
+      if (interruptResponse === "withheld") {
+        assert.ok(
+          elapsedMs < 10_000,
+          `replacement took ${elapsedMs.toFixed(0)}ms with the interrupt response withheld; it must not await the 30s request timeout`
+        );
+      }
       const messages = await fixture.messages();
       assert.deepEqual(
         messages.map((message) => message.method),

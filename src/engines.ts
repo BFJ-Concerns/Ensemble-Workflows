@@ -41,7 +41,16 @@ export interface EngineTurnOptions {
 }
 
 export interface EngineAttemptFailure {
-  kind: "empty-output" | "invalid-json" | "schema-validation" | "claude-first-life-timeout";
+  kind:
+    | "empty-output"
+    | "invalid-json"
+    | "schema-validation"
+    | "claude-dispatch-error"
+    | "claude-poll-timeout"
+    | "claude-first-life-timeout"
+    | "claude-blocked"
+    | "claude-valve-error"
+    | "claude-transcript-error";
   message: string;
 }
 

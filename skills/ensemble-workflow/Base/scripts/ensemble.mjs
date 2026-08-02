@@ -15214,11 +15214,14 @@ var ClaudeEngineInvocation = class {
   }
   async #runAttempt(context) {
     this.#assertOpen();
+    let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
-        return await this.#correctInSession(this.#handle, previousFailure);
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex);
       }
       if (this.#handle !== null) {
         await this.#teardown();
@@ -15226,10 +15229,11 @@ var ClaudeEngineInvocation = class {
       return await this.#dispatchAndCollect(previousFailure);
     } catch (error) {
       if (error instanceof Error) {
-        await this.#attachLatestWorkerText(error);
+        await this.#attachLatestWorkerText(error, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
         await this.#teardown();
+        return failedTurnResult(error);
       }
       throw error;
     }
@@ -15264,15 +15268,14 @@ var ClaudeEngineInvocation = class {
     const transcript = await this.#runToCompletion(handle, 0);
     return this.#buildResult(handle, transcript, 0);
   }
-  async #correctInSession(handle, previousFailure) {
-    const mark = (await this.#readTranscript(handle)).entries.length;
+  async #correctInSession(handle, previousFailure, fromIndex) {
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
       throw new ClaudeValveError("reply valve failed to inject the correction");
     }
-    await this.#awaitReceipt(handle, mark);
-    const transcript = await this.#runToCompletion(handle, mark);
-    return this.#buildResult(handle, transcript, mark);
+    await this.#awaitReceipt(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex);
+    return this.#buildResult(handle, transcript, fromIndex);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
   async #awaitReceipt(handle, mark) {
@@ -15406,13 +15409,13 @@ var ClaudeEngineInvocation = class {
       throw error;
     }
   }
-  async #attachLatestWorkerText(error) {
+  async #attachLatestWorkerText(error, fromIndex) {
     const handle = this.#handle;
     if (handle === null) {
       return;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    const text = transcript === null ? null : finalAssistantText(transcript.entries, 0);
+    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
     if (text !== null) {
       attachPartialWorkerText(error, text);
     }
@@ -15497,6 +15500,36 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID2().slice(0, 8)}`;
   }
 };
+function failedTurnResult(error) {
+  const text = partialWorkerTextOf(error) ?? "";
+  return {
+    text,
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: []
+  };
+}
+function claudeAttemptFailure(error) {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  return { kind: "claude-dispatch-error", message: error.message };
+}
 function delay2(ms, signal, abortError) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {

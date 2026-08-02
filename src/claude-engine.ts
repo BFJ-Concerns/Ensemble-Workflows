@@ -8,7 +8,8 @@ import {
   ClaudeValveError,
   ClaudeWorkerError,
   EngineShutdownError,
-  attachPartialWorkerText
+  attachPartialWorkerText,
+  partialWorkerTextOf
 } from "./errors.js";
 import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
 
@@ -71,8 +72,9 @@ const MAX_CONSECUTIVE_ABSENCES = 3;
  * - **Without the valve** (no tmux), correction degrades to a fresh re-dispatch
  *   whose prompt carries the prior failure; the engine never depends on the valve.
  * - **Operational failures** (dispatch died, poll timed out, blocked past the
- *   bound, valve refused, transcript unreadable) retain their typed diagnostic
- *   and the latest transcript text before the session is torn down. They never hang.
+ *   bound, valve refused, transcript unreadable) become failed turns carrying
+ *   their typed diagnostic and current-turn transcript text. The session is
+ *   torn down and the shared loop applies its normal bounded retry contract.
  *
  * `close()` (called by the shared loop in `finally`) stops and removes the session.
  */
@@ -127,12 +129,15 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
+    let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== undefined && this.#handle !== null;
 
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
-        return await this.#correctInSession(this.#handle as ClaudeSessionHandle, previousFailure);
+        const handle = this.#handle as ClaudeSessionHandle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex);
       }
 
       // First attempt, or a correction we cannot do in-session: (re)dispatch.
@@ -143,13 +148,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       return await this.#dispatchAndCollect(previousFailure);
     } catch (error) {
       if (error instanceof Error) {
-        await this.#attachLatestWorkerText(error);
+        await this.#attachLatestWorkerText(error, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
-        // Preserve the operational failure itself. The shared runtime records
-        // its diagnostic and any attached transcript text before deciding
-        // whether the agent can continue.
+        // Preserve the operational cause and current-turn text on the failed
+        // result while retaining the shared loop's bounded retry governance.
         await this.#teardown();
+        return failedTurnResult(error);
       }
       throw error;
     }
@@ -191,19 +196,19 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     return this.#buildResult(handle, transcript, 0);
   }
 
-  async #correctInSession(handle: ClaudeSessionHandle, previousFailure: EngineAttemptFailure): Promise<TurnResult> {
-    // Mark the transcript so we read only what the correction produces, never the
-    // stale pre-correction answer.
-    const mark = (await this.#readTranscript(handle)).entries.length;
-
+  async #correctInSession(
+    handle: ClaudeSessionHandle,
+    previousFailure: EngineAttemptFailure,
+    fromIndex: number
+  ): Promise<TurnResult> {
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
       throw new ClaudeValveError("reply valve failed to inject the correction");
     }
 
-    await this.#awaitReceipt(handle, mark);
-    const transcript = await this.#runToCompletion(handle, mark);
-    return this.#buildResult(handle, transcript, mark);
+    await this.#awaitReceipt(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex);
+    return this.#buildResult(handle, transcript, fromIndex);
   }
 
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
@@ -356,13 +361,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
   }
 
-  async #attachLatestWorkerText(error: Error): Promise<void> {
+  async #attachLatestWorkerText(error: Error, fromIndex: number): Promise<void> {
     const handle = this.#handle;
     if (handle === null) {
       return;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    const text = transcript === null ? null : finalAssistantText(transcript.entries, 0);
+    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
     if (text !== null) {
       attachPartialWorkerText(error, text);
     }
@@ -462,6 +467,38 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     dispatchCounter += 1;
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
+}
+
+function failedTurnResult(error: ClaudeWorkerError): EngineAttemptResult {
+  const text = partialWorkerTextOf(error) ?? "";
+  return {
+    text,
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: []
+  };
+}
+
+function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  return { kind: "claude-dispatch-error", message: error.message };
 }
 
 function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {

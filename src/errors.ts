@@ -117,8 +117,10 @@ export class EmptyAgentOutputError extends EnsembleError {}
  * Base for *operational* failures of a Claude background worker — dispatch
  * died, polling timed out, the worker stalled past the recovery bound, the
  * valve couldn't inject, the transcript couldn't be read. The Claude engine
- * preserves these as typed terminal errors for the shared runtime to record.
- * A failure that is *not* a `ClaudeWorkerError` is a genuine bug and propagates.
+ * catches these and degrades to a graceful failed turn (the shared loop turns
+ * that into `null` for a schema agent, or the empty-output error after the
+ * bounded attempts for a text agent). It never lets one hang. A failure that
+ * is *not* a `ClaudeWorkerError` is a genuine bug and propagates.
  */
 export class ClaudeWorkerError extends EnsembleError {}
 

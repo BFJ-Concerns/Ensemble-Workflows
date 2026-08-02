@@ -86,7 +86,9 @@ export class EngineRegistry {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.#engines.values()].map((engine) => engine.close()));
+    // allSettled: one adapter's close failure must not stop the caller
+    // waiting for — and therefore observing — the others' teardown.
+    await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 }
 
@@ -188,6 +190,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #config: ClaudeEngineConfig | undefined;
   #activeInvocations = new Set<ClaudeEngineInvocation>();
+  #closed = false;
 
   constructor(options: ClaudeEngineAdapterOptions = {}) {
     this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
@@ -203,6 +206,11 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    if (this.#closed) {
+      // A worker already past the scheduler when close() ran must not
+      // register into a set nothing will ever cancel again.
+      throw new EngineShutdownError(this.name);
+    }
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -217,6 +225,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }
@@ -245,6 +254,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   #modelRegistry: OpenCodeModelRegistry;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #activeInvocations = new Set<OpenCodeEngineInvocation>();
+  #closed = false;
 
   constructor(options: OpenCodeEngineAdapterOptions = {}) {
     this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
@@ -260,6 +270,11 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    if (this.#closed) {
+      // A worker already past the scheduler when close() ran must not
+      // register into a set nothing will ever cancel again.
+      throw new EngineShutdownError(this.name);
+    }
     rejectUnsupportedOpenCodeOptions(options);
     if (options.model === undefined) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
@@ -280,6 +295,7 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }

@@ -7182,7 +7182,7 @@ var AdmissionController = class {
   }
   admit(engine, agentId, task) {
     if (this.#closed) {
-      throw new Error("AdmissionController is closed");
+      throw new EngineShutdownError(engine);
     }
     if (!this.#caps.has(engine)) {
       throw new Error(`No concurrency cap registered for engine ${engine}`);
@@ -7702,6 +7702,7 @@ var LazyCodexAppServerTransport = class {
   cwd;
   #options;
   #transportPromise;
+  #closed = false;
   constructor(options) {
     this.cwd = options.cwd;
     this.#options = options;
@@ -7715,6 +7716,7 @@ var LazyCodexAppServerTransport = class {
     return transport.runTurn(threadId, prompt, options);
   }
   async close() {
+    this.#closed = true;
     if (this.#transportPromise === void 0) {
       return;
     }
@@ -7727,6 +7729,9 @@ var LazyCodexAppServerTransport = class {
     await transport.close();
   }
   #transport() {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
     this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
     return this.#transportPromise;
   }
@@ -7817,6 +7822,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   async runTurn(threadId, prompt, options) {
     const state = this.#createTurnState(threadId, options.timeoutMs);
     this.#turns.set(threadId, state);
+    state.promise.catch(() => void 0);
     try {
       const params = {
         threadId,
@@ -7850,10 +7856,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return await state.promise;
     } catch (error) {
       if (this.#turns.get(threadId) === state) {
-        state.promise.catch(() => void 0);
         this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
-      throw error;
+      return await state.promise;
     }
   }
   /** Number of thread transcripts currently held in memory. Observability for tests. */
@@ -8115,7 +8121,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    * with the turn state.
    */
   #rejectTurn(threadId, turn, error) {
-    turn.reject(attachPartialWorkerText(error, turn.deltaText));
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
@@ -8248,7 +8254,7 @@ function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
   const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
-  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : JSON.stringify(codexErrorInfo));
+  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
   const message = typeof turnError?.message === "string" ? turnError.message : void 0;
   const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
   const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
@@ -8764,6 +8770,10 @@ var ClaudeEngineInvocation = class {
       ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {}
     });
     this.#handle = handle;
+    if (this.#closed) {
+      await this.#teardown();
+      throw new EngineShutdownError("claude");
+    }
     const transcript = await this.#runToCompletion(handle, 0);
     return this.#buildResult(handle, transcript, 0);
   }
@@ -9099,6 +9109,9 @@ var OpenCodeEngineInvocation = class {
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
       signal: this.#abortController.signal
     });
+    if (this.#abortController.signal.aborted) {
+      throw new EngineShutdownError("opencode");
+    }
     const parsedRun = parseRunEvents(run.stdout);
     let exportData = null;
     let exportDiagnostic;
@@ -9859,7 +9872,7 @@ var EngineRegistry = class {
     return [...this.#engines.keys()];
   }
   async close() {
-    await Promise.all([...this.#engines.values()].map((engine) => engine.close()));
+    await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 };
 var CodexEngineAdapter = class {
@@ -9922,6 +9935,7 @@ var ClaudeEngineAdapter = class {
   #onEvent;
   #config;
   #activeInvocations = /* @__PURE__ */ new Set();
+  #closed = false;
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
@@ -9934,6 +9948,9 @@ var ClaudeEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -9947,6 +9964,7 @@ var ClaudeEngineAdapter = class {
     return invocation;
   }
   async close() {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }
@@ -9960,6 +9978,7 @@ var OpenCodeEngineAdapter = class {
   #modelRegistry;
   #onEvent;
   #activeInvocations = /* @__PURE__ */ new Set();
+  #closed = false;
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
@@ -9972,6 +9991,9 @@ var OpenCodeEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
     rejectUnsupportedOpenCodeOptions(options);
     if (options.model === void 0) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
@@ -9991,6 +10013,7 @@ var OpenCodeEngineAdapter = class {
     return invocation;
   }
   async close() {
+    this.#closed = true;
     this.#scheduler.close(new EngineShutdownError(this.name));
     await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
   }

@@ -172,6 +172,60 @@ test("transport close carries each live turn's own partial text", async () => {
   );
 });
 
+test("a closed lazy transport refuses first use instead of spawning", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-latch-"));
+  const capturePath = path.join(directory, "starts.txt");
+  const codexBin = await fakeCodexExitingServer(capturePath);
+  const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
+
+  await transport.close();
+  await assert.rejects(() => transport.openThread({}), AppServerExitedError);
+  // The latch means no spawn ever happened: nothing to leak after teardown.
+  await assert.rejects(() => readFile(capturePath, "utf8"), /ENOENT/);
+});
+
+test("a turn terminalised before its turn/start response surfaces the turn's cause", async () => {
+  // The server streams a delta, then never answers turn/start — the per-turn
+  // timeout fires while the request is still pending. The caller must see
+  // the turn's own terminalisation (with partial text), not the later
+  // request timeout, and no unhandled rejection may escape.
+  const codexBin = await fakeCodexFailingTurnServer("delta-no-turn-start-ack");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    requestTimeoutMs: 5_000
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "stream then stall", { timeoutMs: 200 }),
+      (error: unknown) => {
+        assert.ok(error instanceof TurnTimeoutError);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("itemText reaches the terminal rejection when no deltas were streamed", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("item-then-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "item then die", {}),
+      (error: unknown) => {
+        assert.equal(partialWorkerTextOf(error), "a whole item answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
 test("exact -32001 backpressure outranks an incidental invalid_json_schema mention", () => {
   const error = appServerErrorFromPayload("turn/start", {
     code: -32001,
@@ -422,7 +476,14 @@ reader.on("line", (line) => {
  * answer") and then ends the turn per the requested failure mode.
  */
 async function fakeCodexFailingTurnServer(
-  mode: "error-notification" | "system-error" | "exit-mid-turn" | "hang-after-delta" | "garbage-line"
+  mode:
+    | "error-notification"
+    | "system-error"
+    | "exit-mid-turn"
+    | "hang-after-delta"
+    | "garbage-line"
+    | "delta-no-turn-start-ack"
+    | "item-then-error"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -453,6 +514,20 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    if (mode === "delta-no-turn-start-ack") {
+      // Stream the delta but never acknowledge turn/start: the turn's own
+      // deadline must fire while the request is still pending.
+      send({ method: "turn/started", params: { threadId } });
+      send({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } });
+      return;
+    }
+    if (mode === "item-then-error") {
+      send({ id: message.id, result: {} });
+      send({ method: "turn/started", params: { threadId } });
+      send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "a whole item answer" } } });
+      send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
+      return;
+    }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
     if (mode === "exit-mid-turn") {

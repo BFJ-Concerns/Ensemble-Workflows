@@ -63,7 +63,7 @@ export class AdmissionController {
 
   admit<T>(engine: EngineName, agentId: number, task: () => Promise<T>): Promise<T> {
     if (this.#closed) {
-      throw new Error("AdmissionController is closed");
+      throw new EngineShutdownError(engine);
     }
     if (!this.#caps.has(engine)) {
       throw new Error(`No concurrency cap registered for engine ${engine}`);

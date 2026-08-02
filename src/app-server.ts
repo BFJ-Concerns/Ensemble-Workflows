@@ -92,6 +92,7 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
 
   #options: CodexAppServerTransportOptions;
   #transportPromise: Promise<CodexAppServerTransport> | undefined;
+  #closed = false;
 
   constructor(options: CodexAppServerTransportOptions) {
     this.cwd = options.cwd;
@@ -109,6 +110,9 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   }
 
   async close(): Promise<void> {
+    // Latch: teardown is terminal. A straggler reaching the substrate after
+    // close must fail, not spawn a fresh app-server nothing will ever stop.
+    this.#closed = true;
     if (this.#transportPromise === undefined) {
       return;
     }
@@ -125,6 +129,9 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   }
 
   #transport(): Promise<CodexAppServerTransport> {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
     this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
     return this.#transportPromise;
   }
@@ -230,6 +237,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
     const state = this.#createTurnState(threadId, options.timeoutMs);
     this.#turns.set(threadId, state);
+    // The turn can terminalise while turn/start is still awaiting its
+    // response (timeout, close, process death, an early error frame). This
+    // pre-attached handler keeps that rejection from going unhandled while
+    // nothing awaits the promise yet; later awaits still observe it.
+    state.promise.catch(() => undefined);
 
     try {
       const params: JsonObject = {
@@ -264,18 +276,16 @@ export class CodexAppServerTransport implements RuntimeTransport {
       await this.#request("turn/start", params);
       return await state.promise;
     } catch (error) {
-      // A turn/start request failure is a terminal path like any other; a
-      // rejection of state.promise itself already came through #rejectTurn,
-      // for which this cleanup is an idempotent no-op. Failed attempts
-      // archive no transcripts, so the transcript is dropped either way.
+      // A turn/start request failure is a terminal path like any other.
       if (this.#turns.get(threadId) === state) {
-        // The caller receives the thrown error below, so nothing awaits
-        // state.promise: swallow its rejection to keep the terminal path
-        // from raising an unhandled rejection of its own.
-        state.promise.catch(() => undefined);
         this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
-      throw error;
+      // The turn already terminalised through #rejectTurn (or completed)
+      // while the request was in flight: the state settlement is the one
+      // carrying the turn's real cause and partial text, so surface it in
+      // preference to the bare request error.
+      return await state.promise;
     }
   }
 
@@ -580,7 +590,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
    * with the turn state.
    */
   #rejectTurn(threadId: string, turn: TurnState, error: Error): void {
-    turn.reject(attachPartialWorkerText(error, turn.deltaText));
+    // itemText first, mirroring #completeTurn: a worker whose text arrived
+    // as a completed item rather than deltas has still said it.
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
@@ -738,7 +750,7 @@ function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
   const codexErrorInfo = turnError?.codexErrorInfo;
   const code = typeof codexErrorInfo === "string" ? codexErrorInfo : undefined;
   const errorInfo =
-    code ?? (asJsonObject(codexErrorInfo) === null ? undefined : JSON.stringify(codexErrorInfo));
+    code ?? (asJsonObject(codexErrorInfo) === null ? undefined : renderPayloadSafely(codexErrorInfo));
   const message = typeof turnError?.message === "string" ? turnError.message : undefined;
   const additionalDetails =
     typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : undefined;

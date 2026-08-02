@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
-import { OpenCodeRunError } from "./errors.js";
+import { EngineShutdownError, OpenCodeRunError } from "./errors.js";
 
 import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
 import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
@@ -177,6 +177,12 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       signal: this.#abortController.signal
     });
+    if (this.#abortController.signal.aborted) {
+      // A cancelled worker is a shutdown, not an opencode failure — and a
+      // cancelled invocation must not fork a fresh export subprocess just
+      // to learn what its killed run had said.
+      throw new EngineShutdownError("opencode");
+    }
     const parsedRun = parseRunEvents(run.stdout);
     let exportData: OpenCodeExport | null = null;
     let exportDiagnostic: OpenCodeExportDiagnostic;

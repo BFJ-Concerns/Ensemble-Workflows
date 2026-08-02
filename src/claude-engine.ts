@@ -179,6 +179,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {})
     });
     this.#handle = handle;
+    if (this.#closed) {
+      // close() ran while dispatch was in flight: its teardown saw no
+      // handle, so the session just created is ours to stop — otherwise a
+      // cancelled invocation leaks a live worker.
+      await this.#teardown();
+      throw new EngineShutdownError("claude");
+    }
 
     const transcript = await this.#runToCompletion(handle, 0);
     return this.#buildResult(handle, transcript, 0);

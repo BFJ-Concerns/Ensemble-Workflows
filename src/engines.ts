@@ -1,4 +1,4 @@
-import { CodexAppServerTransport } from "./app-server.js";
+import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
 import {
@@ -291,7 +291,7 @@ export interface CreateDefaultEngineRegistryOptions {
 export async function createDefaultEngineRegistry(
   options: CreateDefaultEngineRegistryOptions
 ): Promise<EngineRegistry> {
-  const transport = await CodexAppServerTransport.start({
+  const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,

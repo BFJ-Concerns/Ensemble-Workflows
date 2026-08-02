@@ -47,6 +47,12 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   (project) and `$XDG_DATA_HOME/ensemble/workflows/` (user); unparseable
   entries are noted on stderr and skipped.
 
+Engine substrates start lazily on the first worker that names them. Creating a
+runtime or starting a workflow does not launch Codex's app-server, Claude, or
+opencode, so a run requires only the CLIs for the engines its script actually
+uses. If a substrate cannot start, the first worker for that engine fails; an
+unused engine cannot prevent the run from starting or shutting down cleanly.
+
 Exit 0 prints the script's return value, or the direct agent's return value, as
 JSON on stdout (unserialisable script values print as `null`). Exit 1 (failure,
 whole-workflow timeout, SIGINT or SIGTERM) prints a partial-result envelope

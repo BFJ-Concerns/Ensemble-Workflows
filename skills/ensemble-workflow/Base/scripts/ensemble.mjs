@@ -7676,6 +7676,39 @@ function rank(state) {
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var LazyCodexAppServerTransport = class {
+  cwd;
+  #options;
+  #transportPromise;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+  async openThread(options) {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+  async runTurn(threadId, prompt, options) {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+  async close() {
+    if (this.#transportPromise === void 0) {
+      return;
+    }
+    let transport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      return;
+    }
+    await transport.close();
+  }
+  #transport() {
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    return this.#transportPromise;
+  }
+};
 var CodexAppServerTransport = class _CodexAppServerTransport {
   cwd;
   #process;
@@ -9791,7 +9824,7 @@ var OpenCodeEngineAdapter = class {
   }
 };
 async function createDefaultEngineRegistry(options) {
-  const transport = await CodexAppServerTransport.start({
+  const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,

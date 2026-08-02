@@ -1,11 +1,83 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CodexAppServerTransport } from "../../src/app-server.js";
+import { CodexAppServerTransport, LazyCodexAppServerTransport } from "../../src/app-server.js";
+import { createDefaultEngineRegistry } from "../../src/engines.js";
 import { AppServerExitedError, AppServerStartupTimeoutError, TurnTimeoutError } from "../../src/errors.js";
+
+test("default engine registry does not start Codex during construction or unused close", async () => {
+  const codexBin = path.join(tmpdir(), "ensemble-no-such-lazy-codex-bin");
+  const registry = await createDefaultEngineRegistry(defaultRegistryOptions(codexBin));
+
+  assert.deepEqual(registry.names(), ["codex", "claude", "opencode"]);
+  await registry.close();
+});
+
+test("default engine registry starts Codex on first use and memoises a missing-binary failure", async () => {
+  const codexBin = path.join(tmpdir(), "ensemble-no-such-lazy-codex-bin");
+  const registry = await createDefaultEngineRegistry(defaultRegistryOptions(codexBin));
+  const codex = registry.get("codex");
+  assert.ok(codex);
+  const invocation = codex.createInvocation("hello", {});
+
+  let firstError: unknown;
+  try {
+    await invocation.runAttempt({ attempt: 1 });
+    assert.fail("first Codex use should fail when its binary is missing");
+  } catch (error) {
+    firstError = error;
+  }
+  assert.ok(firstError instanceof AppServerExitedError);
+  assert.match(firstError.message, /process error.*ENOENT/);
+
+  let secondError: unknown;
+  try {
+    await invocation.runAttempt({ attempt: 2 });
+    assert.fail("second Codex use should retain the startup failure");
+  } catch (error) {
+    secondError = error;
+  }
+  assert.strictEqual(secondError, firstError);
+  await registry.close();
+});
+
+test("lazy Codex transport does not respawn after startup failure", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-failing-codex-"));
+  const capturePath = path.join(directory, "starts.txt");
+  const codexBin = await fakeCodexExitServer(capturePath);
+  const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
+
+  let firstError: unknown;
+  try {
+    await transport.openThread({});
+  } catch (error) {
+    firstError = error;
+  }
+  assert.ok(firstError instanceof AppServerExitedError);
+
+  await assert.rejects(() => transport.openThread({}), (error: unknown) => error === firstError);
+  assert.equal((await readFile(capturePath, "utf8")).trim().split("\n").length, 1);
+  await transport.close();
+});
+
+test("concurrent first Codex calls share one app-server handshake", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-"));
+  const capturePath = path.join(directory, "messages.txt");
+  const codexBin = await fakeCodexTurnServer({ capturePath });
+  const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
+
+  try {
+    const threadIds = await Promise.all([transport.openThread({}), transport.openThread({})]);
+    assert.equal(new Set(threadIds).size, 2);
+    const methods = (await readFile(capturePath, "utf8")).trim().split("\n");
+    assert.equal(methods.filter((method) => method === "initialize").length, 1);
+  } finally {
+    await transport.close();
+  }
+});
 
 test("Codex app-server initialize uses the startup handshake budget", async () => {
   const codexBin = await fakeCodexAppServer({ initializeDelayMs: 0, respondToInitialize: true });
@@ -149,12 +221,13 @@ test("Codex app-server sends full access explicitly on the thread and every turn
 });
 
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
-async function fakeCodexTurnServer(options: { returnPromptBase64?: boolean } = {}): Promise<string> {
+async function fakeCodexTurnServer(options: { returnPromptBase64?: boolean; capturePath?: string } = {}): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
   await writeFile(
     bin,
     `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 if (process.argv[2] !== "app-server") {
@@ -163,11 +236,15 @@ if (process.argv[2] !== "app-server") {
 
 let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
+const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const reader = createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 
 reader.on("line", (line) => {
   const message = JSON.parse(line);
+  if (capturePath !== null) {
+    appendFileSync(capturePath, message.method + "\\n");
+  }
   if (message.method === "initialize") {
     send({ id: message.id, result: {} });
     return;
@@ -199,6 +276,41 @@ reader.on("line", (line) => {
   );
   await chmod(bin, 0o755);
   return bin;
+}
+
+async function fakeCodexExitServer(capturePath: string): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-exit-"));
+  const bin = path.join(directory, "codex");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(capturePath)}, "start\\n");
+process.exit(23);
+`
+  );
+  await chmod(bin, 0o755);
+  return bin;
+}
+
+function defaultTransportOptions(codexBin: string) {
+  return {
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  };
+}
+
+function defaultRegistryOptions(codexBin: string) {
+  return {
+    ...defaultTransportOptions(codexBin),
+    onEvent: () => undefined,
+    onClaudeEvent: () => undefined,
+    onOpenCodeEvent: () => undefined
+  };
 }
 
 async function fakeCodexAppServer(options: {

@@ -17724,7 +17724,7 @@ function assertKnownFreeIdentifiers(wrappedSource, context, filename) {
       `Workflow ${filename} uses dynamic import(), which the sandbox does not provide. Scripts cannot load modules; the available hooks and platform globals are listed in the runtime README.`
     );
   }
-  const unknown = found.filter((global) => !knownGlobals.has(global.name)).filter(
+  const unknown = found.filter((global) => global.name !== "this").filter((global) => !knownGlobals.has(global.name)).filter(
     (global) => !global.nodes.every((node) => {
       const parents = node.parents ?? [];
       const parent = parents[parents.length - 2];

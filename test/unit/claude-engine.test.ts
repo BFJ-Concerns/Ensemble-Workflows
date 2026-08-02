@@ -476,9 +476,10 @@ test("a blocked Claude worker preserves transcript text and its diagnostic in th
       } as unknown as RunRecordWriter);
       try {
         await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
-        assert.equal(records[0]?.attempts[0]?.rawOutput, "Claude reached the evidence");
-        assert.equal(records[0]?.attempts[0]?.failure?.kind, "claude-blocked");
-        assert.match(records[0]?.attempts[0]?.failure?.message ?? "", /blocked awaiting input/);
+        const settledRecord = records.at(-1);
+        assert.equal(settledRecord?.attempts[0]?.rawOutput, "Claude reached the evidence");
+        assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-blocked");
+        assert.match(settledRecord?.attempts[0]?.failure?.message ?? "", /blocked awaiting input/);
       } finally {
         await runtime.close();
       }
@@ -504,11 +505,11 @@ test("Claude operational failures retain partial text across three governed atte
         assert.equal(result, null);
         assert.equal(controlPlane.dispatchCount, 3);
         assert.deepEqual(
-          records[0]?.attempts.map((attempt) => attempt.rawOutput),
+          records.at(-1)?.attempts.map((attempt) => attempt.rawOutput),
           ["partial one", "partial two", "partial three"]
         );
         assert.deepEqual(
-          records[0]?.attempts.map((attempt) => attempt.failure?.kind),
+          records.at(-1)?.attempts.map((attempt) => attempt.failure?.kind),
           ["claude-blocked", "claude-blocked", "claude-blocked"]
         );
       } finally {
@@ -530,8 +531,9 @@ test("a failed correction does not attach text from the previous turn", async ()
       try {
         const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
         assert.equal(result, null);
-        assert.equal(records[0]?.attempts[0]?.rawOutput, "stale previous answer");
-        assert.equal(records[0]?.attempts[1]?.rawOutput, "");
+        const settledRecord = records.at(-1);
+        assert.equal(settledRecord?.attempts[0]?.rawOutput, "stale previous answer");
+        assert.equal(settledRecord?.attempts[1]?.rawOutput, "");
       } finally {
         await runtime.close();
       }

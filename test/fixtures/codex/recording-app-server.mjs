@@ -15,6 +15,8 @@ const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE 
 const notificationSequences = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES ?? "[]");
 const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE === "1";
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
+const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
+const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -118,6 +120,9 @@ const handleLine = (line) => {
     return;
   }
   if (message.method === "turn/interrupt") {
+    if (withholdInterruptResponse) {
+      return;
+    }
     if (rejectInterrupt) {
       send({ id: message.id, error: { code: -32000, message: "turn already finished" } });
     } else {
@@ -129,7 +134,10 @@ const handleLine = (line) => {
     const { threadId } = message.params;
     turnCounter += 1;
     const turnId = `turn-${turnCounter}`;
-    send({ id: message.id, result: {} });
+    send({ id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } });
+    if (stallAfterTurnStart) {
+      return;
+    }
     send({
       method: "turn/started",
       params: {

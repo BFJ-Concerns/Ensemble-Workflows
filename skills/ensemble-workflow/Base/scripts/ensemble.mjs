@@ -14252,11 +14252,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         params,
         recordedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
-      await this.#request("turn/start", params);
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
       return await state.promise;
     } catch (error) {
       if (this.#turns.get(threadId) === state) {
-        await this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
         throw error;
       }
       return await state.promise;
@@ -14276,11 +14280,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       pending.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#pending.clear();
-    await Promise.all(
-      [...this.#turns].map(
-        ([threadId, turn]) => this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"))
-      )
-    );
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
+    }
     this.#turns.clear();
     this.#transcripts.clear();
     this.#process.stdin.end();
@@ -14593,19 +14595,17 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    * worker's accumulated text rides the rejection instead of being deleted
    * with the turn state.
    */
-  async #rejectTurn(threadId, turn, error) {
+  #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
     if (turn.turnId !== void 0) {
-      try {
-        await this.#sendUnacknowledgedRequest("turn/interrupt", {
-          threadId,
-          turnId: turn.turnId
-        });
-      } catch {
-      }
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
     }
     turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
   }

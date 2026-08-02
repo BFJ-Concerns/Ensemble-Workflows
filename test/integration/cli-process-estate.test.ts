@@ -1261,7 +1261,7 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
   }
 });
 
-test("built CLI interrupts an abandoned turn before replacement without awaiting acceptance", async () => {
+test("built CLI interrupts an abandoned turn before replacement without awaiting a response", async () => {
   const overloadSequence = [
     [
       { method: "item/agentMessage/delta", params: { delta: "partial before overload" } },
@@ -1275,8 +1275,8 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
     ]
   ];
 
-  for (const rejectInterrupt of [false, true]) {
-    const fixture = await createProcessFixture(`interrupt-before-replacement-${String(rejectInterrupt)}`, "recovered");
+  for (const interruptResponse of ["accepted", "rejected", "withheld"] as const) {
+    const fixture = await createProcessFixture(`interrupt-before-replacement-${interruptResponse}`, "recovered");
     const recordStore = path.join(path.dirname(fixture.script), "records");
     try {
       await writeFile(
@@ -1295,7 +1295,8 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
 
       const result = await fixture.runWithEnv({
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
-        ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: rejectInterrupt ? "1" : "0",
+        ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: interruptResponse === "rejected" ? "1" : "0",
+        ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE: interruptResponse === "withheld" ? "1" : "0",
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
@@ -1317,6 +1318,43 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
     } finally {
       await fixture.cleanup();
     }
+  }
+});
+
+test("built CLI interrupts a turn that times out before any turn notification", async () => {
+  const fixture = await createProcessFixture("interrupt-timeout-before-notification");
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "interrupt-timeout-before-notification",
+          description: "Interrupt a started turn when its local deadline expires"
+        };
+        return await agent("time out before a notification", {
+          engine: "codex",
+          maxAttempts: 1,
+          timeoutMs: 100
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1" },
+      3_000,
+    );
+
+    assert.equal(result.code, 1, `turn timeout did not reject before the test kill switch\n${result.stderr}`);
+    assert.match(result.stderr, /TurnTimeoutError/);
+    const messages = await fixture.messages();
+    assert.deepEqual(
+      messages.map((message) => message.method),
+      ["initialize", "initialized", "thread/start", "turn/start", "turn/interrupt"]
+    );
+    assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
+  } finally {
+    await fixture.cleanup();
   }
 });
 
@@ -1654,9 +1692,11 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
     assert.match(result.stderr, /AppServerRequestError/);
     assert.match(result.stderr, /systemError/);
-    assert.equal(
-      (await fixture.messages()).filter((message) => message.method === "turn/start").length,
-      1
+    const messages = await fixture.messages();
+    assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
+    assert.deepEqual(
+      messages.find((message) => message.method === "turn/interrupt")?.params,
+      { threadId: "thread-1", turnId: "turn-1" }
     );
 
     const agent = await loadOnlyAgentRecord(recordStore);

@@ -1,11 +1,11 @@
-import { LazyCodexAppServerTransport } from "./app-server.js";
+import { CodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
 import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import { EngineShutdownError, OpenCodeModelRequiredError } from "./errors.js";
+import { OpenCodeModelRequiredError } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -122,7 +122,6 @@ export class CodexEngineAdapter implements EngineAdapter {
   }
 
   async close(): Promise<void> {
-    this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
   }
 }
@@ -187,7 +186,6 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #config: ClaudeEngineConfig | undefined;
-  #activeInvocations = new Set<ClaudeEngineInvocation>();
 
   constructor(options: ClaudeEngineAdapterOptions = {}) {
     this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
@@ -203,22 +201,18 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    const invocation = new ClaudeEngineInvocation({
+    return new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
       options,
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
-      ...(this.#config !== undefined ? { config: this.#config } : {}),
-      onClose: (closed) => this.#activeInvocations.delete(closed)
+      ...(this.#config !== undefined ? { config: this.#config } : {})
     });
-    this.#activeInvocations.add(invocation);
-    return invocation;
   }
 
   async close(): Promise<void> {
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    return Promise.resolve();
   }
 }
 
@@ -244,7 +238,6 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   #runner: OpenCodeRunner;
   #modelRegistry: OpenCodeModelRegistry;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
-  #activeInvocations = new Set<OpenCodeEngineInvocation>();
 
   constructor(options: OpenCodeEngineAdapterOptions = {}) {
     this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
@@ -265,23 +258,19 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    const invocation = new OpenCodeEngineInvocation({
+    return new OpenCodeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
       providerModel: model.providerModel,
       modelKey: model.key,
       options,
       runner: this.#runner,
-      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
-      onClose: (closed) => this.#activeInvocations.delete(closed)
+      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {})
     });
-    this.#activeInvocations.add(invocation);
-    return invocation;
   }
 
   async close(): Promise<void> {
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    return Promise.resolve();
   }
 }
 
@@ -302,7 +291,7 @@ export interface CreateDefaultEngineRegistryOptions {
 export async function createDefaultEngineRegistry(
   options: CreateDefaultEngineRegistryOptions
 ): Promise<EngineRegistry> {
-  const transport = new LazyCodexAppServerTransport({
+  const transport = await CodexAppServerTransport.start({
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,

@@ -1,14 +1,8 @@
-interface QueuedTask {
-  run: () => void;
-  reject: (reason: unknown) => void;
-}
-
 export class Scheduler {
   readonly concurrency: number;
 
   #active = 0;
-  #queue: QueuedTask[] = [];
-  #shutdownError: Error | null = null;
+  #queue: Array<() => void> = [];
 
   constructor(concurrency: number) {
     if (!Number.isInteger(concurrency) || concurrency < 1) {
@@ -26,9 +20,6 @@ export class Scheduler {
   }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
-    if (this.#shutdownError !== null) {
-      return Promise.reject(this.#shutdownError);
-    }
     return new Promise<T>((resolve, reject) => {
       const run = (): void => {
         this.#active += 1;
@@ -41,20 +32,9 @@ export class Scheduler {
           });
       };
 
-      this.#queue.push({ run, reject });
+      this.#queue.push(run);
       this.#drain();
     });
-  }
-
-  close(rejection: Error): void {
-    if (this.#shutdownError !== null) {
-      return;
-    }
-    this.#shutdownError = rejection;
-    const queued = this.#queue.splice(0);
-    for (const task of queued) {
-      task.reject(rejection);
-    }
   }
 
   #drain(): void {
@@ -63,7 +43,7 @@ export class Scheduler {
       if (next === undefined) {
         return;
       }
-      next.run();
+      next();
     }
   }
 }

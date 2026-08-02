@@ -8,7 +8,7 @@ import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } f
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
-  exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult>;
+  exportSession(sessionId: string, cwd: string): Promise<OpenCodeSessionExportResult>;
 }
 
 export type OpenCodeSessionExportResult =
@@ -27,7 +27,6 @@ export interface OpenCodeRunOptions {
   // Omitted → the run subprocess is not killed on a deadline (unbounded).
   timeoutMs?: number;
   variant?: string;
-  signal?: AbortSignal;
 }
 
 export interface OpenCodeRunResult {
@@ -46,7 +45,6 @@ export interface OpenCodeEngineInvocationOptions {
   options: EngineTurnOptions;
   runner?: OpenCodeRunner;
   onEvent?: (event: RuntimeEvent) => void;
-  onClose?: (invocation: OpenCodeEngineInvocation) => void;
 }
 
 interface OpenCodeExport {
@@ -112,11 +110,11 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs, options.signal);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs);
   }
 
-  async exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000, this.#killGraceMs, signal);
+  async exportSession(sessionId: string, cwd: string): Promise<OpenCodeSessionExportResult> {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000, this.#killGraceMs);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -138,10 +136,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   #runner: OpenCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closePromise: Promise<void> | null = null;
-  #settlement: Promise<TurnResult> | null = null;
-  #onClose: ((invocation: OpenCodeEngineInvocation) => void) | undefined;
 
   constructor(options: OpenCodeEngineInvocationOptions) {
     this.#prompt = options.prompt;
@@ -151,27 +145,15 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     this.#options = options.options;
     this.#runner = options.runner ?? new OpenCodeCliRunner();
     this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
   }
 
-  runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-
-  async #runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+  async runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
-      ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
-      signal: this.#abortController.signal
+      ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {})
     });
     const parsedRun = parseRunEvents(run.stdout);
     let exportData: OpenCodeExport | null = null;
@@ -179,11 +161,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     if (parsedRun.sessionId === null) {
       exportDiagnostic = { status: "no-session-id" };
     } else {
-      const exportResult = await this.#runner.exportSession(
-        parsedRun.sessionId,
-        this.#cwd,
-        this.#abortController.signal
-      );
+      const exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
       if (exportResult.status === "command-failed") {
         exportDiagnostic = {
           status: "command-failed",
@@ -253,18 +231,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     };
   }
 
-  async close(): Promise<void> {
-    this.#closePromise ??= (async () => {
-      this.#abortController.abort();
-      try {
-        await this.#settlement?.catch(() => undefined);
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
-
   #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
     if (breakdown.totalTokens === 0) {
       return null;
@@ -321,8 +287,7 @@ function runProcess(
   args: string[],
   cwd: string,
   timeoutMs: number | undefined,
-  killGraceMs = 5_000,
-  abortSignal?: AbortSignal
+  killGraceMs = 5_000
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -334,27 +299,19 @@ function runProcess(
     const stderr: string[] = [];
     let settled = false;
     let killEscalation: NodeJS.Timeout | undefined;
-    const terminate = (): void => {
-      if (settled || killEscalation !== undefined) {
-        return;
-      }
-      child.kill("SIGTERM");
-      killEscalation = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, killGraceMs);
-      killEscalation.unref();
-    };
     // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
     const timeout =
       timeoutMs === undefined
         ? undefined
-        : setTimeout(terminate, timeoutMs);
-
-    if (abortSignal?.aborted === true) {
-      terminate();
-    } else {
-      abortSignal?.addEventListener("abort", terminate, { once: true });
-    }
+        : setTimeout(() => {
+            child.kill("SIGTERM");
+            // A worker that ignores SIGTERM would hang the turn despite the
+            // deadline; escalate after a grace period.
+            killEscalation = setTimeout(() => {
+              child.kill("SIGKILL");
+            }, killGraceMs);
+            killEscalation.unref();
+          }, timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => stdout.push(chunk));
@@ -367,7 +324,6 @@ function runProcess(
       settled = true;
       clearTimeout(timeout);
       clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
@@ -377,7 +333,6 @@ function runProcess(
       settled = true;
       clearTimeout(timeout);
       clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
       resolve({
         exitCode,
         signal,

@@ -10,7 +10,6 @@ import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
 import { EngineRegistry } from "../../src/engines.js";
-import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
@@ -702,23 +701,26 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
-  const hangingEngine = new HangOnPromptEngine("codex", 4, () => process.emit("SIGINT"));
+  const interrupt = setTimeout(() => process.emit("SIGINT"), 50);
 
-  const exitCode = await runEnsembleCli([script], {
-    cwd: directory,
-    stdout,
-    stderr,
-    runRecordDir: null,
-    createRuntime: async () =>
-      new EnsembleRuntime({
-        engines: new EngineRegistry([hangingEngine]),
-        defaultTurnTimeoutMs: 1_000,
-        defaultMaxAttempts: 1
-      })
-  });
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir: null,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([new HangOnPromptEngine("codex", 4), new HangOnPromptEngine("claude", 4)]),
+          defaultTurnTimeoutMs: 1_000,
+          defaultMaxAttempts: 1
+        })
+    });
 
-  assert.equal(exitCode, 1);
-  assert.equal(hangingEngine.cancelCount, 1);
+    assert.equal(exitCode, 1);
+  } finally {
+    clearTimeout(interrupt);
+  }
 
   const envelope = JSON.parse(stdout.text()) as {
     partial: boolean;
@@ -1302,13 +1304,10 @@ function fixedEngineRuntime(
 class HangOnPromptEngine implements EngineAdapter {
   readonly concurrency: number;
   readonly scheduler: Scheduler;
-  cancelCount = 0;
-  #activeInvocations = new Set<EngineInvocation>();
 
   constructor(
     readonly name: EngineName,
-    concurrency: number,
-    private readonly onHangStarted: () => void = () => {}
+    concurrency: number
   ) {
     this.concurrency = concurrency;
     this.scheduler = new Scheduler(concurrency);
@@ -1319,33 +1318,18 @@ class HangOnPromptEngine implements EngineAdapter {
   }
 
   createInvocation(prompt: string): EngineInvocation {
-    let rejectHang: ((error: Error) => void) | undefined;
-    const invocation: EngineInvocation = {
+    return {
       runAttempt: async () => {
         if (prompt === "hang") {
-          this.onHangStarted();
-          await new Promise<never>((_resolve, reject) => {
-            rejectHang = reject;
-          });
+          await new Promise<never>(() => {});
         }
         return turn(`${this.name}:${prompt}`);
-      },
-      close: async () => {
-        this.#activeInvocations.delete(invocation);
-        if (rejectHang !== undefined) {
-          this.cancelCount += 1;
-          rejectHang(new EngineShutdownError(this.name));
-          rejectHang = undefined;
-        }
       }
     };
-    this.#activeInvocations.add(invocation);
-    return invocation;
   }
 
   async close(): Promise<void> {
-    this.scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close?.()));
+    return Promise.resolve();
   }
 }
 

@@ -6913,11 +6913,6 @@ var UnknownEngineError = class extends AgentOptionRejectedError {
     super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
   }
 };
-var EngineShutdownError = class extends EnsembleError {
-  constructor(engine) {
-    super(`${engine} engine is shutting down`);
-  }
-};
 var EmptyAgentOutputError = class extends EnsembleError {
 };
 var ClaudeWorkerError = class extends EnsembleError {
@@ -7681,39 +7676,6 @@ function rank(state) {
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
-var LazyCodexAppServerTransport = class {
-  cwd;
-  #options;
-  #transportPromise;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-  async openThread(options) {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-  async runTurn(threadId, prompt, options) {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-  async close() {
-    if (this.#transportPromise === void 0) {
-      return;
-    }
-    let transport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      return;
-    }
-    await transport.close();
-  }
-  #transport() {
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
-    return this.#transportPromise;
-  }
-};
 var CodexAppServerTransport = class _CodexAppServerTransport {
   cwd;
   #process;
@@ -8645,18 +8607,12 @@ var ClaudeEngineInvocation = class {
   #namePrefix;
   #handle = null;
   #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closed = false;
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
   constructor(options) {
     this.#prompt = options.prompt;
     this.#cwd = options.cwd;
     this.#options = options.options;
     this.#controlPlane = options.controlPlane;
     this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
     const config = options.config ?? {};
     this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
     this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
@@ -8664,17 +8620,7 @@ var ClaudeEngineInvocation = class {
     this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
     this.#namePrefix = config.namePrefix ?? "ensemble";
   }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  async #runAttempt(context) {
-    this.#assertOpen();
+  async runAttempt(context) {
     try {
       const previousFailure = context.previousFailure;
       const correcting = previousFailure !== void 0 && this.#handle !== null;
@@ -8697,17 +8643,7 @@ var ClaudeEngineInvocation = class {
     }
   }
   async close() {
-    this.#closePromise ??= (async () => {
-      this.#closed = true;
-      this.#abortController.abort();
-      try {
-        await this.#teardown();
-        await this.#settlement?.catch(() => void 0);
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
+    await this.#teardown();
   }
   async #dispatchAndCollect(previousFailure) {
     const handle = await this.#controlPlane.dispatch({
@@ -8736,9 +8672,7 @@ var ClaudeEngineInvocation = class {
   async #awaitReceipt(handle, mark) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (; ; ) {
-      this.#assertOpen();
       const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
       if (status.status === "busy") {
         return;
       }
@@ -8749,7 +8683,7 @@ var ClaudeEngineInvocation = class {
       if (Date.now() >= deadline) {
         throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
       }
-      await delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+      await delay2(this.#pollIntervalMs);
     }
   }
   /**
@@ -8767,9 +8701,7 @@ var ClaudeEngineInvocation = class {
     let nudges = 0;
     let absences = 0;
     for (; ; ) {
-      this.#assertOpen();
       const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
       if (!sawLife) {
         sawLife = await this.#tryReadTranscript(handle) !== null;
         if (!sawLife && Date.now() >= firstLifeDeadline) {
@@ -8783,7 +8715,7 @@ var ClaudeEngineInvocation = class {
         if (absences >= MAX_CONSECUTIVE_ABSENCES) {
           throw new ClaudePollTimeoutError("worker left the roster before completing");
         }
-        await delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+        await delay2(this.#pollIntervalMs);
         continue;
       }
       absences = 0;
@@ -8810,12 +8742,7 @@ var ClaudeEngineInvocation = class {
       if (Date.now() >= deadline) {
         throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
       }
-      await delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
-    }
-  }
-  #assertOpen() {
-    if (this.#closed) {
-      throw new EngineShutdownError("claude");
+      await delay2(this.#pollIntervalMs);
     }
   }
   #buildResult(handle, transcript, fromIndex) {
@@ -8951,21 +8878,9 @@ function emptyTurnResult(attemptFailure) {
     tokenUsageEvents: []
   };
 }
-function delay2(ms, signal, abortError) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(abortError());
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
+function delay2(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
   });
 }
 
@@ -8994,10 +8909,10 @@ var OpenCodeCliRunner = class {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs, options.signal);
+    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs);
   }
-  async exportSession(sessionId, cwd, signal) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4, this.#killGraceMs, signal);
+  async exportSession(sessionId, cwd) {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4, this.#killGraceMs);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -9018,10 +8933,6 @@ var OpenCodeEngineInvocation = class {
   #runner;
   #onEvent;
   #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
   constructor(options) {
     this.#prompt = options.prompt;
     this.#cwd = options.cwd;
@@ -9030,25 +8941,14 @@ var OpenCodeEngineInvocation = class {
     this.#options = options.options;
     this.#runner = options.runner ?? new OpenCodeCliRunner();
     this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
   }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  async #runAttempt(context) {
+  async runAttempt(context) {
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
       providerModel: this.#providerModel,
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
-      ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
-      signal: this.#abortController.signal
+      ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {}
     });
     const parsedRun = parseRunEvents(run.stdout);
     let exportData = null;
@@ -9056,11 +8956,7 @@ var OpenCodeEngineInvocation = class {
     if (parsedRun.sessionId === null) {
       exportDiagnostic = { status: "no-session-id" };
     } else {
-      const exportResult = await this.#runner.exportSession(
-        parsedRun.sessionId,
-        this.#cwd,
-        this.#abortController.signal
-      );
+      const exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd);
       if (exportResult.status === "command-failed") {
         exportDiagnostic = {
           status: "command-failed",
@@ -9121,17 +9017,6 @@ var OpenCodeEngineInvocation = class {
       }
     };
   }
-  async close() {
-    this.#closePromise ??= (async () => {
-      this.#abortController.abort();
-      try {
-        await this.#settlement?.catch(() => void 0);
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
   #usageEvent(sessionId, breakdown, cost) {
     if (breakdown.totalTokens === 0) {
       return null;
@@ -9180,7 +9065,7 @@ var OpenCodeEngineInvocation = class {
 function rejectUnsupportedOpenCodeOptions(options) {
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }
-function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3, abortSignal) {
+function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn3(command, args, {
@@ -9191,22 +9076,13 @@ function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3, abortSigna
     const stderr = [];
     let settled = false;
     let killEscalation;
-    const terminate = () => {
-      if (settled || killEscalation !== void 0) {
-        return;
-      }
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
       child.kill("SIGTERM");
       killEscalation = setTimeout(() => {
         child.kill("SIGKILL");
       }, killGraceMs);
       killEscalation.unref();
-    };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
-    if (abortSignal?.aborted === true) {
-      terminate();
-    } else {
-      abortSignal?.addEventListener("abort", terminate, { once: true });
-    }
+    }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => stdout.push(chunk));
     child.stderr.setEncoding("utf8");
@@ -9218,7 +9094,6 @@ function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3, abortSigna
       settled = true;
       clearTimeout(timeout);
       clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
       reject(error);
     });
     child.on("close", (exitCode, signal) => {
@@ -9228,7 +9103,6 @@ function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3, abortSigna
       settled = true;
       clearTimeout(timeout);
       clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
       resolve({
         exitCode,
         signal,
@@ -9486,7 +9360,6 @@ var Scheduler = class {
   concurrency;
   #active = 0;
   #queue = [];
-  #shutdownError = null;
   constructor(concurrency) {
     if (!Number.isInteger(concurrency) || concurrency < 1) {
       throw new Error(`Concurrency must be a positive integer, got ${concurrency}`);
@@ -9500,9 +9373,6 @@ var Scheduler = class {
     return this.#queue.length;
   }
   schedule(task) {
-    if (this.#shutdownError !== null) {
-      return Promise.reject(this.#shutdownError);
-    }
     return new Promise((resolve, reject) => {
       const run = () => {
         this.#active += 1;
@@ -9511,19 +9381,9 @@ var Scheduler = class {
           this.#drain();
         });
       };
-      this.#queue.push({ run, reject });
+      this.#queue.push(run);
       this.#drain();
     });
-  }
-  close(rejection) {
-    if (this.#shutdownError !== null) {
-      return;
-    }
-    this.#shutdownError = rejection;
-    const queued = this.#queue.splice(0);
-    for (const task of queued) {
-      task.reject(rejection);
-    }
   }
   #drain() {
     while (this.#active < this.concurrency) {
@@ -9531,7 +9391,7 @@ var Scheduler = class {
       if (next === void 0) {
         return;
       }
-      next.run();
+      next();
     }
   }
 };
@@ -9830,7 +9690,6 @@ var CodexEngineAdapter = class {
     });
   }
   async close() {
-    this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
   }
 };
@@ -9867,7 +9726,6 @@ var ClaudeEngineAdapter = class {
   #controlPlane;
   #onEvent;
   #config;
-  #activeInvocations = /* @__PURE__ */ new Set();
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
@@ -9880,21 +9738,17 @@ var ClaudeEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
-    const invocation = new ClaudeEngineInvocation({
+    return new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
       options,
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
-      ...this.#config !== void 0 ? { config: this.#config } : {},
-      onClose: (closed) => this.#activeInvocations.delete(closed)
+      ...this.#config !== void 0 ? { config: this.#config } : {}
     });
-    this.#activeInvocations.add(invocation);
-    return invocation;
   }
   async close() {
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    return Promise.resolve();
   }
 };
 var OpenCodeEngineAdapter = class {
@@ -9905,7 +9759,6 @@ var OpenCodeEngineAdapter = class {
   #runner;
   #modelRegistry;
   #onEvent;
-  #activeInvocations = /* @__PURE__ */ new Set();
   constructor(options = {}) {
     this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
     this.#scheduler = new Scheduler(this.concurrency);
@@ -9923,26 +9776,22 @@ var OpenCodeEngineAdapter = class {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    const invocation = new OpenCodeEngineInvocation({
+    return new OpenCodeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
       providerModel: model.providerModel,
       modelKey: model.key,
       options,
       runner: this.#runner,
-      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
-      onClose: (closed) => this.#activeInvocations.delete(closed)
+      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {}
     });
-    this.#activeInvocations.add(invocation);
-    return invocation;
   }
   async close() {
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+    return Promise.resolve();
   }
 };
 async function createDefaultEngineRegistry(options) {
-  const transport = new LazyCodexAppServerTransport({
+  const transport = await CodexAppServerTransport.start({
     cwd: options.cwd,
     codexBin: options.codexBin,
     requestTimeoutMs: options.requestTimeoutMs,

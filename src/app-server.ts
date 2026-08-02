@@ -78,49 +78,6 @@ export interface CodexAppServerTransportOptions {
   onEvent?: (event: RuntimeEvent) => void;
 }
 
-export class LazyCodexAppServerTransport implements RuntimeTransport {
-  readonly cwd: string;
-
-  #options: CodexAppServerTransportOptions;
-  #transportPromise: Promise<CodexAppServerTransport> | undefined;
-
-  constructor(options: CodexAppServerTransportOptions) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-
-  async openThread(options: ThreadStartOptions): Promise<string> {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-
-  async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-
-  async close(): Promise<void> {
-    if (this.#transportPromise === undefined) {
-      return;
-    }
-
-    let transport: CodexAppServerTransport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      // Startup failures belong to the worker that first named Codex. Closing
-      // a failed or partially constructed runtime remains best-effort cleanup.
-      return;
-    }
-    await transport.close();
-  }
-
-  #transport(): Promise<CodexAppServerTransport> {
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
-    return this.#transportPromise;
-  }
-}
-
 export class CodexAppServerTransport implements RuntimeTransport {
   readonly cwd: string;
 

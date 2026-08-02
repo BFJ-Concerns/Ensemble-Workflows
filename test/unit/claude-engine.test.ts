@@ -658,8 +658,8 @@ test("a worker that never shows life fails fast with a distinct recorded failure
     const result = await runtime.agent("decide", { engine: "claude", schema: okSchema });
     assert.equal(result, null);
     assert.ok(Date.now() - startedAt < 500, "mute worker should not consume the full turn timeout");
-    assert.equal(records[0]?.attempts[0]?.failure?.kind, "claude-first-life-timeout");
-    assert.match(records[0]?.attempts[0]?.failure?.message ?? "", /no sign of life/);
+    assert.equal(records.at(-1)?.attempts[0]?.failure?.kind, "claude-first-life-timeout");
+    assert.match(records.at(-1)?.attempts[0]?.failure?.message ?? "", /no sign of life/);
   } finally {
     await runtime.close();
   }

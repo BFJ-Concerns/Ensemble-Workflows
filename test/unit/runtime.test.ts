@@ -169,7 +169,7 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
   });
   completedRuntime.setRunRecorder({
     recordAgent: async (record) => {
-      completedRecords.push(record);
+      completedRecords.push(structuredClone(record));
     }
   } as RunRecordWriter);
 
@@ -202,7 +202,7 @@ test("schema-valid null settles as complete while retry exhaustion remains faile
   });
   failedRuntime.setRunRecorder({
     recordAgent: async (record) => {
-      failedRecords.push(record);
+      failedRecords.push(structuredClone(record));
     }
   } as RunRecordWriter);
 

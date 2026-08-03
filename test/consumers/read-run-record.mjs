@@ -20,7 +20,7 @@ assert.equal(manifest.result?.exit_code, 1);
 for (const file of manifest.files) {
   const bytes = await readFile(path.join(archiveDir, file.path));
   assert.equal(createHash("sha256").update(bytes).digest("hex"), file.sha256, file.path);
-  assert.equal(bytes.byteLength, file.bytes, file.path);
+  assert.equal(bytes.byteLength, file.size, file.path);
 }
 
 const result = await readJson(path.join(archiveDir, "result.json"));
@@ -39,8 +39,8 @@ assert.equal(agent.kind, "agent_record");
 assert.equal(agent.status, "complete");
 assert.equal(agent.attempts?.length, 1);
 assert.equal(agent.attempts[0]?.status, "complete");
-assert.deepEqual(agent.output, result.value.completed[0].output);
-assert.deepEqual(agent.attempts[0]?.validated_output, agent.output);
+assert.deepEqual(agent.validated_output, result.value.completed[0].output);
+assert.deepEqual(agent.attempts[0]?.validated_output, agent.validated_output);
 
 process.stdout.write(`${JSON.stringify({
   task: manifest.meta?.task ?? null,
@@ -49,7 +49,7 @@ process.stdout.write(`${JSON.stringify({
   completed: result.value.completed,
   recordedAgent: {
     label: agent.label,
-    output: agent.output,
+    output: agent.validated_output,
     attemptStatus: agent.attempts[0].status
   }
 })}\n`);

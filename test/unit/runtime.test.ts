@@ -1096,6 +1096,30 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
   }
 });
 
+test("a spontaneous app-server exit records a failed agent without runtime shutdown", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(new AppServerExitedError("transport exited unexpectedly")),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("survive the transport", { engine: "codex" }),
+    AppServerExitedError
+  );
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.status, "in-progress");
+  assert.equal(records[1]?.status, "failed");
+  assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
+});
+
 test("thrown non-shutdown failures retain failed status while the runtime closes", async () => {
   for (const error of [
     new Error("worker failed"),

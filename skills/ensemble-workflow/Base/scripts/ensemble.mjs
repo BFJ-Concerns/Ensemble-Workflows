@@ -16828,7 +16828,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     await this.#engines.close();
   }
   #terminalAgentStatus(error, record) {
-    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError) {
+    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
       return this.#shutdownAgentStatus;
     }
     if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {

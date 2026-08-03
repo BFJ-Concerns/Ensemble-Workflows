@@ -170,7 +170,11 @@ async function createEstate() {
         {
           ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
-          ENSEMBLE_CODEX_SCHEMA_CLI: process.env.ENSEMBLE_CODEX_SCHEMA_CLI ?? realCodex,
+          // Always the resolved real codex, never an inherited value: an
+          // inherited pointer is how this test came to run its own fake as its
+          // schema CLI and fork until the machine died (2026-08-03). The sibling
+          // estates resolve it unconditionally too.
+          ENSEMBLE_CODEX_SCHEMA_CLI: realCodex,
           ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(sequences),
           ENSEMBLE_RUN_RECORD: "1",

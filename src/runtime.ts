@@ -220,19 +220,20 @@ export class EnsembleRuntime {
     }
 
     const engine = this.#engineFor(options.engine);
-    // The budget is an admission boundary, judged once per agent() call,
-    // synchronously at the call —
-    // before any await, so the outcome depends on the script's dispatch order
-    // and never on how usage events interleave with dispatch bookkeeping. A
-    // call admitted under the ceiling owns its bounded attempts to
-    // completion: re-checking inside the retry loops let a concurrent
-    // sibling's usage event land between attempts and replace the failure
-    // that provoked the retry with BudgetExceededError — a record blaming
-    // the budget for a transport death. In-flight turns may collectively
-    // overshoot the ceiling (usage is known only after they run); new
-    // agent() calls are what it blocks. A
-    // blocked call is a pre-dispatch rejection, like a rejected option: it
-    // leaves no progress entry and no run record, because nothing was asked.
+    // The per-engine budget is an admission boundary, judged once per
+    // agent() call, synchronously here — so the outcome depends only on
+    // the script's dispatch order, never on how usage events interleave
+    // with retries or queue starts. Both other placements were built and
+    // rejected: re-checking per retry attempt let a concurrent sibling's
+    // spend replace the failure that provoked a retry with
+    // BudgetExceededError (blaming the budget for a transport death), and
+    // checking at queue-start let a sibling's usage event race a
+    // same-parallel thunk's start. The accepted cost is that the ceiling
+    // bounds *new dispatches* only: everything already dispatched — queued
+    // fan-out included, not just turns on the wire — runs its bounded
+    // attempts to completion, so spend can overshoot by the whole dispatched
+    // backlog. A blocked call is a pre-dispatch rejection, like a rejected
+    // option: no engine invocation, no progress entry, no run record.
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({

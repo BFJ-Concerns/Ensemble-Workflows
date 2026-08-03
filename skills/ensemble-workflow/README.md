@@ -56,8 +56,11 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 
 Exit 0 prints the script's return value, or the direct agent's return value, as
 JSON on stdout. The return value and any `workflow()` arguments must be JSON
-values: a function, a cycle, or a BigInt fails the run at settlement with the
-offending path named (one clean line, exit 1), never a lossy approximation.
+values: a function, a symbol, a cycle, or a BigInt fails the run at settlement
+with the offending path named (one clean line, exit 1), never a lossy
+approximation. A `toJSON` method is honoured as `JSON.stringify` would, but the
+return value crosses a structured-clone boundary first, so a `toJSON` on a
+class prototype does not survive to settlement — return plain data instead.
 A script with no top-level return prints `null`, and JSON's own mappings
 (`undefined` properties vanish; `Infinity` from `budget.remaining` on an
 unbounded engine prints as `null`) remain permitted. Exit 1 (failure,
@@ -301,12 +304,13 @@ existing attempt `duration_ms` retains its previous meaning.
   `--timeout` if a run needs a backstop against that. A
   `thread/status/changed` notification with `status.type: "systemError"`
   rejects the live turn immediately and records `systemError`.
-- **Budget**: each `agent()` call checks the engine's ceiling once, at
-  dispatch; once spend reaches the ceiling, a new `agent()` throws a
-  budget-exhausted error. A call dispatched under the ceiling runs its full
-  retry bound even if spend crosses the ceiling mid-call, so a worker's own
-  failure is never rewritten as budget exhaustion by concurrent spend, and
-  in-flight turns can collectively overshoot the ceiling.
+- **Budget**: each `agent()` call checks the engine's ceiling once, when it
+  starts (leaves the concurrency queue); once spend reaches the ceiling, a
+  call that has not yet started throws a budget-exhausted error. A call that
+  starts under the ceiling runs its full retry bound even if spend crosses
+  the ceiling mid-call, so a worker's own failure is never rewritten as
+  budget exhaustion by concurrent spend; turns already started can
+  collectively overshoot the ceiling.
 - **Whole-workflow timeout / interrupt**: the run exits 1 and emits the
   partial-result envelope described above; completed workers' outputs are not
   lost.

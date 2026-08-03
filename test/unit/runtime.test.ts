@@ -550,13 +550,75 @@ test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry ca
     assert.equal(attempt.failure?.kind, "AppServerOverloadedError");
   }
 
-  // The exhaustion still gates the next dispatch: the ceiling moved from
+  // The exhaustion still gates the next call: the ceiling moved from
   // per-attempt re-checking to one dispatch-time judgement, not away. A
-  // blocked call is a pre-dispatch rejection: no engine attempt and no agent
-  // record, the same surface as a rejected option.
+  // blocked call is a pre-dispatch rejection — no engine reach, no record.
   await assert.rejects(() => runtime.agent("next call blocked", { engine: "codex" }), BudgetExceededError);
-  assert.equal(transport.attempts, 3, "a blocked dispatch must not reach the engine");
-  assert.equal(records.at(-1)?.id, settled?.id, "a blocked dispatch writes no agent record");
+  assert.equal(transport.attempts, 3, "a blocked call must not reach the engine");
+  assert.equal(records.at(-1)?.id, settled?.id, "a blocked call writes no agent record");
+});
+
+test("the ceiling bounds new dispatches, not the already-dispatched backlog", async () => {
+  // Five calls dispatched together under cap 1 while spend is still zero:
+  // all five pass the dispatch-time judgement and run to completion even
+  // though the first call's spend crosses the ceiling — the documented
+  // accepted cost (overshoot bounded by the dispatched backlog). What the
+  // ceiling does bound is the next dispatch, which this test pins too.
+  // This is the contract from both sides: a builder must not "fix" the
+  // overshoot by re-checking at queue-start or per attempt — both
+  // placements make the outcome depend on event interleaving.
+  class SpendingTransport implements RuntimeTransport {
+    readonly cwd = "/fake/repo";
+    turns = 0;
+    #runtime: (() => EnsembleRuntime | null) | undefined;
+
+    bind(runtime: () => EnsembleRuntime | null): void {
+      this.#runtime = runtime;
+    }
+
+    async openThread(): Promise<string> {
+      return "thread-1";
+    }
+
+    async runTurn(): Promise<TurnResult> {
+      this.turns += 1;
+      this.#runtime?.()?.handleTransportEvent({
+        method: "thread/tokenUsage/updated",
+        receivedAt: Date.now(),
+        params: {
+          threadId: "thread-1",
+          turnId: `turn-${this.turns}`,
+          tokenUsage: { last: usage(10), total: usage(10) }
+        }
+      });
+      return turn(`answer-${this.turns}`);
+    }
+
+    async close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  const transport = new SpendingTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    budgetCeilings: { codex: 5 },
+    defaultMaxAttempts: 1
+  });
+  transport.bind(() => runtime);
+
+  const results = await Promise.allSettled(
+    Array.from({ length: 5 }, (_, index) => runtime.agent(`fan-out ${index}`, { engine: "codex" }))
+  );
+
+  // Every dispatched call ran: overshoot to 50 against a ceiling of 5.
+  assert.equal(transport.turns, 5);
+  assert.equal(results.filter((entry) => entry.status === "fulfilled").length, 5);
+  assert.equal(runtime.budget.spent("codex"), 50);
+  // The ceiling's bite is the next dispatch, which never reaches the engine.
+  await assert.rejects(() => runtime.agent("sixth call blocked", { engine: "codex" }), BudgetExceededError);
+  assert.equal(transport.turns, 5);
 });
 
 test("Codex agents pass only turn options that remain configurable", async () => {

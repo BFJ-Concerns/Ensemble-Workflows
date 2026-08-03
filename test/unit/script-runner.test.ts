@@ -276,6 +276,30 @@ test("a non-JSON return value fails settlement with the offending path named", a
       name: "bigint",
       body: `return 10n;`,
       offence: /return value is a BigInt/
+    },
+    {
+      // structuredClone drops a *prototype* toJSON, so the normalised value
+      // the CLI would stringify carries a bare BigInt — the check judges
+      // that value, not the raw vm one, and fails loud instead of letting
+      // stringify throw downstream into a silent null.
+      name: "prototype toJSON lost in normalisation",
+      body: `class Money { constructor() { this.cents = 100n; } toJSON() { return "1.00"; } }\nreturn { price: new Money() };`,
+      offence: /return value\.price\.cents is a BigInt/
+    },
+    {
+      // JSON.stringify accepts a self-returning toJSON (it consults toJSON
+      // once), but the value still carries a function property, which is in
+      // the fail-loud set — and the walk must reject it cleanly, not crash.
+      name: "self-returning toJSON",
+      body: `return { n: 1, toJSON() { return this; } };`,
+      offence: /return value\.toJSON is a function/
+    },
+    {
+      // A boxed BigInt has no enumerable properties for the walk to see;
+      // the final stringify probe catches what the traversal cannot.
+      name: "boxed bigint",
+      body: `return Object(10n);`,
+      offence: /JSON\.stringify rejected it/
     }
   ]) {
     await assert.rejects(
@@ -323,15 +347,26 @@ test("permitted JSON-adjacent returns still settle: undefined, Infinity, and toJ
     source: `export const meta = { name: "tojson" };\nreturn { when: new Date(0) };`
   });
   assert.deepEqual(toJson.result, { when: new Date(0) });
+
+  // A value acceptable *only* through toJSON: the raw object carries a BigInt
+  // and a function, both fail-loud kinds, but stringify consults toJSON first
+  // and never sees them. A walk that ignored the hook would reject this — so
+  // this settling is what proves toJSON is honoured.
+  const toJsonOnly = await runWorkflowScript({
+    filename: "tojson-only.js",
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "tojson-only" };\nreturn { secret: 10n, toJSON() { return "ok"; } };`
+  });
+  assert.equal(JSON.stringify(toJsonOnly.result), '"ok"');
 });
 
 test("non-JSON workflow() arguments fail before the child script is resolved", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-args-serialisable-"));
-  await writeFile(
-    path.join(directory, "child.js"),
-    `export const meta = { name: "args-child" };\nreturn "never reached";`
-  );
-
+  // The child deliberately does not exist: if resolution ran before the
+  // argument check, this call would fail with the could-not-read resolution
+  // error instead — so the serialisability message is itself the proof of
+  // ordering, not just of eventual rejection.
   await assert.rejects(
     () =>
       runWorkflowScript({
@@ -341,13 +376,14 @@ test("non-JSON workflow() arguments fail before the child script is resolved", a
         log: () => {},
         source: `
           export const meta = { name: "args-parent" };
-          return await workflow({ scriptPath: "./child.js" }, [{ pick: (row) => row.id }]);
+          return await workflow({ scriptPath: "./absent-child.js" }, [{ pick: (row) => row.id }]);
         `
       }),
     (error: unknown) => {
       assert.ok(error instanceof WorkflowScriptError);
       assert.match(error.message, /workflow\(\) arguments must be a JSON value/);
       assert.match(error.message, /args\[0\]\.pick is a function/);
+      assert.doesNotMatch(error.message, /could not read/);
       return true;
     }
   );

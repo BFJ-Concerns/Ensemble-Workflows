@@ -17447,12 +17447,18 @@ var WorkflowScriptError = class extends Error {
   }
 };
 function assertJsonSerialisable(value, label, pathRoot) {
-  const offence = findUnserialisable(value, pathRoot, /* @__PURE__ */ new Set());
+  const offence = findUnserialisable(value, pathRoot, /* @__PURE__ */ new Set(), true);
   if (offence !== null) {
     throw new WorkflowScriptError(`${label} must be a JSON value: ${offence}`);
   }
+  try {
+    JSON.stringify(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
+  }
 }
-function findUnserialisable(value, path12, ancestors) {
+function findUnserialisable(value, path12, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
       return `${path12} is a function`;
@@ -17469,8 +17475,8 @@ function findUnserialisable(value, path12, ancestors) {
     return null;
   }
   const toJson = value.toJSON;
-  if (typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path12, ancestors);
+  if (honourToJson && typeof toJson === "function") {
+    return findUnserialisable(toJson.call(value), path12, ancestors, false);
   }
   if (ancestors.has(value)) {
     return `${path12} closes a cycle`;
@@ -17479,7 +17485,7 @@ function findUnserialisable(value, path12, ancestors) {
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path12}[${index}]`, ancestors);
+        const offence = findUnserialisable(value[index], `${path12}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -17487,7 +17493,7 @@ function findUnserialisable(value, path12, ancestors) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path12}.${key}`, ancestors);
+      const offence = findUnserialisable(entry, `${path12}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -17563,12 +17569,13 @@ async function runWorkflowScript(options) {
   if (settlement.status === "rejected") {
     throw settlement.error;
   }
+  const result = normaliseVmValue(settlement.value);
   if (workflowDepth === 0) {
-    assertJsonSerialisable(settlement.value, "workflow return value", "return value");
+    assertJsonSerialisable(result, "workflow return value", "return value");
   }
   return {
     meta,
-    result: normaliseVmValue(settlement.value)
+    result
   };
 }
 function readWorkflowMeta(source, filename = "workflow.js") {

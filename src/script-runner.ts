@@ -33,17 +33,30 @@ export class WorkflowScriptError extends Error {
  * `undefined` (a script without a top-level return prints `null`; an
  * undefined property vanishes) and non-finite numbers (`budget.remaining`
  * on an unbounded engine is legitimately `Infinity`, printing as `null`).
- * The contract's fail-loud set is a function, a cycle, or an
- * undefined-collapsing value — plus BigInt, which throws in stringify.
+ * The fail-loud set is a function, a symbol, a cycle, or a
+ * BigInt (the values stringify drops silently or throws on).
+ *
+ * Call this on the exact value that will cross the boundary — after any
+ * normalisation — never on a precursor: a clone can differ from its source
+ * in precisely the properties this check judges. The final stringify probe
+ * backstops the walk for exotic values the traversal cannot see (a boxed
+ * BigInt has no enumerable properties to walk), so approval here means the
+ * downstream stringify genuinely cannot throw.
  */
 export function assertJsonSerialisable(value: unknown, label: string, pathRoot: string): void {
-  const offence = findUnserialisable(value, pathRoot, new Set());
+  const offence = findUnserialisable(value, pathRoot, new Set(), true);
   if (offence !== null) {
     throw new WorkflowScriptError(`${label} must be a JSON value: ${offence}`);
   }
+  try {
+    JSON.stringify(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
+  }
 }
 
-function findUnserialisable(value: unknown, path: string, ancestors: Set<object>): string | null {
+function findUnserialisable(value: unknown, path: string, ancestors: Set<object>, honourToJson: boolean): string | null {
   switch (typeof value) {
     case "function":
       return `${path} is a function`;
@@ -60,8 +73,13 @@ function findUnserialisable(value: unknown, path: string, ancestors: Set<object>
     return null;
   }
   const toJson = (value as { toJSON?: unknown }).toJSON;
-  if (typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path, ancestors);
+  if (honourToJson && typeof toJson === "function") {
+    // Mirror JSON.stringify: toJSON is invoked once per value, and its
+    // result is serialised without consulting toJSON again on that same
+    // value (nested values inside it are judged normally). Re-honouring it
+    // here sent `{ toJSON() { return this; } }` — a value stringify accepts
+    // — into unbounded recursion.
+    return findUnserialisable(toJson.call(value), path, ancestors, false);
   }
   if (ancestors.has(value)) {
     return `${path} closes a cycle`;
@@ -70,7 +88,7 @@ function findUnserialisable(value: unknown, path: string, ancestors: Set<object>
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path}[${index}]`, ancestors);
+        const offence = findUnserialisable(value[index], `${path}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -78,7 +96,7 @@ function findUnserialisable(value: unknown, path: string, ancestors: Set<object>
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path}.${key}`, ancestors);
+      const offence = findUnserialisable(entry, `${path}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -201,15 +219,20 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // Settlement-time check, on the value the body actually produced: the
   // return value is printed, hashed, and archived, so a non-JSON value
   // fails the run loudly here rather than collapsing to a lossy `null`
-  // downstream. Only the top-level run's return crosses that boundary —
-  // a child's return flows back into the parent script as a value, and is
-  // checked when (and only when) the parent returns it.
+  // downstream. Judged on the *normalised* value — the one the CLI will
+  // stringify — never the raw vm value: structuredClone drops prototypes
+  // (and with them prototype toJSON methods), so the two can differ in
+  // exactly the properties this check exists to judge. Only the top-level
+  // run's return crosses that boundary — a child's return flows back into
+  // the parent script as a value, and is checked when (and only when) the
+  // parent returns it.
+  const result = normaliseVmValue(settlement.value);
   if (workflowDepth === 0) {
-    assertJsonSerialisable(settlement.value, "workflow return value", "return value");
+    assertJsonSerialisable(result, "workflow return value", "return value");
   }
   return {
     meta,
-    result: normaliseVmValue(settlement.value)
+    result
   };
 }
 

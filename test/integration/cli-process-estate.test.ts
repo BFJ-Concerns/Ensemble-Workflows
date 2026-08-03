@@ -895,6 +895,7 @@ test("status artefact sweep removes dead owners without touching a live run or l
 
 test("built CLI recovers nested valid JSON through an unparseable balanced region", async () => {
   const fixture = await createProcessFixture("nested-json", `Findings: { see below ["a","b"] }`);
+  const recordStore = path.join(path.dirname(fixture.script), "records");
 
   try {
     await writeFile(
@@ -915,10 +916,14 @@ test("built CLI recovers nested valid JSON through an unparseable balanced regio
       `
     );
 
-    const result = await fixture.run();
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore
+    });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `["a","b"]\n`);
+    assert.equal((await loadOnlyAgentRecord(recordStore)).parse_route, "array-fallback");
   } finally {
     await fixture.cleanup();
   }
@@ -1368,6 +1373,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
 
 test("built CLI interrupts a turn that times out before any turn notification", async () => {
   const fixture = await createProcessFixture("interrupt-timeout-before-notification");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
   try {
     await writeFile(
       fixture.script,
@@ -1386,7 +1392,11 @@ test("built CLI interrupts a turn that times out before any turn notification", 
 
     const result = await fixture.runArgsWithEnv(
       [fixture.script],
-      { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1" },
+      {
+        ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
       3_000,
     );
 
@@ -1398,6 +1408,7 @@ test("built CLI interrupts a turn that times out before any turn notification", 
       ["initialize", "initialized", "thread/start", "turn/start", "turn/interrupt"]
     );
     assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
+    assert.equal((await loadOnlyAgentRecord(recordStore)).status, "timed-out");
   } finally {
     await fixture.cleanup();
   }
@@ -1765,6 +1776,8 @@ interface RecordedMessage {
 }
 
 interface RecordedAgent {
+  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+  parse_route: "direct" | "object-fallback" | "array-fallback" | null;
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;

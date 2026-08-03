@@ -23,6 +23,7 @@ const MANIFEST_PATH = "manifest.json";
 type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
 type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
 type AccountingSource = "provider-reported" | "estimated";
+type ParseRoute = "direct" | "object-fallback" | "array-fallback";
 
 export interface CliFlagsRecord {
   budget?: Record<string, number | null>;
@@ -83,6 +84,7 @@ export interface RuntimeAgentRecord {
   worktree: {
     branch: string;
     baseCommit: string;
+    tipCommit: string | null;
     changed: boolean;
     removed: boolean;
   } | null;
@@ -92,6 +94,8 @@ export interface RuntimeAgentRecord {
   creationOrder: number;
   concurrencyGroup: string;
   schema: JsonSchema | null;
+  /** The successful schema parse route, once a schema agent has produced a valid value. */
+  parseRoute: ParseRoute | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   queuedMs: number;
@@ -370,6 +374,7 @@ export class RunRecordWriter {
           : {
               branch: record.worktree.branch,
               base_commit: record.worktree.baseCommit,
+              tip_commit: record.worktree.tipCommit,
               changed: record.worktree.changed,
               removed: record.worktree.removed
             },
@@ -379,6 +384,7 @@ export class RunRecordWriter {
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
+      parse_route: record.parseRoute,
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       queued_ms: record.queuedMs,

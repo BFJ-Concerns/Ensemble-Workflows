@@ -16,6 +16,8 @@ export interface IsolatedWorktree {
 }
 
 export interface IsolatedWorktreeRecord extends IsolatedWorktree {
+  /** The branch tip observed during finalisation, or null when finalisation could not inspect it. */
+  tipCommit: string | null;
   changed: boolean;
   removed: boolean;
 }
@@ -59,6 +61,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        tipCommit: tip,
         changed: true,
         removed: false
       };
@@ -74,6 +77,7 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
 
     return {
       ...worktree,
+      tipCommit: tip,
       changed: false,
       removed: true
     };

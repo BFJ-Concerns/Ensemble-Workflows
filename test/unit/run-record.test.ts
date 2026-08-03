@@ -10,6 +10,7 @@ import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
 import { RunRecordWriter } from "../../src/run-record.js";
+import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -312,11 +313,13 @@ test("agent record includes resolved placement and the complete worktree outcome
   });
   await writer.recordAgent({
     ...agentRecord(1, "codex", null, 3),
+    parseRoute: "object-fallback",
     resolvedCwd: "/tmp/example-worktree",
     isolation: "worktree" as const,
     worktree: {
       branch: "ensemble-workflows/example",
       baseCommit: "0123456789abcdef",
+      tipCommit: "fedcba9876543210",
       changed: true,
       removed: false
     }
@@ -326,15 +329,41 @@ test("agent record includes resolved placement and the complete worktree outcome
     resolved_cwd: string;
     isolation: string | null;
     worktree: unknown;
+    parse_route: string | null;
   };
   assert.equal(agent.resolved_cwd, "/tmp/example-worktree");
   assert.equal(agent.isolation, "worktree");
+  assert.equal(agent.parse_route, "object-fallback");
   assert.deepEqual(agent.worktree, {
     branch: "ensemble-workflows/example",
     base_commit: "0123456789abcdef",
+    tip_commit: "fedcba9876543210",
     changed: true,
     removed: false
   });
+});
+
+test("recordAgent snapshots new recoverability fields at its API boundary", async () => {
+  const cwd = await gitRepo("ensemble-record-snapshot-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-snapshot",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const record = agentRecord(1, "codex", null, 3);
+  const writing = writer.recordAgent(record);
+  record.parseRoute = "array-fallback";
+  await writing;
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    parse_route: string | null;
+  };
+  assert.equal(agent.parse_route, null);
 });
 
 test("archived dirty diff captures staged changes", async () => {
@@ -582,7 +611,14 @@ test("child workflow agents are recorded in the parent's single durable run reco
   );
 });
 
-function agentRecord(id: number, engine: EngineName, model: string | null, tokens: number, cost?: number, currency?: string) {
+function agentRecord(
+  id: number,
+  engine: EngineName,
+  model: string | null,
+  tokens: number,
+  cost?: number,
+  currency?: string
+): RuntimeAgentRecord {
   return {
     id,
     engine,
@@ -601,6 +637,7 @@ function agentRecord(id: number, engine: EngineName, model: string | null, token
     creationOrder: id,
     concurrencyGroup: engine,
     schema: null,
+    parseRoute: null,
     rawOutput: "ok",
     validatedOutput: "ok",
     queuedMs: 0,

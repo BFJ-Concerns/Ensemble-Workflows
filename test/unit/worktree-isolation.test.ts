@@ -40,6 +40,7 @@ test("GitWorktreeIsolationManager removes unchanged worktrees and their temporar
 
     assert.equal(record.changed, false);
     assert.equal(record.removed, true);
+    assert.equal(record.tipCommit, worktree.baseCommit);
     await assert.rejects(() => access(worktree.path), /ENOENT/);
     await assert.rejects(() => git(repo, ["rev-parse", "--verify", worktree.branch]), /unknown revision|Needed a single revision/);
   } finally {
@@ -75,6 +76,7 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
     assert.equal(record.removed, false);
     await access(worktree.path);
     const tip = (await git(repo, ["rev-parse", worktree.branch])).trim();
+    assert.equal(record.tipCommit, tip);
     assert.notEqual(tip, worktree.baseCommit);
   } finally {
     await rm(directory, { recursive: true, force: true });

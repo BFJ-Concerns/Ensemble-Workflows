@@ -9,8 +9,10 @@ import {
   AppServerOverloadedError,
   AppServerRetryPromiseBrokenError,
   EmptyAgentOutputError,
+  EngineShutdownError,
   MissingEngineError,
   partialWorkerTextOf,
+  TurnTimeoutError,
   UnknownEngineError
 } from "./errors.js";
 import { RunProgress } from "./progress.js";
@@ -85,6 +87,7 @@ export class EnsembleRuntime {
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
+  #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
   #closed = false;
 
   constructor(options: {
@@ -261,7 +264,7 @@ export class EnsembleRuntime {
       // counted as queued for ever.
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = "failed";
+        agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordAgentSafely(agentRecord);
@@ -287,7 +290,7 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
-      agentRecord.status = outcome === "done" ? "complete" : "failed";
+      agentRecord.status = outcome === "done" ? "complete" : this.#terminalAgentStatus(null, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
       // Retain successful outputs so a timeout can surface completed work.
@@ -309,7 +312,7 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
-      agentRecord.status = "failed";
+      agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordAgentSafely(agentRecord);
@@ -346,10 +349,21 @@ export class EnsembleRuntime {
     return this.#completed;
   }
 
-  async close(): Promise<void> {
+  async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
+    this.#shutdownAgentStatus = status;
     this.#closed = true;
     this.#admission.close();
     await this.#engines.close();
+  }
+
+  #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {
+    if (error instanceof EngineShutdownError) {
+      return this.#shutdownAgentStatus;
+    }
+    if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
+      return "timed-out";
+    }
+    return "failed";
   }
 
   async #runAgent(
@@ -419,6 +433,7 @@ export class EnsembleRuntime {
             // removed. Retain the recoverable identity conservatively.
             const worktree = {
               ...placement.worktree,
+              tipCommit: null,
               changed: true,
               removed: false
             };
@@ -455,6 +470,7 @@ export class EnsembleRuntime {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
+      tipCommit: worktree.tipCommit,
       changed: worktree.changed,
       removed: worktree.removed
     };
@@ -562,6 +578,7 @@ export class EnsembleRuntime {
           continue;
         }
         if (selection.kind === "valid") {
+          agentRecord.parseRoute = selection.parsed.source;
           agentRecord.attempts.push(
             attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
@@ -695,6 +712,7 @@ export class EnsembleRuntime {
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
+      parseRoute: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,

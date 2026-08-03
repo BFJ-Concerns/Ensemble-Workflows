@@ -158,8 +158,9 @@ phases.
   snapshot plus every output/reasoning delta. A stream without usable token
   data emits no usage event and therefore does not advance spend towards its
   ceiling.
-- `worktrees` — finished worktree records from any engine, including whether
-  each worktree changed and whether the unchanged worktree was removed.
+- `worktrees` — finished worktree records from any engine, including the final
+  tip commit, whether each worktree changed, and whether an unchanged worktree
+  was removed.
 - `args` — the CLI positional strings, or the `--json-args` value.
 
 ## `agent()` options and per-engine support
@@ -213,7 +214,11 @@ isolates the checkout rather than containing the worker or repository.
 
 Each durable agent record always includes `resolved_cwd` and `isolation`
 (`null` when unused). Records for successfully created worktrees also include
-the branch, base commit, and `changed` / `removed` outcome.
+the branch, base commit, final tip commit, and `changed` / `removed` outcome.
+Agent status keeps terminal timeout and interruption distinct from generic
+failure. Successful schema agents record `parse_route` as `direct`,
+`object-fallback`, or `array-fallback`; it remains `null` until a valid value is
+selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,

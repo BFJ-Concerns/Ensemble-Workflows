@@ -224,16 +224,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
-    // Mark the run done and flush the final snapshot before tearing down.
+    // Tear workers down while the archive is still open so their terminal
+    // status can replace the dispatch-time snapshot before the run is sealed.
     progress?.finish();
     if (statusWriter !== null) {
       await statusWriter.close();
     }
+    if (runtime !== null) {
+      const terminalStatus = finalRecord?.status;
+      await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
+    }
     if (runRecordWriter !== null) {
       await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
-    }
-    if (runtime !== null) {
-      await runtime.close();
     }
   }
 }

@@ -10,11 +10,15 @@ import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentOptionRejectedError,
+  AppServerExitedError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
+  EmptyAgentOutputError,
+  EngineShutdownError,
   FallbackModelUnsupportedError,
   InvalidAgentSchemaError,
   MissingEngineError,
+  TurnTimeoutError,
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
@@ -86,6 +90,65 @@ class ErrorTransport implements RuntimeTransport {
   }
 }
 
+class ClosingTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #error: Error;
+  #reject: ((error: Error) => void) | null = null;
+  #markStarted: (() => void) | null = null;
+
+  constructor(error: Error = new AppServerExitedError("transport closed")) {
+    this.#error = error;
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    return new Promise((_, reject) => {
+      this.#reject = reject;
+    });
+  }
+
+  async close(): Promise<void> {
+    this.#reject?.(this.#error);
+  }
+}
+
+class InvalidOutputDuringCloseTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #markStarted: (() => void) | null = null;
+  #release: (() => void) | null = null;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  async runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    await new Promise<void>((resolve) => {
+      this.#release = resolve;
+    });
+    return turn("not JSON");
+  }
+
+  async close(): Promise<void> {
+    this.#release?.();
+  }
+}
+
 class FakeWorktreeManager implements WorktreeIsolationManager {
   createdFrom: string[] = [];
   finished: IsolatedWorktree[] = [];
@@ -111,6 +174,7 @@ class FakeWorktreeManager implements WorktreeIsolationManager {
     this.finished.push(worktree);
     return {
       ...worktree,
+      tipCommit: `${worktree.baseCommit}-tip`,
       changed: this.#changed,
       removed: !this.#changed
     };
@@ -225,11 +289,19 @@ test("schema agents return the validated object when a retry succeeds", async ()
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 3
   });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
 
   const result = await runtime.agent("return JSON", { engine: "codex", schema });
 
   assert.deepEqual(result, { answer: "yes" });
   assert.equal(transport.turns.length, 2);
+  assert.equal(records[0]?.parseRoute, null);
+  assert.equal(records.at(-1)?.parseRoute, "direct");
 });
 
 test("schema agents return the last validating candidate from prose and fences", async () => {
@@ -251,6 +323,12 @@ test("schema agents return the last validating candidate from prose and fences",
     defaultTurnTimeoutMs: 1_000,
     defaultMaxAttempts: 1
   });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
   const candidateSchema = {
     type: "object",
     required: ["answer"],
@@ -263,6 +341,7 @@ test("schema agents return the last validating candidate from prose and fences",
   const result = await runtime.agent("return JSON", { engine: "codex", schema: candidateSchema });
 
   assert.deepEqual(result, { answer: "final" });
+  assert.equal(records.at(-1)?.parseRoute, "object-fallback");
 });
 
 test("schema agents recover a valid array nested inside an unparseable brace region", async () => {
@@ -469,6 +548,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       path: "/fake/worktree-1",
       branch: "ensemble-workflows/fake-1",
       baseCommit: "fake-base-1",
+      tipCommit: "fake-base-1-tip",
       changed: true,
       removed: false
     }
@@ -480,6 +560,7 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
   assert.deepEqual(recordedWorktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
   });
@@ -540,6 +621,7 @@ test("a failed worker still finishes and records its changed worktree", async ()
   assert.deepEqual((records.at(-1) as { worktree: unknown }).worktree, {
     branch: "ensemble-workflows/fake-1",
     baseCommit: "fake-base-1",
+    tipCommit: "fake-base-1-tip",
     changed: true,
     removed: false
   });
@@ -582,10 +664,11 @@ test("a missing worktree path remains discoverable and reports its finalisation 
 
   assert.strictEqual(propagated, finalisationError);
   assert.deepEqual(worktreeManager.finished, [worktree]);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
   assert.deepEqual(records.at(-1)?.worktree, {
     branch: worktree.branch,
     baseCommit: worktree.baseCommit,
+    tipCommit: null,
     changed: true,
     removed: false
   });
@@ -639,7 +722,7 @@ test("a worker error remains primary when worktree finalisation also fails", asy
     );
 
   assert.strictEqual(propagated, workerError);
-  assert.deepEqual(runtime.worktrees, [{ ...worktree, changed: true, removed: false }]);
+  assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
   assert.equal(records.at(-1)?.worktree?.branch, worktree.branch);
   assert.deepEqual(events, [
     {
@@ -685,7 +768,7 @@ test("invocation shutdown completes before worktree finalisation", async () => {
     }),
     finish: async (worktree) => {
       order.push("worktree-finish");
-      return { ...worktree, changed: false, removed: true };
+      return { ...worktree, tipCommit: worktree.baseCommit, changed: false, removed: true };
     }
   };
   const engine: EngineAdapter = {
@@ -986,6 +1069,140 @@ test("a worker that dies uncleanly leaves its dispatch-time record", async () =>
   assert.equal(records[0]?.status, "in-progress");
   assert.equal(records[0]?.prompt, "doomed prompt");
   assert.equal(records.at(-1)?.status, "failed");
+});
+
+test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
+  for (const [error, expected] of [
+    [new TurnTimeoutError("turn timed out"), "timed-out"],
+    [new EngineShutdownError("codex"), "interrupted"]
+  ] as const) {
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({
+      transport: new ErrorTransport(error),
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    await assert.rejects(() => runtime.agent("stop", { engine: "codex" }), error.constructor);
+
+    assert.equal(records.length, 2);
+    assert.equal(records[0]?.status, "in-progress");
+    assert.equal(records[1]?.status, expected);
+  }
+});
+
+test("a spontaneous app-server exit records a failed agent without runtime shutdown", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(new AppServerExitedError("transport exited unexpectedly")),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("survive the transport", { engine: "codex" }),
+    AppServerExitedError
+  );
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.status, "in-progress");
+  assert.equal(records[1]?.status, "failed");
+  assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
+});
+
+test("thrown non-shutdown failures retain failed status while the runtime closes", async () => {
+  for (const error of [
+    new Error("worker failed"),
+    new EmptyAgentOutputError("worker returned no output"),
+    new CodexSchemaSubsetUnsupportedError({ code: -32602, message: "unsupported schema" })
+  ]) {
+    const records: RuntimeAgentRecord[] = [];
+    const transport = new ClosingTransport(error);
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    const agent = runtime.agent("fail independently", { engine: "codex" });
+    await transport.started;
+    await runtime.close("interrupted");
+    await assert.rejects(agent, error.constructor);
+
+    assert.equal(records.length, 2);
+    assert.equal(records[0]?.status, "in-progress");
+    assert.equal(records[1]?.status, "failed");
+  }
+});
+
+test("a returned retry-exhaustion failure retains failed status while the runtime closes", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const transport = new InvalidOutputDuringCloseTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const agent = runtime.agent("return JSON", {
+    engine: "codex",
+    schema: { type: "object" }
+  });
+  await transport.started;
+  await runtime.close("interrupted");
+
+  assert.equal(await agent, null);
+  assert.equal(records.length, 2);
+  assert.equal(records[1]?.status, "failed");
+  assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "invalid-json");
+});
+
+test("genuine shutdown errors inherit the runtime shutdown status", async () => {
+  for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
+    for (const status of ["timed-out", "interrupted"] as const) {
+      const records: RuntimeAgentRecord[] = [];
+      const transport = new ClosingTransport(error);
+      const runtime = new EnsembleRuntime({
+        transport,
+        concurrencyCaps: { codex: 1 },
+        defaultMaxAttempts: 1
+      });
+      runtime.setRunRecorder({
+        recordAgent: async (record) => {
+          records.push(structuredClone(record));
+        }
+      } as RunRecordWriter);
+
+      const agent = runtime.agent("stop with the run", { engine: "codex" });
+      await transport.started;
+      await runtime.close(status);
+      await assert.rejects(agent, error.constructor);
+
+      assert.equal(records.length, 2);
+      assert.equal(records[0]?.status, "in-progress");
+      assert.equal(records[1]?.status, status);
+    }
+  }
 });
 
 test("a run-record write failure surfaces as an event and never fails the agent", async () => {

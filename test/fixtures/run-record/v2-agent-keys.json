@@ -12,6 +12,7 @@
   "label",
   "model",
   "options",
+  "parse_route",
   "phase",
   "prompt",
   "queued_ms",

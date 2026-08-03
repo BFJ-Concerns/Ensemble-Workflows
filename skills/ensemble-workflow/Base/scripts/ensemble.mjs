@@ -13620,6 +13620,7 @@ var GitWorktreeIsolationManager = class {
       this.#worktreeRoots.delete(worktree.path);
       return {
         ...worktree,
+        tipCommit: tip,
         changed: true,
         removed: false
       };
@@ -13633,6 +13634,7 @@ var GitWorktreeIsolationManager = class {
     this.#worktreeRoots.delete(worktree.path);
     return {
       ...worktree,
+      tipCommit: tip,
       changed: false,
       removed: true
     };
@@ -16617,6 +16619,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
+  #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
     this.budget = new TokenBudget(options.budgetCeilings);
@@ -16747,7 +16750,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     } catch (error) {
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = "failed";
+        agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordAgentSafely(agentRecord);
@@ -16765,7 +16768,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
-      agentRecord.status = outcome === "done" ? "complete" : "failed";
+      agentRecord.status = outcome === "done" ? "complete" : this.#terminalAgentStatus(null, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
       if (outcome === "done") {
@@ -16784,7 +16787,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
-      agentRecord.status = "failed";
+      agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordAgentSafely(agentRecord);
@@ -16818,10 +16821,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
   completedOutputs() {
     return this.#completed;
   }
-  async close() {
+  async close(status = "interrupted") {
+    this.#shutdownAgentStatus = status;
     this.#closed = true;
     this.#admission.close();
     await this.#engines.close();
+  }
+  #terminalAgentStatus(error, record) {
+    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
+      return this.#shutdownAgentStatus;
+    }
+    if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
+      return "timed-out";
+    }
+    return "failed";
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const placement = await this.#placement.open(options);
@@ -16880,6 +16893,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           if (placement.worktree !== void 0) {
             const worktree = {
               ...placement.worktree,
+              tipCommit: null,
               changed: true,
               removed: false
             };
@@ -16914,6 +16928,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.worktree = {
       branch: worktree.branch,
       baseCommit: worktree.baseCommit,
+      tipCommit: worktree.tipCommit,
       changed: worktree.changed,
       removed: worktree.removed
     };
@@ -17000,6 +17015,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           continue;
         }
         if (selection.kind === "valid") {
+          agentRecord.parseRoute = selection.parsed.source;
           agentRecord.attempts.push(
             attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
@@ -17112,6 +17128,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
+      parseRoute: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,
@@ -18083,6 +18100,7 @@ var RunRecordWriter = class _RunRecordWriter {
       worktree: record.worktree === null ? null : {
         branch: record.worktree.branch,
         base_commit: record.worktree.baseCommit,
+        tip_commit: record.worktree.tipCommit,
         changed: record.worktree.changed,
         removed: record.worktree.removed
       },
@@ -18092,6 +18110,7 @@ var RunRecordWriter = class _RunRecordWriter {
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
+      parse_route: record.parseRoute,
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       queued_ms: record.queuedMs,
@@ -18714,11 +18733,12 @@ async function runEnsembleCli(argv, options = {}) {
     if (statusWriter !== null) {
       await statusWriter.close();
     }
+    if (runtime !== null) {
+      const terminalStatus = finalRecord?.status;
+      await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+    }
     if (runRecordWriter !== null) {
       await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
-    }
-    if (runtime !== null) {
-      await runtime.close();
     }
   }
 }

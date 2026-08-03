@@ -1,21 +1,36 @@
 import Ajv from "ajv";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import process from "node:process";
+import { clearTimeout, setTimeout } from "node:timers";
 
 const PINNED_CODEX_CLI_VERSION = "codex-cli 0.146.0";
+const VALIDATOR_ACTIVE = "ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE";
+const commandTimeoutMs = Number(process.env.ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS ?? "120000");
+
+if (!Number.isInteger(commandTimeoutMs) || commandTimeoutMs < 1) {
+  throw new Error("ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS must be a positive integer");
+}
+
 const codexCli = process.env.ENSEMBLE_CODEX_SCHEMA_CLI;
 if (codexCli === undefined || codexCli.length === 0) {
   throw new Error(
     "Codex fixture schema validation requires ENSEMBLE_CODEX_SCHEMA_CLI pointing to codex-cli 0.146.0"
   );
 }
+const fixturePath = realpathSync(process.argv[1]);
+const resolvedCodexCli = resolveCommand(codexCli);
+if (process.env[VALIDATOR_ACTIVE] === "1" || resolvedCodexCli === fixturePath) {
+  throw new Error(
+    `Codex fixture schema validation refused to execute itself recursively: ${codexCli} resolves to ${resolvedCodexCli}`
+  );
+}
 
 let actualVersion;
 try {
-  actualVersion = execFileSync(codexCli, ["--version"], { encoding: "utf8" }).trim();
+  actualVersion = (await runCodexSchemaCommand(["--version"])).trim();
 } catch (error) {
   throw new Error(`Codex fixture schema validation could not run ${codexCli} --version`, {
     cause: error
@@ -29,20 +44,92 @@ if (actualVersion !== PINNED_CODEX_CLI_VERSION) {
 
 const schemaDirectory = mkdtempSync(path.join(tmpdir(), "ensemble-codex-schema-"));
 try {
-  execFileSync(codexCli, ["app-server", "generate-json-schema", "--out", schemaDirectory], {
-    stdio: ["ignore", "ignore", "pipe"]
-  });
+  await runCodexSchemaCommand(["app-server", "generate-json-schema", "--out", schemaDirectory]);
 } catch (error) {
   rmSync(schemaDirectory, { recursive: true, force: true });
-  throw new Error("Codex fixture schema validation could not generate the pinned protocol schema", {
+  throw new Error(`Codex fixture schema validation could not generate the pinned protocol schema with ${codexCli}`, {
     cause: error
   });
+}
+if (readdirSync(schemaDirectory).length === 0) {
+  rmSync(schemaDirectory, { recursive: true, force: true });
+  throw new Error(`Codex fixture schema command produced no usable protocol schema: ${codexCli}`);
 }
 process.once("exit", () => rmSync(schemaDirectory, { recursive: true, force: true }));
 
 const ajv = new Ajv({ allErrors: true, strict: false, logger: false });
 const validators = new Map();
 const validationCapture = process.env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE;
+
+function resolveCommand(command) {
+  if (command.includes(path.sep)) {
+    return realpathSync(path.resolve(command));
+  }
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    try {
+      return realpathSync(path.join(directory, command));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw error;
+      }
+    }
+  }
+  return command;
+}
+
+function runCodexSchemaCommand(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(codexCli, args, {
+      detached: true,
+      env: { ...process.env, [VALIDATOR_ACTIVE]: "1" },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      killProcessGroup(child.pid);
+    }, commandTimeoutMs);
+
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      if (timedOut) {
+        reject(new Error(
+          `Codex fixture schema command timed out after ${commandTimeoutMs}ms: ${args.join(" ")}`
+        ));
+      } else if (code !== 0) {
+        reject(new Error(
+          `Codex fixture schema command exited with code ${code ?? "null"} signal ${signal ?? "null"}: ${stderr.trim()}`
+        ));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+
+function killProcessGroup(pid) {
+  if (pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      throw error;
+    }
+  }
+}
 
 export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
   if (options.allowMalformed !== undefined) {

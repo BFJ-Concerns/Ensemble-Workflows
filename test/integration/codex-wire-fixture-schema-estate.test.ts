@@ -23,7 +23,7 @@ test("valid outbound Codex notifications pass the pinned protocol schema", async
   );
 });
 
-test("an unknown outbound Codex notification field fails loudly", async () => {
+test("an unknown outbound Codex notification field fails under the locally closed pinned schema", async () => {
   const result = await runFixture("unknown-field");
 
   assert.equal(result.code, 1);
@@ -39,7 +39,7 @@ test("a missing required outbound Codex notification field fails loudly", async 
   assert.match(result.stderr, /must have required property 'threadId'/);
 });
 
-test("the -32001 regression uses a visible per-payload schema opt-out", async () => {
+test("the -32001 regression uses an opt-out required by the locally closed pinned schema", async () => {
   const result = await runFixture("allowed--32001");
 
   assert.equal(result.signal, "SIGTERM");
@@ -59,6 +59,20 @@ test("the -32001 regression uses a visible per-payload schema opt-out", async ()
   assert.ok(!(classified instanceof CodexSchemaSubsetUnsupportedError));
 });
 
+test("caller-authored notification sequences validate by default", async () => {
+  const result = await runFixture(undefined, [[{
+    method: "turn/started",
+    params: {
+      protocolDrift: true,
+      turn: { id: "authored-turn", items: [], status: "inProgress" }
+    }
+  }]]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Codex fixture payload failed ServerNotification\.json validation/);
+  assert.match(result.stderr, /additional properties/);
+});
+
 interface ValidationRecord {
   schemaPath: string;
   outcome: "valid" | "allowed-malformed";
@@ -70,7 +84,7 @@ interface WireMessage {
   params?: { error?: { code: number; message: string; data?: unknown } };
 }
 
-async function runFixture(schemaDrift?: string): Promise<{
+async function runFixture(schemaDrift?: string, notificationSequences?: unknown[]): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
@@ -88,6 +102,9 @@ async function runFixture(schemaDrift?: string): Promise<{
         ...process.env,
         ENSEMBLE_CODEX_SCHEMA_CLI: codexCli,
         ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapture,
+        ...(notificationSequences === undefined ? {} : {
+          ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notificationSequences)
+        }),
         ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift })
       },
       stdio: ["pipe", "pipe", "pipe"]

@@ -78,7 +78,7 @@ const completeTurn = ({ threadId, turnId, turnIndex }) => {
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
       }, "ServerNotification.json", undefined, {
-        allowMalformed: "caller-authored notification sequences preserve established regression payloads"
+        allowMalformed: notification.allowMalformed
       });
     }
     if (!stallAfterNotificationSequence) {

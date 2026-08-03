@@ -1301,7 +1301,11 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
 test("built CLI interrupts an abandoned turn before replacement without awaiting a response", async () => {
   const overloadSequence = [
     [
-      { method: "item/agentMessage/delta", params: { delta: "partial before overload" } },
+      {
+        method: "item/agentMessage/delta",
+        params: { delta: "partial before overload" },
+        allowMalformed: "codex-cli 0.146.0 does not declare item/agentMessage/delta as a server notification"
+      },
       {
         method: "error",
         params: {
@@ -1658,7 +1662,8 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
       params: {
         delta: `progress-${index}`,
         itemId: "progress-message"
-      }
+      },
+      allowMalformed: "codex-cli 0.146.0 does not declare item/agentMessage/delta as a server notification"
     }
   ]).flat();
 

@@ -357,14 +357,17 @@ export class EnsembleRuntime {
   }
 
   #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {
-    if (this.#closed) {
-      return this.#shutdownAgentStatus;
-    }
     if (error instanceof EngineShutdownError) {
       return this.#shutdownAgentStatus;
     }
     if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
       return "timed-out";
+    }
+    if (error === null && record.attempts.at(-1)?.failure !== undefined) {
+      return "failed";
+    }
+    if (this.#closed) {
+      return this.#shutdownAgentStatus;
     }
     return "failed";
   }

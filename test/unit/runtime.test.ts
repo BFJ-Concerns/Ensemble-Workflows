@@ -117,6 +117,35 @@ class ClosingTransport implements RuntimeTransport {
   }
 }
 
+class InvalidOutputDuringCloseTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #markStarted: (() => void) | null = null;
+  #release: (() => void) | null = null;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  async runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    await new Promise<void>((resolve) => {
+      this.#release = resolve;
+    });
+    return turn("not JSON");
+  }
+
+  async close(): Promise<void> {
+    this.#release?.();
+  }
+}
+
 class FakeWorktreeManager implements WorktreeIsolationManager {
   createdFrom: string[] = [];
   finished: IsolatedWorktree[] = [];
@@ -1088,6 +1117,33 @@ test("runtime shutdown reason classifies workers terminalised during close", asy
     assert.equal(records[0]?.status, "in-progress");
     assert.equal(records[1]?.status, status);
   }
+});
+
+test("a genuine worker failure during close keeps its failure status", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const transport = new InvalidOutputDuringCloseTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const agent = runtime.agent("return JSON", {
+    engine: "codex",
+    schema: { type: "object" }
+  });
+  await transport.started;
+  await runtime.close("interrupted");
+
+  assert.equal(await agent, null);
+  assert.equal(records.length, 2);
+  assert.equal(records[1]?.status, "failed");
+  assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "invalid-json");
 });
 
 test("a run-record write failure surfaces as an event and never fails the agent", async () => {

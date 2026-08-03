@@ -22,7 +22,7 @@ if (codexCli === undefined || codexCli.length === 0) {
 }
 const fixturePath = realpathSync(process.argv[1]);
 const resolvedCodexCli = resolveCommand(codexCli);
-if (process.env[VALIDATOR_ACTIVE] === "1" || resolvedCodexCli === fixturePath || parentRunsFixture(fixturePath)) {
+if (process.env[VALIDATOR_ACTIVE] === "1" || resolvedCodexCli === fixturePath) {
   throw new Error(
     `Codex fixture schema validation refused to execute itself recursively: ${codexCli} resolves to ${resolvedCodexCli}`
   );
@@ -71,24 +71,6 @@ function resolveCommand(command) {
     }
   }
   return command;
-}
-
-function parentRunsFixture(expectedFixturePath) {
-  try {
-    const parentArgs = readFileSync(`/proc/${process.ppid}/cmdline`, "utf8").split("\0").filter(Boolean);
-    return parentArgs.some((argument) => {
-      try {
-        return realpathSync(argument) === expectedFixturePath;
-      } catch {
-        return false;
-      }
-    });
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
 }
 
 function runCodexSchemaCommand(args) {

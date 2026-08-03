@@ -12,7 +12,7 @@ const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-ser
 const scopeProperties = ["-p", "TasksMax=60", "-p", "MemoryMax=500M", "-p", "MemorySwapMax=0"];
 let scopeCounter = 0;
 
-test("built CLI schema fixture refuses every recursive executable ingress without process growth", { timeout: 45_000 }, async (t) => {
+test("built CLI schema fixture fails closed on every recursive executable ingress without process growth", { timeout: 45_000 }, async (t) => {
   const estate = await createEstate("recursion");
   try {
     const symlinkPath = path.join(estate.directory, "schema-codex-link");
@@ -24,6 +24,16 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
       markerStrippingWrapperPath,
       `#!/bin/sh\nexec /usr/bin/env -u ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE ${shellQuote(recordingFixturePath)} "$@"\n`
     );
+    const noExecWrapperPath = path.join(estate.directory, "schema-codex-no-exec-wrapper");
+    await writeExecutable(
+      noExecWrapperPath,
+      `#!/bin/sh\n/usr/bin/env -u ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE ${shellQuote(recordingFixturePath)} "$@"\n`
+    );
+    const environmentPassedWrapperPath = path.join(estate.directory, "schema-codex-environment-passed-wrapper");
+    await writeExecutable(
+      environmentPassedWrapperPath,
+      `#!/bin/sh\nENSEMBLE_RECURSIVE_FIXTURE=${shellQuote(recordingFixturePath)} /usr/bin/env -u ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE /bin/sh -c '"$ENSEMBLE_RECURSIVE_FIXTURE" "$@"' fixture-wrapper "$@"\n`
+    );
     const generationWrapperPath = path.join(estate.directory, "schema-codex-generation-wrapper");
     await writeExecutable(
       generationWrapperPath,
@@ -31,13 +41,15 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
     );
 
     const cases = [
-      { name: "direct absolute path", command: recordingFixturePath },
-      { name: "symlink", command: symlinkPath },
-      { name: "relative path", command: path.relative(process.cwd(), recordingFixturePath) },
-      { name: "PATH lookup", command: "schema-codex", pathEntry: recordingFixturePath },
-      { name: "fixture through wrapper", command: wrapperPath },
-      { name: "fixture through marker-stripping wrapper", command: markerStrippingWrapperPath },
-      { name: "schema-generation argument through wrapper", command: generationWrapperPath }
+      { name: "direct absolute path", command: recordingFixturePath, diagnostic: "refusal" },
+      { name: "symlink", command: symlinkPath, diagnostic: "refusal" },
+      { name: "relative path", command: path.relative(process.cwd(), recordingFixturePath), diagnostic: "refusal" },
+      { name: "PATH lookup", command: "schema-codex", pathEntry: recordingFixturePath, diagnostic: "refusal" },
+      { name: "fixture through wrapper", command: wrapperPath, diagnostic: "version-exit" },
+      { name: "fixture through marker-stripping wrapper", command: markerStrippingWrapperPath, diagnostic: "version-exit" },
+      { name: "fixture through marker-stripping no-exec wrapper", command: noExecWrapperPath, diagnostic: "version-exit" },
+      { name: "fixture path passed through environment", command: environmentPassedWrapperPath, diagnostic: "version-exit" },
+      { name: "schema-generation argument through wrapper", command: generationWrapperPath, diagnostic: "refusal" }
     ];
 
     for (const ingress of cases) {
@@ -55,7 +67,11 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
 
         t.diagnostic(JSON.stringify({ ingress: ingress.name, ...result }));
         assert.notEqual(result.code, 0);
-        assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
+        if (ingress.diagnostic === "refusal") {
+          assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
+        } else {
+          assert.match(result.stderr, /Codex fixture schema command exited with code 2 signal null/);
+        }
         assert.match(result.stderr, new RegExp(escapeRegExp(ingress.command)));
         assert.ok(result.peakProcesses <= 5, `unexpected process fan-out: ${result.peakProcesses}`);
         assert.ok(result.peakTasks < 60, `scope reached its task cap: ${result.peakTasks}`);

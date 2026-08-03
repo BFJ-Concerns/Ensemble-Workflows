@@ -4,11 +4,11 @@ import { appendFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
-import { validateCodexFixturePayload } from "./protocol-schema-validator.mjs";
-
 if (process.argv[2] !== "app-server") {
   process.exit(2);
 }
+
+const { validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";

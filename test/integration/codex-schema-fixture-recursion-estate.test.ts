@@ -19,6 +19,11 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
     await symlink(recordingFixturePath, symlinkPath);
     const wrapperPath = path.join(estate.directory, "schema-codex-wrapper");
     await writeExecutable(wrapperPath, `#!/bin/sh\nexec ${shellQuote(recordingFixturePath)} "$@"\n`);
+    const markerStrippingWrapperPath = path.join(estate.directory, "schema-codex-marker-stripping-wrapper");
+    await writeExecutable(
+      markerStrippingWrapperPath,
+      `#!/bin/sh\nexec /usr/bin/env -u ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE ${shellQuote(recordingFixturePath)} "$@"\n`
+    );
     const generationWrapperPath = path.join(estate.directory, "schema-codex-generation-wrapper");
     await writeExecutable(
       generationWrapperPath,
@@ -31,6 +36,7 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
       { name: "relative path", command: path.relative(process.cwd(), recordingFixturePath) },
       { name: "PATH lookup", command: "schema-codex", pathEntry: recordingFixturePath },
       { name: "fixture through wrapper", command: wrapperPath },
+      { name: "fixture through marker-stripping wrapper", command: markerStrippingWrapperPath },
       { name: "schema-generation argument through wrapper", command: generationWrapperPath }
     ];
 
@@ -50,6 +56,7 @@ test("built CLI schema fixture refuses every recursive executable ingress withou
         t.diagnostic(JSON.stringify({ ingress: ingress.name, ...result }));
         assert.notEqual(result.code, 0);
         assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
+        assert.match(result.stderr, new RegExp(escapeRegExp(ingress.command)));
         assert.ok(result.peakProcesses <= 5, `unexpected process fan-out: ${result.peakProcesses}`);
         assert.ok(result.peakTasks < 60, `scope reached its task cap: ${result.peakTasks}`);
         assert.ok(result.peakMemoryBytes < 500 * 1024 * 1024, `scope reached its memory cap: ${result.peakMemoryBytes}`);
@@ -109,6 +116,10 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
   try {
     const record = await waitForJsonLine(processRecord);
     processGroups.add(record.pgid);
+    assert.doesNotThrow(
+      () => process.kill(record.childPid, 0),
+      `recorded descendant ${record.childPid} was not live before the schema-command timeout`
+    );
     const result = await withDeadline(scoped.result, 7_000, "fixture-driving CLI did not time out").catch(async (error: unknown) => {
       await killScopeMain(scoped.unit);
       const survivors = await processGroupMembers(record.pgid);
@@ -365,4 +376,8 @@ async function writeExecutable(file: string, contents: string): Promise<void> {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

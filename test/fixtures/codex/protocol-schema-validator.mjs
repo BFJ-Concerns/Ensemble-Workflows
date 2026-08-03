@@ -1,5 +1,5 @@
 import Ajv from "ajv";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -10,9 +10,6 @@ const PINNED_CODEX_CLI_VERSION = "codex-cli 0.146.0";
 const VALIDATOR_ACTIVE = "ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE";
 const commandTimeoutMs = Number(process.env.ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS ?? "120000");
 
-if (process.env[VALIDATOR_ACTIVE] === "1") {
-  throw new Error("Codex fixture schema validation refused to execute itself recursively");
-}
 if (!Number.isInteger(commandTimeoutMs) || commandTimeoutMs < 1) {
   throw new Error("ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS must be a positive integer");
 }
@@ -21,6 +18,13 @@ const codexCli = process.env.ENSEMBLE_CODEX_SCHEMA_CLI;
 if (codexCli === undefined || codexCli.length === 0) {
   throw new Error(
     "Codex fixture schema validation requires ENSEMBLE_CODEX_SCHEMA_CLI pointing to codex-cli 0.146.0"
+  );
+}
+const fixturePath = realpathSync(process.argv[1]);
+const resolvedCodexCli = resolveCommand(codexCli);
+if (process.env[VALIDATOR_ACTIVE] === "1" || resolvedCodexCli === fixturePath || parentRunsFixture(fixturePath)) {
+  throw new Error(
+    `Codex fixture schema validation refused to execute itself recursively: ${codexCli} resolves to ${resolvedCodexCli}`
   );
 }
 
@@ -43,7 +47,7 @@ try {
   await runCodexSchemaCommand(["app-server", "generate-json-schema", "--out", schemaDirectory]);
 } catch (error) {
   rmSync(schemaDirectory, { recursive: true, force: true });
-  throw new Error("Codex fixture schema validation could not generate the pinned protocol schema", {
+  throw new Error(`Codex fixture schema validation could not generate the pinned protocol schema with ${codexCli}`, {
     cause: error
   });
 }
@@ -52,6 +56,40 @@ process.once("exit", () => rmSync(schemaDirectory, { recursive: true, force: tru
 const ajv = new Ajv({ allErrors: true, strict: false, logger: false });
 const validators = new Map();
 const validationCapture = process.env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE;
+
+function resolveCommand(command) {
+  if (command.includes(path.sep)) {
+    return realpathSync(path.resolve(command));
+  }
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter)) {
+    try {
+      return realpathSync(path.join(directory, command));
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") {
+        throw error;
+      }
+    }
+  }
+  return command;
+}
+
+function parentRunsFixture(expectedFixturePath) {
+  try {
+    const parentArgs = readFileSync(`/proc/${process.ppid}/cmdline`, "utf8").split("\0").filter(Boolean);
+    return parentArgs.some((argument) => {
+      try {
+        return realpathSync(argument) === expectedFixturePath;
+      } catch {
+        return false;
+      }
+    });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
 
 function runCodexSchemaCommand(args) {
   return new Promise((resolve, reject) => {

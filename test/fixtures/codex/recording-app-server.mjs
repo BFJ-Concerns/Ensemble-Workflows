@@ -4,6 +4,8 @@ import { appendFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
+import { validateCodexFixturePayload } from "./protocol-schema-validator.mjs";
+
 if (process.argv[2] !== "app-server") {
   process.exit(2);
 }
@@ -17,11 +19,15 @@ const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFT
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
+const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
 
-const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+const send = (message, schemaPath, payload = message, options) => {
+  validateCodexFixturePayload(schemaPath, payload, options);
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+};
 const finishTurn = (threadId, turnId) => {
   const item = {
     id: `agent-message-${turnId}`,
@@ -36,7 +42,7 @@ const finishTurn = (threadId, turnId) => {
       item,
       completedAtMs: Date.now()
     }
-  });
+  }, "ServerNotification.json");
   send({
     method: "turn/completed",
     params: {
@@ -47,7 +53,7 @@ const finishTurn = (threadId, turnId) => {
         status: "completed"
       }
     }
-  });
+  }, "ServerNotification.json");
 };
 const notificationParamsForTurn = (notification, threadId, turnId) => {
   const params = {
@@ -71,6 +77,8 @@ const completeTurn = ({ threadId, turnId, turnIndex }) => {
       send({
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
+      }, "ServerNotification.json", undefined, {
+        allowMalformed: notification.allowMalformed
       });
     }
     if (!stallAfterNotificationSequence) {
@@ -88,7 +96,7 @@ const completeTurn = ({ threadId, turnId, turnIndex }) => {
         threadId,
         turnId: `turn-${turnCounter}`
       }
-    });
+    }, "ServerNotification.json");
     if (errorNotification.willRetry === true) {
       finishTurn(threadId, turnId);
     }
@@ -104,19 +112,30 @@ const handleLine = (line) => {
 
   const message = JSON.parse(line);
   if (message.method === "initialize") {
-    send({ id: message.id, result: {} });
+    send(
+      { id: message.id, result: {} },
+      "v1/InitializeResponse.json",
+      {},
+      { allowMalformed: "the established fixture predates required initialise metadata" }
+    );
     return;
   }
   if (message.method === "thread/start") {
     threadCounter += 1;
-    send({
+    const response = {
       id: message.id,
       result: {
         thread: { id: `thread-${threadCounter}` },
         model: "gpt-estate-recorder",
         reasoningEffort: "medium"
       }
-    });
+    };
+    send(
+      response,
+      "v2/ThreadStartResponse.json",
+      response.result,
+      { allowMalformed: "the established fixture omits server-owned thread metadata" }
+    );
     return;
   }
   if (message.method === "turn/interrupt") {
@@ -124,9 +143,10 @@ const handleLine = (line) => {
       return;
     }
     if (rejectInterrupt) {
-      send({ id: message.id, error: { code: -32000, message: "turn already finished" } });
+      const response = { id: message.id, error: { code: -32000, message: "turn already finished" } };
+      send(response, "JSONRPCError.json");
     } else {
-      send({ id: message.id, result: {} });
+      send({ id: message.id, result: {} }, "JSONRPCResponse.json");
     }
     return;
   }
@@ -134,11 +154,12 @@ const handleLine = (line) => {
     const { threadId } = message.params;
     turnCounter += 1;
     const turnId = `turn-${turnCounter}`;
-    send({ id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } });
+    const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
+    send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
       return;
     }
-    send({
+    const turnStarted = {
       method: "turn/started",
       params: {
         threadId,
@@ -148,7 +169,31 @@ const handleLine = (line) => {
           status: "inProgress"
         }
       }
-    });
+    };
+    if (schemaDrift === "unknown-field") {
+      turnStarted.params.protocolDrift = true;
+    } else if (schemaDrift === "missing-required") {
+      delete turnStarted.params.threadId;
+    }
+    send(turnStarted, "ServerNotification.json");
+    if (schemaDrift === "allowed--32001") {
+      send({
+        method: "error",
+        params: {
+          threadId,
+          turnId,
+          willRetry: false,
+          error: {
+            code: -32001,
+            message: "backpressure while validating invalid_json_schema payloads",
+            data: { note: "mentions invalid_json_schema in passing" }
+          }
+        }
+      }, "ServerNotification.json", undefined, {
+        allowMalformed: "the -32001 classifier regression deliberately includes schema-forbidden error fields"
+      });
+      return;
+    }
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {
       for (const pending of pendingTurns.splice(0)) {

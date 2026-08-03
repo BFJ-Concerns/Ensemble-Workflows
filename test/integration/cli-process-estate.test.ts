@@ -1804,6 +1804,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   env.PATH = `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`;
   env.ENSEMBLE_FAKE_CODEX_CAPTURE = capturePath;
   env.ENSEMBLE_FAKE_CODEX_RESPONSE = response;
+  env.ENSEMBLE_CODEX_SCHEMA_CLI = await executablePath("codex");
 
   return {
     script,
@@ -1819,6 +1820,30 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
         .map((line) => JSON.parse(line) as RecordedMessage),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+async function executablePath(name: string): Promise<string> {
+  const result = await runProcess("which", [name], process.env);
+  assert.equal(result.code, 0, `required executable ${name} is unavailable: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function runProcess(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.once("error", reject);
+    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+  });
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {

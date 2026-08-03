@@ -220,6 +220,20 @@ export class EnsembleRuntime {
     }
 
     const engine = this.#engineFor(options.engine);
+    // The budget is an admission boundary, judged once per agent() call,
+    // synchronously at the call —
+    // before any await, so the outcome depends on the script's dispatch order
+    // and never on how usage events interleave with dispatch bookkeeping. A
+    // call admitted under the ceiling owns its bounded attempts to
+    // completion: re-checking inside the retry loops let a concurrent
+    // sibling's usage event land between attempts and replace the failure
+    // that provoked the retry with BudgetExceededError — a record blaming
+    // the budget for a transport death. In-flight turns may collectively
+    // overshoot the ceiling (usage is known only after they run); new
+    // agent() calls are what it blocks. A
+    // blocked call is a pre-dispatch rejection, like a rejected option: it
+    // leaves no progress entry and no run record, because nothing was asked.
+    this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
@@ -490,7 +504,6 @@ export class EnsembleRuntime {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
-      this.budget.assertCanStart(engine);
       const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
@@ -545,7 +558,6 @@ export class EnsembleRuntime {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
-      this.budget.assertCanStart(engine);
       const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({

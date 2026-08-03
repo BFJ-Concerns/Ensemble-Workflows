@@ -296,9 +296,12 @@ existing attempt `duration_ms` retains its previous meaning.
   `--timeout` if a run needs a backstop against that. A
   `thread/status/changed` notification with `status.type: "systemError"`
   rejects the live turn immediately and records `systemError`.
-- **Budget**: each attempt checks the engine's ceiling first; once spend
-  reaches it, `agent()` throws a budget-exhausted error. Ceilings are
-  enforced at turn start, so a ceiling can be overshot by the turn in flight.
+- **Budget**: each `agent()` call checks the engine's ceiling once, at
+  dispatch; once spend reaches the ceiling, a new `agent()` throws a
+  budget-exhausted error. A call dispatched under the ceiling runs its full
+  retry bound even if spend crosses the ceiling mid-call, so a worker's own
+  failure is never rewritten as budget exhaustion by concurrent spend, and
+  in-flight turns can collectively overshoot the ceiling.
 - **Whole-workflow timeout / interrupt**: the run exits 1 and emits the
   partial-result envelope described above; completed workers' outputs are not
   lost.

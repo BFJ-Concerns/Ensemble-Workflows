@@ -11,6 +11,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentOptionRejectedError,
   AppServerExitedError,
+  AppServerOverloadedError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   EmptyAgentOutputError,
@@ -481,6 +482,81 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   assert.equal(runtime.budget.remaining("codex"), 0);
   assert.equal(runtime.budget.remaining("claude"), Number.POSITIVE_INFINITY);
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
+});
+
+test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry cannot replace the provoking failure", async () => {
+  // A transport that fails retryably on every attempt, exhausting the codex
+  // ceiling from the *first* attempt's usage — the interleaving that used to
+  // surface BudgetExceededError in place of the worker's own failure.
+  class OverloadedSpendingTransport implements RuntimeTransport {
+    readonly cwd = "/fake/repo";
+    attempts = 0;
+    #runtime: (() => EnsembleRuntime | null) | undefined;
+
+    bind(runtime: () => EnsembleRuntime | null): void {
+      this.#runtime = runtime;
+    }
+
+    async openThread(): Promise<string> {
+      return "thread-1";
+    }
+
+    async runTurn(): Promise<TurnResult> {
+      this.attempts += 1;
+      // Spend past the ceiling before failing, as a live turn's usage event
+      // would arrive before its terminal error notification.
+      this.#runtime?.()?.handleTransportEvent({
+        method: "thread/tokenUsage/updated",
+        receivedAt: Date.now(),
+        params: {
+          threadId: "thread-1",
+          turnId: `turn-${this.attempts}`,
+          tokenUsage: { last: usage(10), total: usage(10) }
+        }
+      });
+      throw new AppServerOverloadedError("turn/start", { code: undefined, message: "server overloaded" });
+    }
+
+    async close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  const transport = new OverloadedSpendingTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    budgetCeilings: { codex: 5 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 3
+  });
+  transport.bind(() => runtime);
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  // The call was dispatched under the ceiling, so it owns its full attempt
+  // bound: every attempt runs, and the surfaced failure is the transport's.
+  await assert.rejects(() => runtime.agent("overloaded", { engine: "codex" }), AppServerOverloadedError);
+
+  assert.equal(transport.attempts, 3);
+  const settled = records.at(-1);
+  assert.equal(settled?.status, "failed");
+  assert.equal(settled?.attempts.length, 3);
+  for (const attempt of settled?.attempts ?? []) {
+    assert.equal(attempt.failure?.kind, "AppServerOverloadedError");
+  }
+
+  // The exhaustion still gates the next dispatch: the ceiling moved from
+  // per-attempt re-checking to one dispatch-time judgement, not away. A
+  // blocked call is a pre-dispatch rejection: no engine attempt and no agent
+  // record, the same surface as a rejected option.
+  await assert.rejects(() => runtime.agent("next call blocked", { engine: "codex" }), BudgetExceededError);
+  assert.equal(transport.attempts, 3, "a blocked dispatch must not reach the engine");
+  assert.equal(records.at(-1)?.id, settled?.id, "a blocked dispatch writes no agent record");
 });
 
 test("Codex agents pass only turn options that remain configurable", async () => {

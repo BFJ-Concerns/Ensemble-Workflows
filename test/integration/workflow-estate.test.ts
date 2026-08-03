@@ -720,7 +720,9 @@ test("CLI budget flag enforces Codex ceiling without blocking Claude", async () 
     codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens",
     claudeAfterCodexExhaustion: "claude-still-runs"
   });
-  assert.deepEqual(codex.invocations.map((invocation) => invocation.contexts.length), [1, 0]);
+  // The blocked call is rejected at dispatch, before the engine sees it: one
+  // invocation total, not a second invocation with zero attempts.
+  assert.deepEqual(codex.invocations.map((invocation) => invocation.contexts.length), [1]);
   assert.equal(claude.invocations.length, 1);
 });
 
@@ -766,7 +768,8 @@ test("CLI budget flag enforces Claude ceiling without blocking Codex", async () 
     codexAfterClaudeExhaustion: "codex-still-runs"
   });
   assert.equal(codex.invocations.length, 1);
-  assert.deepEqual(claude.invocations.map((invocation) => invocation.contexts.length), [1, 0]);
+  // The blocked call is rejected at dispatch, before the engine sees it.
+  assert.deepEqual(claude.invocations.map((invocation) => invocation.contexts.length), [1]);
 });
 
 test("CLI json-args flag switches args from raw strings to parsed JSON", async () => {

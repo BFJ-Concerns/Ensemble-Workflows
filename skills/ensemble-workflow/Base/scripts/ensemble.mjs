@@ -16719,6 +16719,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       assertCompilableSchema(options.schema);
     }
     const engine = this.#engineFor(options.engine);
+    this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
@@ -16939,7 +16940,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
-      this.budget.assertCanStart(engine);
       const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({
@@ -16983,7 +16983,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let previousFailure;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       this.progress.noteAttempt(agentId, attempt);
-      this.budget.assertCanStart(engine);
       const startedAt = Date.now();
       try {
         const result = await invocation.runAttempt({

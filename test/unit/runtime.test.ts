@@ -13,6 +13,7 @@ import {
   AppServerExitedError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
+  EmptyAgentOutputError,
   EngineShutdownError,
   FallbackModelUnsupportedError,
   InvalidAgentSchemaError,
@@ -92,10 +93,12 @@ class ErrorTransport implements RuntimeTransport {
 class ClosingTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   readonly started: Promise<void>;
+  #error: Error;
   #reject: ((error: Error) => void) | null = null;
   #markStarted: (() => void) | null = null;
 
-  constructor() {
+  constructor(error: Error = new AppServerExitedError("transport closed")) {
+    this.#error = error;
     this.started = new Promise((resolve) => {
       this.#markStarted = resolve;
     });
@@ -113,7 +116,7 @@ class ClosingTransport implements RuntimeTransport {
   }
 
   async close(): Promise<void> {
-    this.#reject?.(new AppServerExitedError("transport closed"));
+    this.#reject?.(this.#error);
   }
 }
 
@@ -1093,10 +1096,14 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
   }
 });
 
-test("runtime shutdown reason classifies workers terminalised during close", async () => {
-  for (const status of ["timed-out", "interrupted"] as const) {
+test("thrown non-shutdown failures retain failed status while the runtime closes", async () => {
+  for (const error of [
+    new Error("worker failed"),
+    new EmptyAgentOutputError("worker returned no output"),
+    new CodexSchemaSubsetUnsupportedError({ code: -32602, message: "unsupported schema" })
+  ]) {
     const records: RuntimeAgentRecord[] = [];
-    const transport = new ClosingTransport();
+    const transport = new ClosingTransport(error);
     const runtime = new EnsembleRuntime({
       transport,
       concurrencyCaps: { codex: 1 },
@@ -1108,18 +1115,18 @@ test("runtime shutdown reason classifies workers terminalised during close", asy
       }
     } as RunRecordWriter);
 
-    const agent = runtime.agent("stop with the run", { engine: "codex" });
+    const agent = runtime.agent("fail independently", { engine: "codex" });
     await transport.started;
-    await runtime.close(status);
-    await assert.rejects(agent, AppServerExitedError);
+    await runtime.close("interrupted");
+    await assert.rejects(agent, error.constructor);
 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
-    assert.equal(records[1]?.status, status);
+    assert.equal(records[1]?.status, "failed");
   }
 });
 
-test("a genuine worker failure during close keeps its failure status", async () => {
+test("a returned retry-exhaustion failure retains failed status while the runtime closes", async () => {
   const records: RuntimeAgentRecord[] = [];
   const transport = new InvalidOutputDuringCloseTransport();
   const runtime = new EnsembleRuntime({
@@ -1144,6 +1151,34 @@ test("a genuine worker failure during close keeps its failure status", async () 
   assert.equal(records.length, 2);
   assert.equal(records[1]?.status, "failed");
   assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "invalid-json");
+});
+
+test("genuine shutdown errors inherit the runtime shutdown status", async () => {
+  for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
+    for (const status of ["timed-out", "interrupted"] as const) {
+      const records: RuntimeAgentRecord[] = [];
+      const transport = new ClosingTransport(error);
+      const runtime = new EnsembleRuntime({
+        transport,
+        concurrencyCaps: { codex: 1 },
+        defaultMaxAttempts: 1
+      });
+      runtime.setRunRecorder({
+        recordAgent: async (record) => {
+          records.push(structuredClone(record));
+        }
+      } as RunRecordWriter);
+
+      const agent = runtime.agent("stop with the run", { engine: "codex" });
+      await transport.started;
+      await runtime.close(status);
+      await assert.rejects(agent, error.constructor);
+
+      assert.equal(records.length, 2);
+      assert.equal(records[0]?.status, "in-progress");
+      assert.equal(records[1]?.status, status);
+    }
+  }
 });
 
 test("a run-record write failure surfaces as an event and never fails the agent", async () => {

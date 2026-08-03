@@ -6,6 +6,7 @@ import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
+  AppServerExitedError,
   AppServerOverloadedError,
   AppServerRetryPromiseBrokenError,
   EmptyAgentOutputError,
@@ -357,17 +358,11 @@ export class EnsembleRuntime {
   }
 
   #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {
-    if (error instanceof EngineShutdownError) {
+    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError) {
       return this.#shutdownAgentStatus;
     }
     if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
       return "timed-out";
-    }
-    if (error === null && record.attempts.at(-1)?.failure !== undefined) {
-      return "failed";
-    }
-    if (this.#closed) {
-      return this.#shutdownAgentStatus;
     }
     return "failed";
   }

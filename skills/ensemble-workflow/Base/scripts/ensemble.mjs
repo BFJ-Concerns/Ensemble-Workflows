@@ -17446,6 +17446,57 @@ var WorkflowScriptError = class extends Error {
     this.name = new.target.name;
   }
 };
+function assertJsonSerialisable(value, label, pathRoot) {
+  const offence = findUnserialisable(value, pathRoot, /* @__PURE__ */ new Set());
+  if (offence !== null) {
+    throw new WorkflowScriptError(`${label} must be a JSON value: ${offence}`);
+  }
+}
+function findUnserialisable(value, path12, ancestors) {
+  switch (typeof value) {
+    case "function":
+      return `${path12} is a function`;
+    case "symbol":
+      return `${path12} is a symbol`;
+    case "bigint":
+      return `${path12} is a BigInt`;
+    case "object":
+      break;
+    default:
+      return null;
+  }
+  if (value === null) {
+    return null;
+  }
+  const toJson = value.toJSON;
+  if (typeof toJson === "function") {
+    return findUnserialisable(toJson.call(value), path12, ancestors);
+  }
+  if (ancestors.has(value)) {
+    return `${path12} closes a cycle`;
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const offence = findUnserialisable(value[index], `${path12}[${index}]`, ancestors);
+        if (offence !== null) {
+          return offence;
+        }
+      }
+      return null;
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      const offence = findUnserialisable(entry, `${path12}.${key}`, ancestors);
+      if (offence !== null) {
+        return offence;
+      }
+    }
+    return null;
+  } finally {
+    ancestors.delete(value);
+  }
+}
 var WorkflowTimeoutError = class extends WorkflowScriptError {
   /** The breached deadline, so callers can report it without re-parsing the message. */
   timeoutMs;
@@ -17465,6 +17516,7 @@ async function runWorkflowScript(options) {
     log: options.log,
     ...defaults !== void 0 ? { defaults } : {},
     workflow: workflowDepth === 0 ? async (nameOrRef, args) => {
+      assertJsonSerialisable(args ?? [], "workflow() arguments", "args");
       const scriptPath = await resolveWorkflowReference(asWorkflowReference(nameOrRef), {
         cwd,
         ...options.env !== void 0 ? { env: options.env } : {},
@@ -17510,6 +17562,9 @@ async function runWorkflowScript(options) {
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     throw settlement.error;
+  }
+  if (workflowDepth === 0) {
+    assertJsonSerialisable(settlement.value, "workflow return value", "return value");
   }
   return {
     meta,
@@ -19170,6 +19225,9 @@ function formatError3(error) {
     return error.message;
   }
   if (error instanceof AgentOptionRejectedError) {
+    return `${error.name}: ${error.message}`;
+  }
+  if (error instanceof WorkflowScriptError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

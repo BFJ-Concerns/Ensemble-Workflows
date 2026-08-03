@@ -55,7 +55,12 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   entries are noted on stderr and skipped.
 
 Exit 0 prints the script's return value, or the direct agent's return value, as
-JSON on stdout (unserialisable script values print as `null`). Exit 1 (failure,
+JSON on stdout. The return value and any `workflow()` arguments must be JSON
+values: a function, a cycle, or a BigInt fails the run at settlement with the
+offending path named (one clean line, exit 1), never a lossy approximation.
+A script with no top-level return prints `null`, and JSON's own mappings
+(`undefined` properties vanish; `Infinity` from `budget.remaining` on an
+unbounded engine prints as `null`) remain permitted. Exit 1 (failure,
 whole-workflow timeout, SIGINT or SIGTERM) prints a partial-result envelope
 instead:
 `{"partial":true,"reason":"failed"|"timed-out"|"interrupted","completed":[...]}`

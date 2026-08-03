@@ -6,7 +6,7 @@ import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.j
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { AgentOptionRejectedError } from "./errors.js";
 import { createRuntime } from "./index.js";
-import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
+import { readWorkflowMeta, runWorkflowScript, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
@@ -792,9 +792,11 @@ function usage(): string {
 }
 
 function serialiseResult(result: unknown): string {
-  // The documented contract: a return value that cannot be serialised prints as
-  // null. JSON.stringify returns undefined for functions/symbols but *throws*
-  // on circular structures and BigInt — both collapse to null, not a failed run.
+  // A non-JSON return value fails the run at settlement (script-runner's
+  // assertJsonSerialisable), so by the time a value reaches this point it
+  // serialises cleanly. The guards remain for the values the check does not
+  // gate: a bare `undefined` return (no top-level return statement) prints
+  // as null, and the salvage envelope is harness-built JSON.
   try {
     const json = JSON.stringify(result);
     return json === undefined ? "null" : json;
@@ -808,6 +810,11 @@ function formatError(error: unknown): string {
     return error.message;
   }
   if (error instanceof AgentOptionRejectedError) {
+    return `${error.name}: ${error.message}`;
+  }
+  // Workflow-authoring errors are the author's to fix, not runtime defects:
+  // one clean line, no stack — the same surface as a rejected agent option.
+  if (error instanceof WorkflowScriptError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

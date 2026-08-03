@@ -257,6 +257,102 @@ test("workflow() fails loudly for unknown names and missing script paths", async
   );
 });
 
+test("a non-JSON return value fails settlement with the offending path named", async () => {
+  // Settlement-time check: the value the body actually produced is judged
+  // after the body resolves, not at load — a body can build any value it
+  // likes as long as what crosses the printed-and-archived boundary is JSON.
+  for (const scenario of [
+    {
+      name: "cycle",
+      body: `const value = { name: "loop" };\nvalue.self = value;\nreturn value;`,
+      offence: /return value\.self closes a cycle/
+    },
+    {
+      name: "nested function",
+      body: `return { results: [1, { callback: () => 2 }] };`,
+      offence: /return value\.results\[1\]\.callback is a function/
+    },
+    {
+      name: "bigint",
+      body: `return 10n;`,
+      offence: /return value is a BigInt/
+    }
+  ]) {
+    await assert.rejects(
+      () =>
+        runWorkflowScript({
+          filename: `unserialisable-${scenario.name}.js`,
+          runtime,
+          log: () => {},
+          source: `export const meta = { name: "unserialisable" };\n${scenario.body}`
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowScriptError, `${scenario.name}: ${String(error)}`);
+        assert.match(error.message, /workflow return value must be a JSON value/);
+        assert.match(error.message, scenario.offence);
+        return true;
+      }
+    );
+  }
+});
+
+test("permitted JSON-adjacent returns still settle: undefined, Infinity, and toJSON", async () => {
+  // The fail-loud set is functions, cycles, BigInt. JSON's documented
+  // mappings stay allowed: no top-level return (undefined → null),
+  // budget.remaining's Infinity (→ null), and a toJSON that yields JSON.
+  const noReturn = await runWorkflowScript({
+    filename: "no-return.js",
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "no-return" };\nlog("ran");`
+  });
+  assert.equal(noReturn.result, undefined);
+
+  const infinity = await runWorkflowScript({
+    filename: "infinity.js",
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "infinity" };\nreturn { remaining: budget.remaining("codex") };`
+  });
+  assert.deepEqual(infinity.result, { remaining: Number.POSITIVE_INFINITY });
+
+  const toJson = await runWorkflowScript({
+    filename: "tojson.js",
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "tojson" };\nreturn { when: new Date(0) };`
+  });
+  assert.deepEqual(toJson.result, { when: new Date(0) });
+});
+
+test("non-JSON workflow() arguments fail before the child script is resolved", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-args-serialisable-"));
+  await writeFile(
+    path.join(directory, "child.js"),
+    `export const meta = { name: "args-child" };\nreturn "never reached";`
+  );
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        cwd: directory,
+        filename: path.join(directory, "parent.js"),
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "args-parent" };
+          return await workflow({ scriptPath: "./child.js" }, [{ pick: (row) => row.id }]);
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /workflow\(\) arguments must be a JSON value/);
+      assert.match(error.message, /args\[0\]\.pick is a function/);
+      return true;
+    }
+  );
+});
+
 test("extracts multi-line meta with nested braces, comments, and strings", () => {
   const extracted = extractWorkflowSource(`
     export const meta = {

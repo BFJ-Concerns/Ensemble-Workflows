@@ -1040,18 +1040,45 @@ test("CLI passes a tuning-looking workflow argument through after --", async () 
   assert.equal(stdout.text(), '{"args":["--json-args","@args.json"]}\n');
 });
 
-test("CLI prints null for a return value JSON.stringify cannot serialise", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-circular-"));
+test("CLI fails the run loudly when the return value is not a JSON value", async () => {
+  // The contract: the return value is printed, hashed, and archived, so a
+  // non-JSON value fails the run with the offending path named — never a
+  // silent collapse to null. One scenario per unserialisable kind.
+  for (const scenario of [
+    { name: "cycle", body: `const value = { name: "loop" };\nvalue.self = value;\nreturn value;`, offence: /return value\.self closes a cycle/ },
+    { name: "function", body: `return { callback: () => "later" };`, offence: /return value\.callback is a function/ },
+    { name: "bigint", body: `return { count: 10n };`, offence: /return value\.count is a BigInt/ }
+  ]) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-cli-unserialisable-${scenario.name}-`));
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, `export const meta = { name: "cli-unserialisable-${scenario.name}" };\n${scenario.body}`);
+
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 1, `${scenario.name}: ${stderr.text()}`);
+    // The failure still salvages completed work through the partial envelope.
+    assert.equal(stdout.text(), `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(stderr.text(), /WorkflowScriptError: workflow return value must be a JSON value/);
+    assert.match(stderr.text(), scenario.offence);
+    // An authoring error is the author's to fix: one clean line, no stack.
+    assert.doesNotMatch(stderr.text(), /\n\s+at /);
+  }
+});
+
+test("CLI still prints null for a script with no top-level return", async () => {
+  // A bare undefined return is not a lossy collapse — it is the documented
+  // shape of a script that ends without `return`, and stays permitted.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-no-return-"));
   const script = path.join(directory, "workflow.js");
-  await writeFile(
-    script,
-    `
-      export const meta = { name: "cli-circular" };
-      const value = { name: "loop" };
-      value.self = value;
-      return value;
-    `
-  );
+  await writeFile(script, `export const meta = { name: "cli-no-return" };\nlog("ran");`);
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -1063,7 +1090,7 @@ test("CLI prints null for a return value JSON.stringify cannot serialise", async
     createRuntime: async () => fakeRuntime()
   });
 
-  assert.equal(exitCode, 0);
+  assert.equal(exitCode, 0, stderr.text());
   assert.equal(stdout.text(), "null\n");
 });
 

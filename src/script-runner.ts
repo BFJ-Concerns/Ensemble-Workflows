@@ -21,6 +21,74 @@ export class WorkflowScriptError extends Error {
   }
 }
 
+/**
+ * Settlement-time guard for the run's output surface: the workflow return
+ * value and `workflow()` arguments are printed, hashed, and archived, so a
+ * value JSON.stringify would silently drop, mangle, or throw on must fail
+ * the run loudly instead of degrading to a lossy approximation. The walk
+ * mirrors JSON.stringify's own semantics (toJSON honoured, enumerable own
+ * string-keyed properties, symbol keys ignored) and names the first
+ * offending path so the author can find it. Two collapses are deliberately
+ * permitted as JSON's documented mappings rather than lossy surprises:
+ * `undefined` (a script without a top-level return prints `null`; an
+ * undefined property vanishes) and non-finite numbers (`budget.remaining`
+ * on an unbounded engine is legitimately `Infinity`, printing as `null`).
+ * The contract's fail-loud set is a function, a cycle, or an
+ * undefined-collapsing value — plus BigInt, which throws in stringify.
+ */
+export function assertJsonSerialisable(value: unknown, label: string, pathRoot: string): void {
+  const offence = findUnserialisable(value, pathRoot, new Set());
+  if (offence !== null) {
+    throw new WorkflowScriptError(`${label} must be a JSON value: ${offence}`);
+  }
+}
+
+function findUnserialisable(value: unknown, path: string, ancestors: Set<object>): string | null {
+  switch (typeof value) {
+    case "function":
+      return `${path} is a function`;
+    case "symbol":
+      return `${path} is a symbol`;
+    case "bigint":
+      return `${path} is a BigInt`;
+    case "object":
+      break;
+    default:
+      return null;
+  }
+  if (value === null) {
+    return null;
+  }
+  const toJson = (value as { toJSON?: unknown }).toJSON;
+  if (typeof toJson === "function") {
+    return findUnserialisable(toJson.call(value), path, ancestors);
+  }
+  if (ancestors.has(value)) {
+    return `${path} closes a cycle`;
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const offence = findUnserialisable(value[index], `${path}[${index}]`, ancestors);
+        if (offence !== null) {
+          return offence;
+        }
+      }
+      return null;
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      const offence = findUnserialisable(entry, `${path}.${key}`, ancestors);
+      if (offence !== null) {
+        return offence;
+      }
+    }
+    return null;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 export class WorkflowTimeoutError extends WorkflowScriptError {
   /** The breached deadline, so callers can report it without re-parsing the message. */
   readonly timeoutMs: number;
@@ -71,6 +139,10 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     workflow:
       workflowDepth === 0
         ? async (nameOrRef, args) => {
+            // Arguments cross the same printed-and-archived boundary as the
+            // parent's return value, so they meet the same bar, before the
+            // child script is even resolved.
+            assertJsonSerialisable(args ?? [], "workflow() arguments", "args");
             const scriptPath = await resolveWorkflowReference(asWorkflowReference(nameOrRef), {
               cwd,
               ...(options.env !== undefined ? { env: options.env } : {}),
@@ -125,6 +197,15 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     throw settlement.error;
+  }
+  // Settlement-time check, on the value the body actually produced: the
+  // return value is printed, hashed, and archived, so a non-JSON value
+  // fails the run loudly here rather than collapsing to a lossy `null`
+  // downstream. Only the top-level run's return crosses that boundary —
+  // a child's return flows back into the parent script as a value, and is
+  // checked when (and only when) the parent returns it.
+  if (workflowDepth === 0) {
+    assertJsonSerialisable(settlement.value, "workflow return value", "return value");
   }
   return {
     meta,

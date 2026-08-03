@@ -9,8 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
-import { EngineRegistry } from "../../src/engines.js";
-import { assertFallbackModelSupported } from "../../src/engine-option-validation.js";
+import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -18,7 +17,8 @@ import { TokenBudget } from "../../src/budget.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
-import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
+import type { OpenCodeRunner } from "../../src/opencode-engine.js";
+import type { Budget, EngineName, RuntimeOptions, RuntimeTransport, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -389,7 +389,8 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
 
 test("ensemble agent leaves fallback-model support to the engine and rejects malformed flag syntax before runtime", async () => {
   for (const engineName of ["codex", "opencode"] as const) {
-    const engine = new FallbackCheckingEngine(engineName);
+    const externalCalls: string[] = [];
+    const engine = fallbackRejectingAdapter(engineName, externalCalls);
     const stderr = new CaptureStream();
     const exitCode = await runEnsembleCli(
       ["agent", `--engine=${engineName}`, "--fallback-model=unsupported", "prompt"],
@@ -402,7 +403,7 @@ test("ensemble agent leaves fallback-model support to the engine and rejects mal
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(engine.attempts, 0);
+    assert.deepEqual(externalCalls, []);
     assert.match(stderr.text(), new RegExp(`fallbackModel is not supported on the ${engineName} engine`));
   }
 
@@ -1396,17 +1397,6 @@ class FixedResponseEngine implements EngineAdapter {
   }
 }
 
-class FallbackCheckingEngine extends FixedResponseEngine {
-  constructor(name: EngineName) {
-    super(name, "never reached");
-  }
-
-  override createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
-    return super.createInvocation(prompt, options);
-  }
-}
-
 class CommittingEngine implements EngineAdapter {
   readonly name = "codex";
   readonly concurrency = 1;
@@ -1448,6 +1438,36 @@ function fixedEngineRuntime(
     defaultMaxAttempts,
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {})
   });
+}
+
+function fallbackRejectingAdapter(engineName: "codex" | "opencode", externalCalls: string[]): EngineAdapter {
+  if (engineName === "codex") {
+    const transport: RuntimeTransport = {
+      cwd: process.cwd(),
+      openThread: async () => {
+        externalCalls.push("openThread");
+        return "unexpected";
+      },
+      runTurn: async () => {
+        externalCalls.push("runTurn");
+        return turn("unexpected");
+      },
+      close: async () => {}
+    };
+    return new CodexEngineAdapter({ transport, concurrency: 1 });
+  }
+
+  const runner: OpenCodeRunner = {
+    run: async () => {
+      externalCalls.push("run");
+      throw new Error("unexpected opencode run");
+    },
+    exportSession: async () => {
+      externalCalls.push("exportSession");
+      throw new Error("unexpected opencode export");
+    }
+  };
+  return new OpenCodeEngineAdapter({ runner, concurrency: 1 });
 }
 
 // Resolves every turn immediately except for the "hang" prompt, which never

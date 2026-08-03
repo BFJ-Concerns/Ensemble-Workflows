@@ -10,6 +10,7 @@ import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentOptionRejectedError,
+  AppServerExitedError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
@@ -85,6 +86,34 @@ class ErrorTransport implements RuntimeTransport {
 
   async close(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class ClosingTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #reject: ((error: Error) => void) | null = null;
+  #markStarted: (() => void) | null = null;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    return new Promise((_, reject) => {
+      this.#reject = reject;
+    });
+  }
+
+  async close(): Promise<void> {
+    this.#reject?.(new AppServerExitedError("transport closed"));
   }
 }
 
@@ -1032,6 +1061,32 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
     assert.equal(records[1]?.status, expected);
+  }
+});
+
+test("runtime shutdown reason classifies workers terminalised during close", async () => {
+  for (const status of ["timed-out", "interrupted"] as const) {
+    const records: RuntimeAgentRecord[] = [];
+    const transport = new ClosingTransport();
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    const agent = runtime.agent("stop with the run", { engine: "codex" });
+    await transport.started;
+    await runtime.close(status);
+    await assert.rejects(agent, AppServerExitedError);
+
+    assert.equal(records.length, 2);
+    assert.equal(records[0]?.status, "in-progress");
+    assert.equal(records[1]?.status, status);
   }
 });
 

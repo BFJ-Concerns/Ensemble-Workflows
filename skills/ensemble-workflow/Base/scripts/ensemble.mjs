@@ -16828,6 +16828,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     await this.#engines.close();
   }
   #terminalAgentStatus(error, record) {
+    if (this.#closed) {
+      return this.#shutdownAgentStatus;
+    }
     if (error instanceof EngineShutdownError) {
       return this.#shutdownAgentStatus;
     }

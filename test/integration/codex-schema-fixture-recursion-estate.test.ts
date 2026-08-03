@@ -170,6 +170,38 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
   }
 });
 
+test("built CLI fails closed when the schema command produces no usable schema", { timeout: 15_000 }, async (t) => {
+  const estate = await createEstate("empty-schema");
+  const emptySchemaCodex = path.join(estate.directory, "empty-schema-codex");
+  await writeExecutable(
+    emptySchemaCodex,
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "codex-cli 0.146.0"
+fi
+exit 0
+`
+  );
+
+  try {
+    const result = await runInBoundedScope(
+      [process.execPath, bundledCliPath, estate.workflow],
+      {
+        ...estate.environment,
+        ENSEMBLE_CODEX_SCHEMA_CLI: emptySchemaCodex
+      }
+    );
+
+    t.diagnostic(JSON.stringify(result));
+    assert.notEqual(result.code, 0);
+    assert.match(result.stdout, /"partial":true/);
+    assert.match(result.stderr, /Codex fixture schema command produced no usable protocol schema/);
+    assert.doesNotMatch(result.stderr, /ENOENT/);
+  } finally {
+    await estate.cleanup();
+  }
+});
+
 interface Estate {
   directory: string;
   binDirectory: string;

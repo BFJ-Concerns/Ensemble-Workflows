@@ -1,5 +1,5 @@
 import Ajv from "ajv";
-import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -50,6 +50,10 @@ try {
   throw new Error(`Codex fixture schema validation could not generate the pinned protocol schema with ${codexCli}`, {
     cause: error
   });
+}
+if (readdirSync(schemaDirectory).length === 0) {
+  rmSync(schemaDirectory, { recursive: true, force: true });
+  throw new Error(`Codex fixture schema command produced no usable protocol schema: ${codexCli}`);
 }
 process.once("exit", () => rmSync(schemaDirectory, { recursive: true, force: true }));
 

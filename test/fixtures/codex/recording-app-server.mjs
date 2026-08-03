@@ -8,6 +8,19 @@ if (process.argv[2] !== "app-server") {
   process.exit(2);
 }
 
+// A fake codex is never a legitimate source of the protocol schemas that
+// validate its own payloads — those must come from the real pinned CLI. Refuse
+// the subcommand outright rather than detecting who asked: this runs before the
+// validator is imported, so no spelling of the schema-CLI pointer, no parent
+// process, and no inherited environment can route schema generation back into
+// this fixture and fork.
+if (process.argv.includes("generate-json-schema")) {
+  process.stderr.write(
+    "Codex fixture refused to generate protocol schemas: a recording fixture is never a schema source\n"
+  );
+  process.exit(2);
+}
+
 const { validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;

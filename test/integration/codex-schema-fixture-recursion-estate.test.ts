@@ -40,6 +40,18 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
       `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "codex-cli 0.146.0"\n  exit 0\nfi\nexec ${shellQuote(recordingFixturePath)} "$@"\n`
     );
 
+    // The ingress that defeated three successive guards: it answers --version
+    // itself (so it reaches the generation hop rather than exiting 2 there) AND
+    // strips the inherited marker on the way in (so the marker leg cannot fire),
+    // while the identity leg cannot fire either because the configured command
+    // resolves to this shim rather than to the fixture. Only a by-construction
+    // refusal inside the fixture stops it, which is why it is a permanent case.
+    const combinedShimPath = path.join(estate.directory, "schema-codex-combined-shim");
+    await writeExecutable(
+      combinedShimPath,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "codex-cli 0.146.0"\n  exit 0\nfi\nexec /usr/bin/env -u ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE ${shellQuote(recordingFixturePath)} "$@"\n`
+    );
+
     const cases = [
       { name: "direct absolute path", command: recordingFixturePath, diagnostic: "refusal" },
       { name: "symlink", command: symlinkPath, diagnostic: "refusal" },
@@ -49,7 +61,11 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
       { name: "fixture through marker-stripping wrapper", command: markerStrippingWrapperPath, diagnostic: "version-exit" },
       { name: "fixture through marker-stripping no-exec wrapper", command: noExecWrapperPath, diagnostic: "version-exit" },
       { name: "fixture path passed through environment", command: environmentPassedWrapperPath, diagnostic: "version-exit" },
-      { name: "schema-generation argument through wrapper", command: generationWrapperPath, diagnostic: "refusal" }
+      // Now caught by the fixture's own generate-json-schema refusal rather than
+      // by the identity check: the by-construction guard fires first, before the
+      // validator is imported at all.
+      { name: "schema-generation argument through wrapper", command: generationWrapperPath, diagnostic: "generation-refusal" },
+      { name: "marker-stripping shim reaching schema generation", command: combinedShimPath, diagnostic: "generation-refusal" }
     ];
 
     for (const ingress of cases) {
@@ -69,10 +85,27 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
         assert.notEqual(result.code, 0);
         if (ingress.diagnostic === "refusal") {
           assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
+        } else if (ingress.diagnostic === "generation-refusal") {
+          assert.match(
+            result.stderr,
+            /Codex fixture refused to generate protocol schemas: a recording fixture is never a schema source/
+          );
         } else {
           assert.match(result.stderr, /Codex fixture schema command exited with code 2 signal null/);
         }
-        assert.match(result.stderr, new RegExp(escapeRegExp(ingress.command)));
+        // Assert the path against the diagnostic line alone, never the whole of
+        // stderr: Node prints the fixture's own path in the stack frames of any
+        // failure originating in that file, so matching stderr wholesale passed
+        // even with the diagnostic's path half deleted (proved by mutation).
+        if (ingress.diagnostic === "refusal") {
+          const refusalLine = result.stderr
+            .split("\n")
+            .find((line) => line.includes("refused to execute itself recursively"));
+          assert.ok(refusalLine, "no refusal diagnostic line in stderr");
+          assert.match(refusalLine, new RegExp(escapeRegExp(ingress.command)));
+        } else {
+          assert.match(result.stderr, new RegExp(escapeRegExp(ingress.command)));
+        }
         assert.ok(result.peakProcesses <= 5, `unexpected process fan-out: ${result.peakProcesses}`);
         assert.ok(result.peakTasks < 60, `scope reached its task cap: ${result.peakTasks}`);
         assert.ok(result.peakMemoryBytes < 500 * 1024 * 1024, `scope reached its memory cap: ${result.peakMemoryBytes}`);

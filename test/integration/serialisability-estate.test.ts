@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -86,12 +86,68 @@ test("built CLI preserves JSON's documented undefined and non-finite mappings", 
   assert.deepEqual(JSON.parse(mappings.stdout), { kept: "yes", remaining: null });
 });
 
-async function runWorkflow(name: string, body: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+test("built CLI journeys independently kill each serialisability safeguard mutation", async () => {
+  const bundle = await readFile(bundledCliPath, "utf8");
+  const mutations = [
+    {
+      name: "raw-value-choice",
+      before: `assertJsonSerialisable(result, "workflow return value", "return value");`,
+      after: `assertJsonSerialisable(settlement.value, "workflow return value", "return value");`,
+      body: `class Money { constructor() { this.cents = 100n; } toJSON() { return "1.00"; } } return { price: new Money() };`,
+      killedBy(result: ProcessResult): void {
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stdout, "null\n");
+      }
+    },
+    {
+      name: "tojson-once-guard",
+      before: `return findUnserialisable(toJson.call(value), path12, ancestors, false);`,
+      after: `return findUnserialisable(toJson.call(value), path12, ancestors, true);`,
+      body: `return { n: 1, toJSON() { return this; } };`,
+      killedBy(result: ProcessResult): void {
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, /RangeError: Maximum call stack size exceeded/);
+        assert.match(result.stderr, /\n\s+at /);
+      }
+    },
+    {
+      name: "stringify-backstop",
+      before: `  try {\n    JSON.stringify(value);\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    throw new WorkflowScriptError(\`${"${label}"} must be a JSON value: JSON.stringify rejected it (${"${message}"})\`);\n  }`,
+      after: `  JSON.stringify({});`,
+      body: `return Object(10n);`,
+      killedBy(result: ProcessResult): void {
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stdout, "null\n");
+      }
+    }
+  ];
+
+  for (const mutation of mutations) {
+    assert.equal(bundle.split(mutation.before).length, 2, `${mutation.name}: mutation needle must occur exactly once`);
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-serialisability-mutation-${mutation.name}-`));
+    const mutatedCli = path.join(directory, "ensemble.mjs");
+    try {
+      await writeFile(mutatedCli, bundle.replace(mutation.before, mutation.after));
+      const result = await runWorkflow(mutation.name, mutation.body, mutatedCli);
+      mutation.killedBy(result);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+interface ProcessResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+async function runWorkflow(name: string, body: string, cliPath = bundledCliPath): Promise<ProcessResult> {
   const directory = await mkdtemp(path.join(tmpdir(), `ensemble-serialisability-${name}-`));
   const script = path.join(directory, "workflow.js");
   try {
     await writeFile(script, `export const meta = { name: ${JSON.stringify(name)} };\n${body}\n`);
-    return await runNode([bundledCliPath, script], {
+    return await runNode([cliPath, script], {
       ...process.env,
       ENSEMBLE_RUN_RECORD: "0",
       ENSEMBLE_STATUS: "0",
@@ -102,7 +158,7 @@ async function runWorkflow(name: string, body: string): Promise<{ code: number |
   }
 }
 
-function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";

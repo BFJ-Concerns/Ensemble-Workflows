@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 
 test(
@@ -61,40 +62,22 @@ test(
         completed: [{ id: 1, engine: "codex", label: "live-serialisability-worker", phase: null, output: { token } }]
       });
 
-      // The consumer boundary: forget the process objects and reconstruct
-      // the claim solely from the versioned files beneath the resolved store.
-      const manifestPath = await findOnlyFile(dataHome, "manifest.json");
-      const archiveDir = path.dirname(manifestPath);
-      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as RunManifest;
-      assert.equal(manifest.schema_version, 2);
-      assert.equal(manifest.kind, "run_manifest");
-      assert.equal(manifest.status, "failed");
-      assert.deepEqual(manifest.meta.task, { id: "serialisability-salvage", family: "verification-estate" });
-      assert.deepEqual(manifest.result, { archive_path: "result.json", exit_code: 1 });
-
-      for (const file of manifest.files) {
-        const bytes = await readFile(path.join(archiveDir, file.path));
-        assert.equal(createHash("sha256").update(bytes).digest("hex"), file.sha256, file.path);
-        assert.equal(bytes.byteLength, file.bytes, file.path);
-      }
-
-      const archivedResult = JSON.parse(await readFile(path.join(archiveDir, "result.json"), "utf8")) as RunResult;
-      assert.equal(archivedResult.schema_version, 2);
-      assert.equal(archivedResult.kind, "run_result");
-      assert.equal(archivedResult.status, "failed");
-      assert.equal(archivedResult.exit_code, 1);
-      assert.deepEqual(archivedResult.value, envelope);
-
-      const agentPath = await findOnlyFile(archiveDir, "agent.json");
-      const agent = JSON.parse(await readFile(agentPath, "utf8")) as RecordedAgent;
-      assert.equal(agent.schema_version, 2);
-      assert.equal(agent.kind, "agent_record");
-      assert.equal(agent.status, "complete");
-      assert.equal(agent.label, "live-serialisability-worker");
-      assert.deepEqual(agent.output, { token });
-      assert.equal(agent.attempts.length, 1);
-      assert.equal(agent.attempts[0]?.status, "complete");
-      assert.deepEqual(agent.attempts[0]?.validated_output, { token });
+      // A fresh process receives only the resolved data home. Its stdout is
+      // therefore the archive consumer's reconstruction, not retained state
+      // from the producer process or this test's in-memory envelope.
+      const reader = await runNode([archiveReaderPath, dataHome], { ...process.env });
+      assert.equal(reader.code, 0, reader.stderr);
+      assert.deepEqual(JSON.parse(reader.stdout), {
+        task: { id: "serialisability-salvage", family: "verification-estate" },
+        status: "failed",
+        exitCode: 1,
+        completed: envelope.completed,
+        recordedAgent: {
+          label: "live-serialisability-worker",
+          output: { token },
+          attemptStatus: "complete"
+        }
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -105,39 +88,6 @@ interface SalvageEnvelope {
   partial: true;
   reason: "failed";
   completed: Array<{ id: number; engine: string; label: string | null; phase: string | null; output: unknown }>;
-}
-
-interface RunManifest {
-  schema_version: number;
-  kind: string;
-  status: string;
-  meta: { task?: { id: string; family?: string } };
-  result: { archive_path: string | null; exit_code: number | null };
-  files: Array<{ path: string; sha256: string; bytes: number }>;
-}
-
-interface RunResult {
-  schema_version: number;
-  kind: string;
-  status: string;
-  exit_code: number;
-  value: unknown;
-}
-
-interface RecordedAgent {
-  schema_version: number;
-  kind: string;
-  status: string;
-  label: string | null;
-  output: unknown;
-  attempts: Array<{ status: string; validated_output: unknown }>;
-}
-
-async function findOnlyFile(root: string, basename: string): Promise<string> {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0] ?? "");
 }
 
 function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {

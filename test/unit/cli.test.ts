@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, glob, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
-import { EngineRegistry } from "../../src/engines.js";
+import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -17,7 +17,8 @@ import { TokenBudget } from "../../src/budget.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
-import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
+import type { OpenCodeRunner } from "../../src/opencode-engine.js";
+import type { Budget, EngineName, RuntimeOptions, RuntimeTransport, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -343,6 +344,89 @@ test("ensemble agent honours --max-attempts and rejects invalid values before an
   assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
 });
 
+test("ensemble agent persists label and phase and forwards Claude's fallback model", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-parity-"));
+  const runRecordDir = path.join(directory, "records");
+  const engine = new FixedResponseEngine("claude", "done");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(
+    [
+      "agent",
+      "--engine=claude",
+      "--label=reviewer-a",
+      "--phase=verification",
+      "--fallback-model=claude-sonnet-fallback",
+      "check the patch"
+    ],
+    {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '"done"\n');
+  assert.equal(engine.turnOptions[0]?.fallbackModel, "claude-sonnet-fallback");
+  const records = [];
+  for await (const record of glob(path.join(runRecordDir, "runs/**/agents/000001/agent.json"))) {
+    records.push(record);
+  }
+  assert.equal(records.length, 1);
+  const record = JSON.parse(await readFile(records[0]!, "utf8")) as {
+    label: string | null;
+    phase: string | null;
+    fallback_model: string | null;
+  };
+  assert.equal(record.label, "reviewer-a");
+  assert.equal(record.phase, "verification");
+  assert.equal(record.fallback_model, "claude-sonnet-fallback");
+});
+
+test("ensemble agent leaves fallback-model support to the engine and rejects malformed flag syntax before runtime", async () => {
+  for (const engineName of ["codex", "opencode"] as const) {
+    const externalCalls: string[] = [];
+    const engine = fallbackRejectingAdapter(engineName, externalCalls);
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(
+      ["agent", `--engine=${engineName}`, "--fallback-model=unsupported", "prompt"],
+      {
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: null,
+        createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+      }
+    );
+
+    assert.equal(exitCode, 1);
+    assert.deepEqual(externalCalls, []);
+    assert.match(stderr.text(), new RegExp(`fallbackModel is not supported on the ${engineName} engine`));
+  }
+
+  let runtimeCreations = 0;
+  const malformedStderr = new CaptureStream();
+  const malformedExit = await runEnsembleCli(
+    ["agent", "--engine=claude", "prompt", "--fallback-model"],
+    {
+      stdout: new CaptureStream(),
+      stderr: malformedStderr,
+      createRuntime: async () => {
+        runtimeCreations += 1;
+        return fakeRuntime();
+      }
+    }
+  );
+
+  assert.equal(malformedExit, 2);
+  assert.equal(runtimeCreations, 0);
+  assert.match(malformedStderr.text(), /Option '--fallback-model <value>' argument missing/);
+  assert.doesNotMatch(malformedStderr.text(), /\n\s+at /);
+});
+
 test("--timeout above the 32-bit timer bound is a usage error, not a platform surprise", async () => {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
@@ -488,7 +572,8 @@ test("CLI reports usage errors without a stack trace", async () => {
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
       "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
       "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
@@ -995,7 +1080,8 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(
     result.stderr,
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
       "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
@@ -1283,6 +1369,7 @@ class FixedResponseEngine implements EngineAdapter {
   readonly concurrency = 1;
   readonly scheduler = new Scheduler(1);
   readonly prompts: string[] = [];
+  readonly turnOptions: EngineTurnOptions[] = [];
   attempts = 0;
 
   constructor(
@@ -1294,8 +1381,9 @@ class FixedResponseEngine implements EngineAdapter {
     return this.scheduler.schedule(task);
   }
 
-  createInvocation(prompt: string): EngineInvocation {
+  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
     this.prompts.push(prompt);
+    this.turnOptions.push(options);
     return {
       runAttempt: async () => {
         this.attempts += 1;
@@ -1350,6 +1438,36 @@ function fixedEngineRuntime(
     defaultMaxAttempts,
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {})
   });
+}
+
+function fallbackRejectingAdapter(engineName: "codex" | "opencode", externalCalls: string[]): EngineAdapter {
+  if (engineName === "codex") {
+    const transport: RuntimeTransport = {
+      cwd: process.cwd(),
+      openThread: async () => {
+        externalCalls.push("openThread");
+        return "unexpected";
+      },
+      runTurn: async () => {
+        externalCalls.push("runTurn");
+        return turn("unexpected");
+      },
+      close: async () => {}
+    };
+    return new CodexEngineAdapter({ transport, concurrency: 1 });
+  }
+
+  const runner: OpenCodeRunner = {
+    run: async () => {
+      externalCalls.push("run");
+      throw new Error("unexpected opencode run");
+    },
+    exportSession: async () => {
+      externalCalls.push("exportSession");
+      throw new Error("unexpected opencode export");
+    }
+  };
+  return new OpenCodeEngineAdapter({ runner, concurrency: 1 });
 }
 
 // Resolves every turn immediately except for the "hang" prompt, which never

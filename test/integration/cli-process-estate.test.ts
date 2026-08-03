@@ -1304,7 +1304,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
       {
         method: "item/agentMessage/delta",
         params: { delta: "partial before overload" },
-        allowMalformed: "codex-cli 0.146.0 does not declare item/agentMessage/delta as a server notification"
+        allowMalformed: "this established regression payload omits the schema-required itemId"
       },
       {
         method: "error",
@@ -1662,8 +1662,7 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
       params: {
         delta: `progress-${index}`,
         itemId: "progress-message"
-      },
-      allowMalformed: "codex-cli 0.146.0 does not declare item/agentMessage/delta as a server notification"
+      }
     }
   ]).flat();
 

@@ -62,6 +62,7 @@ const notificationParamsForTurn = (notification, threadId, turnId) => {
   };
   if (
     notification.method === "error" ||
+    notification.method === "thread/tokenUsage/updated" ||
     notification.method.startsWith("item/") ||
     notification.method === "turn/diff/updated" ||
     notification.method === "turn/plan/updated"

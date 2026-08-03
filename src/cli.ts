@@ -496,6 +496,9 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
         engine: { type: "string" },
         model: { type: "string" },
         effort: { type: "string" },
+        label: { type: "string" },
+        phase: { type: "string" },
+        "fallback-model": { type: "string" },
         cwd: { type: "string" },
         isolation: { type: "string" },
         schema: { type: "string" },
@@ -541,6 +544,11 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
     ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
+    ...(parsed.values.label !== undefined ? { label: parsed.values.label } : {}),
+    ...(parsed.values.phase !== undefined ? { phase: parsed.values.phase } : {}),
+    ...(parsed.values["fallback-model"] !== undefined
+      ? { fallbackModel: parsed.values["fallback-model"] }
+      : {}),
     ...(parsed.values.cwd !== undefined ? { cwd: parsed.values.cwd } : {}),
     ...(isolation !== undefined ? { isolation } : {}),
     ...(schema !== undefined ? { schema } : {}),
@@ -772,7 +780,8 @@ function parseMaxAttempts(value: string | undefined): number | undefined {
 function usage(): string {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
-    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>]",
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
+    "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
     "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",

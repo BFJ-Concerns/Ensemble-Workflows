@@ -16,7 +16,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
   [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N|null] \
   [--concurrency engine=N] [--timeout ms] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
-  --engine <engine> [--model <model>] [--effort <effort>] [--cwd <path>] \
+  --engine <engine> [--model <model>] [--effort <effort>] \
+  [--fallback-model <model>] [--label <label>] [--phase <phase>] [--cwd <path>] \
   [--isolation worktree] [--schema '<json>'|@file] [--max-attempts N] \
   [--task <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
@@ -41,8 +42,11 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   argument, or omit the argument and pipe the prompt on stdin. `--schema`
   accepts inline JSON or `@file` and prints the same validated value that
   `agent()` returns in a workflow. `--max-attempts` overrides the per-call
-  retry bound (default 3), as `maxAttempts` does in a script. `--task` copies
-  an optional identity into the run record for benchmark grouping.
+  retry bound (default 3), as `maxAttempts` does in a script. `--label` and
+  `--phase` annotate the worker in progress output and its durable run record.
+  `--fallback-model` supplies Claude's declared-degradation model and is
+  rejected by the other engines. `--task` copies an optional identity into the
+  run record for benchmark grouping.
 - Direct-agent `--cwd` and `--isolation worktree` use the same placement
   lifecycle as a scripted call. An isolated run reports its branch on stderr;
   a branch containing changed work is retained for recovery.

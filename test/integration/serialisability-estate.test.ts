@@ -8,15 +8,13 @@ import test from "node:test";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const failedEnvelope = { partial: true, reason: "failed", completed: [] };
 
-test("built CLI rejects every fail-loud return kind with its path and a salvage envelope", async () => {
-  const scenarios = [
-    { name: "function", body: `return { nested: { callback: () => 1 } };`, path: "return value.nested.callback is a function" },
-    { name: "symbol", body: `return { nested: { marker: Symbol("estate") } };`, path: "return value.nested.marker is a symbol" },
-    { name: "cycle", body: `const value = { nested: {} }; value.nested.self = value.nested; return value;`, path: "return value.nested.self closes a cycle" },
-    { name: "bigint", body: `return { nested: { count: 10n } };`, path: "return value.nested.count is a BigInt" }
-  ];
-
-  for (const scenario of scenarios) {
+for (const scenario of [
+  { name: "function", body: `return { nested: { callback: () => 1 } };`, path: "return value.nested.callback is a function" },
+  { name: "symbol", body: `return { nested: { marker: Symbol("estate") } };`, path: "return value.nested.marker is a symbol" },
+  { name: "cycle", body: `const value = { nested: {} }; value.nested.self = value.nested; return value;`, path: "return value.nested.self closes a cycle" },
+  { name: "bigint", body: `return { nested: { count: 10n } };`, path: "return value.nested.count is a BigInt" }
+]) {
+  test(`built CLI rejects ${scenario.name} returns with their path and a salvage envelope`, async () => {
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
@@ -25,8 +23,8 @@ test("built CLI rejects every fail-loud return kind with its path and a salvage 
       `WorkflowScriptError: workflow return value must be a JSON value: ${scenario.path}\n`
     );
     assert.doesNotMatch(result.stderr, /\n\s+at /);
-  }
-});
+  });
+}
 
 test("built CLI rejects workflow arguments before resolving or executing the child", async () => {
   const result = await runWorkflow(
@@ -43,26 +41,24 @@ test("built CLI rejects workflow arguments before resolving or executing the chi
   assert.doesNotMatch(result.stderr, /could not read|absent-child|\n\s+at /);
 });
 
-test("built CLI routes clone and stringify disagreements through clean author errors", async () => {
-  const scenarios = [
-    {
-      name: "prototype-tojson",
-      body: `class Money { constructor() { this.cents = 100n; } toJSON() { return "1.00"; } } return { price: new Money() };`,
-      path: "return value.price.cents is a BigInt"
-    },
-    {
-      name: "self-recursing-tojson",
-      body: `return { n: 1, toJSON() { return this; } };`,
-      path: "return value.toJSON is a function"
-    },
-    {
-      name: "boxed-bigint",
-      body: `return Object(10n);`,
-      path: "JSON.stringify rejected it"
-    }
-  ];
-
-  for (const scenario of scenarios) {
+for (const scenario of [
+  {
+    name: "prototype-tojson",
+    body: `class Money { constructor() { this.cents = 100n; } toJSON() { return "1.00"; } } return { price: new Money() };`,
+    path: "return value.price.cents is a BigInt"
+  },
+  {
+    name: "self-recursing-tojson",
+    body: `return { n: 1, toJSON() { return this; } };`,
+    path: "return value.toJSON is a function"
+  },
+  {
+    name: "boxed-bigint",
+    body: `return Object(10n);`,
+    path: "JSON.stringify rejected it"
+  }
+]) {
+  test(`built CLI routes the ${scenario.name} disagreement through a clean author error`, async () => {
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
@@ -70,14 +66,16 @@ test("built CLI routes clone and stringify disagreements through clean author er
     assert.match(result.stderr, new RegExp(escapeRegExp(scenario.path)));
     assert.equal(result.stderr.trim().split("\n").length, 1);
     assert.doesNotMatch(result.stderr, /RangeError|\n\s+at /);
-  }
-});
+  });
+}
 
-test("built CLI preserves JSON's documented undefined and non-finite mappings", async () => {
+test("built CLI maps no return to JSON null", async () => {
   const noReturn = await runWorkflow("no-return", `log("completed without a return");`);
   assert.equal(noReturn.code, 0, noReturn.stderr);
   assert.equal(noReturn.stdout, "null\n");
+});
 
+test("built CLI preserves JSON's documented undefined and non-finite mappings", async () => {
   const mappings = await runWorkflow(
     "documented-mappings",
     `return { kept: "yes", omitted: undefined, remaining: budget.remaining("codex") };`
@@ -88,6 +86,10 @@ test("built CLI preserves JSON's documented undefined and non-finite mappings", 
 
 test("built CLI journeys independently kill each serialisability safeguard mutation", async () => {
   const bundle = await readFile(bundledCliPath, "utf8");
+  const toJsonGuardPattern = /return findUnserialisable\(toJson\.call\(value\), [A-Za-z_$][\w$]*, ancestors, false\);/g;
+  const toJsonGuardMatches = bundle.match(toJsonGuardPattern) ?? [];
+  assert.equal(toJsonGuardMatches.length, 1, "tojson-once-guard: mutation needle must occur exactly once");
+  const toJsonGuard = toJsonGuardMatches[0];
   const mutations = [
     {
       name: "raw-value-choice",
@@ -101,8 +103,8 @@ test("built CLI journeys independently kill each serialisability safeguard mutat
     },
     {
       name: "tojson-once-guard",
-      before: `return findUnserialisable(toJson.call(value), path12, ancestors, false);`,
-      after: `return findUnserialisable(toJson.call(value), path12, ancestors, true);`,
+      before: toJsonGuard,
+      after: toJsonGuard.replace(/false\);$/, "true);"),
       body: `return { n: 1, toJSON() { return this; } };`,
       killedBy(result: ProcessResult): void {
         assert.equal(result.code, 1);

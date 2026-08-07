@@ -147,7 +147,13 @@ test("a composed child's invocation is surfaced before the child runs, with sour
   assert.equal(invocations.length, 1);
   assert.equal(invocations[0]!.scriptPath, childPath);
   assert.equal(invocations[0]!.source, childSource);
-  assert.deepEqual(invocations[0]!.args, ["carried"]);
+  // `args` crosses the sandbox boundary, so its prototype is the vm realm's
+  // Array, not this one's — and this file imports `node:assert/strict`, where
+  // deepEqual compares prototypes. Clone it the way the real consumer does:
+  // `RunRecordWriter.recordWorkflowInvocation` calls `structuredClone` on
+  // exactly this value, so asserting on the clone tests what production sees
+  // rather than a realm detail that never reaches the archive.
+  assert.deepEqual(structuredClone(invocations[0]!.args), ["carried"]);
   // Provenance-before-execution: the record exists before the child spends.
   assert.deepEqual(order, ["invocation-recorded", "agent:recorded"]);
 });

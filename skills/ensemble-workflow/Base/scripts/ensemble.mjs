@@ -3225,8 +3225,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path12) {
-      let input = path12;
+    function removeDotSegments(path13) {
+      let input = path13;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3478,8 +3478,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path12, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path12 && path12 !== "/" ? path12 : void 0;
+        const [path13, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path13 && path13 !== "/" ? path13 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -12973,12 +12973,12 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path11 from "node:path";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile6 } from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -13043,7 +13043,9 @@ function resolveAmbientSettings(input) {
       ])
     ),
     runRecordDir: resolveRunRecord(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd)
+    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd),
+    workerEnvironment: config?.worker_environment ?? {}
   };
 }
 function machineConfigPath(env) {
@@ -13069,7 +13071,11 @@ function readMachineConfig(configFile) {
   if (!isObject(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
-  assertKnownKeys(parsed, ["schema_version", "agent_ceiling", "concurrency", "run_record", "status"], configFile);
+  assertKnownKeys(
+    parsed,
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment"],
+    configFile
+  );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
@@ -13079,6 +13085,7 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
+  validateWorkerEnvironment(parsed, configFile);
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -13105,6 +13112,34 @@ function validateRunSetting(section, key, configFile, prefix = "") {
   }
   if (key === "dir" && (typeof value !== "string" || value.trim().length === 0)) {
     throw fileValueError(configFile, qualified, "must be a non-empty string");
+  }
+}
+function validateWorkerEnvironment(root, configFile) {
+  const section = root.worker_environment;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "worker_environment", "must be a JSON object");
+  }
+  assertKnownKeys(section, ENGINES, configFile, "worker_environment");
+  for (const engine of ENGINES) {
+    const variables = section[engine];
+    if (variables === void 0) {
+      continue;
+    }
+    const qualified = `worker_environment.${engine}`;
+    if (!isObject(variables) || Array.isArray(variables)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object of variable names to string values");
+    }
+    for (const [name, value] of Object.entries(variables)) {
+      if (name.trim().length === 0) {
+        throw fileValueError(configFile, qualified, "variable names must be non-empty");
+      }
+      if (typeof value !== "string") {
+        throw fileValueError(configFile, `${qualified}.${name}`, "must be a string");
+      }
+    }
   }
 }
 function validateOptionalPositiveInteger(section, key, configFile, prefix = "") {
@@ -13171,6 +13206,14 @@ function resolveRunRecord(config, env) {
     path.join(dataHome(env), "ensemble")
   );
   return directory;
+}
+function resolveRunRecordStoreDir(config, env) {
+  return resolveDirectory(
+    env[RUN_RECORD_DIR_ENV],
+    RUN_RECORD_DIR_ENV,
+    config?.run_record?.dir,
+    path.join(dataHome(env), "ensemble")
+  );
 }
 function resolveStatus(config, env, cwd) {
   const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
@@ -13252,6 +13295,531 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/completion-sentinel.ts
+import { mkdir as mkdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import path3 from "node:path";
+
+// src/run-record.ts
+import { createHash } from "node:crypto";
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path2 from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+var execFileAsync = promisify(execFile);
+var SCHEMA_VERSION = 2;
+var MANIFEST_PATH = "manifest.json";
+var RunRecordWriter = class _RunRecordWriter {
+  archiveDir;
+  manifest;
+  #cwd;
+  #files = /* @__PURE__ */ new Map();
+  #agents = /* @__PURE__ */ new Map();
+  #tmpSeq = 0;
+  #writeChain = Promise.resolve();
+  #sealed = false;
+  constructor(archiveDir, cwd, manifest) {
+    this.archiveDir = archiveDir;
+    this.#cwd = cwd;
+    this.manifest = manifest;
+  }
+  /**
+   * Concurrent agents settle independently, but the manifest is one shared
+   * read-modify-write document: interleaved writes would race each other (and
+   * previously collided on same-millisecond temp names). Every mutating public
+   * operation runs through this chain, so each snapshot on disk reflects all
+   * operations before it. One failed write must not poison later ones.
+   */
+  #serialise(task) {
+    const next = this.#writeChain.then(task, task);
+    this.#writeChain = next.catch(() => void 0);
+    return next;
+  }
+  static async start(options) {
+    const namespace = await deriveNamespace(options.cwd);
+    const runId = `${namespace.id}:${options.runUuid}`;
+    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
+    await mkdir(archiveDir, { recursive: true });
+    const harnessRoot = await findHarnessRoot() ?? options.cwd;
+    const packageInfo = await readPackageInfo(harnessRoot);
+    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_manifest",
+      run_id: runId,
+      run_uuid: options.runUuid,
+      namespace,
+      status: "in-progress",
+      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ended_at: null,
+      workflow: {
+        path: options.workflowPath,
+        archive_path: "workflow.js",
+        sha256: sha256(options.workflowSource)
+      },
+      args: {
+        archive_path: "args.json",
+        sha256: sha256(canonicalJson(options.args))
+      },
+      meta: {
+        task: null,
+        raw: null
+      },
+      cli_flags: options.cliFlags,
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
+      git: {
+        start: gitStart,
+        end: null
+      },
+      environment: {
+        os: {
+          platform: os.platform(),
+          release: os.release(),
+          arch: os.arch()
+        },
+        node: process.version,
+        tools: await toolVersions()
+      },
+      harness: {
+        package_name: packageInfo.name,
+        package_version: packageInfo.version,
+        commit: await git(["rev-parse", "HEAD"], harnessRoot)
+      },
+      result: {
+        archive_path: null,
+        exit_code: null
+      },
+      cost_rollup: {},
+      files: []
+    });
+    await writer.#writeText("workflow.js", options.workflowSource);
+    await writer.#writeJson("args.json", {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_args",
+      value: options.args
+    });
+    if (gitStart.diffPath !== null) {
+      await writer.#trackFile(gitStart.diffPath);
+    }
+    await writer.#writeManifest();
+    return writer;
+  }
+  async noteMeta(meta) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.meta = {
+        task: extractTask(meta),
+        raw: meta
+      };
+      await this.#writeManifest();
+    });
+  }
+  async recordAgent(record) {
+    const snapshot = structuredClone(record);
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      await this.#recordAgent(snapshot);
+    });
+  }
+  async #recordAgent(record) {
+    this.#agents.set(record.id, record);
+    const agentDir = `agents/${padId(record.id)}`;
+    const transcriptRefs = [];
+    for (const attempt of record.attempts) {
+      let index = 0;
+      for (const transcript of attempt.transcripts) {
+        index += 1;
+        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
+        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        await this.#writeText(relativePath, transcript.content);
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: relativePath,
+          format: transcript.format,
+          source: transcript.source,
+          thread_id: transcript.threadId ?? null,
+          session_id: transcript.sessionId ?? null
+        });
+      }
+    }
+    const agentJsonPath = `${agentDir}/agent.json`;
+    await this.#writeJson(agentJsonPath, {
+      schema_version: SCHEMA_VERSION,
+      kind: "agent_record",
+      id: record.id,
+      engine: record.engine,
+      prompt: record.prompt,
+      options: {
+        timeout_ms: record.options.timeoutMs,
+        max_attempts: record.options.maxAttempts
+      },
+      model: record.model,
+      effort: record.effort,
+      fallback_model: record.fallbackModel,
+      resolved_model: record.resolvedModel,
+      resolved_cwd: record.resolvedCwd,
+      isolation: record.isolation,
+      worktree: record.worktree === null ? null : {
+        branch: record.worktree.branch,
+        base_commit: record.worktree.baseCommit,
+        tip_commit: record.worktree.tipCommit,
+        changed: record.worktree.changed,
+        removed: record.worktree.removed
+      },
+      label: record.label,
+      phase: record.phase,
+      status: record.status,
+      creation_order: record.creationOrder,
+      concurrency_group: record.concurrencyGroup,
+      schema: record.schema,
+      parse_route: record.parseRoute,
+      raw_output: record.rawOutput,
+      validated_output: record.validatedOutput,
+      queued_ms: record.queuedMs,
+      execution_ms: record.executionMs,
+      attempts: record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        status: attempt.status,
+        failure: attempt.failure,
+        worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        raw_output: attempt.rawOutput,
+        validated_output: attempt.validatedOutput,
+        started_at: attempt.startedAt,
+        ended_at: attempt.endedAt,
+        duration_ms: attempt.durationMs,
+        first_delta_ms: attempt.firstDeltaMs,
+        token_usage_events: attempt.tokenUsageEvents,
+        diagnostics: attempt.diagnostics ?? {}
+      })),
+      transcripts: transcriptRefs
+    });
+    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    await this.#writeManifest();
+  }
+  async finish(options) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.status = options.status;
+      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+      if (this.manifest.git.end.diffPath !== null) {
+        await this.#trackFile(this.manifest.git.end.diffPath);
+      }
+      this.manifest.result = {
+        archive_path: "result.json",
+        exit_code: options.exitCode
+      };
+      await this.#writeJson("result.json", {
+        schema_version: SCHEMA_VERSION,
+        kind: "run_result",
+        status: options.status,
+        exit_code: options.exitCode,
+        value: options.result
+      });
+      await this.#writeManifest();
+      this.#sealed = true;
+    });
+  }
+  async #writeJson(relativePath, value) {
+    await this.#writeText(relativePath, `${canonicalJson(value)}
+`);
+  }
+  async #writeText(relativePath, content) {
+    const destination = path2.join(this.archiveDir, relativePath);
+    await mkdir(path2.dirname(destination), { recursive: true });
+    const temporary = path2.join(path2.dirname(destination), `.${path2.basename(destination)}${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, content);
+    await this.#trackFile(relativePath);
+  }
+  async #writeManifest() {
+    this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    const destination = path2.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path2.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
+`);
+  }
+  // pid + sequence keeps names unique within the process; Date.now() alone
+  // collided when two agents settled in the same millisecond.
+  #tmpSuffix() {
+    this.#tmpSeq += 1;
+    return `.${process.pid}.${this.#tmpSeq}.tmp`;
+  }
+  async #trackFile(relativePath) {
+    const absolute = path2.join(this.archiveDir, relativePath);
+    const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
+    this.#files.set(relativePath, {
+      path: relativePath,
+      size: metadata.size,
+      sha256: contentHash
+    });
+  }
+};
+function buildCostRollup(records) {
+  const rollup = {};
+  const unlikeCurrencies = /* @__PURE__ */ new Set();
+  for (const record of records) {
+    const engine = record.engine;
+    const model = record.model ?? "default";
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= {
+      tokens: zeroUsage(),
+      cost: { amount: null, currency: null, source: "estimated" }
+    };
+    const bucket = rollup[engine][model];
+    for (const attempt of record.attempts) {
+      for (const event of attempt.tokenUsageEvents) {
+        addUsage(bucket.tokens, event.last, engine);
+        addProviderCost(bucket.cost, event, unlikeCurrencies);
+      }
+    }
+  }
+  return rollup;
+}
+function addProviderCost(target, event, unlikeCurrencies) {
+  if (unlikeCurrencies.has(target)) {
+    return;
+  }
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    unlikeCurrencies.add(target);
+    target.amount = null;
+    target.currency = null;
+    target.source = "estimated";
+    return;
+  }
+  target.amount = (target.amount ?? 0) + cost;
+  target.source = "provider-reported";
+  if (currency !== null && target.currency === null) {
+    target.currency = currency;
+  }
+}
+function addUsage(target, delta, engine) {
+  target.cachedInputTokens += delta.cachedInputTokens;
+  target.inputTokens += delta.inputTokens;
+  target.outputTokens += delta.outputTokens;
+  target.reasoningOutputTokens += delta.reasoningOutputTokens;
+  target.totalTokens += delta.totalTokens;
+  target.cacheReadTokens += delta.cachedInputTokens;
+  target.freshInputTokens += engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
+}
+function zeroUsage() {
+  return {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    freshInputTokens: 0,
+    cacheReadTokens: 0
+  };
+}
+async function resolveRunDirectory(storeDir, cwd, runUuid) {
+  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+function runDirectoryFor(storeDir, namespace, runUuid) {
+  return path2.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
+}
+async function deriveNamespace(cwd) {
+  const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
+  const material = await realpath(gitRoot ?? cwd);
+  const hash = sha256(material);
+  return {
+    strategy: "git-root-realpath-sha256",
+    id: `cwd:${hash.slice(0, 24)}`,
+    material,
+    hash
+  };
+}
+async function readGitState(cwd, diffPath, archiveDir) {
+  const root = await git(["rev-parse", "--show-toplevel"], cwd);
+  const head = await git(["rev-parse", "HEAD"], cwd);
+  const porcelain = await git(["status", "--porcelain"], cwd);
+  const dirty = porcelain === null ? null : porcelain.length > 0;
+  let archivedDiffPath = null;
+  if (dirty === true) {
+    const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
+    if (diff !== null && diff.length > 0) {
+      await writeStandaloneText(path2.join(archiveDir, diffPath), diff);
+      archivedDiffPath = diffPath;
+    }
+  }
+  return { root, head, dirty, diffPath: archivedDiffPath };
+}
+async function readPackageInfo(cwd) {
+  try {
+    const text = await readFile(path2.join(cwd, "package.json"), "utf8");
+    const parsed = JSON.parse(text);
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
+      version: typeof parsed.version === "string" ? parsed.version : "0.0.0"
+    };
+  } catch {
+    return { name: "ensemble-workflows", version: "0.0.0" };
+  }
+}
+async function findHarnessRoot() {
+  let current = path2.dirname(fileURLToPath(import.meta.url));
+  for (; ; ) {
+    try {
+      const text = await readFile(path2.join(current, "package.json"), "utf8");
+      const parsed = JSON.parse(text);
+      if (parsed.name === "ensemble-workflows") {
+        return current;
+      }
+    } catch {
+    }
+    const parent = path2.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+async function toolVersions() {
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+    commandVersion("git", ["--version"]),
+    commandVersion("codex", ["--version"]),
+    commandVersion("claude", ["--version"]),
+    commandVersion("opencode", ["--version"])
+  ]);
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+}
+async function commandVersion(command, args) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
+    return (stdout || stderr).trim() || null;
+  } catch {
+    return null;
+  }
+}
+async function git(args, cwd) {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+function extractTask(meta) {
+  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
+    return null;
+  }
+  return meta.task ?? null;
+}
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+async function hashFile(filePath) {
+  const text = await readFile(filePath);
+  return createHash("sha256").update(text).digest("hex");
+}
+async function writeStandaloneText(destination, content) {
+  await mkdir(path2.dirname(destination), { recursive: true });
+  const temporary = path2.join(path2.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(temporary, destination, content);
+}
+async function writeAndRename(temporary, destination, content) {
+  try {
+    await writeFile(temporary, content, "utf8");
+    await rename(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+function padId(id) {
+  return String(id).padStart(6, "0");
+}
+function padAttempt(attempt) {
+  return String(attempt).padStart(3, "0");
+}
+function safeName(filename, suffix) {
+  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
+}
+
+// src/completion-sentinel.ts
+var SENTINEL_FILENAME = "completion-sentinel.json";
+var SENTINEL_SCHEMA_VERSION = 1;
+var CompletionSentinel = class {
+  #path = null;
+  #written = false;
+  /**
+   * Derives and returns the sentinel path. Called before workers spawn so
+   * the announcement precedes any work; returns null (and reports) when the
+   * store path cannot be derived.
+   */
+  async prepare(options, onError) {
+    try {
+      const runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
+      this.#path = path3.join(runDir, SENTINEL_FILENAME);
+      return this.#path;
+    } catch (error) {
+      onError(error);
+      return null;
+    }
+  }
+  /**
+   * Writes the terminal sentinel (atomic temp-then-rename). First write
+   * wins: the terminal transition that ends the run is the one a supervisor
+   * must see, and a later bookkeeping path must not rewrite it.
+   */
+  async writeTerminal(outcome, exitCode, onError) {
+    if (this.#path === null || this.#written) {
+      return;
+    }
+    this.#written = true;
+    const payload = {
+      schema_version: SENTINEL_SCHEMA_VERSION,
+      kind: "completion_sentinel",
+      outcome,
+      exit_code: exitCode,
+      ended_at: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    try {
+      await mkdir2(path3.dirname(this.#path), { recursive: true });
+      const temporary = `${this.#path}.${process.pid}.tmp`;
+      try {
+        await writeFile2(temporary, `${JSON.stringify(payload, null, 2)}
+`, "utf8");
+        await rename2(temporary, this.#path);
+      } catch (error) {
+        await rm2(temporary, { force: true });
+        throw error;
+      }
+    } catch (error) {
+      onError(error);
+    }
+  }
+};
+
 // src/errors.ts
 var EnsembleError = class extends Error {
   constructor(message, options) {
@@ -13273,6 +13841,22 @@ function partialWorkerTextOf(error) {
     const text = error.partialWorkerText;
     if (typeof text === "string" && text.length > 0) {
       return text;
+    }
+  }
+  return null;
+}
+function attachWorkerExitStatus(error, exit) {
+  const carrier = error;
+  if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === void 0) {
+    carrier.workerExitStatus = exit;
+  }
+  return error;
+}
+function workerExitStatusOf(error) {
+  if (error instanceof Error) {
+    const exit = error.workerExitStatus;
+    if (exit !== void 0) {
+      return exit;
     }
   }
   return null;
@@ -13584,15 +14168,15 @@ function assertPositiveIntegerOption(options, option, maximum) {
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/agent-placement.ts
-import path3 from "node:path";
+import path5 from "node:path";
 
 // src/worktree-isolation.ts
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import path2 from "node:path";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile);
+import { execFile as execFile2 } from "node:child_process";
+import { mkdir as mkdir3 } from "node:fs/promises";
+import path4 from "node:path";
+import { promisify as promisify2 } from "node:util";
+var execFileAsync2 = promisify2(execFile2);
 var GitWorktreeIsolationManager = class {
   #counter = 0;
   #repoRoots = /* @__PURE__ */ new Map();
@@ -13601,10 +14185,10 @@ var GitWorktreeIsolationManager = class {
     const repoRoot = await this.#gitRepoRoot(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path2.join(path2.dirname(repoRoot), `${path2.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir(path2.dirname(worktreePath), { recursive: true });
-    await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-    const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
+    const worktreePath = path4.join(path4.dirname(repoRoot), `${path4.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir3(path4.dirname(worktreePath), { recursive: true });
+    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
     return {
       path: worktreePath,
@@ -13613,8 +14197,8 @@ var GitWorktreeIsolationManager = class {
     };
   }
   async finish(worktree) {
-    const status = await git(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const tip = (await git(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
     const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
     if (changed) {
       this.#worktreeRoots.delete(worktree.path);
@@ -13629,8 +14213,8 @@ var GitWorktreeIsolationManager = class {
     if (repoRoot === void 0) {
       throw new Error(`worktree was not created by this manager: ${worktree.path}`);
     }
-    await git(repoRoot, ["worktree", "remove", worktree.path]);
-    await git(repoRoot, ["branch", "-D", worktree.branch]);
+    await git2(repoRoot, ["worktree", "remove", worktree.path]);
+    await git2(repoRoot, ["branch", "-D", worktree.branch]);
     this.#worktreeRoots.delete(worktree.path);
     return {
       ...worktree,
@@ -13640,10 +14224,10 @@ var GitWorktreeIsolationManager = class {
     };
   }
   async #gitRepoRoot(baseCwd) {
-    const resolvedCwd = path2.resolve(baseCwd);
+    const resolvedCwd = path4.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === void 0) {
-      repoRoot = git(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
@@ -13662,9 +14246,9 @@ var GitWorktreeIsolationManager = class {
     return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID().slice(0, 8)}`;
   }
 };
-async function git(cwd, args) {
+async function git2(cwd, args) {
   try {
-    const { stdout } = await execFileAsync("git", args, {
+    const { stdout } = await execFileAsync2("git", args, {
       cwd,
       maxBuffer: 10 * 1024 * 1024
     });
@@ -13689,7 +14273,7 @@ var AgentPlacementManager = class {
   baseCwd;
   #worktreeManager;
   constructor(options) {
-    this.baseCwd = path3.resolve(options.baseCwd);
+    this.baseCwd = path5.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
   }
   async open(options) {
@@ -13708,7 +14292,7 @@ var AgentPlacementManager = class {
   }
 };
 function resolveAgentCwd(baseCwd, requestedCwd) {
-  return path3.resolve(baseCwd, requestedCwd ?? ".");
+  return path5.resolve(baseCwd, requestedCwd ?? ".");
 }
 
 // src/admission.ts
@@ -14107,6 +14691,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -14156,6 +14741,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #turns = /* @__PURE__ */ new Map();
   #transcripts = /* @__PURE__ */ new Map();
   #stderrTail = [];
+  #exitStatus = null;
   #hasExited = false;
   #onEvent;
   constructor(options) {
@@ -14167,11 +14753,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
+      // Declared variables sit above inherited ones; everything undeclared
+      // still inherits, so a configured parent keeps working unchanged.
+      env: { ...process.env, ...options.workerEnv }
     });
     this.#wireReader();
     this.#wireStderr();
     this.#process.once("exit", (code, signal) => {
+      this.#exitStatus = { exitCode: code, signal };
       this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
     });
     this.#process.once("error", (error) => {
@@ -14377,7 +14966,16 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       this.#handleLine(line);
     });
     reader.once("close", () => {
-      this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      if (this.#hasExited) {
+        return;
+      }
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
     });
   }
   #wireStderr() {
@@ -14725,7 +15323,11 @@ ${this.#stderrTail.join("\n")}` : "";
     }
     this.#pending.clear();
     for (const [threadId, turn] of [...this.#turns]) {
-      void this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
     }
     this.#turns.clear();
     this.#transcripts.clear();
@@ -14829,10 +15431,10 @@ function itemTypeFromItem(item) {
 }
 
 // src/claude-control-plane.ts
-import { execFile as execFile2, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
 import { access, readdir } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
-import path4 from "node:path";
+import path6 from "node:path";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -14842,10 +15444,14 @@ var ClaudeCliControlPlane = class {
   #valveSubmitSettleMs;
   #valveKillSettleMs;
   #valveCounter = 0;
+  #env;
+  #workerEnv;
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
-    this.#projectsDir = options.projectsDir ?? path4.join(homedir2(), ".claude", "projects");
+    this.#workerEnv = options.workerEnv ?? {};
+    this.#env = { ...process.env, ...this.#workerEnv };
+    this.#projectsDir = options.projectsDir ?? path6.join(homedir2(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
@@ -14909,7 +15515,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path4.join(this.#projectsDir, dir, filename);
+      const candidate = path6.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -14925,9 +15531,14 @@ var ClaudeCliControlPlane = class {
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     try {
+      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
+        "-e",
+        `${name}=${value}`
+      ]);
       const created = await this.#run(this.#tmuxBin, [
         "new-session",
         "-d",
+        ...environmentFlags,
         "-s",
         valve,
         `${this.#claudeBin} attach ${handle.id}`
@@ -14995,10 +15606,10 @@ var ClaudeCliControlPlane = class {
   }
   #run(file, args, cwd) {
     return new Promise((resolve) => {
-      execFile2(
+      execFile3(
         file,
         args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: process.env },
+        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
         (error, stdout, stderr) => {
           resolve({ ok: error === null, stdout, stderr });
         }
@@ -15009,7 +15620,7 @@ var ClaudeCliControlPlane = class {
     return new Promise((resolve) => {
       const child = spawn2(file, args, {
         ...cwd !== void 0 ? { cwd } : {},
-        env: process.env,
+        env: this.#env,
         stdio: ["pipe", "pipe", "pipe"]
       });
       const stdout = [];
@@ -15057,7 +15668,7 @@ function delay(ms) {
 import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile } from "node:fs/promises";
+import { readFile as readFile2 } from "node:fs/promises";
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -15071,14 +15682,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path12) {
+async function readTranscriptFile(path13) {
   let text;
   try {
-    text = await readFile(path12, "utf8");
+    text = await readFile2(path13, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path12}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path13}`, { cause: error });
   }
-  return { path: path12, text, entries: parseTranscriptText(text) };
+  return { path: path13, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -15137,7 +15748,7 @@ function usageSince(entries, fromIndex = 0) {
     lastCached = numeric(usage2.cache_read_input_tokens) + numeric(usage2.cache_creation_input_tokens);
   }
   if (!sawUsage) {
-    return zeroUsage();
+    return zeroUsage2();
   }
   return {
     cachedInputTokens: lastCached,
@@ -15177,7 +15788,7 @@ function asRecord(value) {
 function numeric(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
-function zeroUsage() {
+function zeroUsage2() {
   return {
     cachedInputTokens: 0,
     inputTokens: 0,
@@ -15411,11 +16022,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path12 = await this.#controlPlane.transcriptPath(handle);
-    if (path12 === null) {
+    const path13 = await this.#controlPlane.transcriptPath(handle);
+    if (path13 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path12);
+    return readTranscriptFile(path13);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -15572,9 +16183,11 @@ import { spawn as spawn3 } from "node:child_process";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
+  #env;
   constructor(bin = "opencode", options = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5e3;
+    this.#env = { ...process.env, ...options.workerEnv };
   }
   async run(options) {
     const args = [
@@ -15592,10 +16205,10 @@ var OpenCodeCliRunner = class {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs, options.signal);
+    return runProcess(this.#bin, args, options.cwd, this.#env, options.timeoutMs, this.#killGraceMs, options.signal);
   }
   async exportSession(sessionId, cwd, signal) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 3e4, this.#killGraceMs, signal);
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 3e4, this.#killGraceMs, signal);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -15651,7 +16264,10 @@ var OpenCodeEngineInvocation = class {
     const parsedRun = parseRunEvents(run.stdout);
     const fallback = fallbackText(parsedRun.events);
     if (this.#abortController.signal.aborted) {
-      throw attachPartialWorkerText(new EngineShutdownError("opencode"), fallback);
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
     }
     let exportData = null;
     let exportDiagnostic;
@@ -15708,7 +16324,10 @@ var OpenCodeEngineInvocation = class {
       }
     ];
     if (run.exitCode !== 0) {
-      throw attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text);
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
     }
     return {
       text,
@@ -15785,11 +16404,12 @@ var OpenCodeEngineInvocation = class {
 function rejectUnsupportedOpenCodeOptions(options) {
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }
-function runProcess(command, args, cwd, timeoutMs, killGraceMs = 5e3, abortSignal) {
+function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn3(command, args, {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"]
     });
     const stdout = [];
@@ -16569,6 +17189,7 @@ async function createDefaultEngineRegistry(options) {
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
@@ -16583,6 +17204,7 @@ async function createDefaultEngineRegistry(options) {
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
+      ...options.workerEnvironment?.claude !== void 0 ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) } : {},
       ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
@@ -16591,6 +17213,7 @@ async function createDefaultEngineRegistry(options) {
     new OpenCodeEngineAdapter({
       cwd: options.cwd,
       ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
       ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
       onEvent: options.onOpenCodeEvent
     })
@@ -16660,6 +17283,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+      ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
@@ -16968,7 +17592,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17031,7 +17655,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17148,11 +17772,12 @@ function requireTransport(transport) {
   }
   return transport;
 }
-function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result) {
+function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null) {
   return {
     attempt,
     status,
     failure,
+    workerExit,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
@@ -17286,14 +17911,14 @@ function formatError(error) {
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 import vm from "node:vm";
-import { readFile as readFile3 } from "node:fs/promises";
-import path6 from "node:path";
+import { readFile as readFile4 } from "node:fs/promises";
+import path8 from "node:path";
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access as access2, readdir as readdir2, readFile as readFile2 } from "node:fs/promises";
+import { access as access2, readdir as readdir2, readFile as readFile3 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import path5 from "node:path";
+import path7 from "node:path";
 var WorkflowResolutionError = class extends Error {
   constructor(message, options) {
     super(message, options);
@@ -17306,10 +17931,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir3(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path7.join(homedir3(), ".local", "share");
   return {
-    project: path5.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path5.join(dataHome2, "ensemble", "workflows")
+    project: path7.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path7.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -17319,7 +17944,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path5.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path7.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -17389,9 +18014,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path5.join(dir, entry.name);
+    const scriptPath = path7.join(dir, entry.name);
     try {
-      const source = await readFile2(scriptPath, "utf8");
+      const source = await readFile3(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -17458,14 +18083,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path12, ancestors, honourToJson) {
+function findUnserialisable(value, path13, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path12} is a function`;
+      return `${path13} is a function`;
     case "symbol":
-      return `${path12} is a symbol`;
+      return `${path13} is a symbol`;
     case "bigint":
-      return `${path12} is a BigInt`;
+      return `${path13} is a BigInt`;
     case "object":
       break;
     default:
@@ -17476,16 +18101,16 @@ function findUnserialisable(value, path12, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path12, ancestors, false);
+    return findUnserialisable(toJson.call(value), path13, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path12} closes a cycle`;
+    return `${path13} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path12}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path13}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -17493,7 +18118,7 @@ function findUnserialisable(value, path12, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path12}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path13}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -17514,7 +18139,7 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
   const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
-  const cwd = options.cwd ?? path6.dirname(path6.resolve(options.filename));
+  const cwd = options.cwd ?? path8.dirname(path8.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -17528,7 +18153,7 @@ async function runWorkflowScript(options) {
         ...options.env !== void 0 ? { env: options.env } : {},
         readMeta: readWorkflowMeta
       });
-      const source = await readFile3(scriptPath, "utf8");
+      const source = await readFile4(scriptPath, "utf8");
       const child = await runWorkflowScript({
         source,
         filename: scriptPath,
@@ -17990,473 +18615,14 @@ function skipBlockComment(source, start) {
   return end + 2;
 }
 
-// src/run-record.ts
-import { createHash } from "node:crypto";
-import { mkdir as mkdir2, readFile as readFile4, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path7 from "node:path";
-import { execFile as execFile3 } from "node:child_process";
-import { promisify as promisify2 } from "node:util";
-import { fileURLToPath } from "node:url";
-var execFileAsync2 = promisify2(execFile3);
-var SCHEMA_VERSION = 2;
-var MANIFEST_PATH = "manifest.json";
-var RunRecordWriter = class _RunRecordWriter {
-  archiveDir;
-  manifest;
-  #cwd;
-  #files = /* @__PURE__ */ new Map();
-  #agents = /* @__PURE__ */ new Map();
-  #tmpSeq = 0;
-  #writeChain = Promise.resolve();
-  #sealed = false;
-  constructor(archiveDir, cwd, manifest) {
-    this.archiveDir = archiveDir;
-    this.#cwd = cwd;
-    this.manifest = manifest;
-  }
-  /**
-   * Concurrent agents settle independently, but the manifest is one shared
-   * read-modify-write document: interleaved writes would race each other (and
-   * previously collided on same-millisecond temp names). Every mutating public
-   * operation runs through this chain, so each snapshot on disk reflects all
-   * operations before it. One failed write must not poison later ones.
-   */
-  #serialise(task) {
-    const next = this.#writeChain.then(task, task);
-    this.#writeChain = next.catch(() => void 0);
-    return next;
-  }
-  static async start(options) {
-    const namespace = await deriveNamespace(options.cwd);
-    const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = path7.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
-    await mkdir2(archiveDir, { recursive: true });
-    const harnessRoot = await findHarnessRoot() ?? options.cwd;
-    const packageInfo = await readPackageInfo(harnessRoot);
-    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
-    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_manifest",
-      run_id: runId,
-      run_uuid: options.runUuid,
-      namespace,
-      status: "in-progress",
-      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
-      ended_at: null,
-      workflow: {
-        path: options.workflowPath,
-        archive_path: "workflow.js",
-        sha256: sha256(options.workflowSource)
-      },
-      args: {
-        archive_path: "args.json",
-        sha256: sha256(canonicalJson(options.args))
-      },
-      meta: {
-        task: null,
-        raw: null
-      },
-      cli_flags: options.cliFlags,
-      concurrency: {
-        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
-        engines: options.concurrency?.engines ?? {}
-      },
-      git: {
-        start: gitStart,
-        end: null
-      },
-      environment: {
-        os: {
-          platform: os.platform(),
-          release: os.release(),
-          arch: os.arch()
-        },
-        node: process.version,
-        tools: await toolVersions()
-      },
-      harness: {
-        package_name: packageInfo.name,
-        package_version: packageInfo.version,
-        commit: await git2(["rev-parse", "HEAD"], harnessRoot)
-      },
-      result: {
-        archive_path: null,
-        exit_code: null
-      },
-      cost_rollup: {},
-      files: []
-    });
-    await writer.#writeText("workflow.js", options.workflowSource);
-    await writer.#writeJson("args.json", {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_args",
-      value: options.args
-    });
-    if (gitStart.diffPath !== null) {
-      await writer.#trackFile(gitStart.diffPath);
-    }
-    await writer.#writeManifest();
-    return writer;
-  }
-  async noteMeta(meta) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.meta = {
-        task: extractTask(meta),
-        raw: meta
-      };
-      await this.#writeManifest();
-    });
-  }
-  async recordAgent(record) {
-    const snapshot = structuredClone(record);
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      await this.#recordAgent(snapshot);
-    });
-  }
-  async #recordAgent(record) {
-    this.#agents.set(record.id, record);
-    const agentDir = `agents/${padId(record.id)}`;
-    const transcriptRefs = [];
-    for (const attempt of record.attempts) {
-      let index = 0;
-      for (const transcript of attempt.transcripts) {
-        index += 1;
-        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
-        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
-        transcriptRefs.push({
-          attempt: attempt.attempt,
-          path: relativePath,
-          format: transcript.format,
-          source: transcript.source,
-          thread_id: transcript.threadId ?? null,
-          session_id: transcript.sessionId ?? null
-        });
-      }
-    }
-    const agentJsonPath = `${agentDir}/agent.json`;
-    await this.#writeJson(agentJsonPath, {
-      schema_version: SCHEMA_VERSION,
-      kind: "agent_record",
-      id: record.id,
-      engine: record.engine,
-      prompt: record.prompt,
-      options: {
-        timeout_ms: record.options.timeoutMs,
-        max_attempts: record.options.maxAttempts
-      },
-      model: record.model,
-      effort: record.effort,
-      fallback_model: record.fallbackModel,
-      resolved_model: record.resolvedModel,
-      resolved_cwd: record.resolvedCwd,
-      isolation: record.isolation,
-      worktree: record.worktree === null ? null : {
-        branch: record.worktree.branch,
-        base_commit: record.worktree.baseCommit,
-        tip_commit: record.worktree.tipCommit,
-        changed: record.worktree.changed,
-        removed: record.worktree.removed
-      },
-      label: record.label,
-      phase: record.phase,
-      status: record.status,
-      creation_order: record.creationOrder,
-      concurrency_group: record.concurrencyGroup,
-      schema: record.schema,
-      parse_route: record.parseRoute,
-      raw_output: record.rawOutput,
-      validated_output: record.validatedOutput,
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
-      attempts: record.attempts.map((attempt) => ({
-        attempt: attempt.attempt,
-        status: attempt.status,
-        failure: attempt.failure,
-        raw_output: attempt.rawOutput,
-        validated_output: attempt.validatedOutput,
-        started_at: attempt.startedAt,
-        ended_at: attempt.endedAt,
-        duration_ms: attempt.durationMs,
-        first_delta_ms: attempt.firstDeltaMs,
-        token_usage_events: attempt.tokenUsageEvents,
-        diagnostics: attempt.diagnostics ?? {}
-      })),
-      transcripts: transcriptRefs
-    });
-    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
-    await this.#writeManifest();
-  }
-  async finish(options) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.status = options.status;
-      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
-      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
-      if (this.manifest.git.end.diffPath !== null) {
-        await this.#trackFile(this.manifest.git.end.diffPath);
-      }
-      this.manifest.result = {
-        archive_path: "result.json",
-        exit_code: options.exitCode
-      };
-      await this.#writeJson("result.json", {
-        schema_version: SCHEMA_VERSION,
-        kind: "run_result",
-        status: options.status,
-        exit_code: options.exitCode,
-        value: options.result
-      });
-      await this.#writeManifest();
-      this.#sealed = true;
-    });
-  }
-  async #writeJson(relativePath, value) {
-    await this.#writeText(relativePath, `${canonicalJson(value)}
-`);
-  }
-  async #writeText(relativePath, content) {
-    const destination = path7.join(this.archiveDir, relativePath);
-    await mkdir2(path7.dirname(destination), { recursive: true });
-    const temporary = path7.join(path7.dirname(destination), `.${path7.basename(destination)}${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, content);
-    await this.#trackFile(relativePath);
-  }
-  async #writeManifest() {
-    this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
-    const destination = path7.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path7.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
-`);
-  }
-  // pid + sequence keeps names unique within the process; Date.now() alone
-  // collided when two agents settled in the same millisecond.
-  #tmpSuffix() {
-    this.#tmpSeq += 1;
-    return `.${process.pid}.${this.#tmpSeq}.tmp`;
-  }
-  async #trackFile(relativePath) {
-    const absolute = path7.join(this.archiveDir, relativePath);
-    const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
-    this.#files.set(relativePath, {
-      path: relativePath,
-      size: metadata.size,
-      sha256: contentHash
-    });
-  }
-};
-function buildCostRollup(records) {
-  const rollup = {};
-  const unlikeCurrencies = /* @__PURE__ */ new Set();
-  for (const record of records) {
-    const engine = record.engine;
-    const model = record.model ?? "default";
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= {
-      tokens: zeroUsage2(),
-      cost: { amount: null, currency: null, source: "estimated" }
-    };
-    const bucket = rollup[engine][model];
-    for (const attempt of record.attempts) {
-      for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last, engine);
-        addProviderCost(bucket.cost, event, unlikeCurrencies);
-      }
-    }
-  }
-  return rollup;
-}
-function addProviderCost(target, event, unlikeCurrencies) {
-  if (unlikeCurrencies.has(target)) {
-    return;
-  }
-  const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
-    return;
-  }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
-    unlikeCurrencies.add(target);
-    target.amount = null;
-    target.currency = null;
-    target.source = "estimated";
-    return;
-  }
-  target.amount = (target.amount ?? 0) + cost;
-  target.source = "provider-reported";
-  if (currency !== null && target.currency === null) {
-    target.currency = currency;
-  }
-}
-function addUsage(target, delta, engine) {
-  target.cachedInputTokens += delta.cachedInputTokens;
-  target.inputTokens += delta.inputTokens;
-  target.outputTokens += delta.outputTokens;
-  target.reasoningOutputTokens += delta.reasoningOutputTokens;
-  target.totalTokens += delta.totalTokens;
-  target.cacheReadTokens += delta.cachedInputTokens;
-  target.freshInputTokens += engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-}
-function zeroUsage2() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-    freshInputTokens: 0,
-    cacheReadTokens: 0
-  };
-}
-async function deriveNamespace(cwd) {
-  const gitRoot = await git2(["rev-parse", "--show-toplevel"], cwd);
-  const material = await realpath(gitRoot ?? cwd);
-  const hash = sha256(material);
-  return {
-    strategy: "git-root-realpath-sha256",
-    id: `cwd:${hash.slice(0, 24)}`,
-    material,
-    hash
-  };
-}
-async function readGitState(cwd, diffPath, archiveDir) {
-  const root = await git2(["rev-parse", "--show-toplevel"], cwd);
-  const head = await git2(["rev-parse", "HEAD"], cwd);
-  const porcelain = await git2(["status", "--porcelain"], cwd);
-  const dirty = porcelain === null ? null : porcelain.length > 0;
-  let archivedDiffPath = null;
-  if (dirty === true) {
-    const diff = await git2(["diff", "HEAD", "--binary"], cwd) ?? await git2(["diff", "--binary"], cwd);
-    if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path7.join(archiveDir, diffPath), diff);
-      archivedDiffPath = diffPath;
-    }
-  }
-  return { root, head, dirty, diffPath: archivedDiffPath };
-}
-async function readPackageInfo(cwd) {
-  try {
-    const text = await readFile4(path7.join(cwd, "package.json"), "utf8");
-    const parsed = JSON.parse(text);
-    return {
-      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
-      version: typeof parsed.version === "string" ? parsed.version : "0.0.0"
-    };
-  } catch {
-    return { name: "ensemble-workflows", version: "0.0.0" };
-  }
-}
-async function findHarnessRoot() {
-  let current = path7.dirname(fileURLToPath(import.meta.url));
-  for (; ; ) {
-    try {
-      const text = await readFile4(path7.join(current, "package.json"), "utf8");
-      const parsed = JSON.parse(text);
-      if (parsed.name === "ensemble-workflows") {
-        return current;
-      }
-    } catch {
-    }
-    const parent = path7.dirname(current);
-    if (parent === current) {
-      return null;
-    }
-    current = parent;
-  }
-}
-async function toolVersions() {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
-    commandVersion("git", ["--version"]),
-    commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
-    commandVersion("opencode", ["--version"])
-  ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
-}
-async function commandVersion(command, args) {
-  try {
-    const { stdout, stderr } = await execFileAsync2(command, args, { timeout: 5e3 });
-    return (stdout || stderr).trim() || null;
-  } catch {
-    return null;
-  }
-}
-async function git2(args, cwd) {
-  try {
-    const { stdout } = await execFileAsync2("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
-    return stdout.trim();
-  } catch {
-    return null;
-  }
-}
-function extractTask(meta) {
-  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
-    return null;
-  }
-  return meta.task ?? null;
-}
-function canonicalJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-function sortJson(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-async function hashFile(filePath) {
-  const text = await readFile4(filePath);
-  return createHash("sha256").update(text).digest("hex");
-}
-async function writeStandaloneText(destination, content) {
-  await mkdir2(path7.dirname(destination), { recursive: true });
-  const temporary = path7.join(path7.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(temporary, destination, content);
-}
-async function writeAndRename(temporary, destination, content) {
-  try {
-    await writeFile(temporary, content, "utf8");
-    await rename(temporary, destination);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
-}
-function padId(id) {
-  return String(id).padStart(6, "0");
-}
-function padAttempt(attempt) {
-  return String(attempt).padStart(3, "0");
-}
-function safeName(filename, suffix) {
-  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
-}
-
 // src/status-file.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { link, readFile as readFile5, readdir as readdir3, rename as rename2, unlink, writeFile as writeFile2 } from "node:fs/promises";
-import path8 from "node:path";
+import { link, readFile as readFile5, readdir as readdir3, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import path9 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
 var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename2, unlink, writeFile: writeFile2 };
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename3, unlink, writeFile: writeFile3 };
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -18518,14 +18684,14 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     await this.#initialSweep;
-    const target = path8.join(this.#dir, STATUS_FILENAME);
+    const target = path9.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, target);
   }
   async #removeSnapshot() {
-    const target = path8.join(this.#dir, STATUS_FILENAME);
+    const target = path9.join(this.#dir, STATUS_FILENAME);
     const claim = `${target}.${process.pid}.${randomUUID4()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
@@ -18578,7 +18744,7 @@ var StatusFileWriter = class {
         continue;
       }
       try {
-        await this.#fileOperations.unlink(path8.join(this.#dir, entry));
+        await this.#fileOperations.unlink(path9.join(this.#dir, entry));
       } catch (error) {
         if (!isNodeError2(error) || error.code !== "ENOENT") {
           this.#reportError(error);
@@ -18663,17 +18829,34 @@ async function runEnsembleCli(argv, options = {}) {
   let statusWriter = null;
   let runRecordWriter = null;
   let finalRecord = null;
+  const sentinel = new CompletionSentinel();
+  const reportSentinelError = (error) => {
+    stderr.write(`[sentinel] ${formatError3(error)}
+`);
+  };
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
+      ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
+    const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
+    if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
+      const sentinelPath = await sentinel.prepare(
+        { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
+        reportSentinelError
+      );
+      if (sentinelPath !== null) {
+        stderr.write(`[sentinel] will write ${sentinelPath} when the run ends
+`);
+      }
+    }
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
         storeDir: runRecordDir,
@@ -18790,16 +18973,21 @@ async function runEnsembleCli(argv, options = {}) {
 `);
     return 1;
   } finally {
-    progress?.finish();
-    if (statusWriter !== null) {
-      await statusWriter.close();
-    }
-    if (runtime !== null) {
-      const terminalStatus = finalRecord?.status;
-      await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
-    }
-    if (runRecordWriter !== null) {
-      await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+    try {
+      progress?.finish();
+      if (statusWriter !== null) {
+        await statusWriter.close();
+      }
+      if (runtime !== null) {
+        const terminalStatus = finalRecord?.status;
+        await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+      }
+      if (runRecordWriter !== null) {
+        await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+      }
+    } finally {
+      const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
+      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
     }
   }
 }
@@ -18821,7 +19009,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     return {
-      workflowPath: path9.join(cwd, "<ensemble-agent>"),
+      workflowPath: path10.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -18833,7 +19021,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path9.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path10.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readFile6(workflowPath, "utf8"),
@@ -19118,7 +19306,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path9.resolve(cwd, filename);
+    const filePath = path10.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile6(filePath, "utf8");
@@ -19249,7 +19437,7 @@ function isError(error) {
 
 // src/node-version.ts
 import { readFileSync as readFileSync2 } from "node:fs";
-import path10 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function requiredNodeRange(fromUrl = import.meta.url) {
   if (">=24.14.0".trim().length > 0) {
@@ -19302,9 +19490,9 @@ function parseVersion(version) {
   };
 }
 function readPackageMetadata(fromUrl) {
-  let current = path10.dirname(fileURLToPath2(fromUrl));
+  let current = path11.dirname(fileURLToPath2(fromUrl));
   while (true) {
-    const candidate = path10.join(current, "package.json");
+    const candidate = path11.join(current, "package.json");
     try {
       const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
       if (metadata.name === "ensemble-workflows") {
@@ -19312,7 +19500,7 @@ function readPackageMetadata(fromUrl) {
       }
     } catch {
     }
-    const parent = path10.dirname(current);
+    const parent = path11.dirname(current);
     if (parent === current) {
       throw new Error("Could not locate ensemble-workflows package.json");
     }
@@ -19321,7 +19509,7 @@ function readPackageMetadata(fromUrl) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path11.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {

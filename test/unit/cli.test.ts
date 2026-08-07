@@ -35,6 +35,13 @@ class CaptureStream extends Writable {
   }
 }
 
+function withoutSentinelAnnouncement(stderr: string): string {
+  const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 test("the launcher announces the sentinel path before workers spawn and writes it on success", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-"));
   const runRecordDir = path.join(directory, "records");
@@ -1902,7 +1909,7 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
   });
   assert.equal(unpinnedExit, 0);
   assert.equal(
-    unpinnedStderr.text(),
+    withoutSentinelAnnouncement(unpinnedStderr.text()),
     "[codex] agent 1 (loose) runs unpinned — resolved ambient default: gpt-resolved-default (high effort)\n"
   );
 
@@ -1914,5 +1921,5 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
     createRuntime: makeRuntime
   });
   assert.equal(pinnedExit, 0);
-  assert.doesNotMatch(pinnedStderr.text(), /resolved ambient default/);
+  assert.doesNotMatch(withoutSentinelAnnouncement(pinnedStderr.text()), /resolved ambient default/);
 });

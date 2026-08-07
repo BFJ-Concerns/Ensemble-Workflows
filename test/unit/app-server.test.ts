@@ -222,6 +222,28 @@ reader.on("line", (line) => {
   }
 });
 
+test("the default registry does not leak a Claude worker environment into Codex", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-registry-worker-env-scope-"));
+  const envPath = path.join(directory, "codex-env.txt");
+  const codexBin = await fakeCodexTurnServer({ envCapturePath: envPath });
+  const savedScoped = process.env.ENSEMBLE_TEST_SCOPED;
+  process.env.ENSEMBLE_TEST_SCOPED = "codex-inherited";
+  const registry = await createDefaultEngineRegistry({
+    ...defaultRegistryOptions(codexBin),
+    workerEnvironment: { claude: { ENSEMBLE_TEST_SCOPED: "claude-declared" } }
+  });
+
+  try {
+    const codex = registry.get("codex");
+    assert.ok(codex);
+    await codex.createInvocation("hello", {}).runAttempt({ attempt: 1 });
+    assert.equal(await readFile(envPath, "utf8"), "codex-inherited");
+  } finally {
+    restoreEnv("ENSEMBLE_TEST_SCOPED", savedScoped);
+    await registry.close();
+  }
+});
+
 test("per-turn timeout carries the worker's partial text", async () => {
   const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -645,14 +667,14 @@ test("Codex app-server sends full access explicitly on the thread and every turn
 
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
-  options: { returnPromptBase64?: boolean; capturePath?: string } = {}
+  options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
   await writeFile(
     bin,
     `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 if (process.argv[2] !== "app-server") {
@@ -662,6 +684,10 @@ if (process.argv[2] !== "app-server") {
 let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
+const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
+if (envCapturePath !== null) {
+  writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
+}
 const reader = createInterface({ input: process.stdin });
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 

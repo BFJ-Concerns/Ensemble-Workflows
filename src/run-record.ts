@@ -186,8 +186,40 @@ interface Manifest {
     archive_path: string | null;
     exit_code: number | null;
   };
+  /**
+   * The root workflow and every composed child it invoked, in call order.
+   * One run, one grouping identity: the root's `meta.task` remains the
+   * consumer's key, and a child is an invocation inside the run, never a
+   * second run.
+   */
+  workflow_invocations: WorkflowInvocationEntry[];
   cost_rollup: Record<string, Record<string, UsageRollup>>;
   files: FileEntry[];
+}
+
+interface WorkflowInvocationEntry {
+  /** Call ordering: 0 is the root; children take the next ordinal as invoked. */
+  ordinal: number;
+  /** The invoking entry's ordinal; null for the root. */
+  parent: number | null;
+  path: string;
+  source: {
+    archive_path: string;
+    sha256: string;
+  };
+  args: {
+    archive_path: string;
+    sha256: string;
+  };
+}
+
+export interface WorkflowInvocationRecord {
+  /** The resolved script path the invocation ran. */
+  scriptPath: string;
+  source: string;
+  args: unknown;
+  /** The invoking invocation's ordinal — 0 when the root called it. */
+  parentOrdinal: number;
 }
 
 interface UsageRollup {
@@ -290,6 +322,21 @@ export class RunRecordWriter {
         archive_path: null,
         exit_code: null
       },
+      workflow_invocations: [
+        {
+          ordinal: 0,
+          parent: null,
+          path: options.workflowPath,
+          source: {
+            archive_path: "workflow.js",
+            sha256: sha256(options.workflowSource)
+          },
+          args: {
+            archive_path: "args.json",
+            sha256: sha256(canonicalJson(options.args))
+          }
+        }
+      ],
       cost_rollup: {},
       files: []
     });
@@ -317,6 +364,47 @@ export class RunRecordWriter {
         raw: meta
       };
       await this.#writeManifest();
+    });
+  }
+
+  /**
+   * Record a composed child's invocation: its source and args are archived
+   * beside the root's (same hashing, same canonicalisation), the manifest
+   * gains an ordered entry carrying the parent link, and the assigned
+   * ordinal is returned so nested provenance (if a deeper level is ever
+   * permitted) can name its parent. One run identity throughout — a child
+   * never opens a second archive.
+   */
+  async recordWorkflowInvocation(invocation: WorkflowInvocationRecord): Promise<number> {
+    return await this.#serialise(async () => {
+      const ordinal = this.manifest.workflow_invocations.length;
+      if (this.#sealed) {
+        return ordinal;
+      }
+      const directory = `workflows/${padId(ordinal)}`;
+      const sourcePath = `${directory}/workflow.js`;
+      const argsPath = `${directory}/args.json`;
+      await this.#writeText(sourcePath, invocation.source);
+      await this.#writeJson(argsPath, {
+        schema_version: SCHEMA_VERSION,
+        kind: "workflow_args",
+        value: invocation.args
+      });
+      this.manifest.workflow_invocations.push({
+        ordinal,
+        parent: invocation.parentOrdinal,
+        path: invocation.scriptPath,
+        source: {
+          archive_path: sourcePath,
+          sha256: sha256(invocation.source)
+        },
+        args: {
+          archive_path: argsPath,
+          sha256: sha256(canonicalJson(invocation.args))
+        }
+      });
+      await this.#writeManifest();
+      return ordinal;
     });
   }
 

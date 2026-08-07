@@ -37,6 +37,7 @@ export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, Workflow
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
 export { RunRecordWriter, resolveRunDirectory } from "./run-record.js";
+export type { WorkflowInvocationRecord } from "./run-record.js";
 export {
   CompletionSentinel,
   SENTINEL_FILENAME,

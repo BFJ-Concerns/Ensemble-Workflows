@@ -68,6 +68,80 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.equal(agent.execution_ms, 0);
 });
 
+test("composed-workflow invocations are archived with hashes, ordering, and the parent link", async () => {
+  const cwd = await gitRepo("ensemble-record-invocations-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const rootSource = "export const meta = { name: 'root' };\nreturn await workflow('child', []);\n";
+  const rootArgs = ["root-arg"];
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-composed",
+    workflowPath: path.join(cwd, "parent.js"),
+    workflowSource: rootSource,
+    args: rootArgs,
+    cliFlags: { jsonArgs: false }
+  });
+
+  const childSource = "export const meta = { name: 'child' };\nreturn args;\n";
+  const firstOrdinal = await writer.recordWorkflowInvocation({
+    scriptPath: path.join(cwd, "child.js"),
+    source: childSource,
+    args: { id: 7 },
+    parentOrdinal: 0
+  });
+  const secondOrdinal = await writer.recordWorkflowInvocation({
+    scriptPath: path.join(cwd, "child.js"),
+    source: childSource,
+    args: { id: 8 },
+    parentOrdinal: 0
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  assert.equal(firstOrdinal, 1);
+  assert.equal(secondOrdinal, 2);
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    workflow_invocations: Array<{
+      ordinal: number;
+      parent: number | null;
+      path: string;
+      source: { archive_path: string; sha256: string };
+      args: { archive_path: string; sha256: string };
+    }>;
+    files: Array<{ path: string; sha256: string }>;
+  };
+
+  // The root is entry 0 with no parent; children follow in call order, each
+  // linked to the root. One run identity: this is the same manifest, not a
+  // second archive.
+  assert.equal(manifest.workflow_invocations.length, 3);
+  const [root, first, second] = manifest.workflow_invocations;
+  assert.deepEqual(
+    manifest.workflow_invocations.map((entry) => [entry.ordinal, entry.parent]),
+    [
+      [0, null],
+      [1, 0],
+      [2, 0]
+    ]
+  );
+  assert.equal(root!.source.archive_path, "workflow.js");
+  assert.equal(first!.source.archive_path, "workflows/000001/workflow.js");
+  assert.equal(second!.args.archive_path, "workflows/000002/args.json");
+
+  // Hashes are verifiable against the archived bytes, and same source means
+  // same hash while different args mean different hashes.
+  const archivedChild = await readFile(path.join(writer.archiveDir, first!.source.archive_path), "utf8");
+  assert.equal(archivedChild, childSource);
+  assert.equal(first!.source.sha256, createHash("sha256").update(childSource).digest("hex"));
+  assert.equal(first!.source.sha256, second!.source.sha256);
+  assert.notEqual(first!.args.sha256, second!.args.sha256);
+
+  // The archived files are integrity-tracked like every other artefact.
+  const trackedPaths = manifest.files.map((entry) => entry.path);
+  assert.ok(trackedPaths.includes("workflows/000001/workflow.js"));
+  assert.ok(trackedPaths.includes("workflows/000002/args.json"));
+});
+
 test("CLI records effective concurrency values with mixed-layer provenance", async () => {
   const cwd = await gitRepo("ensemble-record-concurrency-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));

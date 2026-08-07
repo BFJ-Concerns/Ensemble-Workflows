@@ -17,5 +17,6 @@
   "schema_version",
   "started_at",
   "status",
-  "workflow"
+  "workflow",
+  "workflow_invocations"
 ]

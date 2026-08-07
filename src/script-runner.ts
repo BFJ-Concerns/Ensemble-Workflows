@@ -135,6 +135,14 @@ export interface RunWorkflowScriptOptions {
   log: WorkflowLogSink;
   /** Called with the parsed `meta` as soon as the script evaluates, before its body resolves. */
   onMeta?: (meta: unknown) => void | Promise<void>;
+  /**
+   * Called once per composed-child invocation, before the child runs, with
+   * the resolved script path, its source, and its arguments. The supplied
+   * callback owns its own failure handling — recording is observability, so
+   * an implementation that can fail reports rather than throws (the CLI's
+   * does; see `runRecord/writeFailed`).
+   */
+  onWorkflowInvocation?: (invocation: { scriptPath: string; source: string; args: unknown }) => void | Promise<void>;
 }
 
 interface ExtractedWorkflow {
@@ -167,6 +175,10 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
               readMeta: readWorkflowMeta
             });
             const source = await readFile(scriptPath, "utf8");
+            // Provenance before execution, matching the dispatch-time agent
+            // write: a child that dies mid-run still leaves evidence it was
+            // invoked, with what source and which arguments.
+            await options.onWorkflowInvocation?.({ scriptPath, source, args: args ?? [] });
             const child = await runWorkflowScript({
               source,
               filename: scriptPath,

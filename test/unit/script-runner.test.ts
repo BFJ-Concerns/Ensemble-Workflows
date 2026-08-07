@@ -111,6 +111,47 @@ test("workflow({ scriptPath }) runs a saved child with supplied args", async () 
   assert.deepEqual(result.result, { args: { id: 7 }, value: "agent:child-path" });
 });
 
+test("a composed child's invocation is surfaced before the child runs, with source and args", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-invocation-"));
+  const childPath = path.join(directory, "child.js");
+  const childSource = `
+      export const meta = { name: "recorded-child" };
+      return await agent("recorded", { engine: "codex" });
+    `;
+  await writeFile(childPath, childSource);
+
+  const invocations: Array<{ scriptPath: string; source: string; args: unknown }> = [];
+  const order: string[] = [];
+  const result = await runWorkflowScript({
+    cwd: directory,
+    filename: path.join(directory, "parent.js"),
+    runtime: {
+      ...runtime,
+      agent: (prompt: string) => {
+        order.push(`agent:${prompt}`);
+        return Promise.resolve(`agent:${prompt}`);
+      }
+    } as typeof runtime,
+    log: () => {},
+    onWorkflowInvocation: (invocation) => {
+      order.push("invocation-recorded");
+      invocations.push(invocation);
+    },
+    source: `
+      export const meta = { name: "recording-parent" };
+      return await workflow({ scriptPath: "./child.js" }, ["carried"]);
+    `
+  });
+
+  assert.equal(result.result, "agent:recorded");
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0]!.scriptPath, childPath);
+  assert.equal(invocations[0]!.source, childSource);
+  assert.deepEqual(invocations[0]!.args, ["carried"]);
+  // Provenance-before-execution: the record exists before the child spends.
+  assert.deepEqual(order, ["invocation-recorded", "agent:recorded"]);
+});
+
 test("workflow(name) resolves saved children from the project registry before the user registry", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-name-"));
   const userData = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-user-"));

@@ -221,6 +221,19 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       onMeta: async (meta: unknown) => {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
+      },
+      onWorkflowInvocation: async (invocation: { scriptPath: string; source: string; args: unknown }) => {
+        try {
+          // Nesting is one level, so every recorded child's parent is the
+          // root (ordinal 0). Deeper nesting would thread the ordinal back
+          // through the runner; today there is nothing to thread.
+          await runRecordWriter?.recordWorkflowInvocation({ ...invocation, parentOrdinal: 0 });
+        } catch (error) {
+          // Recording is observability: a failed provenance write must not
+          // fail the composition it describes. Same contract as agent
+          // records (`runRecord/writeFailed`).
+          stderr.write(`[run-record] failed to archive a workflow invocation: ${formatError(error)}\n`);
+        }
       }
     };
     const interrupt = watchWorkflowInterrupts();

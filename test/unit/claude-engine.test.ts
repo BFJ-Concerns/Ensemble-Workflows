@@ -487,6 +487,31 @@ test("a blocked Claude worker preserves transcript text and its diagnostic in th
   );
 });
 
+test("a served model the transcript already named survives an operational failure", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked", assistant: { text: "made a start", stop: "tool_use", model: "claude-served" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 0 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        // The turn failed and produced no result value, but the transcript
+        // had already named the served model — a result-less failure must
+        // not un-learn evidence the engine had (failures carry their
+        // evidence), so the record keeps it beside the failed attempt.
+        const settledRecord = records.at(-1);
+        assert.equal(settledRecord?.resolvedModel, "claude-served");
+        assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-blocked");
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
 test("Claude operational failures retain partial text across three governed attempts", async () => {
   await withControlPlane(
     [

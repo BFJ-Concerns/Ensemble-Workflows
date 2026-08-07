@@ -226,6 +226,7 @@ interface UsageRollup {
   tokens: TokenUsageBreakdown & {
     freshInputTokens: number;
     cacheReadTokens: number;
+    cacheCreationTokens: number;
   };
   cost: {
     amount: number | null;
@@ -631,7 +632,13 @@ function addUsage(target: UsageRollup["tokens"], delta: TokenUsageBreakdown, eng
   target.outputTokens += delta.outputTokens;
   target.reasoningOutputTokens += delta.reasoningOutputTokens;
   target.totalTokens += delta.totalTokens;
-  target.cacheReadTokens += delta.cachedInputTokens;
+  // Where the engine separates cache creation from cache reads (Claude),
+  // `cacheReadTokens` means input actually served from cache and the
+  // creation share is accounted on its own line. Engines that report one
+  // combined cached figure keep the whole of it under reads, unchanged.
+  const creation = delta.cacheCreationInputTokens ?? 0;
+  target.cacheCreationTokens += creation;
+  target.cacheReadTokens += Math.max(0, delta.cachedInputTokens - creation);
   // Codex reports cached input as a subset of input; Claude and opencode
   // report cached input separately. This derived field normalises both shapes
   // to uncached input without changing either engine's raw counters.
@@ -647,7 +654,8 @@ function zeroUsage(): UsageRollup["tokens"] {
     reasoningOutputTokens: 0,
     totalTokens: 0,
     freshInputTokens: 0,
-    cacheReadTokens: 0
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0
   };
 }
 

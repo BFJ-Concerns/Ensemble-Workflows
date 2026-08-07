@@ -153,8 +153,12 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
         // result while retaining the shared loop's bounded retry governance.
+        // A served model the transcript already named is evidence too: a
+        // result-less failure must not un-learn it (failures carry their
+        // evidence), so it is read before the session is torn down.
+        const resolvedModel = await this.#tryResolveModel(fromIndex);
         await this.#teardown();
-        return failedTurnResult(error);
+        return failedTurnResult(error, resolvedModel);
       }
       throw error;
     }
@@ -361,6 +365,16 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
   }
 
+  /** The served model the current turn's transcript names, or null when unreadable. */
+  async #tryResolveModel(fromIndex: number): Promise<string | null> {
+    const handle = this.#handle;
+    if (handle === null) {
+      return null;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    return transcript === null ? null : resolvedModelSince(transcript.entries, fromIndex);
+  }
+
   async #attachLatestWorkerText(error: Error, fromIndex: number): Promise<void> {
     const handle = this.#handle;
     if (handle === null) {
@@ -469,10 +483,11 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   }
 }
 
-function failedTurnResult(error: ClaudeWorkerError): EngineAttemptResult {
+function failedTurnResult(error: ClaudeWorkerError, resolvedModel: string | null = null): EngineAttemptResult {
   const text = partialWorkerTextOf(error) ?? "";
   return {
     text,
+    ...(resolvedModel !== null ? { resolvedModel } : {}),
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,

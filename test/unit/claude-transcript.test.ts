@@ -134,6 +134,9 @@ test("usageSince sums output tokens and snapshots the final input side", () => {
   assert.equal(usage.outputTokens, 40);
   assert.equal(usage.inputTokens, 220);
   assert.equal(usage.cachedInputTokens, 10);
+  // The creation share travels beside the combined figure, so a consumer can
+  // tell input served from cache (7) from cache being written (3).
+  assert.equal(usage.cacheCreationInputTokens, 3);
   assert.equal(usage.reasoningOutputTokens, 0);
   assert.equal(usage.totalTokens, 220 + 10 + 40);
 });

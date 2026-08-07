@@ -271,7 +271,8 @@ test("cost roll-up preserves raw usage and adds comparable fresh-input and cache
     reasoningOutputTokens: 2,
     totalTokens: 27,
     freshInputTokens: 12,
-    cacheReadTokens: 8
+    cacheReadTokens: 8,
+    cacheCreationTokens: 0
   });
   assert.deepEqual(claude, {
     cachedInputTokens: 8,
@@ -280,8 +281,44 @@ test("cost roll-up preserves raw usage and adds comparable fresh-input and cache
     reasoningOutputTokens: 0,
     totalTokens: 25,
     freshInputTokens: 12,
-    cacheReadTokens: 8
+    cacheReadTokens: 8,
+    cacheCreationTokens: 0
   });
+});
+
+test("cache creation is accounted apart from cache reads when the engine separates them", async () => {
+  const cwd = await gitRepo("ensemble-record-cache-split-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-cache-split",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'cache' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  // A Claude-shaped breakdown: 10 cached in total, of which 3 were cache
+  // writes — so only 7 were input actually served from cache.
+  await writer.recordAgent(
+    agentRecordWithUsage(1, "claude", { ...usage(220, 10, 40, 0, 270), cacheCreationInputTokens: 3 })
+  );
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    cost_rollup: Record<
+      string,
+      Record<
+        string,
+        { tokens: TokenUsageBreakdown & { freshInputTokens: number; cacheReadTokens: number; cacheCreationTokens: number } }
+      >
+    >;
+  };
+  const tokens = manifest.cost_rollup.claude?.default?.tokens;
+  assert.ok(tokens);
+  assert.equal(tokens.cachedInputTokens, 10);
+  assert.equal(tokens.cacheReadTokens, 7);
+  assert.equal(tokens.cacheCreationTokens, 3);
 });
 
 test("standalone git diff write stages beside its destination and succeeds", async () => {

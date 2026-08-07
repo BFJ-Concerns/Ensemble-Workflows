@@ -142,7 +142,8 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
 export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsageBreakdown {
   let outputTokens = 0;
   let lastInput = 0;
-  let lastCached = 0;
+  let lastCacheRead = 0;
+  let lastCacheCreation = 0;
   let sawUsage = false;
 
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
@@ -159,15 +160,23 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     // Overwrite (not accumulate) the input side: each step's input restates the
     // running context, so the final message's snapshot is the right charge-once value.
     lastInput = numeric(usage.input_tokens);
-    lastCached = numeric(usage.cache_read_input_tokens) + numeric(usage.cache_creation_input_tokens);
+    lastCacheRead = numeric(usage.cache_read_input_tokens);
+    lastCacheCreation = numeric(usage.cache_creation_input_tokens);
   }
 
   if (!sawUsage) {
     return zeroUsage();
   }
 
+  // Claude separates cache reads from cache creation and they mean different
+  // things to a consumer scoring cache efficiency, so the creation share is
+  // carried beside the combined figure: `cachedInputTokens` stays the sum
+  // (the budget's admission arithmetic is unchanged), and
+  // `cacheCreationInputTokens` says how much of it was writes.
+  const lastCached = lastCacheRead + lastCacheCreation;
   return {
     cachedInputTokens: lastCached,
+    cacheCreationInputTokens: lastCacheCreation,
     inputTokens: lastInput,
     outputTokens,
     reasoningOutputTokens: 0,

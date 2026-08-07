@@ -8,6 +8,13 @@ import test from "node:test";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const failedEnvelope = { partial: true, reason: "failed", completed: [] };
 
+function withoutSentinelAnnouncement(stderr: string): string {
+  const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 for (const scenario of [
   { name: "function", body: `return { nested: { callback: () => 1 } };`, path: "return value.nested.callback is a function" },
   { name: "symbol", body: `return { nested: { marker: Symbol("estate") } };`, path: "return value.nested.marker is a symbol" },
@@ -18,11 +25,12 @@ for (const scenario of [
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
+    const diagnostic = withoutSentinelAnnouncement(result.stderr);
     assert.equal(
-      result.stderr,
+      diagnostic,
       `WorkflowScriptError: workflow return value must be a JSON value: ${scenario.path}\n`
     );
-    assert.doesNotMatch(result.stderr, /\n\s+at /);
+    assert.doesNotMatch(diagnostic, /\n\s+at /);
   });
 }
 
@@ -34,11 +42,12 @@ test("built CLI rejects workflow arguments before resolving or executing the chi
 
   assert.equal(result.code, 1, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
+  const diagnostic = withoutSentinelAnnouncement(result.stderr);
   assert.equal(
-    result.stderr,
+    diagnostic,
     "WorkflowScriptError: workflow() arguments must be a JSON value: args[0].nested.callback is a function\n"
   );
-  assert.doesNotMatch(result.stderr, /could not read|absent-child|\n\s+at /);
+  assert.doesNotMatch(diagnostic, /could not read|absent-child|\n\s+at /);
 });
 
 for (const scenario of [
@@ -62,10 +71,11 @@ for (const scenario of [
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
-    assert.match(result.stderr, /^WorkflowScriptError: workflow return value must be a JSON value:/);
-    assert.match(result.stderr, new RegExp(escapeRegExp(scenario.path)));
-    assert.equal(result.stderr.trim().split("\n").length, 1);
-    assert.doesNotMatch(result.stderr, /RangeError|\n\s+at /);
+    const diagnostic = withoutSentinelAnnouncement(result.stderr);
+    assert.match(diagnostic, /^WorkflowScriptError: workflow return value must be a JSON value:/);
+    assert.match(diagnostic, new RegExp(escapeRegExp(scenario.path)));
+    assert.equal(diagnostic.trim().split("\n").length, 1);
+    assert.doesNotMatch(diagnostic, /RangeError|\n\s+at /);
   });
 }
 

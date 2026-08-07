@@ -28,6 +28,13 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+function withoutSentinelAnnouncement(stderr: string): string {
+  const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 class CaptureStream extends Writable {
   chunks: string[] = [];
 
@@ -338,7 +345,7 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
   );
 
   assert.equal(exitCode, 0, stderr);
-  assert.equal(stderr, "[phase] collect\n[phase] compile\n");
+  assert.equal(withoutSentinelAnnouncement(stderr), "[phase] collect\n[phase] compile\n");
   const result = JSON.parse(stdout) as {
     args: string[];
     findings: Array<{ topic: string; confidence: number }>;
@@ -956,8 +963,9 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
 
   assert.equal(unsupported.exitCode, 1);
   assert.equal(unsupported.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-  assert.match(unsupported.stderr, /CodexSchemaSubsetUnsupportedError: Codex rejected outputSchema before generation/);
-  assert.doesNotMatch(unsupported.stderr, /verdict/);
+  const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
+  assert.match(unsupportedDiagnostic, /CodexSchemaSubsetUnsupportedError: Codex rejected outputSchema before generation/);
+  assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
 
   const ordinaryValidation = await runScriptWithCliEngines(
     `
@@ -986,7 +994,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
 
   assert.equal(ordinaryValidation.exitCode, 0, ordinaryValidation.stderr);
   assert.deepEqual(JSON.parse(ordinaryValidation.stdout), { verdict: null });
-  assert.equal(ordinaryValidation.stderr, "");
+  assert.equal(withoutSentinelAnnouncement(ordinaryValidation.stderr), "");
 });
 
 test("pipeline workflow interleaves items and drops only the failing item", async () => {

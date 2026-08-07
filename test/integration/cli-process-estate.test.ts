@@ -13,6 +13,13 @@ import type { EngineName } from "../../src/types.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
+function withoutSentinelAnnouncement(stderr: string): string {
+  const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 class UnboundedBudget implements BudgetView {
   readonly ceilings: Partial<Record<EngineName, number | null>> = {};
 
@@ -243,7 +250,7 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `{"completed":true}\n`);
-    assert.equal(result.stderr, "");
+    assert.equal(withoutSentinelAnnouncement(result.stderr), "");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -311,7 +318,7 @@ test("built CLI executes code after every JavaScript line-comment terminator", a
 
         assert.equal(result.code, 0, result.stderr);
         assert.equal(result.stdout, `${JSON.stringify(`${name}-code-ran`)}\n`);
-        assert.equal(result.stderr, "");
+        assert.equal(withoutSentinelAnnouncement(result.stderr), "");
       } finally {
         await fixture.cleanup();
       }
@@ -621,7 +628,7 @@ test("built CLI rejects a per-turn timeout above Node's timer limit on every aff
       assert.equal(result.code, 1);
       assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
       assert.equal(
-        result.stderr,
+        withoutSentinelAnnouncement(result.stderr),
         'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
       );
       const messages = await fixture.messages();
@@ -651,7 +658,7 @@ test("built CLI keeps a stack for an ordinary workflow-body error", async () => 
 
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.match(result.stderr, /^Error: ordinary workflow bug\n\s+at /);
+    assert.match(withoutSentinelAnnouncement(result.stderr), /^Error: ordinary workflow bug\n\s+at /);
   } finally {
     await fixture.cleanup();
   }
@@ -678,7 +685,7 @@ test("built CLI falls back to an ordinary error's name and message when its stac
 
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.equal(result.stderr, "Error: stackless error\n");
+    assert.equal(withoutSentinelAnnouncement(result.stderr), "Error: stackless error\n");
   } finally {
     await fixture.cleanup();
   }
@@ -703,8 +710,9 @@ test("built CLI does not trust a stack field on a thrown non-Error object", asyn
 
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.equal(result.stderr, "[object Object]\n");
-    assert.doesNotMatch(result.stderr, /not actually a stack trace/);
+    const diagnostic = withoutSentinelAnnouncement(result.stderr);
+    assert.equal(diagnostic, "[object Object]\n");
+    assert.doesNotMatch(diagnostic, /not actually a stack trace/);
   } finally {
     await fixture.cleanup();
   }
@@ -1049,7 +1057,7 @@ test("built CLI treats an absent machine config as silent and normal", async () 
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `"config-default-ok"\n`);
-    assert.doesNotMatch(result.stderr, /config/i);
+    assert.doesNotMatch(withoutSentinelAnnouncement(result.stderr), /config/i);
   } finally {
     await fixture.cleanup();
   }

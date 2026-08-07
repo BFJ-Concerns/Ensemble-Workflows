@@ -43,19 +43,31 @@ test("the launcher announces the sentinel path before workers spawn and writes i
     script,
     `
       export const meta = { name: "sentinel-success" };
+      await agent("observe ordering", { engine: "codex" });
       return "ok";
     `
   );
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
+  // The ordering property is pinned by observation, not by code position:
+  // the worker dispatch itself records whether the announcement had already
+  // reached stderr when the first agent() ran.
+  let announcedBeforeFirstAgent: boolean | null = null;
+  const runtime = fakeRuntime();
+  runtime.agent = (async (prompt: string) => {
+    announcedBeforeFirstAgent ??= /\[sentinel\] will write /.test(stderr.text());
+    return prompt;
+  }) as EnsembleRuntime["agent"];
   const exitCode = await runEnsembleCli([script], {
     cwd: directory,
     stdout,
     stderr,
     runRecordDir,
-    createRuntime: async () => fakeRuntime()
+    createRuntime: async () => runtime
   });
+
+  assert.equal(announcedBeforeFirstAgent, true, "the sentinel path must be announced before the first worker runs");
 
   assert.equal(exitCode, 0, stderr.text());
   const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);

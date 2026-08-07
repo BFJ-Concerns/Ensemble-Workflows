@@ -105,13 +105,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveKillSettleMs: number;
   #valveCounter = 0;
   #env: NodeJS.ProcessEnv;
+  #workerEnv: Record<string, string>;
 
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     // Declared variables sit above inherited ones; everything undeclared
-    // still inherits, so a configured parent keeps working unchanged.
-    this.#env = { ...process.env, ...options.workerEnv };
+    // still inherits, so a configured parent keeps working unchanged. The
+    // declared map is also kept separately: the tmux valve needs it as
+    // explicit -e flags (see steer()).
+    this.#workerEnv = options.workerEnv ?? {};
+    this.#env = { ...process.env, ...this.#workerEnv };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
@@ -211,9 +215,19 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
 
     try {
+      // A pre-existing tmux server starts the pane's command from the
+      // *server's* environment, not this client's, so the declared worker
+      // variables must ride explicit `-e` flags (tmux >= 3.2) to reach the
+      // `claude attach` child. Without them the injection silently covers
+      // only the server-started-here case.
+      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
+        "-e",
+        `${name}=${value}`
+      ]);
       const created = await this.#run(this.#tmuxBin, [
         "new-session",
         "-d",
+        ...environmentFlags,
         "-s",
         valve,
         `${this.#claudeBin} attach ${handle.id}`

@@ -157,8 +157,12 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
     JSON.stringify({ type: "session.created", sessionID: "ses_killed" }),
     JSON.stringify({ type: "text", part: { type: "text", text: "half an answer" } })
   ].join("\n");
+  // A killed run's session export realistically fails too; making it fail
+  // also keeps the stream text as the retained evidence — a successful
+  // export would legitimately replace it with the exported answer.
   const runner = new FakeOpenCodeRunner({
-    runResult: { exitCode: null, signal: "SIGKILL", stdout: stream, stderr: "" }
+    runResult: { exitCode: null, signal: "SIGKILL", stdout: stream, stderr: "" },
+    exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "session gone" }
   });
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
@@ -215,6 +219,10 @@ process.stdout.write(JSON.stringify({ type: "text", part: { type: "text", text: 
   );
   await chmod(bin, 0o755);
 
+  // Save-and-restore, not delete: a pre-existing value on the invoking
+  // machine must survive this test for later tests in the process.
+  const savedKey = process.env.OPENCODE_API_KEY;
+  const savedInherited = process.env.ENSEMBLE_TEST_INHERITED;
   process.env.OPENCODE_API_KEY = "inherited-key";
   process.env.ENSEMBLE_TEST_INHERITED = "still-here";
   try {
@@ -222,8 +230,8 @@ process.stdout.write(JSON.stringify({ type: "text", part: { type: "text", text: 
     const result = await runner.run({ prompt: "hello", cwd: directory, providerModel: "test/model" });
     assert.equal(result.exitCode, 0);
   } finally {
-    delete process.env.OPENCODE_API_KEY;
-    delete process.env.ENSEMBLE_TEST_INHERITED;
+    restoreEnv("OPENCODE_API_KEY", savedKey);
+    restoreEnv("ENSEMBLE_TEST_INHERITED", savedInherited);
     // The observation file is written before the child exits, so no wait race.
   }
   const observed = JSON.parse(await readFile(envPath, "utf8")) as { key: string | null; inherited: string | null };
@@ -1036,3 +1044,11 @@ setInterval(() => {}, 1000);
   assert.equal(result.signal, "SIGKILL");
   assert.equal(result.exitCode, null);
 });
+
+function restoreEnv(name: string, saved: string | undefined): void {
+  if (saved === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = saved;
+  }
+}

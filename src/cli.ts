@@ -95,8 +95,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let statusWriter: StatusFileWriter | null = null;
   let runRecordWriter: RunRecordWriter | null = null;
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
-  // The launcher owns the sentinel: written on every
-  // terminal transition this process can handle, even when recording is off.
+  // The launcher owns the sentinel: written on every terminal transition this
+  // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
   const reportSentinelError = (error: unknown): void => {
     stderr.write(`[sentinel] ${formatError(error)}\n`);
@@ -124,10 +124,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Announce the sentinel path before any worker spawns. The store
     // directory resolves independently of the ambient record on/off switch:
     // the sentinel is supervision surface, not archive, so a *storage
-    // preference* must not silently remove a supervisor's wake signal.
-    // An explicit programmatic
-    // `runRecordDir: null` is a different thing — a library caller opting
-    // out of the store entirely — and skips the sentinel with it.
+    // preference* must not silently remove a supervisor's wake signal. An
+    // explicit programmatic `runRecordDir: null` is a different thing — a
+    // library caller opting out of the store entirely — and skips the
+    // sentinel with it.
     const sentinelStoreDir =
       options.runRecordDir !== undefined
         ? options.runRecordDir
@@ -255,25 +255,30 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
-    // Tear workers down while the archive is still open so their terminal
-    // status can replace the dispatch-time snapshot before the run is sealed.
-    progress?.finish();
-    if (statusWriter !== null) {
-      await statusWriter.close();
+    try {
+      // Tear workers down while the archive is still open so their terminal
+      // status can replace the dispatch-time snapshot before the run is sealed.
+      progress?.finish();
+      if (statusWriter !== null) {
+        await statusWriter.close();
+      }
+      if (runtime !== null) {
+        const terminalStatus = finalRecord?.status;
+        await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
+      }
+      if (runRecordWriter !== null) {
+        await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+      }
+    } finally {
+      // Last, so a supervisor woken by the sentinel finds the archive already
+      // sealed — and in its own finally, so a teardown or archive-seal error
+      // cannot skip the wake signal. Every terminal transition this launcher
+      // can handle passes through here — success, failure, timeout,
+      // interruption, salvage — and a missing finalRecord is itself a
+      // failure outcome.
+      const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
+      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
     }
-    if (runtime !== null) {
-      const terminalStatus = finalRecord?.status;
-      await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
-    }
-    if (runRecordWriter !== null) {
-      await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
-    }
-    // Last, so a supervisor woken by the sentinel finds the archive already
-    // sealed. Every terminal transition this launcher can handle passes
-    // through this finally — success, failure, timeout, interruption,
-    // salvage — and a missing finalRecord is itself a failure outcome.
-    const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
-    await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
   }
 }
 

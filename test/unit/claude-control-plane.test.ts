@@ -102,6 +102,10 @@ test("a declared worker environment reaches the dispatched claude child, above i
 
     // The declared value must win over an inherited one for the same name,
     // and an undeclared inherited variable must still pass through.
+    // Save-and-restore, not delete: a pre-existing value on the invoking
+    // machine must survive this test for later tests in the process.
+    const savedBase = process.env.ANTHROPIC_BASE_URL;
+    const savedInherited = process.env.ENSEMBLE_TEST_INHERITED;
     process.env.ANTHROPIC_BASE_URL = "https://inherited.example";
     process.env.ENSEMBLE_TEST_INHERITED = "still-here";
     try {
@@ -113,8 +117,8 @@ test("a declared worker environment reaches the dispatched claude child, above i
       });
       await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
     } finally {
-      delete process.env.ANTHROPIC_BASE_URL;
-      delete process.env.ENSEMBLE_TEST_INHERITED;
+      restoreEnv("ANTHROPIC_BASE_URL", savedBase);
+      restoreEnv("ENSEMBLE_TEST_INHERITED", savedInherited);
     }
 
     const observed = JSON.parse(await readFile(envPath, "utf8")) as { base: string | null; inherited: string | null };
@@ -185,3 +189,11 @@ test("steer returns false when either tmux delivery step fails", async (context)
     });
   }
 });
+
+function restoreEnv(name: string, saved: string | undefined): void {
+  if (saved === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = saved;
+  }
+}

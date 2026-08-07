@@ -63,6 +63,16 @@ export interface ClaudeSessionStatus {
 export interface ClaudeCliControlPlaneOptions {
   claudeBin?: string;
   tmuxBin?: string;
+  /**
+   * Machine-declared variables injected over the inherited environment for
+   * every child this control plane starts.
+   * The dispatch is the worker, but the daemon can be auto-started by any
+   * `claude` invocation and the tmux valve runs `claude attach` inside its
+   * pane, so the injection covers all of them — a gateway setting that
+   * reached only the dispatch could still miss the process that actually
+   * serves the session.
+   */
+  workerEnv?: Record<string, string>;
   /** Defaults to `~/.claude/projects`. */
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
@@ -94,10 +104,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
   #valveCounter = 0;
+  #env: NodeJS.ProcessEnv;
 
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
+    // Declared variables sit above inherited ones; everything undeclared
+    // still inherits, so a configured parent keeps working unchanged.
+    this.#env = { ...process.env, ...options.workerEnv };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
@@ -283,7 +297,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       execFile(
         file,
         args,
-        { ...(cwd !== undefined ? { cwd } : {}), maxBuffer: 32 * 1024 * 1024, env: process.env },
+        { ...(cwd !== undefined ? { cwd } : {}), maxBuffer: 32 * 1024 * 1024, env: this.#env },
         (error, stdout, stderr) => {
           resolve({ ok: error === null, stdout, stderr });
         }
@@ -295,7 +309,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return new Promise<ExecResult>((resolve) => {
       const child = spawn(file, args, {
         ...(cwd !== undefined ? { cwd } : {}),
-        env: process.env,
+        env: this.#env,
         stdio: ["pipe", "pipe", "pipe"]
       });
       const stdout: Buffer[] = [];

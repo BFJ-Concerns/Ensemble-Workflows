@@ -8,7 +8,7 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
-import type { EngineConcurrencyCaps, EngineName } from "./types.js";
+import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
 export const CONFIG_SCHEMA_VERSION = 1;
 export const AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
@@ -27,7 +27,21 @@ export interface AmbientSettings {
   agentCeiling: Resolved<number | null>;
   concurrencyCaps: Record<EngineName, Resolved<number>>;
   runRecordDir: Resolved<string | null>;
+  /**
+   * The durable-record store's directory, resolved independently of the
+   * record's on/off switch. The completion sentinel lands under the run's
+   * directory here even when archiving is disabled: the sentinel is
+   * supervision surface, not archive.
+   */
+  runRecordStoreDir: Resolved<string>;
   statusDir: Resolved<string | null>;
+  /**
+   * Per-engine environment variables to inject into dispatched workers.
+   * Config-file only: the motivating failure is a run whose parent
+   * environment cannot be relied on, so an env-var or flag layer would
+   * restate the problem the setting exists to solve.
+   */
+  workerEnvironment: EngineWorkerEnvironment;
 }
 
 export interface AmbientSettingFlags {
@@ -54,6 +68,7 @@ interface MachineConfig {
     enabled?: boolean;
     dir?: string;
   };
+  worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
 }
 
 const ENGINES = ["codex", "claude", "opencode"] as const satisfies readonly EngineName[];
@@ -96,7 +111,9 @@ export function resolveAmbientSettings(input: {
       ])
     ) as Record<EngineName, Resolved<number>>,
     runRecordDir: resolveRunRecord(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd)
+    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
+    statusDir: resolveStatus(config, input.env, input.cwd),
+    workerEnvironment: config?.worker_environment ?? {}
   };
 }
 
@@ -139,7 +156,11 @@ function readMachineConfig(configFile: string): MachineConfig | null {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
 
-  assertKnownKeys(parsed, ["schema_version", "agent_ceiling", "concurrency", "run_record", "status"], configFile);
+  assertKnownKeys(
+    parsed,
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment"],
+    configFile
+  );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
@@ -149,6 +170,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
+  validateWorkerEnvironment(parsed, configFile);
   return parsed as unknown as MachineConfig;
 }
 
@@ -188,6 +210,41 @@ function validateRunSetting(
   }
   if (key === "dir" && (typeof value !== "string" || value.trim().length === 0)) {
     throw fileValueError(configFile, qualified, "must be a non-empty string");
+  }
+}
+
+/**
+ * `worker_environment` is a map of maps, not a scalar setting, so it takes its
+ * own validator rather than riding `validateSection`'s known-key walk: engines
+ * are the known keys, and each engine's value is an open set of variable
+ * names whose values must all be strings.
+ */
+function validateWorkerEnvironment(root: Record<string, unknown>, configFile: string): void {
+  const section = root.worker_environment;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "worker_environment", "must be a JSON object");
+  }
+  assertKnownKeys(section, ENGINES, configFile, "worker_environment");
+  for (const engine of ENGINES) {
+    const variables = section[engine];
+    if (variables === undefined) {
+      continue;
+    }
+    const qualified = `worker_environment.${engine}`;
+    if (!isObject(variables) || Array.isArray(variables)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object of variable names to string values");
+    }
+    for (const [name, value] of Object.entries(variables)) {
+      if (name.trim().length === 0) {
+        throw fileValueError(configFile, qualified, "variable names must be non-empty");
+      }
+      if (typeof value !== "string") {
+        throw fileValueError(configFile, `${qualified}.${name}`, "must be a string");
+      }
+    }
   }
 }
 
@@ -285,6 +342,18 @@ function resolveRunRecord(
     path.join(dataHome(env), "ensemble")
   );
   return directory;
+}
+
+function resolveRunRecordStoreDir(
+  config: MachineConfig | null,
+  env: NodeJS.ProcessEnv
+): Resolved<string> {
+  return resolveDirectory(
+    env[RUN_RECORD_DIR_ENV],
+    RUN_RECORD_DIR_ENV,
+    config?.run_record?.dir,
+    path.join(dataHome(env), "ensemble")
+  );
 }
 
 function resolveStatus(

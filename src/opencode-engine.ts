@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
-import { EngineShutdownError, OpenCodeRunError, attachPartialWorkerText } from "./errors.js";
+import { EngineShutdownError, OpenCodeRunError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
 
 import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
 import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
@@ -92,10 +92,14 @@ type ParsedExport = { ok: true; data: OpenCodeExport } | { ok: false; error: str
 export class OpenCodeCliRunner implements OpenCodeRunner {
   #bin: string;
   #killGraceMs: number;
+  #env: NodeJS.ProcessEnv;
 
-  constructor(bin = "opencode", options: { killGraceMs?: number } = {}) {
+  constructor(bin = "opencode", options: { killGraceMs?: number; workerEnv?: Record<string, string> } = {}) {
     this.#bin = bin;
     this.#killGraceMs = options.killGraceMs ?? 5_000;
+    // Declared variables sit above inherited ones; everything undeclared
+    // still inherits, so a configured parent keeps working unchanged.
+    this.#env = { ...process.env, ...options.workerEnv };
   }
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
@@ -114,11 +118,11 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, options.timeoutMs, this.#killGraceMs, options.signal);
+    return runProcess(this.#bin, args, options.cwd, this.#env, options.timeoutMs, this.#killGraceMs, options.signal);
   }
 
   async exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult> {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, 30_000, this.#killGraceMs, signal);
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 30_000, this.#killGraceMs, signal);
     if (result.exitCode !== 0) {
       return {
         status: "command-failed",
@@ -183,7 +187,10 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       // A cancelled worker is a shutdown, not an opencode failure — and a
       // cancelled invocation must not fork a fresh export subprocess just
       // to learn what its killed run had said.
-      throw attachPartialWorkerText(new EngineShutdownError("opencode"), fallback);
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
     }
     let exportData: OpenCodeExport | null = null;
     let exportDiagnostic: OpenCodeExportDiagnostic;
@@ -247,7 +254,13 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     ];
 
     if (run.exitCode !== 0) {
-      throw attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text);
+      // Evidence of *how* the process died rides the failure beside the
+      // worker's partial text: exit status or terminating signal, so a
+      // killed leg is distinguishable from one that returned nothing.
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
     }
 
     return {
@@ -334,6 +347,7 @@ function runProcess(
   command: string,
   args: string[],
   cwd: string,
+  env: NodeJS.ProcessEnv,
   timeoutMs: number | undefined,
   killGraceMs = 5_000,
   abortSignal?: AbortSignal
@@ -342,6 +356,7 @@ function runProcess(
     const startedAt = Date.now();
     const child = spawn(command, args, {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"]
     });
     const stdout: string[] = [];

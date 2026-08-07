@@ -102,9 +102,22 @@ The optional machine file uses schema version 1:
   "status": {
     "enabled": true,
     "dir": "/path/to/existing/status-directory"
+  },
+  "worker_environment": {
+    "claude": { "ANTHROPIC_BASE_URL": "https://gateway.example" },
+    "codex": { "OPENAI_BASE_URL": "https://codex-gateway.example" }
   }
 }
 ```
+
+`worker_environment` declares environment variables the harness injects into
+the workers it dispatches, scoped per engine — a variable declared for
+`claude` reaches Claude workers only. Injected values override inherited ones
+for that engine's workers; everything undeclared still inherits from the
+launching process. This section lives in the config file alone — there is
+deliberately no `ENSEMBLE_` variable or CLI flag for it, because its purpose
+is to hold for runs whose parent environment cannot be relied on. Values must
+be strings; unknown engines and non-string values fail the run loudly.
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, unknown key, invalid value, unreadable file, or
@@ -258,7 +271,22 @@ The durable manifest records the effective ceiling and every registered
 engine's cap with the layer that supplied each value (`flag`, `env`,
 `config-file`, or `default`). An unbounded ceiling is written explicitly as
 `null`. Every agent record separates `queued_ms` from `execution_ms`; the
-existing attempt `duration_ms` retains its previous meaning.
+existing attempt `duration_ms` retains its previous meaning. When an
+attempt's worker process dies rather than returns, the attempt record's
+`worker_exit` carries `{ exit_code, signal }` as the engine observed them —
+a killed leg is distinguishable from one that returned nothing; attempts that
+returned normally record `worker_exit: null`.
+
+**Completion sentinel.** At startup the CLI prints, on stderr, the path of a
+sentinel file (`completion-sentinel.json`, under the run's own directory in
+the durable-record store) that the launcher process itself writes when the
+run ends. It is written on every terminal transition the launcher can
+handle — success, failure, timeout, interruption, salvage — carrying
+`outcome`, `exit_code`, and `ended_at`, and it is written even when durable
+recording is disabled: the sentinel is supervision surface, not archive, so
+the run directory is created for it alone. An uncatchable kill of the
+launcher leaves no sentinel — a supervisor should keep a scheduled fallback
+timer behind its filesystem watch rather than trusting the file absolutely.
 
 ## Return contract and failure modes
 

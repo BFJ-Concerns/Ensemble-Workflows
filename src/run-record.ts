@@ -54,6 +54,13 @@ export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
   failure: { kind: string; message: string } | null;
+  /**
+   * How the attempt's worker process died, when the engine observed it —
+   * the exit status or terminating signal, so a killed leg is
+   * distinguishable from one that returned nothing. Null when the worker
+   * returned normally or its engine has no process handle to observe.
+   */
+  workerExit: { exitCode: number | null; signal: string | null } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   startedAt: string;
@@ -228,7 +235,7 @@ export class RunRecordWriter {
   static async start(options: RunRecordStartOptions): Promise<RunRecordWriter> {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = path.join(options.storeDir, "runs", "cwd", namespace.hash, options.runUuid);
+    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
     await mkdir(archiveDir, { recursive: true });
 
     const harnessRoot = (await findHarnessRoot()) ?? options.cwd;
@@ -393,6 +400,10 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         failure: attempt.failure,
+        worker_exit:
+          attempt.workerExit === null
+            ? null
+            : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         started_at: attempt.startedAt,
@@ -550,6 +561,20 @@ function zeroUsage(): UsageRollup["tokens"] {
     freshInputTokens: 0,
     cacheReadTokens: 0
   };
+}
+
+/**
+ * The run's directory in the durable-record store. Exported for the
+ * completion sentinel, which lands under the same derivable path whether or
+ * not the archive itself is being written — one derivation, two consumers,
+ * so a supervisor's watch path and the writer's archive path cannot drift.
+ */
+export async function resolveRunDirectory(storeDir: string, cwd: string, runUuid: string): Promise<string> {
+  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+
+function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {
+  return path.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
 }
 
 async function deriveNamespace(cwd: string): Promise<NamespaceRecord> {

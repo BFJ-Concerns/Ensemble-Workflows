@@ -37,6 +37,41 @@ export function partialWorkerTextOf(error: unknown): string | null {
   return null;
 }
 
+/**
+ * How a worker process actually died, when the engine observed it. A sibling
+ * carrier to the partial-text one above, and deliberately not a generalised
+ * metadata channel: it carries exactly the evidence the contract names — the
+ * exit status or terminating signal — so a killed leg is distinguishable from
+ * one that returned nothing. Attachment never overwrites an earlier value,
+ * so the observation closest to the process wins over a later re-wrap.
+ */
+export interface WorkerExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
+
+interface WorkerExitStatusCarrier {
+  workerExitStatus?: WorkerExitStatus;
+}
+
+export function attachWorkerExitStatus<T extends Error>(error: T, exit: WorkerExitStatus): T {
+  const carrier = error as T & WorkerExitStatusCarrier;
+  if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === undefined) {
+    carrier.workerExitStatus = exit;
+  }
+  return error;
+}
+
+export function workerExitStatusOf(error: unknown): WorkerExitStatus | null {
+  if (error instanceof Error) {
+    const exit = (error as WorkerExitStatusCarrier).workerExitStatus;
+    if (exit !== undefined) {
+      return exit;
+    }
+  }
+  return null;
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

@@ -6,6 +6,13 @@ export type IsolationMode = "worktree";
 export type TokenAccountingMode = "last-delta" | "total-cumulative";
 export type EngineBudgetCeilings = Partial<Record<EngineName, number | null>>;
 export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
+/**
+ * Machine-declared environment variables injected into dispatched workers,
+ * scoped per engine. Injected values override inherited ones for that
+ * engine's workers; everything undeclared still inherits from the launching
+ * process.
+ */
+export type EngineWorkerEnvironment = Partial<Record<EngineName, Record<string, string>>>;
 
 export interface AgentOptions {
   engine: EngineName;
@@ -36,6 +43,13 @@ export interface RuntimeOptions {
    */
   retryPromiseSilenceTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
+  /**
+   * Machine-declared per-engine worker environment (the config file's
+   * `worker_environment` section). Injected values override inherited ones
+   * for the declared engine's workers only, so one engine's settings never
+   * reach another's workers.
+   */
+  workerEnvironment?: EngineWorkerEnvironment;
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;
   clientName?: string;

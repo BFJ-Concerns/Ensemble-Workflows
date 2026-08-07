@@ -35,6 +35,169 @@ class CaptureStream extends Writable {
   }
 }
 
+test("the launcher announces the sentinel path before workers spawn and writes it on success", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-success" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced, "sentinel path must be announced on stderr at startup");
+  const sentinelPath = announced[1]!;
+  assert.equal(path.basename(sentinelPath), "completion-sentinel.json");
+  // The sentinel lands under the run's own directory in the store, beside
+  // the archive a supervisor would read next.
+  assert.ok(sentinelPath.startsWith(path.join(runRecordDir, "runs")));
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    exit_code: number;
+    ended_at: string;
+  };
+  assert.equal(sentinel.outcome, "complete");
+  assert.equal(sentinel.exit_code, 0);
+  assert.ok(sentinel.ended_at.length > 0);
+});
+
+test("the sentinel is written even when durable recording is disabled ambiently", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-off-"));
+  const configHome = path.join(directory, "config");
+  const dataHome = path.join(directory, "data");
+  await mkdir(path.join(configHome, "ensemble"), { recursive: true });
+  // Recording off, but the store's location still resolves: the sentinel is
+  // supervision surface, not archive.
+  await writeFile(
+    path.join(configHome, "ensemble", "config.json"),
+    JSON.stringify({ schema_version: 1, run_record: { enabled: false } })
+  );
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-recording-off" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    env: { XDG_CONFIG_HOME: configHome, XDG_DATA_HOME: dataHome },
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced, "recording off must not remove the supervisor's wake signal");
+  const sentinelPath = announced[1]!;
+  assert.ok(sentinelPath.startsWith(path.join(dataHome, "ensemble")));
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { outcome: string };
+  assert.equal(sentinel.outcome, "complete");
+  // No archive: the run directory exists for the sentinel alone.
+  await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
+});
+
+test("the sentinel carries each terminal outcome the launcher can handle", async () => {
+  // Failure and timeout, driven through the same terminal finally as
+  // success; interruption shares that path (the SIGINT test above proves the
+  // interrupted envelope reaches it).
+  const cases = [
+    {
+      name: "failed",
+      source: `export const meta = { name: "sentinel-failed" };\nthrow new Error("boom");`,
+      argv: (script: string) => [script],
+      outcome: "failed"
+    },
+    {
+      name: "timed-out",
+      source: `export const meta = { name: "sentinel-timeout" };\nawait agent("hang", { engine: "codex" });`,
+      argv: (script: string) => ["--timeout=50", script],
+      outcome: "timed-out"
+    }
+  ] as const;
+
+  for (const terminal of cases) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-cli-sentinel-${terminal.name}-`));
+    const runRecordDir = path.join(directory, "records");
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, terminal.source);
+
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(terminal.argv(script), {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => (terminal.name === "timed-out" ? hangingRuntime() : fakeRuntime())
+    });
+
+    assert.equal(exitCode, 1);
+    const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, `${terminal.name}: sentinel path must be announced`);
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.equal(sentinel.outcome, terminal.outcome, terminal.name);
+    assert.equal(sentinel.exit_code, 1, terminal.name);
+  }
+});
+
+test("a failed sentinel write reports on stderr and never fails the run", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-unwritable-"));
+  // A file where the store directory should be makes every mkdir under it
+  // fail — the sentinel must degrade to a report, not an exit-code change.
+  const runRecordDir = path.join(directory, "store-blocker");
+  await writeFile(runRecordDir, "not a directory");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-unwritable" };
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  // The unwritable store already fails the run through the record writer
+  // (existing behaviour); what this pins is the sentinel half — its write
+  // failure surfaces as a [sentinel] stderr report, never as a crash or a
+  // different exit path.
+  assert.equal(exitCode, 1);
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced, "the path is announced before the store proves unwritable");
+  await assert.rejects(access(announced[1]!), "no sentinel can exist under the blocked store");
+  // A [sentinel] line beyond the announcement is the degraded write report.
+  const sentinelLines = stderr.text().split("\n").filter((line) => line.startsWith("[sentinel]"));
+  assert.ok(sentinelLines.length >= 2, `expected a sentinel write-failure report, got: ${stderr.text()}`);
+});
+
 test("CLI prints result JSON to stdout and logs to stderr", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-"));
   const script = path.join(directory, "workflow.js");
@@ -54,6 +217,7 @@ test("CLI prints result JSON to stdout and logs to stderr", async () => {
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir: null,
     createRuntime: async () => fakeRuntime()
   });
 
@@ -124,6 +288,7 @@ test("CLI passes parsed JSON as args when --json-args is set", async () => {
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir: null,
     createRuntime: async () => fakeRuntime()
   });
 
@@ -152,6 +317,7 @@ test("CLI reads parsed JSON args from an @file path", async () => {
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir: null,
     createRuntime: async () => fakeRuntime()
   });
 
@@ -613,6 +779,7 @@ test("CLI wires per-engine budget ceilings into the workflow runtime", async () 
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir: null,
     createRuntime: async (options) => {
       const runtimeOption = options ?? {};
       runtimeOptions.push(runtimeOption);
@@ -658,6 +825,7 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir: null,
     createRuntime: async (options) => {
       const runtimeOption = options ?? {};
       runtimeOptions.push(runtimeOption);
@@ -679,6 +847,60 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
   assert.equal(claudeEngines[0]?.maxActive, 2);
   assert.equal(stdout.text(), "\"done\"\n");
   assert.equal(stderr.text(), "");
+});
+
+test("CLI threads the config file's worker environment into runtime construction", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-env-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  const script = path.join(directory, "workflow.js");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(
+    configFile,
+    JSON.stringify({
+      schema_version: 1,
+      worker_environment: { claude: { ANTHROPIC_BASE_URL: "https://gateway.example" } }
+    })
+  );
+  await writeFile(script, `export const meta = { name: "cli-worker-env" }; return "done";`);
+  const observed: RuntimeOptions[] = [];
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream(),
+    env: { XDG_CONFIG_HOME: configHome },
+    runRecordDir: null,
+    createRuntime: async (options = {}) => {
+      observed.push(options);
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.deepEqual(observed[0]?.workerEnvironment, {
+    claude: { ANTHROPIC_BASE_URL: "https://gateway.example" }
+  });
+
+  // A run with no section behaves exactly as today: the option is absent,
+  // not an empty object a later consumer might treat as a declaration.
+  const bare = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-env-absent-"));
+  const bareScript = path.join(bare, "workflow.js");
+  await writeFile(bareScript, `export const meta = { name: "cli-worker-env-absent" }; return "done";`);
+  const bareObserved: RuntimeOptions[] = [];
+  const bareExit = await runEnsembleCli([bareScript], {
+    cwd: bare,
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream(),
+    env: { XDG_CONFIG_HOME: path.join(bare, "no-config") },
+    runRecordDir: null,
+    createRuntime: async (options = {}) => {
+      bareObserved.push(options);
+      return fakeRuntime();
+    }
+  });
+  assert.equal(bareExit, 0);
+  assert.equal(bareObserved[0]?.workerEnvironment, undefined);
 });
 
 test("CLI wires the whole-workflow agent ceiling into runtime construction", async () => {
@@ -1221,6 +1443,7 @@ test("CLI leaves a missing status namespace absent and silent", async () => {
     stdout,
     stderr,
     statusDir,
+    runRecordDir: null,
     createRuntime: async () =>
       new EnsembleRuntime({
         engines: new EngineRegistry([new ScheduledTextEngine("codex", 1), new ScheduledTextEngine("claude", 1)]),

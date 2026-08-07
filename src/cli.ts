@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
+import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { AgentOptionRejectedError } from "./errors.js";
 import { createRuntime } from "./index.js";
@@ -94,12 +95,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let statusWriter: StatusFileWriter | null = null;
   let runRecordWriter: RunRecordWriter | null = null;
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
+  // The launcher owns the sentinel: written on every
+  // terminal transition this process can handle, even when recording is off.
+  const sentinel = new CompletionSentinel();
+  const reportSentinelError = (error: unknown): void => {
+    stderr.write(`[sentinel] ${formatError(error)}\n`);
+  };
 
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
+      ...(Object.keys(ambientSettings.workerEnvironment).length > 0
+        ? { workerEnvironment: ambientSettings.workerEnvironment }
+        : {}),
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -110,6 +120,27 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
     const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
+
+    // Announce the sentinel path before any worker spawns. The store
+    // directory resolves independently of the ambient record on/off switch:
+    // the sentinel is supervision surface, not archive, so a *storage
+    // preference* must not silently remove a supervisor's wake signal.
+    // An explicit programmatic
+    // `runRecordDir: null` is a different thing — a library caller opting
+    // out of the store entirely — and skips the sentinel with it.
+    const sentinelStoreDir =
+      options.runRecordDir !== undefined
+        ? options.runRecordDir
+        : ambientSettings.runRecordStoreDir.value;
+    if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
+      const sentinelPath = await sentinel.prepare(
+        { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
+        reportSentinelError
+      );
+      if (sentinelPath !== null) {
+        stderr.write(`[sentinel] will write ${sentinelPath} when the run ends\n`);
+      }
+    }
     if (runRecordDir !== null && runRecordDir.length > 0) {
       runRecordWriter = await RunRecordWriter.start({
         storeDir: runRecordDir,
@@ -237,6 +268,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     if (runRecordWriter !== null) {
       await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
     }
+    // Last, so a supervisor woken by the sentinel finds the archive already
+    // sealed. Every terminal transition this launcher can handle passes
+    // through this finally — success, failure, timeout, interruption,
+    // salvage — and a missing finalRecord is itself a failure outcome.
+    const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
+    await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
   }
 }
 

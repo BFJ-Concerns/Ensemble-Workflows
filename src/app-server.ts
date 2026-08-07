@@ -9,9 +9,11 @@ import {
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   attachPartialWorkerText,
+  attachWorkerExitStatus,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
+import type { WorkerExitStatus } from "./errors.js";
 
 import type {
   JsonObject,
@@ -72,6 +74,13 @@ const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
  * alive turn over freeing its slot promptly.
  */
 const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
+/**
+ * How long a stdout EOF waits for the process's own exit event before
+ * terminalising as "stdout closed". Long enough for a reaped death's status
+ * to arrive (same-tick in practice), short enough that a live server that
+ * closed its pipe still fails promptly.
+ */
+const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -82,6 +91,8 @@ interface ThreadTranscript {
 export interface CodexAppServerTransportOptions {
   cwd: string;
   codexBin: string;
+  /** Machine-declared variables injected over the inherited environment. */
+  workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
@@ -160,6 +171,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #turns = new Map<string, TurnState>();
   #transcripts = new Map<string, ThreadTranscript>();
   #stderrTail: string[] = [];
+  #exitStatus: WorkerExitStatus | null = null;
   #hasExited = false;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
 
@@ -173,12 +185,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env
+      // Declared variables sit above inherited ones; everything undeclared
+      // still inherits, so a configured parent keeps working unchanged.
+      env: { ...process.env, ...options.workerEnv }
     });
 
     this.#wireReader();
     this.#wireStderr();
     this.#process.once("exit", (code, signal) => {
+      // The observed exit is evidence: retained so every turn this death
+      // terminalises carries how the process died, not only that it did.
+      this.#exitStatus = { exitCode: code, signal };
       this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
     });
     // Without a listener, a spawn failure (codex missing, bad codexBin) surfaces
@@ -420,7 +437,21 @@ export class CodexAppServerTransport implements RuntimeTransport {
       this.#handleLine(line);
     });
     reader.once("close", () => {
-      this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      if (this.#hasExited) {
+        return;
+      }
+      // stdout EOF usually means the process died, and the death's `exit`
+      // event carries the evidence (#exitStatus) the terminal errors must
+      // ride. EOF can be observed before the exit status is reaped, so give
+      // the exit event a short grace to win that race; a server that closed
+      // its pipe while still alive fails through the timer as before.
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
     });
   }
 
@@ -843,7 +874,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // One error instance per turn: the partial-text carrier is per-worker
     // state, so the shared `wrapped` would smear one turn's text across all.
     for (const [threadId, turn] of [...this.#turns]) {
-      void this.#rejectTurn(threadId, turn, new AppServerExitedError(wrapped.message));
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
     }
     this.#turns.clear();
     this.#transcripts.clear();

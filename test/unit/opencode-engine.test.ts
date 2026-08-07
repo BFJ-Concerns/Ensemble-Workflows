@@ -15,7 +15,8 @@ import {
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError,
   OpenCodeRunError,
-  partialWorkerTextOf
+  partialWorkerTextOf,
+  workerExitStatusOf
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -144,6 +145,91 @@ test("opencode run failure preserves stream text and the engine diagnostic in th
     await rm(cwd, { recursive: true, force: true });
     await rm(store, { recursive: true, force: true });
   }
+});
+
+test("a worker killed by signal leaves its exit evidence in the attempt record", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-signal-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-signal-store-"));
+  // An externally killed run: no exit code, a terminating signal, partial
+  // stream text. The record must say *how* the process died, so a killed leg
+  // is distinguishable from one that returned nothing.
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_killed" }),
+    JSON.stringify({ type: "text", part: { type: "text", text: "half an answer" } })
+  ].join("\n");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { exitCode: null, signal: "SIGKILL", stdout: stream, stderr: "" }
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-signal",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-signal' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  try {
+    await assert.rejects(runtime.agent("get killed", { engine: "opencode", model: "glm-5.2" }), (error: unknown) => {
+      assert.ok(error instanceof OpenCodeRunError);
+      assert.deepEqual(workerExitStatusOf(error), { exitCode: null, signal: "SIGKILL" });
+      return true;
+    });
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      attempts: Array<{
+        worker_exit: { exit_code: number | null; signal: string | null } | null;
+        raw_output: string | null;
+      }>;
+    };
+    assert.deepEqual(agent.attempts[0]?.worker_exit, { exit_code: null, signal: "SIGKILL" });
+    // The exit evidence rides beside the partial text, not instead of it.
+    assert.equal(agent.attempts[0]?.raw_output, "half an answer");
+  } finally {
+    await runtime.close();
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("a declared opencode worker environment reaches the run child, above inheritance", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-worker-env-"));
+  const bin = path.join(directory, "opencode");
+  const envPath = path.join(directory, "observed-env.json");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
+  key: process.env.OPENCODE_API_KEY ?? null,
+  inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
+}));
+process.stdout.write(JSON.stringify({ type: "session.created", sessionID: "ses_env" }) + "\\n");
+process.stdout.write(JSON.stringify({ type: "text", part: { type: "text", text: "ok" } }) + "\\n");
+`
+  );
+  await chmod(bin, 0o755);
+
+  process.env.OPENCODE_API_KEY = "inherited-key";
+  process.env.ENSEMBLE_TEST_INHERITED = "still-here";
+  try {
+    const runner = new OpenCodeCliRunner(bin, { workerEnv: { OPENCODE_API_KEY: "declared-key" } });
+    const result = await runner.run({ prompt: "hello", cwd: directory, providerModel: "test/model" });
+    assert.equal(result.exitCode, 0);
+  } finally {
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.ENSEMBLE_TEST_INHERITED;
+    // The observation file is written before the child exits, so no wait race.
+  }
+  const observed = JSON.parse(await readFile(envPath, "utf8")) as { key: string | null; inherited: string | null };
+  assert.equal(observed.key, "declared-key");
+  assert.equal(observed.inherited, "still-here");
+  await rm(directory, { recursive: true, force: true });
 });
 
 test("opencode invocation and adapter close terminate their real child processes", async () => {

@@ -133,6 +133,101 @@ test("malformed environment values fail naming the variable", () => {
   );
 });
 
+test("worker_environment resolves per engine from the config file alone", async () => {
+  const fixture = await configFixture({
+    schema_version: 1,
+    worker_environment: {
+      claude: { ANTHROPIC_BASE_URL: "https://gateway.local", ANTHROPIC_AUTH_TOKEN: "tok" },
+      codex: { OPENAI_BASE_URL: "https://codex-gateway.local" }
+    }
+  });
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: fixture.configHome },
+      cwd: fixture.cwd
+    });
+
+    assert.deepEqual(settings.workerEnvironment, {
+      claude: { ANTHROPIC_BASE_URL: "https://gateway.local", ANTHROPIC_AUTH_TOKEN: "tok" },
+      codex: { OPENAI_BASE_URL: "https://codex-gateway.local" }
+    });
+    // Config-file only: there is deliberately no
+    // ENSEMBLE_WORKER_ENVIRONMENT variable and no CLI flag, so nothing else
+    // to assert layers against — an absent section is simply empty.
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("an absent worker_environment section resolves empty, changing nothing", async () => {
+  const fixture = await configFixture({ schema_version: 1 });
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: fixture.configHome },
+      cwd: fixture.cwd
+    });
+    assert.deepEqual(settings.workerEnvironment, {});
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("worker_environment fails loud on unknown engines and non-string values", async () => {
+  const cases: Array<{ source: string; pattern: RegExp }> = [
+    {
+      source: '{"schema_version":1,"worker_environment":{"gemini":{"K":"v"}}}',
+      pattern: /worker_environment\.gemini.*config\.json/
+    },
+    {
+      source: '{"schema_version":1,"worker_environment":{"claude":{"K":1}}}',
+      pattern: /worker_environment\.claude\.K.*must be a string/
+    },
+    {
+      source: '{"schema_version":1,"worker_environment":{"claude":["K"]}}',
+      pattern: /worker_environment\.claude.*JSON object/
+    },
+    {
+      source: '{"schema_version":1,"worker_environment":{"claude":{" ":"v"}}}',
+      pattern: /worker_environment\.claude.*non-empty/
+    },
+    {
+      source: '{"schema_version":1,"worker_environment":[]}',
+      pattern: /worker_environment.*JSON object/
+    }
+  ];
+
+  for (const entry of cases) {
+    const fixture = await rawConfigFixture(entry.source);
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        entry.pattern
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("the record store directory resolves even when recording is disabled", async () => {
+  // The completion sentinel lands under the store whether or not the archive
+  // is written, so the store path must survive `run_record.enabled: false`.
+  const fixture = await configFixture({
+    schema_version: 1,
+    run_record: { enabled: false, dir: "/file/records" }
+  });
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: fixture.configHome },
+      cwd: fixture.cwd
+    });
+    assert.deepEqual(settings.runRecordDir, { value: null, layer: "config-file" });
+    assert.deepEqual(settings.runRecordStoreDir, { value: "/file/records", layer: "config-file" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function configFixture(value: unknown): Promise<{
   cwd: string;
   configHome: string;

@@ -14,7 +14,8 @@ import {
   MissingEngineError,
   partialWorkerTextOf,
   TurnTimeoutError,
-  UnknownEngineError
+  UnknownEngineError,
+  workerExitStatusOf
 } from "./errors.js";
 import { RunProgress } from "./progress.js";
 import {
@@ -147,6 +148,7 @@ export class EnsembleRuntime {
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
         : {}),
+      ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? "0.0.0",
@@ -533,9 +535,10 @@ export class EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         // Terminalisation invariant: a failed turn's attempt record carries
-        // whatever the worker had said before it died, not a bare null.
+        // whatever the worker had said before it died, not a bare null —
+        // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -609,9 +612,10 @@ export class EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         // Terminalisation invariant: a failed turn's attempt record carries
-        // whatever the worker had said before it died, not a bare null.
+        // whatever the worker had said before it died, not a bare null —
+        // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null)
+          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -768,12 +772,14 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null
+  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null,
+  workerExit: { exitCode: number | null; signal: string | null } | null = null
 ): RuntimeAgentAttemptRecord {
   return {
     attempt,
     status,
     failure,
+    workerExit,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),

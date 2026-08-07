@@ -65,6 +65,66 @@ test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing i
   }
 });
 
+test("a declared worker environment reaches the dispatched claude child, above inheritance", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-worker-env-"));
+  try {
+    const envPath = path.join(dir, "observed-env.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000003";
+    const name = "worker-env-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
+            base: process.env.ANTHROPIC_BASE_URL ?? null,
+            inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
+          }));
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "env-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    // The declared value must win over an inherited one for the same name,
+    // and an undeclared inherited variable must still pass through.
+    process.env.ANTHROPIC_BASE_URL = "https://inherited.example";
+    process.env.ENSEMBLE_TEST_INHERITED = "still-here";
+    try {
+      const controlPlane = new ClaudeCliControlPlane({
+        claudeBin: stubPath,
+        projectsDir: dir,
+        dispatchTimeoutMs: 1_000,
+        workerEnv: { ANTHROPIC_BASE_URL: "https://declared.example" }
+      });
+      await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    } finally {
+      delete process.env.ANTHROPIC_BASE_URL;
+      delete process.env.ENSEMBLE_TEST_INHERITED;
+    }
+
+    const observed = JSON.parse(await readFile(envPath, "utf8")) as { base: string | null; inherited: string | null };
+    assert.equal(observed.base, "https://declared.example");
+    assert.equal(observed.inherited, "still-here");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("steer returns false when either tmux delivery step fails", async (context) => {
   for (const failedStep of ["literal", "enter"] as const) {
     await context.test(failedStep, async () => {

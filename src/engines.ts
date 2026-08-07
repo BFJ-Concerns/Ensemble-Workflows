@@ -23,6 +23,7 @@ import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type {
   EngineName,
   EngineConcurrencyCaps,
+  EngineWorkerEnvironment,
   JsonSchema,
   RuntimeEvent,
   RuntimeTransport,
@@ -320,6 +321,7 @@ export interface CreateDefaultEngineRegistryOptions {
   clientName: string;
   clientVersion: string;
   concurrencyCaps?: EngineConcurrencyCaps;
+  workerEnvironment?: EngineWorkerEnvironment;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
@@ -334,6 +336,7 @@ export async function createDefaultEngineRegistry(
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    ...(options.workerEnvironment?.codex !== undefined ? { workerEnv: options.workerEnvironment.codex } : {}),
     requestTimeoutMs: options.requestTimeoutMs,
     ...(options.retryPromiseSilenceTimeoutMs !== undefined
       ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
@@ -351,6 +354,9 @@ export async function createDefaultEngineRegistry(
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
+      ...(options.workerEnvironment?.claude !== undefined
+        ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) }
+        : {}),
       ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
@@ -359,6 +365,9 @@ export async function createDefaultEngineRegistry(
     new OpenCodeEngineAdapter({
       cwd: options.cwd,
       ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
+      ...(options.workerEnvironment?.opencode !== undefined
+        ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
+        : {}),
       ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
       onEvent: options.onOpenCodeEvent
     })

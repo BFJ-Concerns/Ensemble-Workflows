@@ -14,7 +14,8 @@ import {
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
-  partialWorkerTextOf
+  partialWorkerTextOf,
+  workerExitStatusOf
 } from "../../src/errors.js";
 
 test("default engine registry performs no Codex I/O at construction or unused close", async () => {
@@ -122,6 +123,98 @@ test("every failing terminal path carries the worker's partial text", async () =
     } finally {
       await transport.close();
     }
+  }
+});
+
+test("a turn ended by process death carries how the process died", async () => {
+  // The evidence sibling to the partial-text carrier: an exit-terminalised
+  // turn records the exit status or signal, so a killed leg is
+  // distinguishable from one that returned nothing.
+  const codexBin = await fakeCodexFailingTurnServer("exit-mid-turn");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "stream then die", {}),
+      (error: unknown) => {
+        assert.deepEqual(workerExitStatusOf(error), { exitCode: 7, signal: null });
+        // Both carriers ride the same rejection; neither displaces the other.
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a turn that fails without a process death carries no exit status", async () => {
+  // The carrier reports only observed process deaths: an in-band error
+  // notification ends the turn while the server lives, so inventing an exit
+  // would misattribute the failure.
+  const codexBin = await fakeCodexFailingTurnServer("error-notification");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "stream then fail in-band", {}),
+      (error: unknown) => {
+        assert.equal(workerExitStatusOf(error), null);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a declared codex worker environment reaches the app-server child, above inheritance", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-worker-env-"));
+  const envPath = path.join(directory, "observed-env.json");
+  const bin = path.join(directory, "codex");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+
+if (process.argv[2] !== "app-server") {
+  process.exit(2);
+}
+writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({
+  base: process.env.OPENAI_BASE_URL ?? null,
+  inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
+}));
+const reader = createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: {} });
+  }
+});
+`
+  );
+  await chmod(bin, 0o755);
+
+  process.env.OPENAI_BASE_URL = "https://inherited.example";
+  process.env.ENSEMBLE_TEST_INHERITED = "still-here";
+  let transport: CodexAppServerTransport;
+  try {
+    transport = await CodexAppServerTransport.start({
+      ...defaultTransportOptions(bin),
+      workerEnv: { OPENAI_BASE_URL: "https://declared.example" }
+    });
+  } finally {
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.ENSEMBLE_TEST_INHERITED;
+  }
+  try {
+    const observed = JSON.parse(await readFile(envPath, "utf8")) as { base: string | null; inherited: string | null };
+    assert.equal(observed.base, "https://declared.example");
+    assert.equal(observed.inherited, "still-here");
+  } finally {
+    await transport.close();
   }
 });
 

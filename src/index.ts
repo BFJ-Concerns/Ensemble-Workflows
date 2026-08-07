@@ -36,7 +36,20 @@ export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
-export { RunRecordWriter } from "./run-record.js";
+export { RunRecordWriter, resolveRunDirectory } from "./run-record.js";
+export {
+  CompletionSentinel,
+  SENTINEL_FILENAME,
+  SENTINEL_SCHEMA_VERSION
+} from "./completion-sentinel.js";
+export type { CompletionSentinelOptions, SentinelOutcome } from "./completion-sentinel.js";
+export {
+  attachPartialWorkerText,
+  partialWorkerTextOf,
+  attachWorkerExitStatus,
+  workerExitStatusOf
+} from "./errors.js";
+export type { WorkerExitStatus } from "./errors.js";
 export {
   AmbientConfigError,
   CONFIG_SCHEMA_VERSION,
@@ -76,6 +89,7 @@ export type {
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
+  EngineWorkerEnvironment,
   IsolationMode,
   JsonObject,
   JsonSchema,

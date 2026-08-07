@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import { EngineShutdownError, OpenCodeRunError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
@@ -239,10 +240,15 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
             breakdown: usageFromExport(exportData),
             cost: exportData.info?.cost ?? null
           };
+    // A token-bearing stream that carries no session id is still measured
+    // spend — suppressing it reintroduces a fixed defect (spend that
+    // never reaches the ledger), behind a narrower gate. The identifiers
+    // exist only to attribute the event, so a missing id gets a synthetic,
+    // clearly-labelled one rather than costing the accounting.
     const usageEvent =
-      parsedRun.sessionId === null || usage.breakdown === null
+      usage.breakdown === null
         ? null
-        : this.#usageEvent(parsedRun.sessionId, usage.breakdown, usage.cost);
+        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -290,6 +296,15 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       }
     })();
     await this.#closePromise;
+  }
+
+  /**
+   * Attribution identity for a token-bearing stream that named no session:
+   * unique per invocation, and visibly synthetic so a consumer never
+   * mistakes it for a real opencode session id.
+   */
+  #syntheticSessionId(): string {
+    return `opencode-no-session-${randomUUID()}`;
   }
 
   #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {

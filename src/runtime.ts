@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
-import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
+import { assertValidAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
@@ -27,6 +27,8 @@ import {
   defaultCodexConcurrency
 } from "./engines.js";
 import { assertCompilableSchema, selectLastValidJsonFromText } from "./schema.js";
+
+import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type {
   AgentOptions,
@@ -138,6 +140,17 @@ export class EnsembleRuntime {
     this.#registerEngineCaps();
   }
 
+  /**
+   * The opencode registry dispatch will consult — the adapter's own, so
+   * load-time validation and dispatch can never read different registries
+   * (an injected registry previously made load time the stricter of the
+   * two, rejecting models dispatch would run).
+   */
+  get openCodeModelRegistry(): OpenCodeModelRegistry | undefined {
+    const adapter = this.#engines.get("opencode");
+    return adapter instanceof OpenCodeEngineAdapter ? adapter.modelRegistry : undefined;
+  }
+
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
@@ -215,7 +228,7 @@ export class EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
-    assertRecognisedAgentOptions(options);
+    assertValidAgentOptions(options);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);

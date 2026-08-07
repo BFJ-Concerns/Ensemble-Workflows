@@ -83,6 +83,54 @@ test("GitWorktreeIsolationManager keeps a worktree whose worker committed its ch
   }
 });
 
+test("the container directory goes with its last worktree and survives while siblings remain", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-container-"));
+  const repo = path.join(directory, "repo");
+  await initialiseRepo(repo);
+  const container = path.join(directory, "repo.ensemble-workflows-worktrees");
+
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    const first = await manager.create(repo);
+    const second = await manager.create(repo);
+
+    // Finishing one of two leaves the container (a sibling still lives there)…
+    await manager.finish(first);
+    await access(container);
+
+    // …and finishing the last removes it, so no empty directory persists
+    // beside the user's repository.
+    await manager.finish(second);
+    await assert.rejects(() => access(container), /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a retained changed worktree keeps its container after an unchanged sibling is removed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-retained-"));
+  const repo = path.join(directory, "repo");
+  await initialiseRepo(repo);
+  const container = path.join(directory, "repo.ensemble-workflows-worktrees");
+
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    const changed = await manager.create(repo);
+    const unchanged = await manager.create(repo);
+    await writeFile(path.join(changed.path, "feature.txt"), "worker output\n");
+
+    const changedRecord = await manager.finish(changed);
+    assert.equal(changedRecord.removed, false);
+    await manager.finish(unchanged);
+
+    // The retained worktree is real work product; its container must stand.
+    await access(container);
+    await access(changed.path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("one manager creates worktrees from different repositories independently", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-multi-repo-"));
   const firstRepo = path.join(directory, "first");

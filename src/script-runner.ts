@@ -5,6 +5,8 @@ import path from "node:path";
 import detectGlobals from "acorn-globals";
 
 import { validateEngineDefaults } from "./engine-option-validation.js";
+
+import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { createWorkflowHooks } from "./hooks.js";
 import {
   NestedWorkflowError,
@@ -154,7 +156,13 @@ interface ExtractedWorkflow {
 
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
   const extracted = extractWorkflowSource(options.source);
-  const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
+  const defaults = readWorkflowDefaults(
+    extracted.defaultsSource,
+    options.filename,
+    // Validate against the registry the runtime will actually dispatch with:
+    // one registry choice, consulted at both load and dispatch.
+    options.runtime.openCodeModelRegistry
+  );
   const cwd = options.cwd ?? path.dirname(path.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
@@ -299,17 +307,18 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
 /** Evaluate and shape-check a script's `export const defaults` block. */
 export function readWorkflowDefaults(
   defaultsSource: string | null,
-  filename: string = "workflow.js"
+  filename: string = "workflow.js",
+  openCodeModelRegistry?: OpenCodeModelRegistry
 ): WorkflowDefaults | undefined {
   if (defaultsSource === null) {
     return undefined;
   }
   const script = new vm.Script(`(${defaultsSource});`, { filename });
   const value = normaliseVmValue(script.runInNewContext(undefined, { timeout: 100 }));
-  return validateWorkflowDefaults(value);
+  return validateWorkflowDefaults(value, openCodeModelRegistry);
 }
 
-function validateWorkflowDefaults(value: unknown): WorkflowDefaults {
+function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCodeModelRegistry): WorkflowDefaults {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WorkflowScriptError("Workflow defaults must be an object keyed by engine name");
   }
@@ -335,7 +344,10 @@ function validateWorkflowDefaults(value: unknown): WorkflowDefaults {
       }
       engineDefaults[option] = optionValue;
     }
-    validateEngineDefaults(engine, engineDefaults);
+    // Consult the runtime's own registry when the caller supplies one, so an
+    // injected registry cannot make load time reject a model dispatch would
+    // accept (the over-strict direction — worse than no check at all).
+    validateEngineDefaults(engine, engineDefaults, openCodeModelRegistry);
     defaults[engine] = engineDefaults;
   }
   return defaults;

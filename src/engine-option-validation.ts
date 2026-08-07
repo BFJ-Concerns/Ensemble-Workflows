@@ -35,7 +35,7 @@ const AGENT_OPTION_KEYS = Object.keys({
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 
-export function assertRecognisedAgentOptions(options: object): void {
+export function assertValidAgentOptions(options: object): void {
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
       throw new RemovedAgentOptionError(key);

@@ -1,13 +1,20 @@
-import { assertRecognisedAgentOptions } from "./engine-option-validation.js";
+import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { AgentOptionRejectedError } from "./errors.js";
 
 import type { AgentOptions, Budget, EngineName } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
+import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 export interface WorkflowRuntime {
   readonly budget: Budget;
   readonly worktrees: readonly IsolatedWorktreeRecord[];
+  /**
+   * The opencode registry this runtime's dispatch consults, so load-time
+   * validation reads the same one. Optional: a runtime that does not expose
+   * it validates against the module default, as before.
+   */
+  readonly openCodeModelRegistry?: OpenCodeModelRegistry;
   agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
   notePhase: (title: string) => void;
 }
@@ -135,7 +142,7 @@ function mergeAgentDefaults(
   defaults: WorkflowDefaults,
   agentOptions: Partial<AgentOptions> | undefined
 ): Partial<AgentOptions> {
-  assertRecognisedAgentOptions(agentOptions ?? {});
+  assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : undefined;
   if (engineDefaults === undefined) {

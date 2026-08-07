@@ -588,8 +588,13 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
     codexBin,
-    requestTimeoutMs: 2_000,
-    startupHandshakeTimeoutMs: 2_000,
+    // Generous budgets, deliberately: these bound a real spawned child, and
+    // every assertion below latches on deterministic signals (the settled
+    // runTurn promise, transcript content, openTranscripts()), so a slow or
+    // contended host only makes the test slower, never red. Tight budgets
+    // here bought nothing and flaked under contention.
+    requestTimeoutMs: 30_000,
+    startupHandshakeTimeoutMs: 30_000,
     clientName: "ensemble-test",
     clientVersion: "0.0.0"
   });

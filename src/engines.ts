@@ -275,6 +275,16 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
     this.#onEvent = options.onEvent;
   }
 
+  /**
+   * The registry this adapter dispatches against — exposed so load-time
+   * validation consults the same registry, never a parallel resolution of
+   * the module default that an injected registry would silently disagree
+   * with (rejecting before the body a model the runtime would run).
+   */
+  get modelRegistry(): OpenCodeModelRegistry {
+    return this.#modelRegistry;
+  }
+
   schedule<T>(task: () => Promise<T>): Promise<T> {
     return this.#scheduler.schedule(task);
   }

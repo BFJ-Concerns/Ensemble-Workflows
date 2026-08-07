@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -74,6 +74,17 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     await git(repoRoot, ["worktree", "remove", worktree.path]);
     await git(repoRoot, ["branch", "-D", worktree.branch]);
     this.#worktreeRoots.delete(worktree.path);
+    // When this was the container's last worktree, the empty directory goes
+    // with it rather than persisting beside the user's repository. rmdir is
+    // non-recursive by contract, so a container still holding siblings —
+    // including one being created concurrently — fails ENOTEMPTY and is
+    // kept; that atomicity is the concurrency safety, not a check-then-act.
+    try {
+      await rmdir(path.dirname(worktree.path));
+    } catch {
+      // ENOTEMPTY (siblings remain) and ENOENT (already gone) are both
+      // fine outcomes; container cleanup never fails a finished worker.
+    }
 
     return {
       ...worktree,

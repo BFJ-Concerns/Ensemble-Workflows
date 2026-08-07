@@ -677,6 +677,45 @@ test("opencode records a missing stream session id separately without attempting
   assert.deepEqual(runner.exports, []);
 });
 
+test("a token-bearing stream with no session id still reaches the budget under a synthetic identity", async () => {
+  let runtime: EnsembleRuntime | null = null;
+  const runner = new FakeOpenCodeRunner({
+    runResult: {
+      stdout: [
+        JSON.stringify({ type: "step_start", part: { type: "step-start" } }),
+        JSON.stringify({ type: "text", part: { type: "text", text: "measured answer" } }),
+        JSON.stringify({
+          type: "step_finish",
+          part: {
+            type: "step-finish",
+            reason: "stop",
+            tokens: { input: 100, output: 40, reasoning: 0, cache: { read: 10, write: 0 } }
+          }
+        })
+      ].join("\n")
+    }
+  });
+  const adapter = new OpenCodeEngineAdapter({
+    runner,
+    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    defaultMaxAttempts: 1
+  });
+
+  assert.equal(await runtime.agent("measure me", { engine: "opencode", model: "glm-5.2" }), "measured answer");
+
+  // Measured spend reaches the ledger despite the missing id…
+  assert.equal(runtime.budget.spent("opencode"), 150);
+  assert.equal(runtime.budget.events.length, 1);
+  // …under an identity a consumer can never mistake for a real session id,
+  // while the missing-id diagnostic still tells the truth about the stream.
+  const event = runtime.budget.events[0]?.event;
+  assert.match(event?.threadId ?? "", /^opencode-no-session-/);
+  assert.deepEqual(runner.exports, []);
+});
+
 test("opencode fallback keeps the last text-bearing stopped step when a textless stop follows", async () => {
   const runner = new FakeOpenCodeRunner({
     runResult: {
@@ -1021,25 +1060,38 @@ function tokens(input: number, output: number, reasoning: number): { input: numb
   return { input, output, reasoning };
 }
 
-test("opencode run escalates to SIGKILL when a timed-out worker ignores SIGTERM", async () => {
+test("opencode run escalates to SIGKILL when a terminated worker ignores SIGTERM", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-stubborn-"));
   const bin = path.join(directory, "opencode");
+  const ready = path.join(directory, "handler-installed");
+  // The fixture announces when its SIGTERM handler exists, and termination
+  // waits for that announcement (abort signal, not a wall-clock deadline) —
+  // under host contention a fixed timeout could deliver SIGTERM before the
+  // handler was installed, killing the child with the very signal the test
+  // needs it to ignore. The TERM-then-KILL grace period is the mechanism
+  // under test and remains a real timer; only the racy trigger is replaced.
   await writeFile(
     bin,
     `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
 process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(ready)}, "ready");
 setInterval(() => {}, 1000);
 `
   );
   await chmod(bin, 0o755);
 
   const runner = new OpenCodeCliRunner(bin, { killGraceMs: 50 });
-  const result = await runner.run({
+  const abort = new AbortController();
+  const running = runner.run({
     prompt: "hang forever",
     cwd: directory,
     providerModel: "openrouter/z-ai/glm-5.2",
-    timeoutMs: 50
+    signal: abort.signal
   });
+  await waitForFile(ready);
+  abort.abort();
+  const result = await running;
 
   assert.equal(result.signal, "SIGKILL");
   assert.equal(result.exitCode, null);

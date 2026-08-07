@@ -1108,6 +1108,64 @@ test("an unregistered opencode model in defaults fails before the body runs", as
   assert.equal(agentCalls, 0);
 });
 
+test("load-time defaults validation consults the runtime's own opencode registry", async () => {
+  // A runtime whose opencode adapter carries an injected registry with an
+  // extra model: load time must accept what dispatch would run…
+  const injectedRegistry = {
+    get: (model: string) =>
+      model === "custom-model"
+        ? {
+            key: "custom-model",
+            providerModel: "custom/custom-model",
+            displayName: "Custom",
+            provider: "custom",
+            family: "custom",
+            capabilities: { vision: false },
+            billing: { mode: "self-hosted" as const }
+          }
+        : undefined,
+    names: () => ["custom-model"]
+  };
+  const agentPrompts: string[] = [];
+  const registryAwareRuntime = {
+    ...runtime,
+    openCodeModelRegistry: injectedRegistry,
+    agent: (async (prompt: string) => {
+      agentPrompts.push(prompt);
+      return "ran";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+
+  const accepted = await runWorkflowScript({
+    filename: "injected-registry.js",
+    runtime: registryAwareRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "injected-registry" };
+      export const defaults = { opencode: { model: "custom-model" } };
+      return await agent("go", { engine: "opencode" });
+    `
+  });
+  assert.equal(accepted.result, "ran");
+  assert.deepEqual(agentPrompts, ["go"]);
+
+  // …and still reject before the body a model that registry does not carry.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "injected-registry-unknown.js",
+        runtime: registryAwareRuntime,
+        log: () => {},
+        source: `
+          export const meta = { name: "injected-registry-unknown" };
+          export const defaults = { opencode: { model: "glm-5.2" } };
+          return await agent("never", { engine: "opencode" });
+        `
+      }),
+    /OpenCode model "glm-5.2" is not registered/
+  );
+});
+
 test("a script with a defaults block still exposes its meta to registry readers", async () => {
   const { readWorkflowMeta } = await import("../../src/script-runner.js");
   const meta = readWorkflowMeta(`

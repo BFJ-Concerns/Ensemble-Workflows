@@ -118,6 +118,12 @@ launching process. This section lives in the config file alone — there is
 deliberately no `ENSEMBLE_` variable or CLI flag for it, because its purpose
 is to hold for runs whose parent environment cannot be relied on. Values must
 be strings; unknown engines and non-string values fail the run loudly.
+Claude workers are served by Claude Code's per-user daemon, whose environment
+predates the run, so the harness delivers their declarations through a
+private per-dispatch settings file (`claude --bg --settings`) whose `env`
+block Claude Code layers additively over the operator's own settings —
+declared keys win collisions, nothing else is touched, and the file is
+removed when the session stops.
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, unknown key, invalid value, unreadable file, or

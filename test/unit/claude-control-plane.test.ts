@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -124,6 +124,122 @@ test("a declared worker environment reaches the dispatched claude child, above i
     const observed = JSON.parse(await readFile(envPath, "utf8")) as { base: string | null; inherited: string | null };
     assert.equal(observed.base, "https://declared.example");
     assert.equal(observed.inherited, "still-here");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a declared worker environment rides a per-dispatch settings file to the worker session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-settings-env-"));
+  try {
+    const argvPath = path.join(dir, "dispatch-argv.json");
+    const settingsCopyPath = path.join(dir, "settings-copy.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000004";
+    const name = "settings-env-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { copyFile, writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
+          // The daemon reads the settings file while starting the session;
+          // copy it here so the test can inspect content that outlives stop().
+          const flag = args.indexOf("--settings");
+          if (flag !== -1) {
+            await copyFile(args[flag + 1], ${JSON.stringify(settingsCopyPath)});
+          }
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "settings-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const declared = { ANTHROPIC_BASE_URL: "https://declared.example", ANTHROPIC_AUTH_TOKEN: "sentinel-token" };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      workerEnv: declared
+    });
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+
+    // The flag was passed and the file carried exactly the declared env block —
+    // the harness writes only its own declarations, never a merge of the
+    // operator's settings (Claude Code's own additive layering does the merge).
+    const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    const flagIndex = dispatchArgv.indexOf("--settings");
+    assert.notEqual(flagIndex, -1);
+    const settingsPath = dispatchArgv[flagIndex + 1]!;
+    assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), { env: declared });
+
+    // The file holds credentials: private file in a private directory, and it
+    // lives exactly as long as the session — present while live, gone on stop().
+    const fileMode = (await stat(settingsPath)).mode & 0o777;
+    assert.equal(fileMode, 0o600);
+    const dirMode = (await stat(path.dirname(settingsPath))).mode & 0o777;
+    assert.equal(dirMode, 0o700);
+    await controlPlane.stop(handle);
+    await assert.rejects(access(settingsPath));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("no declared worker environment dispatches without a settings flag", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-no-settings-"));
+  try {
+    const argvPath = path.join(dir, "dispatch-argv.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000005";
+    const name = "no-settings-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "no-settings-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000
+    });
+    await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+
+    const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    assert.ok(!dispatchArgv.includes("--settings"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

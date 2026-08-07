@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { ClaudeDispatchError } from "./errors.js";
@@ -64,13 +64,25 @@ export interface ClaudeCliControlPlaneOptions {
   claudeBin?: string;
   tmuxBin?: string;
   /**
-   * Machine-declared variables injected over the inherited environment for
-   * every child this control plane starts.
-   * The dispatch is the worker, but the daemon can be auto-started by any
-   * `claude` invocation and the tmux valve runs `claude attach` inside its
-   * pane, so the injection covers all of them — a gateway setting that
-   * reached only the dispatch could still miss the process that actually
-   * serves the session.
+   * Machine-declared variables injected for every worker this control plane
+   * dispatches. Delivery is per surface,
+   * because Claude Code splits the worker across processes with unrelated
+   * environments:
+   *
+   * - **The worker session itself** is served by the per-user daemon, which
+   *   an earlier `claude` invocation may have started from an environment
+   *   this run never saw — so process inheritance cannot reach it. The one
+   *   measured route in (2026-08-07) is a settings file:
+   *   `claude --bg --settings <file>` with an `env` block, whose variables
+   *   Claude Code merges additively over the project and user settings and
+   *   which win collisions — exactly the injected-over-inherited contract.
+   *   `dispatch()` writes that file per dispatch and passes the flag.
+   * - **Control-plane children** (dispatch, roster queries, stop) get the
+   *   spread `#env`, because any of them can auto-start the daemon and the
+   *   dispatch command itself may read gateway settings.
+   * - **The valve's `claude attach` client** gets explicit tmux `-e` flags:
+   *   a pre-existing tmux server starts pane commands from the *server's*
+   *   environment, not this client's.
    */
   workerEnv?: Record<string, string>;
   /** Defaults to `~/.claude/projects`. */
@@ -106,6 +118,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveCounter = 0;
   #env: NodeJS.ProcessEnv;
   #workerEnv: Record<string, string>;
+  /** Per-session settings directories, removed when the session stops. */
+  #settingsDirs = new Map<string, string>();
 
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
@@ -134,31 +148,91 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     if (options.fallbackModel !== undefined) {
       args.push("--fallback-model", options.fallbackModel);
     }
-    // Prompts routinely contain whole diffs and can exceed the platform's argv
-    // ceiling. Claude's background mode accepts its initial prompt on stdin, so
-    // keep argv small and stream the bytes without involving a shell.
-    const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-    // `claude --bg` prints the short id and returns; if it failed outright there
-    // is no session to wait for, so surface immediately with its stderr.
-    if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
-      throw new ClaudeDispatchError(
-        `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
-      );
+    // The worker session runs under the per-user daemon, whose environment
+    // predates this run — inheritance cannot deliver the declared variables
+    // to it (measured 2026-08-07: an exported variable never reached a
+    // dispatched worker). A per-dispatch settings file is the surface that
+    // does: Claude Code merges its `env` block additively over the project
+    // and user settings, declared keys winning collisions, so the file
+    // carries only this run's declarations and never touches the operator's
+    // own settings.
+    const settingsDir = await this.#writeWorkerSettings(options.name);
+    if (settingsDir !== null) {
+      args.push("--settings", path.join(settingsDir, "settings.json"));
     }
-
-    const deadline = Date.now() + this.#dispatchTimeoutMs;
-    for (;;) {
-      const handle = await this.#findByName(options.name);
-      if (handle !== null) {
-        return handle;
-      }
-      if (Date.now() >= deadline) {
+    let registered: ClaudeSessionHandle | null = null;
+    try {
+      // Prompts routinely contain whole diffs and can exceed the platform's argv
+      // ceiling. Claude's background mode accepts its initial prompt on stdin, so
+      // keep argv small and stream the bytes without involving a shell.
+      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
+      // `claude --bg` prints the short id and returns; if it failed outright there
+      // is no session to wait for, so surface immediately with its stderr.
+      if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
         throw new ClaudeDispatchError(
-          `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
         );
       }
-      await delay(500);
+
+      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      for (;;) {
+        const handle = await this.#findByName(options.name);
+        if (handle !== null) {
+          registered = handle;
+          break;
+        }
+        if (Date.now() >= deadline) {
+          throw new ClaudeDispatchError(
+            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+          );
+        }
+        await delay(500);
+      }
+    } finally {
+      if (settingsDir !== null) {
+        if (registered === null) {
+          // The dispatch never produced a session, so nothing will read the
+          // file again. Best-effort: cleanup failure must never mask the
+          // dispatch error being thrown past this block.
+          await this.#removeSettingsDir(settingsDir);
+        } else {
+          // The session is live and Claude Code watches settings files for
+          // changes, so the file keeps the session's own lifetime: stop()
+          // removes it. Deleting it here — the moment the roster registers —
+          // would risk the daemon observing a mid-session removal of the
+          // very variables the file exists to hold.
+          this.#settingsDirs.set(registered.sessionId, settingsDir);
+        }
+      }
     }
+    if (registered === null) {
+      // Unreachable: every path that leaves the loop without a handle throws.
+      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
+    }
+    return registered;
+  }
+
+  /**
+   * Write the per-dispatch settings file carrying the declared worker
+   * environment, or return null when nothing is declared (no flag is passed
+   * and behaviour matches a run that declares nothing). The file
+   * carries the declared values — gateway credentials among them — so it
+   * lives in its own mkdtemp directory (0o700 by construction, unguessable
+   * name) and the file itself is 0o600.
+   */
+  async #writeWorkerSettings(dispatchName: string): Promise<string | null> {
+    if (Object.keys(this.#workerEnv).length === 0) {
+      return null;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env: this.#workerEnv })}\n`, {
+      mode: 0o600
+    });
+    return dir;
+  }
+
+  async #removeSettingsDir(dir: string): Promise<void> {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 
   async poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus> {
@@ -261,6 +335,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // so failures are swallowed rather than allowed to mask the real result.
     await this.#run(this.#claudeBin, ["stop", handle.id]);
     await this.#run(this.#claudeBin, ["rm", handle.id]);
+    // The session is gone, so its settings file (which carries the declared
+    // gateway values) goes with it. Same best-effort discipline as above.
+    const settingsDir = this.#settingsDirs.get(handle.sessionId);
+    if (settingsDir !== undefined) {
+      this.#settingsDirs.delete(handle.sessionId);
+      await this.#removeSettingsDir(settingsDir);
+    }
   }
 
   async tmuxAvailable(): Promise<boolean> {

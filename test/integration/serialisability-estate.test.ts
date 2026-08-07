@@ -96,15 +96,46 @@ test("built CLI preserves JSON's documented undefined and non-finite mappings", 
 
 test("built CLI journeys independently kill each serialisability safeguard mutation", async () => {
   const bundle = await readFile(bundledCliPath, "utf8");
-  const toJsonGuardPattern = /return findUnserialisable\(toJson\.call\(value\), [A-Za-z_$][\w$]*, ancestors, false\);/g;
-  const toJsonGuardMatches = bundle.match(toJsonGuardPattern) ?? [];
-  assert.equal(toJsonGuardMatches.length, 1, "tojson-once-guard: mutation needle must occur exactly once");
-  const toJsonGuard = toJsonGuardMatches[0];
+  const identifier = String.raw`[A-Za-z_$][\w$]*`;
+  const rawValueChoice = exactlyOneMatch(
+    bundle,
+    "raw-value-choice",
+    new RegExp(
+      String.raw`const (?<result>${identifier}) = normaliseVmValue\((?<settlement>${identifier})\.value\);\n` +
+        String.raw`  if \((?<depth>${identifier}) === 0\) \{\n` +
+        String.raw`    (?<assertion>(?<assertionFn>${identifier})\(\k<result>, "workflow return value", "return value"\);)`
+    )
+  );
+  const toJsonOnceGuard = exactlyOneMatch(
+    bundle,
+    "tojson-once-guard",
+    new RegExp(
+      String.raw`const (?<toJson>${identifier}) = (?<value>${identifier})\.toJSON;\n` +
+        String.raw`  if \((?<honour>${identifier}) && typeof \k<toJson> === "function"\) \{\n` +
+        String.raw`    (?<guard>return (?<walk>${identifier})\(\k<toJson>\.call\(\k<value>\), (?<path>${identifier}), (?<ancestors>${identifier}), false\);)`
+    )
+  );
+  const stringifyBackstop = exactlyOneMatch(
+    bundle,
+    "stringify-backstop",
+    new RegExp(
+      String.raw`(?<backstop>  try \{\n    JSON\.stringify\((?<value>${identifier})\);\n` +
+        String.raw`  \} catch \((?<error>${identifier})\) \{\n` +
+        String.raw`    const (?<message>${identifier}) = \k<error> instanceof Error \? \k<error>\.message : String\(\k<error>\);\n` +
+        String.raw`    throw new (?<scriptError>${identifier})\(` +
+        String.raw`\`\$\{(?<label>${identifier})\} must be a JSON value: JSON\.stringify rejected it \(\$\{\k<message>\}\)\`\);\n  \})`
+    )
+  );
+  const rawAssertion = captured(rawValueChoice, "assertion");
+  const assertionFunction = captured(rawValueChoice, "assertionFn");
+  const settlement = captured(rawValueChoice, "settlement");
+  const toJsonGuard = captured(toJsonOnceGuard, "guard");
+  const backstop = captured(stringifyBackstop, "backstop");
   const mutations = [
     {
       name: "raw-value-choice",
-      before: `assertJsonSerialisable(result, "workflow return value", "return value");`,
-      after: `assertJsonSerialisable(settlement.value, "workflow return value", "return value");`,
+      before: rawAssertion,
+      after: `${assertionFunction}(${settlement}.value, "workflow return value", "return value");`,
       body: `class Money { constructor() { this.cents = 100n; } toJSON() { return "1.00"; } } return { price: new Money() };`,
       killedBy(result: ProcessResult): void {
         assert.equal(result.code, 0, result.stderr);
@@ -124,7 +155,7 @@ test("built CLI journeys independently kill each serialisability safeguard mutat
     },
     {
       name: "stringify-backstop",
-      before: `  try {\n    JSON.stringify(value);\n  } catch (error) {\n    const message = error instanceof Error ? error.message : String(error);\n    throw new WorkflowScriptError(\`${"${label}"} must be a JSON value: JSON.stringify rejected it (${"${message}"})\`);\n  }`,
+      before: backstop,
       after: `  JSON.stringify({});`,
       body: `return Object(10n);`,
       killedBy(result: ProcessResult): void {
@@ -147,6 +178,24 @@ test("built CLI journeys independently kill each serialisability safeguard mutat
     }
   }
 });
+
+interface StructuralMatch extends RegExpMatchArray {
+  groups: Record<string, string>;
+}
+
+function exactlyOneMatch(bundle: string, name: string, pattern: RegExp): StructuralMatch {
+  const matches = [...bundle.matchAll(new RegExp(pattern, "g"))];
+  assert.equal(matches.length, 1, `${name}: mutation needle must occur exactly once`);
+  const match = matches[0];
+  assert.ok(match?.groups, `${name}: mutation needle must capture its emitted identifiers`);
+  return match as StructuralMatch;
+}
+
+function captured(match: StructuralMatch, name: string): string {
+  const value = match.groups[name];
+  assert.ok(value, `mutation needle must capture ${name}`);
+  return value;
+}
 
 interface ProcessResult {
   code: number | null;

@@ -101,7 +101,7 @@ test("built CLI journeys independently kill each serialisability safeguard mutat
     bundle,
     "raw-value-choice",
     new RegExp(
-      String.raw`const (?<result>${identifier}) = normaliseVmValue\((?<settlement>${identifier})\.value\);\n` +
+      String.raw`const (?<result>${identifier}) = (?<normalise>${identifier})\((?<settlement>${identifier})\.value\);\n` +
         String.raw`  if \((?<depth>${identifier}) === 0\) \{\n` +
         String.raw`    (?<assertion>(?<assertionFn>${identifier})\(\k<result>, "workflow return value", "return value"\);)`
     )

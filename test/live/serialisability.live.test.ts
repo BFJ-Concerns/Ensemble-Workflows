@@ -10,6 +10,18 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 
+// Every run announces its completion sentinel on stderr at startup, so an
+// exact-stderr assertion must account for that line. Removing exactly one
+// well-formed announcement — and failing when it is absent, malformed, or
+// duplicated — keeps the original assertion's protection over the remaining
+// bytes while additionally pinning the announcement's own shape.
+function withoutSentinelAnnouncement(stderr: string): string {
+  const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
   { skip: !isLive, timeout: 300_000 },
@@ -52,7 +64,7 @@ test(
 
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
-        result.stderr,
+        withoutSentinelAnnouncement(result.stderr),
         "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;

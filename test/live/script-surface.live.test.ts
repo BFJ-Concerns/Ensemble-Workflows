@@ -619,9 +619,14 @@ for (const scenario of placementScenarios) {
     const { agent } = await recordedAgent(recordStore, `worktree-commit-${scenario.engine}`);
     assert.equal(agent.resolved_cwd, worktree.path);
     assert.equal(agent.isolation, "worktree");
+    // `tip_commit` is part of the record's worktree shape since 619ff32
+    // (recoverability details in agent records). Asserted against the branch
+    // tip this test already resolved, so the record is checked to name the
+    // commit the worker actually made rather than merely to carry the field.
     assert.deepEqual(agent.worktree, {
       branch: worktree.branch,
       base_commit: worktree.baseCommit,
+      tip_commit: tip,
       changed: true,
       removed: false
     });
@@ -644,6 +649,7 @@ interface RecordedAgent {
   worktree: {
     branch: string;
     base_commit: string;
+    tip_commit: string | null;
     changed: boolean;
     removed: boolean;
   } | null;

@@ -98,7 +98,14 @@ test(
         assert.equal(worktree.changed, true);
         assert.equal(worktree.removed, false);
         const committed = await git(repo, ["show", `${worktree.branch}:${filename}`]);
-        assert.equal(committed, `${token}\n`, `${engine.name} branch did not carry the committed marker`);
+        // The claim is that the branch carries the marker the worker was asked
+        // to commit. Whether the worker ended the file with a newline is its
+        // own formatting choice — no contract requires one, and models vary
+        // between sessions (observed 2026-08-07: the same opencode model wrote
+        // the file with a trailing newline one day and without one the next,
+        // failing this assertion twice with no harness change in between).
+        // Compare the content and let the trailing whitespace be.
+        assert.equal(committed.trimEnd(), token, `${engine.name} branch did not carry the committed marker`);
       }
     } finally {
       await runtime.close();

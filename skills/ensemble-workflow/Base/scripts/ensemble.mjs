@@ -13393,6 +13393,21 @@ var RunRecordWriter = class _RunRecordWriter {
         archive_path: null,
         exit_code: null
       },
+      workflow_invocations: [
+        {
+          ordinal: 0,
+          parent: null,
+          path: options.workflowPath,
+          source: {
+            archive_path: "workflow.js",
+            sha256: sha256(options.workflowSource)
+          },
+          args: {
+            archive_path: "args.json",
+            sha256: sha256(canonicalJson(options.args))
+          }
+        }
+      ],
       cost_rollup: {},
       files: []
     });
@@ -13418,6 +13433,47 @@ var RunRecordWriter = class _RunRecordWriter {
         raw: meta
       };
       await this.#writeManifest();
+    });
+  }
+  /**
+   * Record a composed child's invocation: its source and args are archived
+   * beside the root's (same hashing, same canonicalisation), the manifest
+   * gains an ordered entry carrying the parent link, and the assigned
+   * ordinal is returned so nested provenance (if a deeper level is ever
+   * permitted) can name its parent. One run identity throughout — a child
+   * never opens a second archive.
+   */
+  async recordWorkflowInvocation(invocation) {
+    const args = structuredClone(invocation.args);
+    return await this.#serialise(async () => {
+      if (this.#sealed) {
+        return -1;
+      }
+      const ordinal = this.manifest.workflow_invocations.length;
+      const directory = `workflows/${padId(ordinal)}`;
+      const sourcePath = `${directory}/workflow.js`;
+      const argsPath = `${directory}/args.json`;
+      await this.#writeText(sourcePath, invocation.source);
+      await this.#writeJson(argsPath, {
+        schema_version: SCHEMA_VERSION,
+        kind: "workflow_args",
+        value: args
+      });
+      this.manifest.workflow_invocations.push({
+        ordinal,
+        parent: invocation.parentOrdinal,
+        path: invocation.scriptPath,
+        source: {
+          archive_path: sourcePath,
+          sha256: sha256(invocation.source)
+        },
+        args: {
+          archive_path: argsPath,
+          sha256: sha256(canonicalJson(args))
+        }
+      });
+      await this.#writeManifest();
+      return ordinal;
     });
   }
   async recordAgent(record) {
@@ -13613,7 +13669,9 @@ function addUsage(target, delta, engine) {
   target.outputTokens += delta.outputTokens;
   target.reasoningOutputTokens += delta.reasoningOutputTokens;
   target.totalTokens += delta.totalTokens;
-  target.cacheReadTokens += delta.cachedInputTokens;
+  const creation = delta.cacheCreationInputTokens ?? 0;
+  target.cacheCreationTokens += creation;
+  target.cacheReadTokens += Math.max(0, delta.cachedInputTokens - creation);
   target.freshInputTokens += engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
 }
 function zeroUsage() {
@@ -13624,7 +13682,8 @@ function zeroUsage() {
     reasoningOutputTokens: 0,
     totalTokens: 0,
     freshInputTokens: 0,
-    cacheReadTokens: 0
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0
   };
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
@@ -14122,7 +14181,7 @@ var AGENT_OPTION_KEYS = Object.keys({
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
-function assertRecognisedAgentOptions(options) {
+function assertValidAgentOptions(options) {
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
       throw new RemovedAgentOptionError(key);
@@ -14165,7 +14224,7 @@ function assertPositiveIntegerOption(options, option, maximum) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/agent-placement.ts
 import path5 from "node:path";
@@ -14173,7 +14232,7 @@ import path5 from "node:path";
 // src/worktree-isolation.ts
 import { randomUUID } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir3 } from "node:fs/promises";
+import { mkdir as mkdir3, rmdir } from "node:fs/promises";
 import path4 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
@@ -14216,6 +14275,10 @@ var GitWorktreeIsolationManager = class {
     await git2(repoRoot, ["worktree", "remove", worktree.path]);
     await git2(repoRoot, ["branch", "-D", worktree.branch]);
     this.#worktreeRoots.delete(worktree.path);
+    try {
+      await rmdir(path4.dirname(worktree.path));
+    } catch {
+    }
     return {
       ...worktree,
       tipCommit: tip,
@@ -15432,8 +15495,8 @@ function itemTypeFromItem(item) {
 
 // src/claude-control-plane.ts
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
-import { access, readdir } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
+import { access, mkdtemp, readdir, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import { homedir as homedir2, tmpdir } from "node:os";
 import path6 from "node:path";
 var ClaudeCliControlPlane = class {
   #claudeBin;
@@ -15446,6 +15509,8 @@ var ClaudeCliControlPlane = class {
   #valveCounter = 0;
   #env;
   #workerEnv;
+  /** Per-session settings directories, removed when the session stops. */
+  #settingsDirs = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
@@ -15468,25 +15533,72 @@ var ClaudeCliControlPlane = class {
     if (options.fallbackModel !== void 0) {
       args.push("--fallback-model", options.fallbackModel);
     }
-    const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-    if (!dispatch.ok && await this.#findByName(options.name) === null) {
-      throw new ClaudeDispatchError(
-        `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
-      );
+    const settingsDir = await this.#writeWorkerSettings(options.name);
+    if (settingsDir !== null) {
+      args.push("--settings", path6.join(settingsDir, "settings.json"));
     }
-    const deadline = Date.now() + this.#dispatchTimeoutMs;
-    for (; ; ) {
-      const handle = await this.#findByName(options.name);
-      if (handle !== null) {
-        return handle;
-      }
-      if (Date.now() >= deadline) {
+    let registered = null;
+    try {
+      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
+      if (!dispatch.ok && await this.#findByName(options.name) === null) {
         throw new ClaudeDispatchError(
-          `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
         );
       }
-      await delay(500);
+      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      for (; ; ) {
+        const handle = await this.#findByName(options.name);
+        if (handle !== null) {
+          registered = handle;
+          break;
+        }
+        if (Date.now() >= deadline) {
+          throw new ClaudeDispatchError(
+            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+          );
+        }
+        await delay(500);
+      }
+    } finally {
+      if (settingsDir !== null) {
+        if (registered === null) {
+          await this.#removeSettingsDir(settingsDir);
+        } else {
+          this.#settingsDirs.set(registered.sessionId, settingsDir);
+        }
+      }
     }
+    if (registered === null) {
+      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
+    }
+    return registered;
+  }
+  /**
+   * Write the per-dispatch settings file carrying the declared worker
+   * environment, or return null when nothing is declared (no flag is passed
+   * and behaviour matches a run that declares nothing). The file
+   * carries the declared values — gateway credentials among them — so it
+   * lives in its own mkdtemp directory (0o700 by construction, unguessable
+   * name) and the file itself is 0o600.
+   */
+  async #writeWorkerSettings(dispatchName) {
+    if (Object.keys(this.#workerEnv).length === 0) {
+      return null;
+    }
+    const dir = await mkdtemp(path6.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    try {
+      await writeFile3(path6.join(dir, "settings.json"), `${JSON.stringify({ env: this.#workerEnv })}
+`, {
+        mode: 384
+      });
+    } catch (error) {
+      await this.#removeSettingsDir(dir);
+      throw error;
+    }
+    return dir;
+  }
+  async #removeSettingsDir(dir) {
+    await rm3(dir, { recursive: true, force: true }).catch(() => void 0);
   }
   async poll(handle) {
     const roster = await this.#roster();
@@ -15565,6 +15677,11 @@ var ClaudeCliControlPlane = class {
   async stop(handle) {
     await this.#run(this.#claudeBin, ["stop", handle.id]);
     await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const settingsDir = this.#settingsDirs.get(handle.sessionId);
+    if (settingsDir !== void 0) {
+      this.#settingsDirs.delete(handle.sessionId);
+      await this.#removeSettingsDir(settingsDir);
+    }
   }
   async tmuxAvailable() {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
@@ -15731,7 +15848,8 @@ function turnComplete(entries, fromIndex = 0) {
 function usageSince(entries, fromIndex = 0) {
   let outputTokens = 0;
   let lastInput = 0;
-  let lastCached = 0;
+  let lastCacheRead = 0;
+  let lastCacheCreation = 0;
   let sawUsage = false;
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
     const entry = entries[index];
@@ -15745,13 +15863,16 @@ function usageSince(entries, fromIndex = 0) {
     sawUsage = true;
     outputTokens += numeric(usage2.output_tokens);
     lastInput = numeric(usage2.input_tokens);
-    lastCached = numeric(usage2.cache_read_input_tokens) + numeric(usage2.cache_creation_input_tokens);
+    lastCacheRead = numeric(usage2.cache_read_input_tokens);
+    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
   }
   if (!sawUsage) {
     return zeroUsage2();
   }
+  const lastCached = lastCacheRead + lastCacheCreation;
   return {
     cachedInputTokens: lastCached,
+    cacheCreationInputTokens: lastCacheCreation,
     inputTokens: lastInput,
     outputTokens,
     reasoningOutputTokens: 0,
@@ -15862,8 +15983,9 @@ var ClaudeEngineInvocation = class {
         await this.#attachLatestWorkerText(error, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
+        const resolvedModel = await this.#tryResolveModel(fromIndex);
         await this.#teardown();
-        return failedTurnResult(error);
+        return failedTurnResult(error, resolvedModel);
       }
       throw error;
     }
@@ -16039,6 +16161,15 @@ var ClaudeEngineInvocation = class {
       throw error;
     }
   }
+  /** The served model the current turn's transcript names, or null when unreadable. */
+  async #tryResolveModel(fromIndex) {
+    const handle = this.#handle;
+    if (handle === null) {
+      return null;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    return transcript === null ? null : resolvedModelSince(transcript.entries, fromIndex);
+  }
   async #attachLatestWorkerText(error, fromIndex) {
     const handle = this.#handle;
     if (handle === null) {
@@ -16130,10 +16261,11 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID2().slice(0, 8)}`;
   }
 };
-function failedTurnResult(error) {
+function failedTurnResult(error, resolvedModel = null) {
   const text = partialWorkerTextOf(error) ?? "";
   return {
     text,
+    ...resolvedModel !== null ? { resolvedModel } : {},
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -16180,6 +16312,7 @@ function delay2(ms, signal, abortError) {
 
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
+import { randomUUID as randomUUID3 } from "node:crypto";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -16313,7 +16446,7 @@ var OpenCodeEngineInvocation = class {
       breakdown: usageFromExport(exportData),
       cost: exportData.info?.cost ?? null
     };
-    const usageEvent = parsedRun.sessionId === null || usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId, usage2.breakdown, usage2.cost);
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -16355,6 +16488,14 @@ var OpenCodeEngineInvocation = class {
       }
     })();
     await this.#closePromise;
+  }
+  /**
+   * Attribution identity for a token-bearing stream that named no session:
+   * unique per invocation, and visibly synthetic so a consumer never
+   * mistakes it for a real opencode session id.
+   */
+  #syntheticSessionId() {
+    return `opencode-no-session-${randomUUID3()}`;
   }
   #usageEvent(sessionId, breakdown, cost) {
     if (breakdown.totalTokens === 0) {
@@ -17154,6 +17295,15 @@ var OpenCodeEngineAdapter = class {
     this.#modelRegistry = options.modelRegistry ?? defaultOpenCodeModelRegistry;
     this.#onEvent = options.onEvent;
   }
+  /**
+   * The registry this adapter dispatches against — exposed so load-time
+   * validation consults the same registry, never a parallel resolution of
+   * the module default that an injected registry would silently disagree
+   * with (rejecting before the body a model the runtime would run).
+   */
+  get modelRegistry() {
+    return this.#modelRegistry;
+  }
   schedule(task) {
     return this.#scheduler.schedule(task);
   }
@@ -17247,7 +17397,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   constructor(options) {
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID3(),
+      runId: options.runId ?? randomUUID4(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -17274,6 +17424,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
       caps: this.#engineCaps()
     });
     this.#registerEngineCaps();
+  }
+  /**
+   * The opencode registry dispatch will consult — the adapter's own, so
+   * load-time validation and dispatch can never read different registries
+   * (an injected registry previously made load time the stricter of the
+   * two, rejecting models dispatch would run).
+   */
+  get openCodeModelRegistry() {
+    const adapter = this.#engines.get("opencode");
+    return adapter instanceof OpenCodeEngineAdapter ? adapter.modelRegistry : void 0;
   }
   static async create(options = {}) {
     let runtime = null;
@@ -17338,7 +17498,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
-    assertRecognisedAgentOptions(options);
+    assertValidAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -17887,7 +18047,7 @@ async function pipeline(items, stages, log) {
   );
 }
 function mergeAgentDefaults(defaults, agentOptions) {
-  assertRecognisedAgentOptions(agentOptions ?? {});
+  assertValidAgentOptions(agentOptions ?? {});
   const engine = agentOptions?.engine;
   const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
   if (engineDefaults === void 0) {
@@ -18138,7 +18298,13 @@ var WorkflowTimeoutError = class extends WorkflowScriptError {
 };
 async function runWorkflowScript(options) {
   const extracted = extractWorkflowSource(options.source);
-  const defaults = readWorkflowDefaults(extracted.defaultsSource, options.filename);
+  const defaults = readWorkflowDefaults(
+    extracted.defaultsSource,
+    options.filename,
+    // Validate against the registry the runtime will actually dispatch with:
+    // one registry choice, consulted at both load and dispatch.
+    options.runtime.openCodeModelRegistry
+  );
   const cwd = options.cwd ?? path8.dirname(path8.resolve(options.filename));
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
@@ -18154,6 +18320,7 @@ async function runWorkflowScript(options) {
         readMeta: readWorkflowMeta
       });
       const source = await readFile4(scriptPath, "utf8");
+      await options.onWorkflowInvocation?.({ scriptPath, source, args: args ?? [] });
       const child = await runWorkflowScript({
         source,
         filename: scriptPath,
@@ -18244,15 +18411,15 @@ function extractWorkflowSource(source) {
     bodySource: withoutBom.slice(bodyStart)
   };
 }
-function readWorkflowDefaults(defaultsSource, filename = "workflow.js") {
+function readWorkflowDefaults(defaultsSource, filename = "workflow.js", openCodeModelRegistry) {
   if (defaultsSource === null) {
     return void 0;
   }
   const script = new vm.Script(`(${defaultsSource});`, { filename });
   const value = normaliseVmValue(script.runInNewContext(void 0, { timeout: 100 }));
-  return validateWorkflowDefaults(value);
+  return validateWorkflowDefaults(value, openCodeModelRegistry);
 }
-function validateWorkflowDefaults(value) {
+function validateWorkflowDefaults(value, openCodeModelRegistry) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new WorkflowScriptError("Workflow defaults must be an object keyed by engine name");
   }
@@ -18278,7 +18445,7 @@ function validateWorkflowDefaults(value) {
       }
       engineDefaults[option] = optionValue;
     }
-    validateEngineDefaults(engine, engineDefaults);
+    validateEngineDefaults(engine, engineDefaults, openCodeModelRegistry);
     defaults[engine] = engineDefaults;
   }
   return defaults;
@@ -18616,13 +18783,13 @@ function skipBlockComment(source, start) {
 }
 
 // src/status-file.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
-import { link, readFile as readFile5, readdir as readdir3, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import { randomUUID as randomUUID5 } from "node:crypto";
+import { link, readFile as readFile5, readdir as readdir3, rename as rename3, unlink, writeFile as writeFile4 } from "node:fs/promises";
 import path9 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
 var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename3, unlink, writeFile: writeFile3 };
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile5, readdir: readdir3, rename: rename3, unlink, writeFile: writeFile4 };
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -18692,7 +18859,7 @@ var StatusFileWriter = class {
   }
   async #removeSnapshot() {
     const target = path9.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID4()}.remove`;
+    const claim = `${target}.${process.pid}.${randomUUID5()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
     } catch (error) {
@@ -18943,6 +19110,14 @@ async function runEnsembleCli(argv, options = {}) {
       onMeta: async (meta) => {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
+      },
+      onWorkflowInvocation: async (invocation2) => {
+        try {
+          await runRecordWriter?.recordWorkflowInvocation({ ...invocation2, parentOrdinal: 0 });
+        } catch (error) {
+          stderr.write(`[run-record] failed to archive a workflow invocation: ${formatError3(error)}
+`);
+        }
       }
     };
     const interrupt = watchWorkflowInterrupts();

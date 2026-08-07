@@ -198,16 +198,27 @@ interface Manifest {
 }
 
 interface WorkflowInvocationEntry {
-  /** Call ordering: 0 is the root; children take the next ordinal as invoked. */
+  /**
+   * Recording order: 0 is the root; children take the next ordinal as their
+   * pre-run record reaches the writer. Concurrent `workflow()` calls in one
+   * `parallel()` are ordered by when each finished resolving, which is the
+   * earliest moment provenance exists to record.
+   */
   ordinal: number;
   /** The invoking entry's ordinal; null for the root. */
   parent: number | null;
   path: string;
   source: {
+    /** sha256 of the archived source file's exact bytes. */
     archive_path: string;
     sha256: string;
   };
   args: {
+    /**
+     * sha256 of the *canonical args value*, matching the root manifest's
+     * `args.sha256` semantics — not a hash of the archived envelope file,
+     * which wraps the value in `{schema_version, kind, value}`.
+     */
     archive_path: string;
     sha256: string;
   };
@@ -377,11 +388,16 @@ export class RunRecordWriter {
    * never opens a second archive.
    */
   async recordWorkflowInvocation(invocation: WorkflowInvocationRecord): Promise<number> {
+    // Snapshot at the boundary, like recordAgent: args may be a live object
+    // a concurrent sibling mutates while this write waits on the chain.
+    const args = structuredClone(invocation.args);
     return await this.#serialise(async () => {
-      const ordinal = this.manifest.workflow_invocations.length;
       if (this.#sealed) {
-        return ordinal;
+        // Nothing was recorded, so no ordinal exists to return; -1 is the
+        // honest non-value rather than a number that names a ghost entry.
+        return -1;
       }
+      const ordinal = this.manifest.workflow_invocations.length;
       const directory = `workflows/${padId(ordinal)}`;
       const sourcePath = `${directory}/workflow.js`;
       const argsPath = `${directory}/args.json`;
@@ -389,7 +405,7 @@ export class RunRecordWriter {
       await this.#writeJson(argsPath, {
         schema_version: SCHEMA_VERSION,
         kind: "workflow_args",
-        value: invocation.args
+        value: args
       });
       this.manifest.workflow_invocations.push({
         ordinal,
@@ -401,7 +417,7 @@ export class RunRecordWriter {
         },
         args: {
           archive_path: argsPath,
-          sha256: sha256(canonicalJson(invocation.args))
+          sha256: sha256(canonicalJson(args))
         }
       });
       await this.#writeManifest();

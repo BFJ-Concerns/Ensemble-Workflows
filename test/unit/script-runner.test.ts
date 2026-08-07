@@ -1166,6 +1166,26 @@ test("load-time defaults validation consults the runtime's own opencode registry
   );
 });
 
+test("EnsembleRuntime surfaces its opencode adapter's own registry", async () => {
+  const { EnsembleRuntime } = await import("../../src/runtime.js");
+  const { EngineRegistry, OpenCodeEngineAdapter } = await import("../../src/engines.js");
+  const injectedRegistry = {
+    get: () => undefined,
+    names: () => ["injected-only"]
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ modelRegistry: injectedRegistry })]),
+    defaultMaxAttempts: 1
+  });
+  try {
+    // The getter chain (adapter → runtime) is what script loading consults;
+    // identity, not shape, is the property — one registry object at both ends.
+    assert.equal(runtime.openCodeModelRegistry, injectedRegistry);
+  } finally {
+    await runtime.close();
+  }
+});
+
 test("a script with a defaults block still exposes its meta to registry readers", async () => {
   const { readWorkflowMeta } = await import("../../src/script-runner.js");
   const meta = readWorkflowMeta(`

@@ -225,9 +225,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       return null;
     }
     const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
-    await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env: this.#workerEnv })}\n`, {
-      mode: 0o600
-    });
+    try {
+      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env: this.#workerEnv })}\n`, {
+        mode: 0o600
+      });
+    } catch (error) {
+      // A failed write means the caller never learns the directory exists,
+      // so nothing else can clean it up — remove it (and any partial file)
+      // here before surfacing the failure.
+      await this.#removeSettingsDir(dir);
+      throw error;
+    }
     return dir;
   }
 

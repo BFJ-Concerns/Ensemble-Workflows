@@ -1089,7 +1089,17 @@ setInterval(() => {}, 1000);
     providerModel: "openrouter/z-ai/glm-5.2",
     signal: abort.signal
   });
-  await waitForFile(ready);
+  // Race the readiness wait against the child settling: a fixture that dies
+  // before announcing (spawn failure, script error) fails the test with the
+  // child's own result instead of leaving waitForFile looping forever.
+  const readiness = await Promise.race([
+    waitForFile(ready).then(() => "ready" as const),
+    running.then(
+      (early) => `child settled before readiness: ${JSON.stringify(early)}`,
+      (error) => `child failed before readiness: ${String(error)}`
+    )
+  ]);
+  assert.equal(readiness, "ready");
   abort.abort();
   const result = await running;
 

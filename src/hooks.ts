@@ -14,7 +14,7 @@ export interface WorkflowRuntime {
    * validation reads the same one. Optional: a runtime that does not expose
    * it validates against the module default, as before.
    */
-  readonly openCodeModelRegistry?: OpenCodeModelRegistry;
+  readonly openCodeModelRegistry?: OpenCodeModelRegistry | undefined;
   agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
   notePhase: (title: string) => void;
 }

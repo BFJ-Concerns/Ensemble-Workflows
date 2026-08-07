@@ -128,12 +128,21 @@ test("composed-workflow invocations are archived with hashes, ordering, and the 
   assert.equal(first!.source.archive_path, "workflows/000001/workflow.js");
   assert.equal(second!.args.archive_path, "workflows/000002/args.json");
 
-  // Hashes are verifiable against the archived bytes, and same source means
-  // same hash while different args mean different hashes.
+  // The source hash covers the archived file's exact bytes; the args hash
+  // covers the canonical args *value* (matching the root manifest's
+  // args.sha256 semantics), not the archived envelope file that wraps it.
   const archivedChild = await readFile(path.join(writer.archiveDir, first!.source.archive_path), "utf8");
   assert.equal(archivedChild, childSource);
   assert.equal(first!.source.sha256, createHash("sha256").update(childSource).digest("hex"));
   assert.equal(first!.source.sha256, second!.source.sha256);
+  const archivedArgs = JSON.parse(
+    await readFile(path.join(writer.archiveDir, first!.args.archive_path), "utf8")
+  ) as { value: unknown };
+  assert.deepEqual(archivedArgs.value, { id: 7 });
+  assert.equal(
+    first!.args.sha256,
+    createHash("sha256").update(JSON.stringify({ id: 7 }, null, 2)).digest("hex")
+  );
   assert.notEqual(first!.args.sha256, second!.args.sha256);
 
   // The archived files are integrity-tracked like every other artefact.

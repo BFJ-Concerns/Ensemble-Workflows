@@ -13972,6 +13972,11 @@ var AppServerOverloadedError = class extends AppServerRequestError {
 };
 var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
 };
+var AppServerFirstDeltaTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server turn did not deliver its first agent-message delta within ${timeoutMs}ms`);
+  }
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -14791,6 +14796,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 var LazyCodexAppServerTransport = class {
   cwd;
@@ -14835,6 +14841,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #process;
   #requestTimeoutMs;
   #retryPromiseSilenceTimeoutMs;
+  #firstDeltaTimeoutMs;
   #startupHandshakeTimeoutMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
@@ -14848,6 +14855,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -15184,6 +15192,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "item/agentMessage/delta") {
+      if (speaksForTurn) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
       if (turn.firstDeltaAt === null) {
         turn.firstDeltaAt = now;
       }
@@ -15296,6 +15307,17 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       );
     }, this.#retryPromiseSilenceTimeoutMs);
   }
+  #disarmFirstDeltaDeadline(turn) {
+    if (turn.firstDeltaDeadline !== void 0) {
+      clearTimeout(turn.firstDeltaDeadline);
+      turn.firstDeltaDeadline = void 0;
+    }
+  }
+  #armFirstDeltaDeadline(threadId, turn) {
+    turn.firstDeltaDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstDeltaTimeoutError(this.#firstDeltaTimeoutMs));
+    }, this.#firstDeltaTimeoutMs);
+  }
   /**
    * The single terminal path for a failing turn. Every way a turn can end
    * short of completion — error notification, retry-promise bound,
@@ -15309,6 +15331,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     if (turn.turnId !== void 0) {
       void this.#sendUnacknowledgedRequest("turn/interrupt", {
         threadId,
@@ -15322,6 +15345,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result = {
@@ -15382,6 +15406,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
+      firstDeltaDeadline: void 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -15395,6 +15420,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         );
       }, timeoutMs)
     };
+    this.#armFirstDeltaDeadline(threadId, state);
     return state;
   }
   #sendApprovalDenial(id) {
@@ -17385,6 +17411,7 @@ async function createDefaultEngineRegistry(options) {
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+    ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
@@ -17487,6 +17514,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+      ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",

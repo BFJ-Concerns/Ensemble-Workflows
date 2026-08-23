@@ -107,6 +107,13 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
+/** A started turn that never produced an agent-message delta before its transport deadline. */
+export class AppServerFirstDeltaTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server turn did not deliver its first agent-message delta within ${timeoutMs}ms`);
+  }
+}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);

@@ -164,6 +164,7 @@ export class EnsembleRuntime {
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
         : {}),
+      ...(options.firstDeltaTimeoutMs !== undefined ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {}),
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",

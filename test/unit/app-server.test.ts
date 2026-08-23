@@ -7,9 +7,11 @@ import test from "node:test";
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
 import { createRuntime } from "../../src/runtime.js";
+import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerFirstDeltaTimeoutError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
@@ -342,6 +344,56 @@ test("itemText reaches the terminal rejection when no deltas were streamed", asy
         return true;
       }
     );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a started turn with no first delta expires before its ordinary timeout and records the terminal attempt", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("no-first-delta");
+  const runtime = await createRuntime({
+    codexBin,
+    firstDeltaTimeoutMs: 250,
+    requestTimeoutMs: 2_000
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => runtime.agent("start but never speak", { engine: "codex", timeoutMs: 2_000, maxAttempts: 1 }),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerFirstDeltaTimeoutError);
+        assert.match(error.message, /first agent-message delta within 250ms/);
+        return true;
+      }
+    );
+    assert.ok(Date.now() - startedAt < 1_000, "first-delta expiry must win over the 2s turn timeout");
+    const attempt = records.at(-1)?.attempts.at(-1);
+    assert.equal(records.at(-1)?.status, "failed");
+    assert.equal(attempt?.status, "failed");
+    assert.equal(attempt?.failure?.kind, "AppServerFirstDeltaTimeoutError");
+    assert.match(attempt?.failure?.message ?? "", /first agent-message delta within 250ms/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a delayed first delta inside the deadline completes after the deadline would otherwise expire", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("delayed-first-delta");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    firstDeltaTimeoutMs: 250
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "speak slowly", { timeoutMs: 2_000 });
+    assert.equal(result.text, "the delayed whole answer");
+    assert.equal(result.deltaText, "the delayed first delta");
+    assert.ok((result.firstDeltaMs ?? Infinity) < 250, "the client must ingest the first delta before expiry");
   } finally {
     await transport.close();
   }
@@ -752,6 +804,8 @@ async function fakeCodexFailingTurnServer(
     | "promise-then-server-request-recovery"
     | "promise-foreign-frame-then-silence"
     | "promise-mcp-alternation"
+    | "no-first-delta"
+    | "delayed-first-delta"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -767,7 +821,19 @@ if (process.argv[2] !== "app-server") {
 const mode = ${JSON.stringify(mode)};
 let threadCounter = 0;
 const reader = createInterface({ input: process.stdin });
-const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const send = (message, afterWrite) => {
+  if (message === null || typeof message !== "object") {
+    throw new Error("fake app-server messages must be objects");
+  }
+  if (typeof message.method === "string") {
+    if (message.params === null || typeof message.params !== "object") {
+      throw new Error("fake app-server notifications must carry object params");
+    }
+  } else if (!("id" in message) || (!("result" in message) && !("error" in message))) {
+    throw new Error("fake app-server responses must carry an id and result or error");
+  }
+  process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
+};
 
 reader.on("line", (line) => {
   const message = JSON.parse(line);
@@ -798,11 +864,29 @@ reader.on("line", (line) => {
     }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (mode === "no-first-delta") {
+      // The accepted turn stays alive but never produces output: only the
+      // client's first-delta deadline can free the worker slot.
+      return;
+    }
+    if (mode === "delayed-first-delta") {
+      // The first delta arrives inside the test deadline, while completion is
+      // deliberately after it. This proves the client, not the fixture log,
+      // disarmed the deadline when it ingested the delta.
+      setTimeout(() => {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "the delayed first delta" } });
+      }, 100);
+      setTimeout(() => {
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the delayed whole answer" } } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+      }, 450);
+      return;
+    }
     if (mode === "exit-mid-turn") {
       // Exit only after the delta has flushed, or the partial text never
       // reaches the transport and the test measures the pipe, not the code.
-      process.stdout.write(
-        JSON.stringify({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } }) + "\\n",
+      send(
+        { method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } },
         () => process.exit(7)
       );
       return;

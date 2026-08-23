@@ -56,6 +56,13 @@ export interface RuntimeOptions {
    * deliberately not a CLI flag or ambient setting. Defaults to 15 minutes.
    */
   retryPromiseSilenceTimeoutMs?: number;
+  /**
+   * Bounds a started Codex turn's wait for its first agent-message delta;
+   * expiry terminalises the turn. A library-level option like
+   * `requestTimeoutMs` — deliberately not a CLI flag or ambient setting.
+   * Defaults to 15 minutes.
+   */
+  firstDeltaTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   /**
    * Machine-declared per-engine worker environment (the config file's

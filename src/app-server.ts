@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerFirstDeltaTimeoutError,
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
@@ -60,6 +61,7 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
+  firstDeltaDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
@@ -74,6 +76,11 @@ const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
  * alive turn over freeing its slot promptly.
  */
 const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
+/**
+ * A started turn that remains completely silent costs a worker slot without
+ * producing evidence. Healthy long turns disarm this on their first delta.
+ */
+const DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
  * How long a stdout EOF waits for the process's own exit event before
  * terminalising as "stdout closed". Long enough for a reaped death's status
@@ -95,6 +102,7 @@ export interface CodexAppServerTransportOptions {
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
+  firstDeltaTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -165,6 +173,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
   #retryPromiseSilenceTimeoutMs: number;
+  #firstDeltaTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
@@ -180,6 +189,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs =
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -593,6 +603,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "item/agentMessage/delta") {
+      if (speaksForTurn) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
       if (turn.firstDeltaAt === null) {
         turn.firstDeltaAt = now;
       }
@@ -722,6 +735,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }, this.#retryPromiseSilenceTimeoutMs);
   }
 
+  #disarmFirstDeltaDeadline(turn: TurnState): void {
+    if (turn.firstDeltaDeadline !== undefined) {
+      clearTimeout(turn.firstDeltaDeadline);
+      turn.firstDeltaDeadline = undefined;
+    }
+  }
+
+  #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
+    turn.firstDeltaDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstDeltaTimeoutError(this.#firstDeltaTimeoutMs));
+    }, this.#firstDeltaTimeoutMs);
+  }
+
   /**
    * The single terminal path for a failing turn. Every way a turn can end
    * short of completion — error notification, retry-promise bound,
@@ -737,6 +763,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     if (turn.turnId !== undefined) {
       // #writeLine enters stdin.write synchronously, preserving wire order;
       // neither write completion nor the app-server response may delay the
@@ -756,6 +783,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
@@ -825,6 +853,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
+      firstDeltaDeadline: undefined,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -841,6 +870,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
               );
             }, timeoutMs)
     };
+    this.#armFirstDeltaDeadline(threadId, state);
     return state;
   }
 

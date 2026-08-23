@@ -567,7 +567,7 @@ test("a pathologically nested payload classifies without crashing", () => {
   assert.ok(!(error instanceof CodexSchemaSubsetUnsupportedError));
 });
 
-test("an undecodable inbound frame leaves a decode diagnostic event", async () => {
+test("an unterminated undecodable inbound frame leaves a decode diagnostic event", async () => {
   const codexBin = await fakeCodexFailingTurnServer("garbage-line");
   const events: Array<{ method: string; params: Record<string, unknown> }> = [];
   const transport = await CodexAppServerTransport.start({
@@ -576,11 +576,70 @@ test("an undecodable inbound frame leaves a decode diagnostic event", async () =
   });
   try {
     const threadId = await transport.openThread({});
-    await assert.rejects(() => transport.runTurn(threadId, "emit garbage", {}));
+    await assert.rejects(() => transport.runTurn(threadId, "emit garbage", {}), AppServerExitedError);
     const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
     assert.equal(decodeFailures.length, 1);
     assert.match(String(decodeFailures[0]?.params.linePrefix), /^this is not JSON/);
     assert.ok(Number(decodeFailures[0]?.params.byteLength) > 0);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a newline-terminated undecodable inbound frame leaves a decode diagnostic event", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("terminated-garbage-line");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "emit terminated garbage", {}), AppServerExitedError);
+    const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
+    assert.equal(decodeFailures.length, 1);
+    assert.match(String(decodeFailures[0]?.params.linePrefix), /^this is not JSON/);
+    assert.ok(Number(decodeFailures[0]?.params.byteLength) > 0);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("an oversized stdout frame leaves bounded decode evidence and the transport processes the next line", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("oversized-line");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "survive oversized provider frame", {});
+
+    const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
+    assert.equal(decodeFailures.length, 1);
+    assert.equal(decodeFailures[0]?.params.byteLength, 1_048_699);
+    assert.equal(String(decodeFailures[0]?.params.linePrefix).length, 512);
+    assert.equal(result.text, "answer after oversized frame");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a just-under-limit stdout frame is processed normally", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("just-under-limit-line");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "accept just-under provider frame", {});
+
+    assert.equal(events.filter((event) => event.method === "transport/decodeFailed").length, 0);
+    assert.ok(result.text.length > 1_000_000);
+    assert.match(result.text, /^under-limit frame/);
   } finally {
     await transport.close();
   }
@@ -807,6 +866,7 @@ async function fakeCodexFailingTurnServer(
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
+    | "terminated-garbage-line"
     | "delta-no-turn-start-ack"
     | "item-then-error"
     | "promise-then-silence"
@@ -815,6 +875,8 @@ async function fakeCodexFailingTurnServer(
     | "promise-foreign-frame-then-silence"
     | "promise-mcp-alternation"
     | "turn-start-error"
+    | "oversized-line"
+    | "just-under-limit-line"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -874,14 +936,27 @@ reader.on("line", (line) => {
       );
       return;
     }
+    if (mode === "oversized-line" || mode === "just-under-limit-line") {
+      const prefix = mode === "oversized-line" ? "over-limit frame" : "under-limit frame";
+      const targetByteLength = mode === "oversized-line" ? 1_048_699 : 1_048_575;
+      const frame = { method: "item/agentMessage/delta", params: { threadId, delta: prefix } };
+      const delta = prefix + "x".repeat(targetByteLength - Buffer.byteLength(JSON.stringify(frame)));
+      send({ method: "item/agentMessage/delta", params: { threadId, delta } });
+      if (mode === "oversized-line") {
+        send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "answer after oversized frame" } } });
+      }
+      send({ method: "turn/completed", params: { threadId } });
+      return;
+    }
     send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
     if (mode === "error-notification") {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
     } else if (mode === "garbage-line") {
-      process.stdout.write("this is not JSON at all\\n");
-      send({ method: "error", params: { threadId, willRetry: false, error: { message: "and then it failed" } } });
+      process.stdout.write("this is not JSON at all", () => process.exit(7));
+    } else if (mode === "terminated-garbage-line") {
+      process.stdout.write("this is not JSON at all\\n", () => process.exit(7));
     } else if (mode === "promise-then-silence") {
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion", codexErrorInfo: "serverOverloaded" } } });
       // Then nothing at all: the silence deadline is the only way out.

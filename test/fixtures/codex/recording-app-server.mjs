@@ -35,6 +35,10 @@ const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_STA
 const turnStartError = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_TURN_START_ERROR ?? "null");
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
+const oversizedLineBytes = Number(process.env.ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES ?? "0");
+if (!Number.isSafeInteger(oversizedLineBytes) || oversizedLineBytes < 0) {
+  throw new Error("ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES must be a non-negative safe integer");
+}
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -234,6 +238,15 @@ const handleLine = (line) => {
         allowMalformed: "the -32001 classifier regression deliberately includes schema-forbidden error fields"
       });
       return;
+    }
+    if (oversizedLineBytes > 0) {
+      // This cannot be elicited from a live provider on cue. Its payload is
+      // still protocol-valid: exercise the client boundary without opening a
+      // hole in the fixture's wire-schema guard.
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId, turnId, itemId: `agent-message-${turnId}`, delta: "x".repeat(oversizedLineBytes) }
+      }, "ServerNotification.json");
     }
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {

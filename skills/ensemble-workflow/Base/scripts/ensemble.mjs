@@ -15124,6 +15124,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== void 0) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstDeltaDeadline(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -15169,6 +15170,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
     }
     const now = Date.now();
     if (isTurnProgressNotification(method)) {
@@ -15192,9 +15196,6 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "item/agentMessage/delta") {
-      if (speaksForTurn) {
-        this.#disarmFirstDeltaDeadline(turn);
-      }
       if (turn.firstDeltaAt === null) {
         turn.firstDeltaAt = now;
       }
@@ -15501,6 +15502,9 @@ function isTurnProgressNotification(method) {
   // resuming — the reset set's rationale. Counting it would let a
   // promise/heartbeat alternation defeat the consecutive-promise bound.
   method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
 }
 function turnIdFromParams(params) {
   if (typeof params.turnId === "string") {

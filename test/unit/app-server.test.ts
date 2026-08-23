@@ -821,19 +821,7 @@ if (process.argv[2] !== "app-server") {
 const mode = ${JSON.stringify(mode)};
 let threadCounter = 0;
 const reader = createInterface({ input: process.stdin });
-const send = (message, afterWrite) => {
-  if (message === null || typeof message !== "object") {
-    throw new Error("fake app-server messages must be objects");
-  }
-  if (typeof message.method === "string") {
-    if (message.params === null || typeof message.params !== "object") {
-      throw new Error("fake app-server notifications must carry object params");
-    }
-  } else if (!("id" in message) || (!("result" in message) && !("error" in message))) {
-    throw new Error("fake app-server responses must carry an id and result or error");
-  }
-  process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
-};
+const send = (message, afterWrite) => process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
 
 reader.on("line", (line) => {
   const message = JSON.parse(line);

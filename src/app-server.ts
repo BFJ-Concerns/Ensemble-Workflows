@@ -515,6 +515,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstDeltaDeadline(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -575,6 +576,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
+      // `turn/started` only acknowledges acceptance. Every later correlated
+      // server notification is output from the live turn — streamed text,
+      // tool work, usage, routing, status, or a terminal item — and proves
+      // it is no longer silently stuck before producing anything.
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
     }
 
     const now = Date.now();
@@ -603,9 +611,6 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "item/agentMessage/delta") {
-      if (speaksForTurn) {
-        this.#disarmFirstDeltaDeadline(turn);
-      }
       if (turn.firstDeltaAt === null) {
         turn.firstDeltaAt = now;
       }
@@ -981,6 +986,16 @@ function isTurnProgressNotification(method: string): boolean {
     // promise/heartbeat alternation defeat the consecutive-promise bound.
     (method.startsWith("item/") && method !== "item/mcpToolCall/progress")
   );
+}
+
+/**
+ * `turn/started` establishes a turn but does not show it doing useful work;
+ * retaining the first-output deadline through that acknowledgement catches a
+ * turn that accepts and then stalls. Any subsequent correlated server frame
+ * is observable output and therefore disarms that deadline.
+ */
+function isOutputBearingTurnFrame(method: string): boolean {
+  return method !== "turn/started";
 }
 
 /**

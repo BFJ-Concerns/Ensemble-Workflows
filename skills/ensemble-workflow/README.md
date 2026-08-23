@@ -143,9 +143,12 @@ defaults to `$XDG_DATA_HOME/ensemble` (normally
 `~/.local/share/ensemble`). A composed run stays one run: the manifest's
 `workflow_invocations` lists the root and every `workflow()` child in call
 order — each with its archived source and arguments, their hashes, and a
-parent link — recorded before the child runs, while the root's `meta.task`
-remains the single grouping identity. Status defaults to the run's `.claude` directory
-only when that directory already exists; an explicit status directory must also
+parent link — recorded before the child runs. Each args entry names a
+`canonical_archive_path` whose exact canonical JSON text is what
+`args.sha256` covers, so an archive consumer can verify it without the
+writer. The root's `meta.task` remains the single grouping identity. Status
+defaults to the run's `.claude` directory only when that directory already
+exists; an explicit status directory must also
 already exist.
 
 ## Script shape

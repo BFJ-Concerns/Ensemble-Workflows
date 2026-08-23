@@ -153,6 +153,12 @@ interface Manifest {
   };
   args: {
     archive_path: string;
+    /**
+     * The exact canonical JSON text whose bytes `sha256` covers. This is
+     * archived separately from the descriptive args envelope so an archive
+     * consumer can verify the digest without depending on writer behaviour.
+     */
+    canonical_archive_path: string;
     sha256: string;
   };
   meta: {
@@ -215,11 +221,12 @@ interface WorkflowInvocationEntry {
   };
   args: {
     /**
-     * sha256 of the *canonical args value*, matching the root manifest's
-     * `args.sha256` semantics — not a hash of the archived envelope file,
-     * which wraps the value in `{schema_version, kind, value}`.
+     * sha256 of the exact canonical JSON text at `canonical_archive_path`,
+     * matching the root manifest's `args.sha256` semantics. `archive_path`
+     * remains the descriptive envelope with `{schema_version, kind, value}`.
      */
     archive_path: string;
+    canonical_archive_path: string;
     sha256: string;
   };
 }
@@ -285,6 +292,7 @@ export class RunRecordWriter {
     const harnessRoot = (await findHarnessRoot()) ?? options.cwd;
     const packageInfo = await readPackageInfo(harnessRoot);
     const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const canonicalArgs = canonicalJson(options.args);
     const writer = new RunRecordWriter(archiveDir, options.cwd, {
       schema_version: SCHEMA_VERSION,
       kind: "run_manifest",
@@ -301,7 +309,8 @@ export class RunRecordWriter {
       },
       args: {
         archive_path: "args.json",
-        sha256: sha256(canonicalJson(options.args))
+        canonical_archive_path: "args.canonical.json",
+        sha256: sha256(canonicalArgs)
       },
       meta: {
         task: null,
@@ -345,7 +354,8 @@ export class RunRecordWriter {
           },
           args: {
             archive_path: "args.json",
-            sha256: sha256(canonicalJson(options.args))
+            canonical_archive_path: "args.canonical.json",
+            sha256: sha256(canonicalArgs)
           }
         }
       ],
@@ -359,6 +369,7 @@ export class RunRecordWriter {
       kind: "run_args",
       value: options.args
     });
+    await writer.#writeText("args.canonical.json", canonicalArgs);
     if (gitStart.diffPath !== null) {
       await writer.#trackFile(gitStart.diffPath);
     }
@@ -401,12 +412,15 @@ export class RunRecordWriter {
       const directory = `workflows/${padId(ordinal)}`;
       const sourcePath = `${directory}/workflow.js`;
       const argsPath = `${directory}/args.json`;
+      const canonicalArgsPath = `${directory}/args.canonical.json`;
+      const canonicalArgs = canonicalJson(args);
       await this.#writeText(sourcePath, invocation.source);
       await this.#writeJson(argsPath, {
         schema_version: SCHEMA_VERSION,
         kind: "workflow_args",
         value: args
       });
+      await this.#writeText(canonicalArgsPath, canonicalArgs);
       this.manifest.workflow_invocations.push({
         ordinal,
         parent: invocation.parentOrdinal,
@@ -417,7 +431,8 @@ export class RunRecordWriter {
         },
         args: {
           archive_path: argsPath,
-          sha256: sha256(canonicalJson(args))
+          canonical_archive_path: canonicalArgsPath,
+          sha256: sha256(canonicalArgs)
         }
       });
       await this.#writeManifest();

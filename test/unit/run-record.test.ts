@@ -47,10 +47,14 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-manifest-keys.json", "utf8"));
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-manifest-keys.json", "utf8")) as {
+    manifest: string[];
+    args: string[];
+  };
   const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-agent-keys.json", "utf8"));
 
-  assert.deepEqual(Object.keys(manifest).sort(), manifestKeys);
+  assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
+  assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
   assert.equal(manifest.schema_version, 2);
   assert.equal(manifest.kind, "run_manifest");
@@ -106,7 +110,7 @@ test("composed-workflow invocations are archived with hashes, ordering, and the 
       parent: number | null;
       path: string;
       source: { archive_path: string; sha256: string };
-      args: { archive_path: string; sha256: string };
+      args: { archive_path: string; canonical_archive_path: string; sha256: string };
     }>;
     files: Array<{ path: string; sha256: string }>;
   };
@@ -127,10 +131,13 @@ test("composed-workflow invocations are archived with hashes, ordering, and the 
   assert.equal(root!.source.archive_path, "workflow.js");
   assert.equal(first!.source.archive_path, "workflows/000001/workflow.js");
   assert.equal(second!.args.archive_path, "workflows/000002/args.json");
+  assert.equal(root!.args.canonical_archive_path, "args.canonical.json");
+  assert.equal(first!.args.canonical_archive_path, "workflows/000001/args.canonical.json");
+  assert.deepEqual(Object.keys(root!.args).sort(), ["archive_path", "canonical_archive_path", "sha256"]);
 
-  // The source hash covers the archived file's exact bytes; the args hash
-  // covers the canonical args *value* (matching the root manifest's
-  // args.sha256 semantics), not the archived envelope file that wraps it.
+  // The source hash covers the archived file's exact bytes. The args hash
+  // covers the separately archived canonical text, not the envelope that
+  // wraps the value, so an archive-only consumer can recompute it directly.
   const archivedChild = await readFile(path.join(writer.archiveDir, first!.source.archive_path), "utf8");
   assert.equal(archivedChild, childSource);
   assert.equal(first!.source.sha256, createHash("sha256").update(childSource).digest("hex"));
@@ -143,12 +150,17 @@ test("composed-workflow invocations are archived with hashes, ordering, and the 
     first!.args.sha256,
     createHash("sha256").update(JSON.stringify({ id: 7 }, null, 2)).digest("hex")
   );
+  const archivedCanonicalArgs = await readFile(path.join(writer.archiveDir, first!.args.canonical_archive_path), "utf8");
+  assert.equal(archivedCanonicalArgs, JSON.stringify({ id: 7 }, null, 2));
+  assert.equal(first!.args.sha256, createHash("sha256").update(archivedCanonicalArgs).digest("hex"));
   assert.notEqual(first!.args.sha256, second!.args.sha256);
 
   // The archived files are integrity-tracked like every other artefact.
   const trackedPaths = manifest.files.map((entry) => entry.path);
   assert.ok(trackedPaths.includes("workflows/000001/workflow.js"));
   assert.ok(trackedPaths.includes("workflows/000002/args.json"));
+  assert.ok(trackedPaths.includes("args.canonical.json"));
+  assert.ok(trackedPaths.includes("workflows/000002/args.canonical.json"));
 });
 
 test("CLI records effective concurrency values with mixed-layer provenance", async () => {

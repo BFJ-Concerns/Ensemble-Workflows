@@ -28,9 +28,8 @@ test("built consumer terminalises a turn with no output before its ordinary time
     const result = await fixture.run({
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
       ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM: "1",
-      // 1000 ms is only the accelerated deadline's hang guard; the fixture
-      // releases it solely after the client writes armed:<id>.
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000"
+      // The fixture releases the client-controlled deadline only after it
+      // writes armed:first-delta:<id>.
     });
 
     assert.equal(result.code, 1, result.stderr);
@@ -45,9 +44,8 @@ test("built consumer terminalises a turn with no output before its ordinary time
 test("built consumer accepts a first delta that arrives late but inside the deadline", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      // 1000 ms is a hang guard; the delta is released by armed:<id> and
-      // completion by the client-written disarmed:<id>, never elapsed time.
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
+      // The delta is released by armed:first-delta:<id> and completion by
+      // the client-written disarmed:first-delta:<id>, never elapsed time.
       ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
@@ -61,15 +59,14 @@ test("built consumer accepts a first delta that arrives late but inside the dead
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, '"worker-ok"\n');
     const attempt = await fixture.onlyAttempt();
-    assert.ok((attempt.first_delta_ms ?? Infinity) >= 0, "the client must ingest the first delta");
+    assert.notEqual(attempt.first_delta_ms, null, "the client must record the first delta it ingests");
   });
 });
 
 test("built consumer treats a correlated non-delta frame as first output", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      // 1000 ms is a hang guard; the fixture waits on client-written markers.
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
+      // The fixture waits on client-written first-delta markers.
       ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
@@ -120,7 +117,7 @@ async function createFixture() {
       return await agent("exercise first-output liveness", {
         engine: "codex",
         maxAttempts: 1,
-        timeoutMs: 5_000
+        timeoutMs: 5_000 // Harness hang guard, not an assertion deadline.
       });
     `
   );
@@ -140,7 +137,6 @@ async function createFixture() {
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
-          ENSEMBLE_POST_PROMISE_DEADLINE_MS: "250",
           ENSEMBLE_STATUS: "0",
           XDG_DATA_HOME: path.join(directory, "data"),
           ...overrides

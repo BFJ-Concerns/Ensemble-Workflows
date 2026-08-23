@@ -48,6 +48,7 @@ test("built consumer terminalises permanent silence after a retry promise with i
     assert.equal(attempts[0]?.status, "failed");
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_SILENCE");
     assert.match(attempts[0]?.failure?.message ?? "", /PROMISE_ABANDONED_41/);
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -66,6 +67,7 @@ test("built consumer continues after a post-promise delta disarms the silence de
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `"delta-recovered"\n`);
     assert.equal((await fixture.attempts()).length, 2);
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -84,6 +86,7 @@ test("built consumer returns a recovered answer when the app-server keeps its re
     const attempts = await fixture.attempts();
     assert.equal(attempts.length, 2);
     assert.equal(attempts[1]?.status, "complete");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -106,6 +109,7 @@ test("built consumer rejects promise and MCP-progress alternation at the bounded
     assert.match(result.stderr, /ALTERNATING_PROMISE_5/);
     const attempts = await fixture.attempts();
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_HEARTBEATS");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -127,6 +131,7 @@ test("built consumer answers a turn-scoped request and continues after it disarm
       (message) => message.id === 10_001 && message.result?.decision === "denied"
     );
     assert.equal(denial?.result?.reason, "Ensemble workers run with approvalPolicy never");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -137,6 +142,16 @@ function abandonedAttempt(partialText: string): Action[] {
     { type: "deadline" },
     { type: "silence" }
   ];
+}
+
+function assertFirstOutputDeadlineDisarmed(control: string): void {
+  const armed = [...control.matchAll(/armed:first-delta:(\d+)/g)].at(-1)?.[1];
+  assert.notEqual(armed, undefined, "the client must control its first-output deadline");
+  assert.match(
+    control,
+    new RegExp(`disarmed:first-delta:${armed}`),
+    "the first output must disarm its client-controlled deadline"
+  );
 }
 
 interface RecordedAttempt {
@@ -194,7 +209,6 @@ async function createFixture() {
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
-          ENSEMBLE_POST_PROMISE_DEADLINE_MS: "60",
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
           ENSEMBLE_STATUS: "0",
@@ -213,6 +227,7 @@ async function createFixture() {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as RecordedMessage),
+    deadlineControl: () => readFile(deadlineControlPath, "utf8"),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

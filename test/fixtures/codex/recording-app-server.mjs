@@ -41,6 +41,7 @@ const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGR
 const completionDelayMs = Number(process.env.ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS ?? "0");
 const turnStartMarkerPath = process.env.ENSEMBLE_FAKE_CODEX_TURN_START_MARKER;
 const firstDeltaControlPath = process.env.ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL;
+const firstDeltaDeadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "first-delta";
 const releaseFirstDeltaAfterArm = process.env.ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM === "1";
 const completeAfterFirstDeltaDisarm = process.env.ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
@@ -163,7 +164,7 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
     }
     if (!stallAfterNotificationSequence) {
       if (completeAfterFirstDeltaDisarm) {
-        await waitForFirstDeltaControl("disarmed:");
+        await waitForFirstDeltaControl(`disarmed:${firstDeltaDeadlineKind}:`);
       }
       if (completionDelayMs > 0) {
         await wait(completionDelayMs);
@@ -272,12 +273,12 @@ const handleLine = (line) => {
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
       if (releaseFirstDeltaAfterArm) {
-        void waitForFirstDeltaControl("armed:").then((control) => {
-          const armed = [...control.matchAll(/armed:(\d+)/g)].at(-1)?.[1];
+        void waitForFirstDeltaControl(`armed:${firstDeltaDeadlineKind}:`).then((control) => {
+          const armed = [...control.matchAll(new RegExp(`armed:${firstDeltaDeadlineKind}:(\\d+)`, "g"))].at(-1)?.[1];
           if (armed === undefined) {
             throw new Error("first-delta control marker did not identify an armed deadline");
           }
-          appendFileSync(firstDeltaControlPath, `release:${armed}\n`);
+          appendFileSync(firstDeltaControlPath, `release:${firstDeltaDeadlineKind}:${armed}\n`);
         });
       }
       releaseTurnTimeoutAfterClientProcessesStart();

@@ -11,6 +11,7 @@ if (process.argv[2] !== "app-server") {
 
 const capturePath = process.env.ENSEMBLE_POST_PROMISE_CAPTURE;
 const deadlineControlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
+const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 const scenarios = JSON.parse(process.env.ENSEMBLE_POST_PROMISE_SCENARIOS ?? "[]");
 let threadCounter = 0;
 let turnCounter = 0;
@@ -26,9 +27,9 @@ async function releaseDeadline(requireDisarm) {
   }
   for (let attempt = 0; attempt < 6_000; attempt += 1) {
     const control = readFileSync(deadlineControlPath, "utf8");
-    const armed = [...control.matchAll(/armed:(\d+)/g)].at(-1)?.[1];
-    if (armed !== undefined && (!requireDisarm || control.includes(`disarmed:${armed}`))) {
-      appendFileSync(deadlineControlPath, `release:${armed}\n`);
+    const armed = [...control.matchAll(new RegExp(`armed:${deadlineKind}:(\\d+)`, "g"))].at(-1)?.[1];
+    if (armed !== undefined && (!requireDisarm || control.includes(`disarmed:${deadlineKind}:${armed}`))) {
+      appendFileSync(deadlineControlPath, `release:${deadlineKind}:${armed}\n`);
       return;
     }
     await wait(5);

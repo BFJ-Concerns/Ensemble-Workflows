@@ -5,23 +5,23 @@ const nativeSetTimeout = globalThis.setTimeout;
 const nativeSetInterval = globalThis.setInterval;
 const nativeClearTimeout = globalThis.clearTimeout;
 const nativeClearInterval = globalThis.clearInterval;
-const acceleratedMs = Number(process.env.ENSEMBLE_POST_PROMISE_DEADLINE_MS ?? "60");
 const controlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
-const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 let deadlineCount = 0;
 const controlledTimers = new Map();
 
 globalThis.setTimeout = (callback, delay, ...args) => {
   const callbackText = Function.prototype.toString.call(callback);
-  const expectedError = deadlineKind === "first-delta"
-    ? "AppServerFirstOutputTimeoutError"
-    : "AppServerRetryPromiseBrokenError";
-  if (delay !== 15 * 60 * 1_000 || controlPath === undefined || !callbackText.includes(expectedError)) {
-    return nativeSetTimeout(callback, delay === 15 * 60 * 1_000 ? acceleratedMs : delay, ...args);
+  const terminalKind = callbackText.includes("AppServerFirstOutputTimeoutError")
+    ? "first-delta"
+    : callbackText.includes("AppServerRetryPromiseBrokenError")
+      ? "retry-promise"
+      : undefined;
+  if (delay !== 15 * 60 * 1_000 || controlPath === undefined || terminalKind === undefined) {
+    return nativeSetTimeout(callback, delay, ...args);
   }
 
   const id = ++deadlineCount;
-  appendFileSync(controlPath, `armed:${id}\n`);
+  appendFileSync(controlPath, `armed:${terminalKind}:${id}\n`);
   const timer = nativeSetInterval(() => {
     let control = "";
     try {
@@ -29,7 +29,7 @@ globalThis.setTimeout = (callback, delay, ...args) => {
     } catch {
       return;
     }
-    const releaseMarker = `release:${id}\n`;
+    const releaseMarker = `release:${terminalKind}:${id}\n`;
     if (!control.includes(releaseMarker)) {
       return;
     }
@@ -40,17 +40,17 @@ globalThis.setTimeout = (callback, delay, ...args) => {
     controlledTimers.delete(timer);
     callback(...args);
   }, 5); // Hang-guard poll; only the client-written release marker fires the deadline.
-  controlledTimers.set(timer, id);
+  controlledTimers.set(timer, { id, terminalKind });
   timer.unref();
   return timer;
 };
 
 globalThis.clearTimeout = (timer) => {
-  const id = controlledTimers.get(timer);
-  if (id !== undefined) {
+  const controlled = controlledTimers.get(timer);
+  if (controlled !== undefined) {
     controlledTimers.delete(timer);
     nativeClearInterval(timer);
-    appendFileSync(controlPath, `disarmed:${id}\n`);
+    appendFileSync(controlPath, `disarmed:${controlled.terminalKind}:${controlled.id}\n`);
     return;
   }
   nativeClearTimeout(timer);

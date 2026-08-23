@@ -65,7 +65,7 @@ test("the launcher announces the sentinel path before workers spawn and writes i
   runtime.agent = (async (prompt: string) => {
     announcedBeforeFirstAgent ??= /\[sentinel\] will write /.test(stderr.text());
     return prompt;
-  }) as EnsembleRuntime["agent"];
+  }) as unknown as EnsembleRuntime["agent"];
   const exitCode = await runEnsembleCli([script], {
     cwd: directory,
     stdout,
@@ -1587,7 +1587,7 @@ function salvageRuntime(): EnsembleRuntime {
   const runtime = fakeRuntime() as EnsembleRuntime & {
     completedOutputs: () => typeof completed;
   };
-  runtime.agent = async (prompt: string, options: { label?: string; phase?: string }) => {
+  runtime.agent = (async (prompt: string, options: { label?: string; phase?: string }) => {
     const output = `codex:${prompt}`;
     completed.push({
       id: completed.length + 1,
@@ -1597,7 +1597,7 @@ function salvageRuntime(): EnsembleRuntime {
       output
     });
     return output;
-  };
+  }) as unknown as EnsembleRuntime["agent"];
   runtime.completedOutputs = () => completed;
   return runtime;
 }

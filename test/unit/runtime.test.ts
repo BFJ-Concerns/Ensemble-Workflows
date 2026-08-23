@@ -261,12 +261,14 @@ test("an identified schema collapse still carries the worker's identity", async 
 
 test("a non-boolean identity value is rejected before any worker spawns", async () => {
   const transport = new FakeTransport([]);
-  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 } });
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
 
   await assert.rejects(
     () => runtime.agent("go", { engine: "codex", identity: "yes" as never }),
     InvalidAgentOptionValueError
   );
+  // Nothing reached the engine at all: no thread opened, no turn run.
+  assert.equal(transport.openedThreads.length, 0);
   assert.equal(transport.turns.length, 0);
 });
 

@@ -440,6 +440,17 @@ function ensureWorkflowModuleLoader(): void {
     return;
   }
   registerHooks({
+    // The resolve hook must short-circuit too: default resolution stats a
+    // file: URL for existence before load is consulted, and the script's
+    // source is not required to exist on disk (a library caller passes
+    // source directly; the CLI's synthetic direct-agent workflow has no
+    // file at all).
+    resolve(specifier, context, nextResolve) {
+      if (pendingWorkflowModules.has(specifier)) {
+        return { url: specifier, format: "module", shortCircuit: true };
+      }
+      return nextResolve(specifier, context);
+    },
     load(url, context, nextLoad) {
       const source = pendingWorkflowModules.get(url);
       if (source !== undefined) {

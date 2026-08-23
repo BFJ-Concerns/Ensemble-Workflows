@@ -16759,13 +16759,16 @@ function openCodeTokenSnapshot(tokens) {
   const outputTokens = numberField(tokens, "output");
   const reasoningOutputTokens = numberField(tokens, "reasoning");
   const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const cacheReadTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const cacheCreationInputTokens = isRecord(cache) ? numberField(cache, "write") : null;
+  const cachedInputTokens = cacheReadTokens === null && cacheCreationInputTokens === null ? null : (cacheReadTokens ?? 0) + (cacheCreationInputTokens ?? 0);
   const reportedTotal = numberField(tokens, "total");
   if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
     return null;
   }
   return {
     cachedInputTokens: cachedInputTokens ?? 0,
+    ...cacheCreationInputTokens === null ? {} : { cacheCreationInputTokens },
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
@@ -16776,6 +16779,7 @@ function openCodeTokenSnapshot(tokens) {
 function aggregateOpenCodeUsage(tokenSnapshots) {
   let sawUsage = false;
   let cachedInputTokens = 0;
+  let cacheCreationInputTokens;
   let inputTokens = 0;
   let outputTokens = 0;
   let reasoningOutputTokens = 0;
@@ -16787,6 +16791,7 @@ function aggregateOpenCodeUsage(tokenSnapshots) {
     }
     sawUsage = true;
     cachedInputTokens = snapshot.cachedInputTokens;
+    cacheCreationInputTokens = snapshot.cacheCreationInputTokens;
     inputTokens = snapshot.inputTokens;
     outputTokens += snapshot.outputTokens;
     reasoningOutputTokens += snapshot.reasoningOutputTokens;
@@ -16800,6 +16805,7 @@ function aggregateOpenCodeUsage(tokenSnapshots) {
   const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
     cachedInputTokens,
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
     inputTokens,
     outputTokens,
     reasoningOutputTokens,

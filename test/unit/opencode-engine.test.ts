@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
@@ -27,6 +29,8 @@ import type {
   OpenCodeRunner,
   OpenCodeSessionExportResult
 } from "../../src/opencode-engine.js";
+
+const execFileAsync = promisify(execFile);
 
 class FakeOpenCodeRunner implements OpenCodeRunner {
   runs: OpenCodeRunOptions[] = [];
@@ -528,6 +532,59 @@ test("opencode stream and export share snapshot-input and delta-output accountin
     BudgetExceededError
   );
   assert.equal(exportRunner.runs.length, 1);
+});
+
+test("opencode cache writes survive the engine path as a separate archive roll-up line", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-cache-write-cwd-"));
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-cache-write-store-"));
+  const cache = { read: 13, write: 5 };
+  const runner = new FakeOpenCodeRunner({
+    exportText: `Exporting session: ses_test\n${JSON.stringify({
+      info: {
+        id: "ses_test",
+        model: { id: "glm-5.2", providerID: "openrouter", variant: "default" },
+        cost: 0.001,
+        tokens: { input: 7, output: 3, reasoning: 2, cache }
+      },
+      messages: [{ info: { role: "assistant" }, parts: [{ type: "text", text: "cached answer" }] }]
+    })}\n`
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 1
+  });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-opencode-cache-write",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'opencode-cache-write' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+
+  try {
+    assert.equal(await runtime.agent("return cached answer", { engine: "opencode", model: "glm-5.2" }), "cached answer");
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+    // A separate reader sees the durable archive, not the in-process writer.
+    await execFileAsync(process.execPath, ["--input-type=module", "--eval", `
+      import assert from "node:assert/strict";
+      import { readFile } from "node:fs/promises";
+      import path from "node:path";
+      const manifest = JSON.parse(await readFile(path.join(process.argv[1], "manifest.json"), "utf8"));
+      const tokens = manifest.cost_rollup.opencode["glm-5.2"].tokens;
+      assert.equal(tokens.cachedInputTokens, 18);
+      assert.equal(tokens.cacheReadTokens, 13);
+      assert.equal(tokens.cacheCreationTokens, 5);
+      assert.equal(tokens.totalTokens, 30);
+    `, writer.archiveDir]);
+  } finally {
+    await runtime.close();
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
 });
 
 test("opencode fallback without usable token data leaves the budget unmeasured", async () => {

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { setInterval } from "node:timers";
+import { setTimeout as wait } from "node:timers/promises";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -37,6 +38,8 @@ const signalAfterInitialise = process.env.ENSEMBLE_FAKE_CODEX_SIGNAL_AFTER_INITI
 const turnStartError = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_TURN_START_ERROR ?? "null");
 const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT === "1";
 const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS ?? "20");
+const completionDelayMs = Number(process.env.ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS ?? "0");
+const turnStartMarkerPath = process.env.ENSEMBLE_FAKE_CODEX_TURN_START_MARKER;
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
 const oversizedLineBytes = Number(process.env.ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES ?? "0");
@@ -94,13 +97,16 @@ const notificationParamsForTurn = (notification, threadId, turnId) => {
   }
   return params;
 };
-const completeTurn = ({ threadId, turnId, turnIndex }) => {
+const completeTurn = async ({ threadId, turnId, turnIndex }) => {
   if (emitDecodeFailure) {
     process.stdout.write("this is not JSON at all\n");
   }
   const notificationSequence = notificationSequences[turnIndex];
   if (notificationSequence !== undefined) {
     for (const notification of notificationSequence) {
+      if (notification.afterMs !== undefined) {
+        await wait(notification.afterMs);
+      }
       send({
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
@@ -109,6 +115,9 @@ const completeTurn = ({ threadId, turnId, turnIndex }) => {
       });
     }
     if (!stallAfterNotificationSequence) {
+      if (completionDelayMs > 0) {
+        await wait(completionDelayMs);
+      }
       finishTurn(threadId, turnId);
     }
     return;
@@ -206,6 +215,9 @@ const handleLine = (line) => {
       send({ id: message.id, error: turnStartError }, "JSONRPCError.json");
       return;
     }
+    if (turnStartMarkerPath !== undefined) {
+      writeFileSync(turnStartMarkerPath, String(Date.now()));
+    }
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
@@ -271,7 +283,7 @@ const handleLine = (line) => {
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {
       for (const pending of pendingTurns.splice(0)) {
-        completeTurn(pending);
+        void completeTurn(pending);
       }
     }
   }

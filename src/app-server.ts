@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerFirstOutputTimeoutError,
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
@@ -61,6 +62,7 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
+  firstDeltaDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
@@ -75,6 +77,11 @@ const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
  * alive turn over freeing its slot promptly.
  */
 const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
+/**
+ * A started turn that remains completely silent costs a worker slot without
+ * producing evidence. Healthy long turns disarm this on their first output-bearing frame.
+ */
+const DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
  * How long a stdout EOF waits for the process's own exit event before
  * terminalising as "stdout closed". Long enough for a reaped death's status
@@ -104,6 +111,7 @@ export interface CodexAppServerTransportOptions {
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
+  firstDeltaTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -174,6 +182,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
   #retryPromiseSilenceTimeoutMs: number;
+  #firstDeltaTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
@@ -189,6 +198,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs =
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -580,6 +590,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstDeltaDeadline(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -648,6 +659,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
+      // `turn/started` only acknowledges acceptance. Every later correlated
+      // server notification is output from the live turn — streamed text,
+      // tool work, usage, routing, status, or a terminal item — and proves
+      // it is no longer silently stuck before producing anything.
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
     }
 
     const now = Date.now();
@@ -809,6 +827,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }, this.#retryPromiseSilenceTimeoutMs);
   }
 
+  #disarmFirstDeltaDeadline(turn: TurnState): void {
+    if (turn.firstDeltaDeadline !== undefined) {
+      clearTimeout(turn.firstDeltaDeadline);
+      turn.firstDeltaDeadline = undefined;
+    }
+  }
+
+  #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
+    turn.firstDeltaDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
+    }, this.#firstDeltaTimeoutMs);
+  }
+
   /**
    * The single terminal path for a failing turn. Every way a turn can end
    * short of completion — error notification, retry-promise bound,
@@ -824,6 +855,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     if (turn.turnId !== undefined) {
       // #writeLine enters stdin.write synchronously, preserving wire order;
       // neither write completion nor the app-server response may delay the
@@ -843,6 +875,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
@@ -912,6 +945,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
+      firstDeltaDeadline: undefined,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -928,6 +962,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
               );
             }, timeoutMs)
     };
+    this.#armFirstDeltaDeadline(threadId, state);
     return state;
   }
 
@@ -1052,6 +1087,16 @@ function isTurnProgressNotification(method: string): boolean {
     // promise/heartbeat alternation defeat the consecutive-promise bound.
     (method.startsWith("item/") && method !== "item/mcpToolCall/progress")
   );
+}
+
+/**
+ * `turn/started` establishes a turn but does not show it doing useful work;
+ * retaining the first-output deadline through that acknowledgement catches a
+ * turn that accepts and then stalls. Any subsequent correlated server frame
+ * is observable output and therefore disarms that deadline.
+ */
+function isOutputBearingTurnFrame(method: string): boolean {
+  return method !== "turn/started";
 }
 
 /**

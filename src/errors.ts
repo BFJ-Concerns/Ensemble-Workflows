@@ -138,6 +138,13 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
+/** A started turn that produced no output-bearing frame before its transport deadline. */
+export class AppServerFirstOutputTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
+  }
+}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);

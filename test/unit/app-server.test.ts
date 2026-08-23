@@ -14,6 +14,7 @@ import {
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
+  appServerDiagnosticOf,
   partialWorkerTextOf,
   workerExitStatusOf
 } from "../../src/errors.js";
@@ -160,6 +161,67 @@ test("a turn that fails without a process death carries no exit status", async (
       () => transport.runTurn(threadId, "stream then fail in-band", {}),
       (error: unknown) => {
         assert.equal(workerExitStatusOf(error), null);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex terminal paths retain observed diagnostics and leave an ordinary timeout null", async () => {
+  const paths = [
+    {
+      mode: "turn-start-error",
+      options: {},
+      expected: { code: -32001, message: "request cause", payload: /request payload/ }
+    },
+    {
+      mode: "error-notification",
+      options: {},
+      expected: { code: null, message: "upstream fell over", payload: /upstream fell over/ }
+    },
+    {
+      mode: "promise-then-silence",
+      options: { retryPromiseSilenceTimeoutMs: 100 },
+      expected: { code: "serverOverloaded", message: /stream disconnected/, payload: /serverOverloaded/ }
+    }
+  ] as const;
+
+  for (const path of paths) {
+    const codexBin = await fakeCodexFailingTurnServer(path.mode);
+    const transport = await CodexAppServerTransport.start({ ...defaultTransportOptions(codexBin), ...path.options });
+    try {
+      const threadId = await transport.openThread({});
+      await assert.rejects(
+        () => transport.runTurn(threadId, "preserve the engine cause", {}),
+        (error: unknown) => {
+          const diagnostic = appServerDiagnosticOf(error);
+          assert.ok(diagnostic, `${path.mode} should retain the observed diagnostic`);
+          assert.equal(diagnostic.code, path.expected.code);
+          if (typeof path.expected.message === "string") {
+            assert.equal(diagnostic.message, path.expected.message);
+          } else {
+            assert.match(diagnostic.message, path.expected.message);
+          }
+          assert.match(diagnostic.payload, path.expected.payload);
+          return true;
+        }
+      );
+    } finally {
+      await transport.close();
+    }
+  }
+
+  const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "time out without an engine diagnostic", { timeoutMs: 100 }),
+      (error: unknown) => {
+        assert.ok(error instanceof TurnTimeoutError);
+        assert.equal(appServerDiagnosticOf(error), null);
         return true;
       }
     );
@@ -752,6 +814,7 @@ async function fakeCodexFailingTurnServer(
     | "promise-then-server-request-recovery"
     | "promise-foreign-frame-then-silence"
     | "promise-mcp-alternation"
+    | "turn-start-error"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -782,6 +845,10 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    if (mode === "turn-start-error") {
+      send({ id: message.id, error: { code: -32001, message: "request cause", data: { detail: "request payload" } } });
+      return;
+    }
     if (mode === "delta-no-turn-start-ack") {
       // Stream the delta but never acknowledge turn/start: the turn's own
       // deadline must fire while the request is still pending.

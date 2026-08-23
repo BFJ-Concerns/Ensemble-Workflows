@@ -540,6 +540,9 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
       assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
       assert.match(error.message, /outside Codex's accepted subset or malformed/);
       assert.doesNotMatch(error.message, /turn\/start failed/);
+      assert.match(error.message, /-32602/);
+      assert.match(error.message, /invalid_json_schema/);
+      assert.match(error.message, /required key missing from properties/);
       return true;
     }
   );
@@ -1350,6 +1353,33 @@ test("a worker that dies uncleanly leaves its dispatch-time record", async () =>
   assert.equal(records[0]?.status, "in-progress");
   assert.equal(records[0]?.prompt, "doomed prompt");
   assert.equal(records.at(-1)?.status, "failed");
+});
+
+test("a recorded Codex failure serialises its observed app-server diagnostic", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const error = appServerErrorFromPayload("turn/start", {
+    code: -32001,
+    message: "backpressure from fixture",
+    data: { queue: "saturated" }
+  });
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(error),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(() => runtime.agent("record the engine cause", { engine: "codex" }));
+
+  assert.deepEqual(records.at(-1)?.attempts.at(-1)?.appServerDiagnostic, {
+    code: -32001,
+    message: "backpressure from fixture",
+    payload: '{"queue":"saturated"}'
+  });
 });
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {

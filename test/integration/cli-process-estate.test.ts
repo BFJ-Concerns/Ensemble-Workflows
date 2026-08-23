@@ -1351,9 +1351,92 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
     assert.match(agent.attempts[0]?.failure?.message ?? "", /serverOverloaded/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /Upstream capacity is temporarily exhausted/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /gateway detail: server_is_overloaded/);
+    assert.deepEqual(agent.attempts[0]?.app_server_diagnostic, {
+      code: "serverOverloaded",
+      message: "serverOverloaded: Upstream capacity is temporarily exhausted; invalid_json_schema is not the cause: gateway detail: server_is_overloaded",
+      payload: JSON.stringify({ ...overload, threadId: "thread-1", turnId: "turn-1" })
+    });
     assert.equal(agent.attempts[1]?.status, "complete");
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test("built CLI records observed request and notification diagnostics, but not an unobserved timeout cause", async () => {
+  const cases = [
+    {
+      name: "request",
+      scriptOptions: "",
+      env: {
+        ENSEMBLE_FAKE_CODEX_TURN_START_ERROR: JSON.stringify({
+          code: -32603,
+          message: "upstream refused the turn; invalid_json_schema is not the cause",
+          data: { detail: "real request cause" }
+        })
+      },
+      stderr: /-32603.*upstream refused the turn.*real request cause/s,
+      diagnostic: {
+        code: -32603,
+        message: "upstream refused the turn; invalid_json_schema is not the cause",
+        payload: '{"detail":"real request cause"}'
+      }
+    },
+    {
+      name: "notification",
+      scriptOptions: "",
+      env: {
+        ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([
+          { error: { message: "notification cause", codexErrorInfo: "serverOverloaded" }, willRetry: false }
+        ])
+      },
+      stderr: /notification cause/,
+      diagnostic: {
+        code: "serverOverloaded",
+        message: "serverOverloaded: notification cause",
+        payload: /notification cause/
+      }
+    },
+    {
+      name: "timeout",
+      scriptOptions: ", timeoutMs: 50",
+      env: { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1" },
+      stderr: /timed out after 50ms/,
+      diagnostic: null
+    }
+  ] as const;
+
+  for (const entry of cases) {
+    const fixture = await createProcessFixture(`diagnostic-${entry.name}`);
+    const recordStore = path.join(path.dirname(fixture.script), "records");
+    try {
+      await writeFile(
+        fixture.script,
+        `export const meta = { name: "diagnostic-${entry.name}" }; return await agent("fail", { engine: "codex", maxAttempts: 1${entry.scriptOptions} });`
+      );
+      const result = await fixture.runWithEnv({
+        ...entry.env,
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, entry.stderr);
+
+      const diagnostic = (await loadOnlyAgentRecord(recordStore)).attempts[0]?.app_server_diagnostic;
+      if (entry.diagnostic === null) {
+        assert.equal(diagnostic, null);
+      } else {
+        assert.ok(diagnostic);
+        assert.equal(diagnostic.code, entry.diagnostic.code);
+        assert.equal(diagnostic.message, entry.diagnostic.message);
+        if (typeof entry.diagnostic.payload === "string") {
+          assert.equal(diagnostic.payload, entry.diagnostic.payload);
+        } else {
+          assert.match(diagnostic.payload, entry.diagnostic.payload);
+        }
+      }
+    } finally {
+      await fixture.cleanup();
+    }
   }
 });
 
@@ -1842,6 +1925,7 @@ interface RecordedAgent {
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
+    app_server_diagnostic: { code: number | string | null; message: string; payload: string } | null;
     raw_output: string | null;
   }>;
 }

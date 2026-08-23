@@ -781,6 +781,7 @@ function agentRecord(
         status: "complete" as const,
         failure: null,
         workerExit: null,
+        appServerDiagnostic: null,
         rawOutput: "ok",
         validatedOutput: "ok",
         startedAt: "2026-01-01T00:00:00.000Z",

@@ -74,8 +74,10 @@ test("an absent machine config is silent and resolves built-in defaults", async 
   });
 
   assert.deepEqual(settings.agentCeiling, { value: null, layer: "default" });
-  assert.equal(settings.concurrencyCaps.claude.value, 8);
+  assert.equal(settings.concurrencyCaps.claude.value, 12);
   assert.equal(settings.concurrencyCaps.claude.layer, "default");
+  assert.equal(settings.concurrencyCaps.codex.value, 12);
+  assert.equal(settings.concurrencyCaps.codex.layer, "default");
   assert.deepEqual(settings.runRecordDir, {
     value: path.join(cwd, "data", "ensemble"),
     layer: "default"

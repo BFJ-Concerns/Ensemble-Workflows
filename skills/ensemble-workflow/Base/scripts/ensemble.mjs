@@ -13007,12 +13007,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 // src/concurrency-defaults.ts
-import { cpus } from "node:os";
 function defaultCodexConcurrency() {
-  return Math.max(1, Math.min(16, cpus().length - 2));
+  return 12;
 }
 function defaultClaudeConcurrency() {
-  return 8;
+  return 12;
 }
 function defaultOpenCodeConcurrency() {
   return 2;

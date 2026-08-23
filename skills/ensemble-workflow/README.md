@@ -274,8 +274,7 @@ Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `gemma-4-31b-qat-standard`, `gemma-4-31b-qat-heretic`,
 `qwen-3-6-27b-standard`, `qwen-3-6-27b-heretic-neo-code`.
 
-Default concurrency caps: codex `max(1, min(16, cpus − 2))`, claude 8,
-opencode 2.
+Default concurrency caps: codex 12, claude 12, opencode 2.
 Calls beyond the cap queue per engine.
 
 During ordinary execution, the optional whole-run agent ceiling is enforced

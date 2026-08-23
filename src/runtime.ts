@@ -12,6 +12,7 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   MissingEngineError,
+  appServerDiagnosticOf,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -562,7 +563,17 @@ export class EnsembleRuntime {
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -639,7 +650,17 @@ export class EnsembleRuntime {
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -797,13 +818,15 @@ function attemptRecord(
   validatedOutput: unknown,
   startedAtMs: number,
   result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null,
-  workerExit: { exitCode: number | null; signal: string | null } | null = null
+  workerExit: { exitCode: number | null; signal: string | null } | null = null,
+  appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null
 ): RuntimeAgentAttemptRecord {
   return {
     attempt,
     status,
     failure,
     workerExit,
+    appServerDiagnostic,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),

@@ -13546,6 +13546,11 @@ var RunRecordWriter = class _RunRecordWriter {
         status: attempt.status,
         failure: attempt.failure,
         worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
+          code: attempt.appServerDiagnostic.code,
+          message: attempt.appServerDiagnostic.message,
+          payload: attempt.appServerDiagnostic.payload
+        },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         started_at: attempt.startedAt,
@@ -13903,6 +13908,19 @@ function partialWorkerTextOf(error) {
     if (typeof text === "string" && text.length > 0) {
       return text;
     }
+  }
+  return null;
+}
+function attachAppServerDiagnostic(error, diagnostic) {
+  const carrier = error;
+  if (carrier.appServerDiagnostic === void 0) {
+    carrier.appServerDiagnostic = diagnostic;
+  }
+  return error;
+}
+function appServerDiagnosticOf(error) {
+  if (error instanceof Error) {
+    return error.appServerDiagnostic ?? null;
   }
   return null;
 }
@@ -15179,14 +15197,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
+        const diagnostic = { code: "systemError", message: "systemError", data: params };
         void this.#rejectTurn(
           threadId,
           turn,
-          new AppServerRequestError(method, {
-            code: "systemError",
-            message: "systemError",
-            data: params
-          })
+          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -15200,10 +15215,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
           void this.#rejectTurn(
             threadId,
             turn,
-            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
           );
           return;
         }
@@ -15258,9 +15277,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       void this.#rejectTurn(
         threadId,
         turn,
-        new AppServerRetryPromiseBrokenError(
-          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-          diagnostic
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
         )
       );
     }, this.#retryPromiseSilenceTimeoutMs);
@@ -15403,20 +15425,20 @@ ${this.#stderrTail.join("\n")}` : "";
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
-  if (errorPayload.code === -32001) {
-    return new AppServerBackpressureError(method, errorPayload);
-  }
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
-  return new AppServerRequestError(method, errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
 }
 function appServerErrorFromNotification(params) {
   const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+  const error = errorPayload.code === "serverOverloaded" ? new AppServerOverloadedError("turn notification", errorPayload) : new AppServerRequestError("turn notification", errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
 }
 function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
@@ -17762,7 +17784,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17825,7 +17857,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17942,12 +17984,13 @@ function requireTransport(transport) {
   }
   return transport;
 }
-function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null) {
+function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null) {
   return {
     attempt,
     status,
     failure,
     workerExit,
+    appServerDiagnostic,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),

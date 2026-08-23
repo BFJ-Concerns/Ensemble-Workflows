@@ -8,6 +8,7 @@ import {
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
+  attachAppServerDiagnostic,
   attachPartialWorkerText,
   attachWorkerExitStatus,
   CodexSchemaSubsetUnsupportedError,
@@ -622,14 +623,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
+        const diagnostic = { code: "systemError", message: "systemError", data: params };
         void this.#rejectTurn(
           threadId,
           turn,
-          new AppServerRequestError(method, {
-            code: "systemError",
-            message: "systemError",
-            data: params
-          })
+          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -645,10 +643,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
           void this.#rejectTurn(
             threadId,
             turn,
-            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
           );
           return;
         }
@@ -714,9 +716,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
       void this.#rejectTurn(
         threadId,
         turn,
-        new AppServerRetryPromiseBrokenError(
-          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-          diagnostic
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
         )
       );
     }, this.#retryPromiseSilenceTimeoutMs);
@@ -889,21 +894,34 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
   // Exact code matches outrank the substring scan: a payload that merely
   // *mentions* invalid_json_schema (say, inside a backpressure diagnostic)
   // must not be reclassified as a terminal schema rejection.
-  if (errorPayload.code === -32001) {
-    return new AppServerBackpressureError(method, errorPayload);
-  }
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
-  return new AppServerRequestError(method, errorPayload);
+  const error =
+    errorPayload.code === -32001
+      ? new AppServerBackpressureError(method, errorPayload)
+      : payloadContainsInvalidJsonSchema(errorPayload)
+        ? new CodexSchemaSubsetUnsupportedError(errorPayload)
+        : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
 }
 
 function appServerErrorFromNotification(params: JsonObject): Error {
   const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+  const error =
+    errorPayload.code === "serverOverloaded"
+      ? new AppServerOverloadedError("turn notification", errorPayload)
+      : new AppServerRequestError("turn notification", errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+}
+
+function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {
+  code: number | string | null;
+  message: string;
+  payload: string;
+} {
+  return {
+    code: payload.code ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
 }
 
 function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {

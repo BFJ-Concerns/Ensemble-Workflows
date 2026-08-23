@@ -32,6 +32,7 @@ const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFT
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
+const turnStartError = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_TURN_START_ERROR ?? "null");
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 let threadCounter = 0;
 let turnCounter = 0;
@@ -168,6 +169,10 @@ const handleLine = (line) => {
     const { threadId } = message.params;
     turnCounter += 1;
     const turnId = `turn-${turnCounter}`;
+    if (turnStartError !== null) {
+      send({ id: message.id, error: turnStartError }, "JSONRPCError.json");
+      return;
+    }
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {

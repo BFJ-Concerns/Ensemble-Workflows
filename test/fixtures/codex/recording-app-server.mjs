@@ -41,11 +41,6 @@ const pendingTurns = [];
 
 const send = (message, schemaPath, payload = message, options) => {
   validateCodexFixturePayload(schemaPath, payload, options);
-  if (toolActiveOutputSilent && message.method === "item/mcpToolCall/progress" && capturePath !== undefined) {
-    // Keep the manufactured condition observable without mixing server frames
-    // with the client's normal request capture shape.
-    appendFileSync(capturePath, `${JSON.stringify({ fixtureEvent: message })}\n`);
-  }
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
 const finishTurn = (threadId, turnId) => {

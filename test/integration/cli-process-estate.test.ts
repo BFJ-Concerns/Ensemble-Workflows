@@ -1919,8 +1919,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
       (await readFile(capturePath, "utf8"))
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as RecordedMessage & { fixtureEvent?: unknown })
-        .filter((message) => message.fixtureEvent === undefined),
+        .map((line) => JSON.parse(line) as RecordedMessage),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

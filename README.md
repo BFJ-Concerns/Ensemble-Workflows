@@ -16,7 +16,7 @@ curated models — with schema-validated structured output and
 bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
-`workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel Codex agents — driven by the
+`workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel agents on any engine — driven by the
 `ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
 non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
 `'claude'`, or `'opencode'`): there is no default and no engine is privileged.
@@ -51,10 +51,12 @@ any worker spawns.
   inherits and call-site options override.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
-  that a rejected `agent()` option propagates and fails the run.
+  that a pre-spawn author error — a rejected `agent()` option, a malformed
+  schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
+  arguments, a nesting violation — propagates and fails the run.
 - `pipeline(items, ...stages)` runs each item through each stage independently,
   with no cross-item barrier between stages. Ordinary stage failures drop that
-  item to `null`; rejected `agent()` options propagate.
+  item to `null`; the same pre-spawn author errors propagate.
 - `workflow(nameOrRef, args)` runs a saved workflow inline and returns the
   child's result. `nameOrRef` is either a workflow name string or
   `{ scriptPath }`. Names resolve project-first from
@@ -76,7 +78,7 @@ any worker spawns.
   snapshot once, plus every output and reasoning delta; cache reads count on
   both paths. An older or truncated fallback stream without usable token data
   remains unmeasured and does not advance spend towards its ceiling.
-- `worktrees` exposes changed Codex worktrees left by `isolation: "worktree"`.
+- `worktrees` exposes changed worktrees left by `isolation: "worktree"` on any engine.
 - `args` is the raw CLI string arguments, or the parsed JSON value from
   `--json-args '<json>'` or `--json-args @file`.
 

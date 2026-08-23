@@ -268,6 +268,62 @@ test("workflow() inside a child workflow throws the one-level nesting error", as
   );
 });
 
+test("pre-spawn workflow() author errors propagate out of the combinators from the real hook", async () => {
+  // End-to-end through runWorkflowScript, not a hand-thrown class: the
+  // raise sites themselves must produce the exempt family, or a fan-out of
+  // identical author mistakes filters to a silent empty success.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-combinator-author-errors-"));
+
+  // A mistyped saved-workflow name inside parallel().
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        cwd: directory,
+        filename: path.join(directory, "fan-out-mistyped.js"),
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "fan-out-mistyped" };
+          return await parallel([() => workflow("no-such-workflow", [])]);
+        `
+      }),
+    /workflow\("no-such-workflow"\) was not found/
+  );
+
+  // A reference the hook cannot even narrow, inside pipeline().
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        cwd: directory,
+        filename: path.join(directory, "pipeline-bad-ref.js"),
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "pipeline-bad-ref" };
+          return await pipeline([1], () => workflow(123, []));
+        `
+      }),
+    /workflow\(\) expects a workflow name string/
+  );
+
+  // Non-JSON workflow() arguments inside parallel() — pre-spawn, so the
+  // run fails rather than the slot nulling.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        cwd: directory,
+        filename: path.join(directory, "fan-out-bad-args.js"),
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "fan-out-bad-args" };
+          return await parallel([() => workflow({ scriptPath: "./absent.js" }, [() => 1])]);
+        `
+      }),
+    /workflow\(\) arguments must be a JSON value/
+  );
+});
+
 test("workflow() fails loudly for unknown names and missing script paths", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-fail-loud-"));
 

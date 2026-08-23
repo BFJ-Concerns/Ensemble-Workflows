@@ -9,23 +9,31 @@ import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
 import { validateEngineDefaults } from "./engine-option-validation.js";
+import { EnsembleError, PreSpawnAuthorError } from "./errors.js";
 
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { createWorkflowHooks } from "./hooks.js";
 import {
   NestedWorkflowError,
+  WorkflowResolutionError,
   resolveWorkflowReference
 } from "./workflow-registry.js";
 
 import type { WorkflowDefaults, WorkflowEngineDefaults, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
 import type { WorkflowReference } from "./workflow-registry.js";
 
-export class WorkflowScriptError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = new.target.name;
-  }
-}
+/**
+ * Workflow-authoring errors — script shape, load-time checks, defaults
+ * validation, and the output-boundary contract. A member of the pre-spawn
+ * author-error family: every instance that can reach a combinator thunk is
+ * raised before a worker spawns (a bad `workflow()` argument, a composed
+ * child's load-time failure), so the combinators propagate it rather than
+ * collapsing a fan-out of identical author mistakes to a filterable
+ * all-null success. The settlement-time return-value check also uses this
+ * class, but it runs only at the top-level run's own surface (depth 0),
+ * where no combinator sits between it and the caller.
+ */
+export class WorkflowScriptError extends PreSpawnAuthorError {}
 
 /**
  * Settlement-time guard for the run's output surface: the workflow return
@@ -113,7 +121,14 @@ function findUnserialisable(value: unknown, path: string, ancestors: Set<object>
   }
 }
 
-export class WorkflowTimeoutError extends WorkflowScriptError {
+/**
+ * Deliberately outside the pre-spawn author-error family: a breached
+ * deadline is an operational bound, not an authoring mistake, so it takes
+ * the ordinary failure path rather than the combinators' propagation
+ * exemption. (Historically a `WorkflowScriptError` subclass; re-parented
+ * when that class joined the family.)
+ */
+export class WorkflowTimeoutError extends EnsembleError {
   /** The breached deadline, so callers can report it without re-parsing the message. */
   readonly timeoutMs: number;
 
@@ -255,7 +270,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     // (modules are strict code), so both a property write and a wholesale
     // rebinding throw rather than silently mutating what the archive
     // already recorded.
-    meta: deepFreeze(structuredClone(declaredMeta)),
+    meta: deepFreeze(cloneDeclaredMeta(declaredMeta)),
     // Module loading resolves from the script's own path: relative
     // specifiers and node_modules walks behave as they would for a module
     // sitting where the script sits.
@@ -493,6 +508,24 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
 }
 
 /**
+ * The bound `meta` is a frozen clone, so an uncloneable meta (a method in
+ * the literal survives `normaliseVmValue`'s degrade-to-raw path) must fail
+ * as the authoring mistake it is — one clean line naming what to change —
+ * not as a raw DataCloneError with a stack.
+ */
+function cloneDeclaredMeta(meta: unknown): unknown {
+  try {
+    return structuredClone(meta);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new WorkflowScriptError(
+      `Workflow meta must be a plain data literal the runtime can clone and freeze: ${message}`,
+      { cause: error }
+    );
+  }
+}
+
+/**
  * Freeze without assuming acyclicity: meta is script-authored, and
  * `structuredClone` preserves cycles, so a naive recursion would overflow
  * the stack on a self-referential meta instead of loading it read-only.
@@ -574,7 +607,9 @@ function asWorkflowReference(value: unknown): WorkflowReference {
   ) {
     return { scriptPath: (value as { scriptPath: string }).scriptPath };
   }
-  throw new WorkflowScriptError("workflow() expects a workflow name string or { scriptPath: string }");
+  // A reference the runtime cannot even narrow is a resolution failure,
+  // the same family the registry raises for a mistyped name.
+  throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
 }
 
 /**

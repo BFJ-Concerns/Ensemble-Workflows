@@ -18,8 +18,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] \
   [--fallback-model <model>] [--label <label>] [--phase <phase>] [--cwd <path>] \
-  [--isolation worktree] [--schema '<json>'|@file] [--max-attempts N] \
-  [--task <identity>] \
+  [--isolation worktree] [--identity] [--schema '<json>'|@file] \
+  [--max-attempts N] [--task <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
@@ -177,9 +177,10 @@ that is neither a Node global, a bound hook, nor a module-scope binding
 fails **at load, before any worker spawns**, naming the unknown
 identifiers — a `typeof X` probe is fine; a mistyped name is a load error,
 not a `ReferenceError` after paid agent phases. One boundary of the opt-in
-`--timeout` is worth knowing: it interrupts the body at `await` points, so
-a synchronously spinning loop can only be stopped by killing the process —
-the orchestrator remains the real backstop.
+`--timeout` is worth knowing: it stops the run's wait at the next `await`
+settlement — the body itself is never interrupted, and a synchronously
+spinning loop can only be stopped by killing the process — the
+orchestrator remains the real backstop.
 
 ## Hooks
 
@@ -188,12 +189,14 @@ the orchestrator remains the real backstop.
   `{ scriptPath }` relative to the run cwd. One level only: a child workflow
   calling `workflow()` throws.
 - `parallel(thunks)` — `Promise.all` over thunks; an ordinary thrown error
-  yields `null` in its slot and is logged. A rejected `agent()` option
-  propagates and fails the run.
+  yields `null` in its slot and is logged. Any pre-spawn author error —
+  a rejected `agent()` option, a malformed schema, an unresolvable
+  `workflow()` reference or bad `workflow()` arguments, a nesting
+  violation — propagates and fails the run.
 - `pipeline(items, ...stages)` — runs each item through the stages
   (`stage(previous, originalItem, index)`), items in parallel; a stage failure
-  yields `null` for that item, except that a rejected `agent()` option
-  propagates.
+  yields `null` for that item, with the same pre-spawn author-error
+  exception as `parallel()`.
 - `phase(title)` / `log(message)` — run log; `phase` also updates live status.
 - `budget.spent(engine)` / `budget.remaining(engine)` — token accounting
   (remaining is `Infinity` without a ceiling). opencode uses stream step usage
@@ -363,6 +366,9 @@ timer behind its filesystem watch rather than trusting the file absolutely.
   lost.
 
 Ordinary errors thrown by `parallel()` thunks or `pipeline()` stage callbacks
-surface as `null` elements, so callers must null-check fan-in results. A
-pre-spawn author rejection from `agent()` — including a rejected option or
-malformed schema — is the narrow exception: it propagates and fails the run.
+surface as `null` elements, so callers must null-check fan-in results. The
+narrow exception is the pre-spawn author-error family, from any hook: a
+rejected or invalid `agent()` option, a malformed schema, an unresolvable
+`workflow()` reference or non-JSON `workflow()` arguments, a nesting
+violation, or a composed child's load-time authoring failure propagates and
+fails the run.

@@ -7,7 +7,7 @@ import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { PreSpawnAuthorError } from "./errors.js";
 import { createRuntime } from "./index.js";
-import { readWorkflowMeta, runWorkflowScript, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
+import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
@@ -874,14 +874,11 @@ function formatError(error: unknown): string {
     return error.message;
   }
   // The pre-spawn author-error family — rejected options, unresolvable
-  // workflow() references, nesting violations — is the author's to fix:
-  // one clean line, no stack.
-  if (error instanceof PreSpawnAuthorError) {
-    return `${error.name}: ${error.message}`;
-  }
-  // Workflow-authoring errors are the author's to fix, not runtime defects:
-  // one clean line, no stack — the same surface as a rejected agent option.
-  if (error instanceof WorkflowScriptError) {
+  // workflow() references, nesting violations, workflow-authoring errors
+  // (WorkflowScriptError is a member) — is the author's to fix: one clean
+  // line, no stack. A breached deadline is not an authoring mistake but
+  // gets the same operator-facing surface.
+  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

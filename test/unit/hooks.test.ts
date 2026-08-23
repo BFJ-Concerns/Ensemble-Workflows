@@ -163,7 +163,7 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
 
   assert.equal(hooks.budget.spent("codex"), 0);
   assert.equal(hooks.budget.remaining("codex"), 100);
-  // The live TokenBudget's mutators must not cross into the sandbox.
+  // The live TokenBudget's mutators must not reach script code.
   assert.equal("record" in hooks.budget, false);
   assert.equal("events" in hooks.budget, false);
 });

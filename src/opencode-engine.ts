@@ -74,6 +74,7 @@ interface OpenCodeUsage {
 
 interface OpenCodeTokenSnapshot {
   cachedInputTokens: number;
+  cacheCreationInputTokens?: number;
   inputTokens: number;
   outputTokens: number;
   reasoningOutputTokens: number;
@@ -603,7 +604,12 @@ function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
   const outputTokens = numberField(tokens, "output");
   const reasoningOutputTokens = numberField(tokens, "reasoning");
   const cache = tokens.cache;
-  const cachedInputTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const cacheReadTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const cacheCreationInputTokens = isRecord(cache) ? numberField(cache, "write") : null;
+  const cachedInputTokens =
+    cacheReadTokens === null && cacheCreationInputTokens === null
+      ? null
+      : (cacheReadTokens ?? 0) + (cacheCreationInputTokens ?? 0);
   const reportedTotal = numberField(tokens, "total");
   if (
     inputTokens === null &&
@@ -616,6 +622,7 @@ function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
   }
   return {
     cachedInputTokens: cachedInputTokens ?? 0,
+    ...(cacheCreationInputTokens === null ? {} : { cacheCreationInputTokens }),
     inputTokens: inputTokens ?? 0,
     outputTokens: outputTokens ?? 0,
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
@@ -631,6 +638,7 @@ function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
 function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown | null {
   let sawUsage = false;
   let cachedInputTokens = 0;
+  let cacheCreationInputTokens: number | undefined;
   let inputTokens = 0;
   let outputTokens = 0;
   let reasoningOutputTokens = 0;
@@ -646,6 +654,7 @@ function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown 
     // input/cache snapshot once and every generated delta, matching Claude's
     // convention. See test/fixtures/opencode/multi-step-tool-calls.jsonl.
     cachedInputTokens = snapshot.cachedInputTokens;
+    cacheCreationInputTokens = snapshot.cacheCreationInputTokens;
     inputTokens = snapshot.inputTokens;
     outputTokens += snapshot.outputTokens;
     reasoningOutputTokens += snapshot.reasoningOutputTokens;
@@ -660,6 +669,7 @@ function aggregateOpenCodeUsage(tokenSnapshots: unknown[]): TokenUsageBreakdown 
     cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
   return {
     cachedInputTokens,
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
     inputTokens,
     outputTokens,
     reasoningOutputTokens,

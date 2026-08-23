@@ -36,6 +36,7 @@ import type {
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
+  IdentifiedAgentResult,
   JsonSchema,
   RuntimeEvent,
   RuntimeOptions,
@@ -222,6 +223,7 @@ export class EnsembleRuntime {
     this.handleEngineEvent("codex", event);
   }
 
+  async agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
   async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
   async agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
@@ -269,7 +271,16 @@ export class EnsembleRuntime {
     // called, so a worker that dies uncleanly still leaves evidence it was
     // asked. Settlement overwrites this same record (last write wins).
     await this.#recordAgentSafely(agentRecord);
-    return this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+    const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+    if (options.identity === true) {
+      // Identified resolution (result identity is opt-in): the
+      // envelope wraps every resolution, a schema call's null collapse
+      // included, so a fan-in that keeps the envelope still knows which
+      // worker failed. The durable record is unchanged — it already
+      // carries label and phase as first-class fields.
+      return { label: options.label ?? null, phase: options.phase ?? null, output };
+    }
+    return output;
   }
 
   async #runAdmitted(

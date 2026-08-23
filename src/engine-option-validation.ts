@@ -30,7 +30,8 @@ const AGENT_OPTION_KEYS = Object.keys({
   timeoutMs: true,
   maxAttempts: true,
   label: true,
-  phase: true
+  phase: true,
+  identity: true
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
@@ -51,6 +52,9 @@ export function assertValidAgentOptions(options: object): void {
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
+  if (values.identity !== undefined && typeof values.identity !== "boolean") {
+    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+  }
 }
 
 export function assertFallbackModelSupported(engine: EngineName, fallbackModel: string | undefined): void {

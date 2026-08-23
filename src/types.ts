@@ -27,6 +27,20 @@ export interface AgentOptions {
   maxAttempts?: number;
   label?: string;
   phase?: string;
+  /**
+   * Opt-in identified resolution: the call resolves `{ label, phase,
+   * output }` instead of the bare output — the same identity the salvage
+   * envelope attaches — so a fan-in can filter failures out without losing
+   * which worker produced each survivor. Default resolution unchanged.
+   */
+  identity?: boolean;
+}
+
+/** The identified resolution shape `identity: true` opts a call into. */
+export interface IdentifiedAgentResult {
+  label: string | null;
+  phase: string | null;
+  output: unknown;
 }
 
 export interface RuntimeOptions {

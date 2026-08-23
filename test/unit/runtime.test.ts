@@ -17,6 +17,7 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   FallbackModelUnsupportedError,
+  InvalidAgentOptionValueError,
   InvalidAgentSchemaError,
   MissingEngineError,
   TurnTimeoutError,
@@ -222,6 +223,51 @@ test("schema agents retry invalid output and return null after the bounded attem
 
   assert.equal(result, null);
   assert.equal(transport.turns.length, 2);
+});
+
+test("identity: true resolves the identified envelope; default resolution is unchanged", async () => {
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("{\"answer\":\"yes\"}"), turn("{\"answer\":\"yes\"}")]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  const identified = await runtime.agent("go", {
+    engine: "codex",
+    schema,
+    label: "finder",
+    phase: "hunt",
+    identity: true
+  });
+  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" } });
+
+  const bare = await runtime.agent("go", { engine: "codex", schema });
+  assert.deepEqual(bare, { answer: "yes" });
+});
+
+test("an identified schema collapse still carries the worker's identity", async () => {
+  // The envelope wraps every resolution, the null collapse included — the
+  // fan-in filtering idiom under identity is on `output`, and a failed leg
+  // keeps saying which worker it was.
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn("not json")]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  const collapsed = await runtime.agent("go", { engine: "codex", schema, label: "verifier", identity: true });
+  assert.deepEqual(collapsed, { label: "verifier", phase: null, output: null });
+});
+
+test("a non-boolean identity value is rejected before any worker spawns", async () => {
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 } });
+
+  await assert.rejects(
+    () => runtime.agent("go", { engine: "codex", identity: "yes" as never }),
+    InvalidAgentOptionValueError
+  );
+  assert.equal(transport.turns.length, 0);
 });
 
 test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {

@@ -222,6 +222,7 @@ unknown values throw before any worker spawns.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
+| `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted: it can read and write wherever the user running
 the harness can and can reach the network. Codex receives this full-access
@@ -231,7 +232,7 @@ Codex workers without an `agent()` option.
 
 An unrecognised option key or invalid harness-owned value throws before that
 call's worker spawns. The checked value domains are `isolation`, `timeoutMs`,
-and `maxAttempts`; engine-owned and descriptive values such as `model`,
+`maxAttempts`, and `identity`; engine-owned and descriptive values such as `model`,
 `effort`, `label`, and `phase` pass through unchecked. The removed `sandbox`,
 `network`, and `webSearch` keys receive a specific removal error rather than
 being ignored. The `timeoutMs` maximum is Node's largest faithfully

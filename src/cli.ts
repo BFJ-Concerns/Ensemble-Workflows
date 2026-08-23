@@ -242,7 +242,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
         interrupt.promise
       ]);
-      if (invocation.kind === "agent" && result === null && !completedDirectAgentWithNull(runtime)) {
+      // Under identity the resolution is an envelope, so the collapse
+      // signal is the envelope's output — an exhausted identified worker
+      // must still fail the run, not print `{output: null}` at exit 0.
+      const directAgentOutput =
+        invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null
+          ? (result as { output: unknown }).output
+          : result;
+      if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
         throw new SingleAgentFailedError();
       }
 
@@ -558,6 +565,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
         "fallback-model": { type: "string" },
         cwd: { type: "string" },
         isolation: { type: "string" },
+        identity: { type: "boolean" },
         schema: { type: "string" },
         "max-attempts": { type: "string" },
         task: { type: "string" },
@@ -608,6 +616,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
       : {}),
     ...(parsed.values.cwd !== undefined ? { cwd: parsed.values.cwd } : {}),
     ...(isolation !== undefined ? { isolation } : {}),
+    ...(parsed.values.identity === true ? { identity: true } : {}),
     ...(schema !== undefined ? { schema } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {})
   };
@@ -839,7 +848,7 @@ function usage(): string {
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

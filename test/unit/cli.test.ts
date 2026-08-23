@@ -529,6 +529,48 @@ test("ensemble agent honours --max-attempts and rejects invalid values before an
   assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
 });
 
+test("ensemble agent --identity prints the identified envelope and still fails on exhaustion", async () => {
+  // Success: stdout matches agent()'s identified return contract exactly.
+  const engine = new FixedResponseEngine("codex", "done");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--identity", "--label=finder", "--phase=hunt", "go"],
+    {
+      stdout,
+      stderr,
+      createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+    }
+  );
+  assert.equal(exitCode, 0, stderr.text());
+  assert.deepEqual(JSON.parse(stdout.text()), { label: "finder", phase: "hunt", output: "done" });
+
+  // Exhaustion: the envelope's null output is still the failure signal —
+  // exit 1 with the partial envelope, never `{output: null}` at exit 0.
+  const exhaustedEngine = new FixedResponseEngine("codex", "not JSON");
+  const exhaustedStdout = new CaptureStream();
+  const exhaustedStderr = new CaptureStream();
+  const exhaustedExit = await runEnsembleCli(
+    [
+      "agent",
+      "--engine=codex",
+      "--identity",
+      "--max-attempts=1",
+      "--schema",
+      '{"type":"object","additionalProperties":false,"required":["answer"],"properties":{"answer":{"type":"string"}}}',
+      "go"
+    ],
+    {
+      stdout: exhaustedStdout,
+      stderr: exhaustedStderr,
+      createRuntime: async (options) => fixedEngineRuntime(exhaustedEngine, 1, options)
+    }
+  );
+  assert.equal(exhaustedExit, 1);
+  const envelope = JSON.parse(exhaustedStdout.text()) as { partial?: boolean };
+  assert.equal(envelope.partial, true);
+});
+
 test("ensemble agent persists label and phase and forwards Claude's fallback model", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-parity-"));
   const runRecordDir = path.join(directory, "records");
@@ -759,7 +801,7 @@ test("CLI reports usage errors without a stack trace", async () => {
       "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
@@ -1350,7 +1392,7 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );

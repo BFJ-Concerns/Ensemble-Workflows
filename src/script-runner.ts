@@ -1,7 +1,11 @@
 import vm from "node:vm";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
+import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
 import { validateEngineDefaults } from "./engine-option-validation.js";
@@ -13,7 +17,7 @@ import {
   resolveWorkflowReference
 } from "./workflow-registry.js";
 
-import type { WorkflowDefaults, WorkflowEngineDefaults, WorkflowHooks, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
+import type { WorkflowDefaults, WorkflowEngineDefaults, WorkflowLogSink, WorkflowRuntime } from "./hooks.js";
 import type { WorkflowReference } from "./workflow-registry.js";
 
 export class WorkflowScriptError extends Error {
@@ -154,6 +158,32 @@ interface ExtractedWorkflow {
   bodySource: string;
 }
 
+/**
+ * The identifiers the wrapper binds into the body's scope, in one place so
+ * the wrapper's destructuring, the bindings object, and the load-time
+ * free-identifier allowlist cannot drift apart. `meta` is the script's own
+ * frozen export; `require` is a CommonJS loader resolving from the script's
+ * path — dynamic `import()` and `import.meta` need no binding because the
+ * body executes as a genuine ES module.
+ */
+const HOOK_BINDING_NAMES = [
+  "agent",
+  "workflow",
+  "parallel",
+  "pipeline",
+  "phase",
+  "log",
+  "budget",
+  "worktrees",
+  "args",
+  "meta",
+  "require"
+] as const;
+
+type WorkflowBodyBindings = Record<(typeof HOOK_BINDING_NAMES)[number], unknown>;
+
+type WorkflowBodyFunction = (bindings: WorkflowBodyBindings) => Promise<unknown>;
+
 export async function runWorkflowScript(options: RunWorkflowScriptOptions): Promise<WorkflowScriptResult> {
   const extracted = extractWorkflowSource(options.source);
   const defaults = readWorkflowDefaults(
@@ -163,7 +193,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const cwd = options.cwd ?? path.dirname(path.resolve(options.filename));
+  const resolvedFilename = path.resolve(options.filename);
+  const cwd = options.cwd ?? path.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -204,34 +235,42 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
             throw new NestedWorkflowError();
           }
   });
-  // Meta is evaluated ahead of the body so the sandbox can bind it read-only:
-  // the script may read the object it was required to declare, never mutate it.
+  // Meta is evaluated ahead of the body so it can be bound read-only: the
+  // script may read the object it was required to declare, never mutate it.
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
-  const context = createSandboxContext(hooks, declaredMeta);
-  const script = compileWorkflowScript(extracted, options.filename);
-  assertKnownFreeIdentifiers(buildWrappedSource(extracted), context, options.filename);
-
-  let runResult: unknown;
-  try {
-    runResult =
-      options.timeoutMs === undefined
-        ? (script.runInContext(context) as unknown)
-        : (script.runInContext(context, { timeout: options.timeoutMs }) as unknown);
-  } catch (error) {
-    if (options.timeoutMs !== undefined && isVmTimeoutError(error)) {
-      throw new WorkflowTimeoutError(options.timeoutMs);
-    }
-    throw error;
-  }
-  const resultRecord = asResultRecord(runResult);
-  const meta = normaliseVmValue(resultRecord.meta);
-  const resultSettlement = resultRecord.promise.then(
+  assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  const run = await importWorkflowBody(extracted, resolvedFilename);
+  const bindings: WorkflowBodyBindings = {
+    agent: hooks.agent,
+    workflow: hooks.workflow,
+    parallel: hooks.parallel,
+    pipeline: hooks.pipeline,
+    phase: hooks.phase,
+    log: hooks.log,
+    budget: hooks.budget,
+    worktrees: hooks.worktrees,
+    args: hooks.args,
+    // The script's own declared meta, readable without redeclaring it.
+    // Frozen, and destructured as a `const` binding in the module wrapper
+    // (modules are strict code), so both a property write and a wholesale
+    // rebinding throw rather than silently mutating what the archive
+    // already recorded.
+    meta: deepFreeze(structuredClone(declaredMeta)),
+    // Module loading resolves from the script's own path: relative
+    // specifiers and node_modules walks behave as they would for a module
+    // sitting where the script sits.
+    require: createRequire(resolvedFilename)
+  };
+  // The body starts here: its synchronous prefix runs inside this call, and
+  // everything after its first await settles through the returned promise.
+  const resultPromise = run(bindings);
+  const resultSettlement = resultPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (error: unknown) => ({ status: "rejected" as const, error })
   );
   // Meta is known the moment the script evaluates — surface it before awaiting
   // the body so a live status view can name the run from the start.
-  await options.onMeta?.(meta);
+  await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
     throw settlement.error;
@@ -240,22 +279,30 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // return value is printed, hashed, and archived, so a non-JSON value
   // fails the run loudly here rather than collapsing to a lossy `null`
   // downstream. Judged on the *normalised* value — the one the CLI will
-  // stringify — never the raw vm value: structuredClone drops prototypes
+  // stringify — never the raw one: structuredClone drops prototypes
   // (and with them prototype toJSON methods), so the two can differ in
   // exactly the properties this check exists to judge. Only the top-level
   // run's return crosses that boundary — a child's return flows back into
   // the parent script as a value, and is checked when (and only when) the
   // parent returns it.
-  const result = normaliseVmValue(settlement.value);
+  const result = normaliseResultValue(settlement.value);
   if (workflowDepth === 0) {
     assertJsonSerialisable(result, "workflow return value", "return value");
   }
   return {
-    meta,
+    meta: declaredMeta,
     result
   };
 }
 
+/**
+ * `meta` and `defaults` are object literals evaluated ahead of the body, and
+ * they stay inside a bare `node:vm` context with a short synchronous timeout
+ * deliberately: registry listing evaluates the meta of every saved workflow,
+ * so a literal with a spinning getter must be bounded there even though the
+ * body itself now runs as ordinary, unbounded Node code. This is literal
+ * evaluation, not the retired sandbox.
+ */
 export function readWorkflowMeta(source: string, filename: string = "workflow.js"): unknown {
   const extracted = extractWorkflowSource(source);
   const script = new vm.Script(`(${extracted.metaSource});`, { filename });
@@ -280,7 +327,7 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
     bodyStart += 1;
   }
 
-  // Optional second export: `export const defaults = { \u2026 }` directly after meta.
+  // Optional second export: `export const defaults = { … }` directly after meta.
   let defaultsSource: string | null = null;
   const afterMeta = skipWhitespaceAndComments(withoutBom, bodyStart);
   const defaultsMatch = /^export\s+const\s+defaults\s*=/.exec(withoutBom.slice(afterMeta));
@@ -354,17 +401,63 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
 }
 
 function buildWrappedSource(workflow: ExtractedWorkflow): string {
-  return `"use strict";
-const __workflowMeta = (${workflow.metaSource});
-const __workflowPromise = (async () => {
+  return `export default async (__ensembleHooks) => {
+const { ${HOOK_BINDING_NAMES.join(", ")} } = __ensembleHooks;
 ${workflow.bodySource}
-})();
-({ meta: __workflowMeta, promise: __workflowPromise });`;
+};`;
 }
 
-function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): vm.Script {
+/**
+ * Workflow bodies execute as genuine ES modules served from memory: the
+ * wrapped source is registered against the script's own file URL (tagged
+ * with a run-unique query so the module cache never returns a stale body),
+ * and a `node:module` load hook serves it instead of the on-disk bytes.
+ * Executing under the script's own URL is what makes the full-Node contract
+ * hold without a temp file: `import.meta.url` names the script's location,
+ * and relative and bare dynamic `import()` specifiers resolve exactly as
+ * they would for a module at that path.
+ */
+const pendingWorkflowModules = new Map<string, string>();
+let workflowModuleLoaderRegistered = false;
+
+function ensureWorkflowModuleLoader(): void {
+  if (workflowModuleLoaderRegistered) {
+    return;
+  }
+  registerHooks({
+    load(url, context, nextLoad) {
+      const source = pendingWorkflowModules.get(url);
+      if (source !== undefined) {
+        return { format: "module", source, shortCircuit: true };
+      }
+      return nextLoad(url, context);
+    }
+  });
+  workflowModuleLoaderRegistered = true;
+}
+
+async function importWrappedModule(wrappedSource: string, filename: string): Promise<Record<string, unknown>> {
+  ensureWorkflowModuleLoader();
+  const url = `${pathToFileURL(filename).href}?ensemble-workflow-run=${randomUUID()}`;
+  pendingWorkflowModules.set(url, wrappedSource);
   try {
-    return new vm.Script(buildWrappedSource(workflow), { filename });
+    return (await import(url)) as Record<string, unknown>;
+  } finally {
+    pendingWorkflowModules.delete(url);
+  }
+}
+
+/**
+ * Compile-and-load with author-facing diagnostics: V8 is the syntax
+ * authority (nothing here rejects what Node would execute), and the one
+ * shape error worth explaining — `export const defaults` declared in the
+ * body instead of directly after `meta` — is diagnosed by recompiling with
+ * that export blanked, exactly as the vm-era compile step did.
+ */
+async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string): Promise<WorkflowBodyFunction> {
+  let namespace: Record<string, unknown>;
+  try {
+    namespace = await importWrappedModule(buildWrappedSource(workflow), filename);
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error;
@@ -379,7 +472,7 @@ function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): v
     }
 
     try {
-      new vm.Script(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), { filename });
+      await importWrappedModule(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), filename);
     } catch {
       throw new WorkflowScriptError(
         `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
@@ -392,80 +485,11 @@ function compileWorkflowScript(workflow: ExtractedWorkflow, filename: string): v
       { cause: error }
     );
   }
-}
-
-function createSandboxContext(hooks: WorkflowHooks, meta: unknown): vm.Context {
-  const bindings: Record<string, unknown> = {
-    agent: hooks.agent,
-    workflow: hooks.workflow,
-    parallel: hooks.parallel,
-    pipeline: hooks.pipeline,
-    phase: hooks.phase,
-    log: hooks.log,
-    budget: hooks.budget,
-    worktrees: hooks.worktrees,
-    args: hooks.args,
-    // The script's own declared meta, readable without redeclaring it.
-    // Frozen: the body runs in strict mode, so a write throws rather than
-    // silently mutating what the archive already recorded.
-    meta: deepFreeze(structuredClone(meta)),
-    // Side-effect-free platform globals, bound explicitly because scripts
-    // demonstrably reach for them. Pure computation over values — no
-    // filesystem, process, or network reach — so they widen convenience,
-    // not capability. `Buffer` stays out: TextEncoder covers the
-    // byte-length case without dragging Node-API expectations in.
-    TextEncoder,
-    TextDecoder,
-    structuredClone,
-    URL,
-    URLSearchParams,
-    atob,
-    btoa,
-    crypto: Object.freeze({
-      randomUUID: () => crypto.randomUUID(),
-      subtle: Object.freeze({
-        digest: (algorithm: AlgorithmIdentifier, data: BufferSource) => crypto.subtle.digest(algorithm, data)
-      })
-    })
-  };
-  const context = vm.createContext(bindings, {
-    name: "ensemble-workflow-script",
-    codeGeneration: {
-      strings: false,
-      wasm: false
-    }
-  });
-  // The values are frozen or facades, but the *bindings* would still be
-  // writable: `meta = {...}` would silently rebind the global. Lock every
-  // binding so reassignment throws under strict mode. The explicit `value`
-  // matters: inside a vm context, defineProperty without one clears the
-  // binding instead of preserving it.
-  for (const name of Object.keys(bindings)) {
-    vm.runInContext(
-      `Object.defineProperty(globalThis, ${JSON.stringify(name)}, { value: globalThis[${JSON.stringify(
-        name
-      )}], writable: false, configurable: false, enumerable: true });`,
-      context
-    );
+  const run = namespace.default;
+  if (typeof run !== "function") {
+    throw new WorkflowScriptError("Workflow script did not produce a runnable body");
   }
-  return context;
-}
-
-/** Walks the parsed AST for any ImportExpression node (depth-first, cycle-free by construction). */
-function containsImportExpression(node: unknown): boolean {
-  if (typeof node !== "object" || node === null) {
-    return false;
-  }
-  if (Array.isArray(node)) {
-    return node.some(containsImportExpression);
-  }
-  const record = node as Record<string, unknown>;
-  if (record.type === "ImportExpression") {
-    return true;
-  }
-  return Object.entries(record).some(
-    ([key, child]) => key !== "parents" && typeof child === "object" && containsImportExpression(child)
-  );
+  return run as WorkflowBodyFunction;
 }
 
 /**
@@ -490,59 +514,33 @@ function deepFreeze(value: unknown): unknown {
 }
 
 /**
- * The identifiers a bare vm context supplies on its own — the ECMAScript
- * intrinsics (`JSON`, `Promise`, `Map`, …) plus vm's own scaffolding.
- * Enumerated from a real empty context rather than hand-listed, so the set
- * cannot drift from what the sandbox actually resolves; memoised because it
- * is identical for every script. Node globals (`Buffer`, `process`,
- * `setTimeout`, `fetch`) are absent from a vm context, which is exactly why
- * they must not be read from the host's `globalThis` here.
+ * Fail-loud-before-spend: a free identifier that is neither a Node global,
+ * a bound hook, nor a module-scope binding fails at load with the unknown
+ * names, instead of as a `ReferenceError` after paid agent phases. The
+ * allowlist is enumerated from the real `globalThis` at check time rather
+ * than hand-listed, so it cannot drift from what the executing module
+ * actually resolves. `typeof`-only references are exempt — probing for an
+ * absent global is the defensive idiom this check must not punish — and the
+ * hook names are included for robustness even though the wrapper's `const`
+ * destructuring already keeps them from being free.
  */
-let sandboxIntrinsics: Set<string> | undefined;
-
-function vmIntrinsicNames(): Set<string> {
-  if (sandboxIntrinsics === undefined) {
-    const probe = vm.createContext({});
-    const names = vm.runInContext(
-      "Object.getOwnPropertyNames(globalThis)",
-      probe
-    ) as string[];
-    sandboxIntrinsics = new Set(names);
-  }
-  return sandboxIntrinsics;
-}
-
-/**
- * Fail-loud-before-spend: a free identifier the sandbox does not bind fails
- * at load with the unknown names, instead of as a `ReferenceError` after
- * paid agent phases. `typeof`-only references are exempt — probing for an
- * absent global is the defensive idiom this check must not punish.
- */
-function assertKnownFreeIdentifiers(wrappedSource: string, context: vm.Context, filename: string): void {
-  const knownGlobals = new Set([...vmIntrinsicNames(), ...Object.keys(context as object)]);
+function assertKnownFreeIdentifiers(wrappedSource: string, filename: string): void {
+  const knownGlobals = new Set([...Object.getOwnPropertyNames(globalThis), ...HOOK_BINDING_NAMES]);
   let found: ReturnType<typeof detectGlobals>;
-  let ast: ReturnType<typeof detectGlobals.parse>;
   try {
-    ast = detectGlobals.parse(wrappedSource);
-    found = detectGlobals(ast);
+    // Module grammar, matching how the wrapper actually executes — the body
+    // may legally contain dynamic `import()` and `import.meta`.
+    const ast = acorn.parse(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+    found = detectGlobals(ast as never);
   } catch {
-    // The source already compiled under vm.Script; a parser disagreement here
-    // must not reject a script the runtime can execute.
+    // V8 is the syntax authority: a parser disagreement here must not
+    // reject a script Node can execute, so the check degrades to nothing
+    // and any genuine syntax error surfaces from the module load instead.
     return;
-  }
-  // Dynamic import is denied by the sandbox but introduces no free
-  // identifier, so without this walk it would surface only at execution —
-  // after paid agent phases, the exact late failure this check exists to
-  // prevent.
-  if (containsImportExpression(ast)) {
-    throw new WorkflowScriptError(
-      `Workflow ${filename} uses dynamic import(), which the sandbox does not provide. ` +
-        "Scripts cannot load modules; the available hooks and platform globals are listed in the runtime README."
-    );
   }
   const unknown = found
     // acorn-globals reports ThisExpression as a free name, but `this` is
-    // syntax whose value V8 supplies wherever the compiled script permits it.
+    // syntax whose value V8 supplies wherever the compiled module permits it.
     .filter((global) => global.name !== "this")
     .filter((global) => !knownGlobals.has(global.name))
     .filter(
@@ -556,9 +554,10 @@ function assertKnownFreeIdentifiers(wrappedSource: string, context: vm.Context, 
     .map((global) => global.name);
   if (unknown.length > 0) {
     throw new WorkflowScriptError(
-      `Workflow ${filename} references identifiers the sandbox does not provide: ${unknown.join(", ")}. ` +
-        "Scripts run without Node globals (no require, process, or Buffer); the available hooks and " +
-        "platform globals are listed in the runtime README."
+      `Workflow ${filename} references identifiers that are not defined: ${unknown.join(", ")}. ` +
+        "A free identifier must be a Node global, a bound hook, or a module-scope binding " +
+        "(require, dynamic import(), import.meta) — a mistyped name fails here, at load, " +
+        "before any worker spawns."
     );
   }
 }
@@ -578,27 +577,14 @@ function asWorkflowReference(value: unknown): WorkflowReference {
   throw new WorkflowScriptError("workflow() expects a workflow name string or { scriptPath: string }");
 }
 
-function asResultRecord(value: unknown): { meta: unknown; promise: Promise<unknown> } {
-  if (typeof value !== "object" || value === null || !("promise" in value)) {
-    throw new WorkflowScriptError("Workflow script did not produce a result promise");
-  }
-  const promise = (value as { promise: unknown }).promise;
-  if (!isPromiseLike(promise)) {
-    throw new WorkflowScriptError("Workflow script did not produce a result promise");
-  }
-  return { meta: (value as { meta?: unknown }).meta, promise: Promise.resolve(promise) };
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "then" in value &&
-    typeof (value as { then?: unknown }).then === "function"
-  );
-}
-
-function normaliseVmValue(value: unknown): unknown {
+/**
+ * The return value crosses a structured-clone boundary before it is
+ * stringified: the clone is the documented normalisation (prototypes and
+ * their toJSON methods do not survive it), and the serialisability check
+ * judges exactly this value. A value the clone rejects is kept as-is —
+ * the settlement check then names what stringify would lose.
+ */
+function normaliseResultValue(value: unknown): unknown {
   try {
     return structuredClone(value);
   } catch {
@@ -606,13 +592,13 @@ function normaliseVmValue(value: unknown): unknown {
   }
 }
 
-function isVmTimeoutError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) {
-    return false;
+/** Meta and defaults literals cross out of their evaluation vm the same way. */
+function normaliseVmValue(value: unknown): unknown {
+  try {
+    return structuredClone(value);
+  } catch {
+    return value;
   }
-  const code = (error as { code?: unknown }).code;
-  const message = (error as { message?: unknown }).message;
-  return code === "ERR_SCRIPT_EXECUTION_TIMEOUT" || (typeof message === "string" && /Script execution timed out/.test(message));
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number | undefined): Promise<T> {

@@ -159,19 +159,27 @@ and `/* ... */` comments may separate these exports; a
 `defaults` export declared later in the workflow body is rejected with a
 placement error. If another syntax error makes that placement check
 inconclusive, the runtime says so and preserves the original `SyntaxError` as
-its cause. The rest of the file is the workflow body, evaluated in a `node:vm`
-sandbox as an async function — `return` produces the run's result. The sandbox
-exposes the hooks below plus a short list of side-effect-free platform
-globals — `TextEncoder` / `TextDecoder`, `structuredClone`, `URL` /
-`URLSearchParams`, `atob` / `btoa`, and `crypto.randomUUID` /
-`crypto.subtle.digest` — and binds the script's own `meta` export read-only
-(reading `meta.name` works; writing to `meta` throws). No `require`, no
-`import`, no dynamic code generation, and no Node globals: `Buffer` and
-`process` are deliberately absent (`TextEncoder` covers byte-length
-measuring). Any other free identifier fails **at load, before any worker
-spawns**, naming the unknown identifiers — a `typeof Buffer` probe is fine;
-using `Buffer` is a load error, not a `ReferenceError` after paid agent
-phases.
+its cause. The rest of the file is the workflow body,
+executed as **ordinary, unsandboxed Node** — the body of a single async
+function, so `return` produces the run's result and top-level `await` works.
+The full platform is available alongside the hooks below: every Node global
+(`process`, `Buffer`, `fetch`, timers — a
+`await new Promise(r => setTimeout(r, ms))` sleep is ordinary code), the
+filesystem and network, `require(...)` and dynamic `import()` resolving from
+the script's own path, and `import.meta` (its URL is the script's own,
+tagged with a run-unique query). Static `import` syntax does not apply —
+the body is a function body, not module top level. The script is the
+trusted orchestration program of the user who launched it; workers are
+dispatched only through `agent()`, and prompts constrain behaviour, not
+capability. The script's own `meta` export is bound read-only (reading
+`meta.name` works; writing to it or rebinding it throws). A free identifier
+that is neither a Node global, a bound hook, nor a module-scope binding
+fails **at load, before any worker spawns**, naming the unknown
+identifiers — a `typeof X` probe is fine; a mistyped name is a load error,
+not a `ReferenceError` after paid agent phases. One boundary of the opt-in
+`--timeout` is worth knowing: it interrupts the body at `await` points, so
+a synchronously spinning loop can only be stopped by killing the process —
+the orchestrator remains the real backstop.
 
 ## Hooks
 

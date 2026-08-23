@@ -15,7 +15,7 @@ both is stronger than either family could vouch for alone.
 curated models — with schema-validated structured output and
 bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
-surface — `parallel()`, `pipeline()`, a `node:vm` restricted-globals sandbox, and
+surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
 `workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel Codex agents — driven by the
 `ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
 non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
@@ -30,9 +30,13 @@ ensemble my-workflow.js > result.json 2> run.log
 ## Script surface
 
 Workflow scripts begin with an `export const meta = { name, description, ... }`
-object literal, then run ordinary async JavaScript inside a restricted-globals
-sandbox. The sandbox has no filesystem, shell, network, `process`, `require`, or
-Node module access; the host-provided hooks are the way out.
+object literal, then run as the body of a single async function in **ordinary,
+unsandboxed Node**: the full platform — filesystem, network, `process`,
+timers, `require(...)` and dynamic `import()` resolving from the script's own
+path, `import.meta` — is available alongside the host-provided hooks. Workers
+are dispatched only through `agent()`; a free identifier that is neither a
+Node global, a bound hook, nor a module-scope binding fails at load, before
+any worker spawns.
 
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or

@@ -72,7 +72,7 @@ export function createWorkflowHooks(options: {
     log: (message) => {
       writeLog(message);
     },
-    // A read-only facade: handing the live TokenBudget into the sandbox would
+    // A read-only facade: handing the live TokenBudget to the script would
     // expose record() and the events array to script mutation.
     budget: {
       spent: (engine) => options.runtime.budget.spent(engine),

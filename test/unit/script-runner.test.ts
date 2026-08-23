@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   WorkflowScriptError,
@@ -147,12 +148,9 @@ test("a composed child's invocation is surfaced before the child runs, with sour
   assert.equal(invocations.length, 1);
   assert.equal(invocations[0]!.scriptPath, childPath);
   assert.equal(invocations[0]!.source, childSource);
-  // `args` crosses the sandbox boundary, so its prototype is the vm realm's
-  // Array, not this one's — and this file imports `node:assert/strict`, where
-  // deepEqual compares prototypes. Clone it the way the real consumer does:
+  // Assert on the clone the way the real consumer does:
   // `RunRecordWriter.recordWorkflowInvocation` calls `structuredClone` on
-  // exactly this value, so asserting on the clone tests what production sees
-  // rather than a realm detail that never reaches the archive.
+  // exactly this value, so this tests what production sees.
   assert.deepEqual(structuredClone(invocations[0]!.args), ["carried"]);
   // Provenance-before-execution: the record exists before the child spends.
   assert.deepEqual(order, ["invocation-recorded", "agent:recorded"]);
@@ -457,18 +455,28 @@ test("extracts multi-line meta with nested braces, comments, and strings", () =>
   assert.match(extracted.bodySource, /return "body"/);
 });
 
-test("denies ambient Node, filesystem-shaped, and network globals while permitting Date and Math", async () => {
+test("the body runs as ordinary Node: platform globals, timers, and the filesystem", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-full-node-"));
+  const evidence = path.join(directory, "evidence.txt");
+  await writeFile(evidence, "read-from-disk");
+
   const checks = await runWorkflowScript({
-    filename: "sandbox.js",
+    filename: path.join(directory, "full-node.js"),
     runtime,
     log: () => {},
     source: `
-      export const meta = { name: "sandbox" };
+      export const meta = { name: "full-node" };
 
+      // Waiting and inspecting the world are free in-script code: a sleep
+      // through a real timer, and a file read through the platform.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const fs = await import("node:fs/promises");
+      const onDisk = await fs.readFile(${JSON.stringify(evidence)}, "utf8");
       return {
         process: typeof process,
-        require: typeof require,
+        buffer: typeof Buffer,
         fetch: typeof fetch,
+        onDisk,
         date: typeof Date.now(),
         random: typeof Math.random()
       };
@@ -476,26 +484,63 @@ test("denies ambient Node, filesystem-shaped, and network globals while permitti
   });
 
   assert.deepEqual(checks.result, {
-    process: "undefined",
-    require: "undefined",
-    fetch: "undefined",
+    process: "object",
+    buffer: "function",
+    fetch: "function",
+    onDisk: "read-from-disk",
     date: "number",
     random: "number"
   });
+});
 
-  await assert.rejects(
-    () =>
-      runWorkflowScript({
-        filename: "dynamic-import.js",
-        runtime,
-        log: () => {},
-        source: `
-          export const meta = { name: "import" };
-          return await import("node:fs");
-        `
-      }),
-    /uses dynamic import\(\), which the sandbox does not provide/
-  );
+test("require, relative dynamic import, and import.meta resolve from the script's own path", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-module-loading-"));
+  await writeFile(path.join(directory, "helper.mjs"), "export const helper = \"relative-import\";\n");
+  await writeFile(path.join(directory, "helper.cjs"), "module.exports = { helper: \"relative-require\" };\n");
+  const scriptPath = path.join(directory, "loader.js");
+
+  const result = await runWorkflowScript({
+    filename: scriptPath,
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "loader" };
+
+      const viaImport = (await import("./helper.mjs")).helper;
+      const viaRequire = require("./helper.cjs").helper;
+      const viaBuiltin = require("node:path").basename("/x/y.txt");
+      return { viaImport, viaRequire, viaBuiltin, metaUrl: import.meta.url };
+    `
+  });
+
+  const value = result.result as { viaImport: string; viaRequire: string; viaBuiltin: string; metaUrl: string };
+  assert.equal(value.viaImport, "relative-import");
+  assert.equal(value.viaRequire, "relative-require");
+  assert.equal(value.viaBuiltin, "y.txt");
+  // The body executes under the script's own URL (tagged per run), so
+  // import.meta and relative specifiers behave as if the module sat at the
+  // script's path — not at a temp file or the harness's own location.
+  assert.ok(value.metaUrl.startsWith(`${pathToFileURL(scriptPath).href}?ensemble-workflow-run=`), value.metaUrl);
+});
+
+test("each run executes a fresh body, never a stale cached module", async () => {
+  // One filename, two different sources: the run-unique URL tag is what
+  // keeps the ESM module cache from serving the first body to the second run.
+  const filename = "cache-check.js";
+  const first = await runWorkflowScript({
+    filename,
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "cache-check" };\nreturn "first";`
+  });
+  const second = await runWorkflowScript({
+    filename,
+    runtime,
+    log: () => {},
+    source: `export const meta = { name: "cache-check" };\nreturn "second";`
+  });
+  assert.equal(first.result, "first");
+  assert.equal(second.result, "second");
 });
 
 test("binds the script's own meta read-only in the body", async () => {
@@ -561,7 +606,7 @@ test("a cyclic meta loads read-only instead of overflowing the stack", async () 
   assert.equal(result.result, "meta-cycle");
 });
 
-test("binds the enumerated side-effect-free platform globals", async () => {
+test("the web-platform globals scripts already rely on remain available", async () => {
   const result = await runWorkflowScript({
     filename: "platform-globals.js",
     runtime,
@@ -625,24 +670,24 @@ test("an unknown free identifier fails at load, before any worker spawns", async
     }
   };
 
-  // Buffer is the documented absence; the reference sits *after* an agent
-  // call, which is exactly the late-ReferenceError-after-paid-spend failure
-  // the load-time check exists to prevent.
+  // The unknown name sits *after* an agent call, which is exactly the
+  // late-ReferenceError-after-paid-spend failure the load-time check
+  // exists to prevent.
   await assert.rejects(
     () =>
       runWorkflowScript({
-        filename: "uses-buffer.js",
+        filename: "uses-undeclared.js",
         runtime: countingRuntime,
         log: () => {},
         source: `
-          export const meta = { name: "uses-buffer" };
+          export const meta = { name: "uses-undeclared" };
           const found = await agent("survey", { engine: "codex" });
-          return Buffer.byteLength(found);
+          return summariseFindings(found);
         `
       }),
     (error: unknown) => {
       assert.ok(error instanceof WorkflowScriptError);
-      assert.match(error.message, /identifiers the sandbox does not provide: Buffer/);
+      assert.match(error.message, /identifiers that are not defined: summariseFindings/);
       return true;
     }
   );
@@ -660,28 +705,8 @@ test("an unknown free identifier fails at load, before any worker spawns", async
           return await agnet("x", { engine: "codex" });
         `
       }),
-    /identifiers the sandbox does not provide: agnet/
+    /identifiers that are not defined: agnet/
   );
-
-  // Dynamic import introduces no free identifier, so it needs its own
-  // load-time rejection — after an agent call it would otherwise be the
-  // paid-work-then-fail path.
-  await assert.rejects(
-    () =>
-      runWorkflowScript({
-        filename: "dynamic-import-late.js",
-        runtime: countingRuntime,
-        log: () => {},
-        source: `
-          export const meta = { name: "dynamic-import-late" };
-          const found = await agent("survey", { engine: "codex" });
-          const fs = await import("node:fs");
-          return fs.readFileSync ? "reached" : found;
-        `
-      }),
-    /uses dynamic import\(\), which the sandbox does not provide/
-  );
-  assert.equal(agentCalls, 0, "the import() rejection must also fire before any worker spawns");
 });
 
 test("a typeof probe for an absent global passes the load-time check", async () => {
@@ -692,12 +717,12 @@ test("a typeof probe for an absent global passes the load-time check", async () 
     source: `
       export const meta = { name: "typeof-probe" };
       // The defensive idiom: feature-probe, then use only what exists.
-      const hasBuffer = typeof Buffer !== "undefined";
+      const hasAbsent = typeof definitelyNotAGlobalAnywhere !== "undefined";
       const hasDecoder = typeof TextDecoder !== "undefined";
-      return { hasBuffer, hasDecoder };
+      return { hasAbsent, hasDecoder };
     `
   });
-  assert.deepEqual(result.result, { hasBuffer: false, hasDecoder: true });
+  assert.deepEqual(result.result, { hasAbsent: false, hasDecoder: true });
 });
 
 test("times out runaway async scripts", async () => {
@@ -739,23 +764,6 @@ test("does not impose a default timeout when no timeout is configured", async ()
   assert.equal(result.result, "agent:slow-but-finite");
 });
 
-test("times out runaway synchronous scripts", async () => {
-  await assert.rejects(
-    () =>
-      runWorkflowScript({
-        filename: "sync-timeout.js",
-        runtime,
-        timeoutMs: 20,
-        log: () => {},
-        source: `
-          export const meta = { name: "sync-timeout" };
-          while (true) {}
-        `
-      }),
-    WorkflowTimeoutError
-  );
-});
-
 function tokenUsageEvent(totalTokens: number): Parameters<TokenBudget["record"]>[1] {
   const usage = {
     cachedInputTokens: 0,
@@ -778,8 +786,6 @@ test("export const defaults supplies per-engine policy that call sites override"
   const recordingRuntime: WorkflowRuntime = {
     ...runtime,
     agent: (async (prompt: string, options?: Record<string, unknown>) => {
-      // Spread to normalise the realm: an unmerged options object arrives with
-      // the sandbox's Object.prototype, which deepEqual treats as different.
       seen.push({ ...(options ?? {}) });
       return `agent:${prompt}`;
     }) as unknown as WorkflowRuntime["agent"]

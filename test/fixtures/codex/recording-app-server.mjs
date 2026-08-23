@@ -33,6 +33,10 @@ const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1"
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
+const oversizedLineBytes = Number(process.env.ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES ?? "0");
+if (!Number.isSafeInteger(oversizedLineBytes) || oversizedLineBytes < 0) {
+  throw new Error("ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES must be a non-negative safe integer");
+}
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -207,6 +211,12 @@ const handleLine = (line) => {
         allowMalformed: "the -32001 classifier regression deliberately includes schema-forbidden error fields"
       });
       return;
+    }
+    if (oversizedLineBytes > 0) {
+      // This cannot be elicited from a live provider on cue. Deliberately
+      // bypass schema validation: the frame is malformed by construction and
+      // exists to exercise the client's bounded stdout assembly.
+      process.stdout.write(`${"x".repeat(oversizedLineBytes)}\n`);
     }
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {

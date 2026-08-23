@@ -12,6 +12,7 @@ import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
@@ -452,6 +453,51 @@ test("built CLI propagates removed options from parallel when a sibling succeeds
     assert.equal(envelope.reason, "failed");
     assert.ok(Array.isArray(envelope.completed));
     assert.match(result.stderr, /sandbox[\s\S]*removed/i);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI terminalises an abandoned parallel sibling in the sealed archive", async () => {
+  const fixture = await createProcessFixture("parallel-abandoned-record");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "parallel-abandoned-record",
+          description: "A run timeout abandons siblings while their dispatch records are still writing"
+        };
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return await parallel([
+          ...Array.from({ length: 16 }, (_, index) => () => agent("wait in the recorder", {
+            engine: "codex",
+            label: "abandoned-sibling-" + index,
+            maxAttempts: 1
+          }))
+        ]);
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      ["--timeout=20", "--concurrency=codex=1", fixture.script],
+      {
+        ENSEMBLE_RUN_RECORD: "1",
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${delayedAgentWritePreloadPath}`.trim()
+      },
+      5_000
+    );
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /Workflow timed out/i);
+    const agents = await readArchivedAgentsInSeparateProcess(fixture.dataHome);
+    const abandoned = agents.find((agent) => agent.label === "abandoned-sibling-15");
+    assert.ok(abandoned, "expected the separately-read archive to contain the abandoned sibling");
+    // This is the discriminating assertion: before run-end finalisation, this
+    // exact sibling remained in-progress with no attempts after sealing.
+    assert.equal(abandoned.status, "abandoned", JSON.stringify(agents.map((agent) => [agent.label, agent.status])));
+    assert.deepEqual(abandoned.attempts, []);
   } finally {
     await fixture.cleanup();
   }
@@ -1791,7 +1837,7 @@ interface RecordedMessage {
 }
 
 interface RecordedAgent {
-  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
   parse_route: "direct" | "object-fallback" | "array-fallback" | null;
   attempts: Array<{
     status: "complete" | "failed";
@@ -1802,6 +1848,7 @@ interface RecordedAgent {
 
 interface ProcessFixture {
   script: string;
+  dataHome: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1846,6 +1893,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
 
   return {
     script,
+    dataHome: path.join(directory, "data"),
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>
@@ -1863,6 +1911,21 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
         .map((line) => JSON.parse(line) as ValidationRecord),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
+  const reader = [
+    'const { readdirSync, readFileSync } = require("node:fs");',
+    'const { join, basename } = require("node:path");',
+    'const root = process.argv[1];',
+    'const agents = readdirSync(root, { recursive: true })',
+    '  .filter((entry) => basename(entry) === "agent.json")',
+    '  .map((entry) => JSON.parse(readFileSync(join(root, entry), "utf8")));',
+    'process.stdout.write(JSON.stringify(agents));'
+  ].join("\n");
+  const result = await runProcess(process.execPath, ["-e", reader, dataHome], process.env);
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
 }
 
 async function executablePath(name: string): Promise<string> {

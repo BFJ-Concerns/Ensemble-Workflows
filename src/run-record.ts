@@ -21,7 +21,7 @@ const SCHEMA_VERSION = 2;
 const MANIFEST_PATH = "manifest.json";
 
 type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
-type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
 type AccountingSource = "provider-reported" | "estimated";
 type ParseRoute = "direct" | "object-fallback" | "array-fallback";
 

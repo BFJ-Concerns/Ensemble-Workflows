@@ -122,6 +122,62 @@ class ClosingTransport implements RuntimeTransport {
   }
 }
 
+class NonSettlingCloseTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #markStarted: (() => void) | null = null;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    return new Promise(() => undefined);
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+class DispatchBlockedRecorder {
+  readonly records: RuntimeAgentRecord[] = [];
+  readonly dispatchStarted: Promise<void>;
+  #markDispatchStarted: (() => void) | null = null;
+  #releaseDispatch: (() => void) | null = null;
+
+  constructor(private readonly failReplacement = false) {
+    this.dispatchStarted = new Promise((resolve) => {
+      this.#markDispatchStarted = resolve;
+    });
+  }
+
+  async recordAgent(record: RuntimeAgentRecord): Promise<void> {
+    this.records.push(structuredClone(record));
+    if (this.records.length !== 1) {
+      if (this.failReplacement) {
+        throw new Error("disk full");
+      }
+      return;
+    }
+    this.#markDispatchStarted?.();
+    await new Promise<void>((resolve) => {
+      this.#releaseDispatch = resolve;
+    });
+  }
+
+  releaseDispatch(): void {
+    this.#releaseDispatch?.();
+  }
+}
+
 class InvalidOutputDuringCloseTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   readonly started: Promise<void>;
@@ -1458,6 +1514,57 @@ test("a run-record write failure surfaces as an event and never fails the agent"
     { method: "runRecord/writeFailed", message: "disk full" },
     { method: "runRecord/writeFailed", message: "disk full" }
   ]);
+});
+
+test("a run-end record write failure remains an observability event", async () => {
+  const transport = new NonSettlingCloseTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const recorder = new DispatchBlockedRecorder(true);
+  runtime.setRunRecorder(recorder as unknown as RunRecordWriter);
+  const events: Array<{ method: string; message: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "runRecord/writeFailed") {
+      events.push({ method: event.method, message: event.params.message });
+    }
+  });
+
+  const agent = runtime.agent("abandoned", { engine: "codex" });
+  await recorder.dispatchStarted;
+  await runtime.close("interrupted");
+
+  // The second event is the close-time replacement write. Its failure does
+  // not escape close() or create an invented agent failure.
+  assert.deepEqual(events, [
+    { method: "runRecord/writeFailed", message: "disk full" }
+  ]);
+  recorder.releaseDispatch();
+  await assert.rejects(agent, EngineShutdownError);
+});
+
+test("runtime close terminalises an unsettled dispatch record", async () => {
+  const transport = new NonSettlingCloseTransport();
+  const recorder = new DispatchBlockedRecorder();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder(recorder as unknown as RunRecordWriter);
+
+  const agent = runtime.agent("abandoned", { engine: "codex" });
+  await recorder.dispatchStarted;
+  await runtime.close("interrupted");
+
+  assert.equal(recorder.records.length, 2);
+  assert.equal(recorder.records[0]?.status, "in-progress");
+  assert.equal(recorder.records[1]?.status, "abandoned");
+  assert.deepEqual(recorder.records[1]?.attempts, []);
+  recorder.releaseDispatch();
+  await assert.rejects(agent, EngineShutdownError);
 });
 
 // The Claude engine is now implemented; it is driven through the runtime with a

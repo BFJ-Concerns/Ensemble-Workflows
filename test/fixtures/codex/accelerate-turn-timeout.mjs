@@ -13,7 +13,7 @@ let turnStartRequestTimeout;
 
 globalThis.setTimeout = (callback, delay, ...args) => {
   if (delay !== controlledDelay || controlPath === undefined) {
-    if (captureTurnStartRequestTimeout) {
+    if (captureTurnStartRequestTimeout && delay === 30_000) {
       captureTurnStartRequestTimeout = false;
       const timer = nativeSetTimeout(callback, delay, ...args);
       turnStartRequestTimeout = timer;

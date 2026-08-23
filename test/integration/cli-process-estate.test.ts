@@ -1431,8 +1431,9 @@ test("built CLI interrupts a turn that times out before any turn notification", 
 test("built bundle times out an output-silent worker while its tool remains active", { timeout: 20_000 }, async () => {
   // Manufactured-condition exception: a live engine cannot be made to emit
   // tool progress while withholding all further worker output on cue. The
-  // recording app-server fixture supplies exactly that condition, and this
-  // drives the shipped bundle rather than importing the runtime directly.
+  // recording app-server fixture supplies exactly that condition. The direct
+  // transport leg observes client ingress; the following process leg drives
+  // the shipped bundle and proves terminalisation and archival behaviour.
   const fixture = await createProcessFixture("tool-active-output-silent");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   try {

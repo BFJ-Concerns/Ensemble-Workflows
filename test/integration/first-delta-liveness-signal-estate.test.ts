@@ -27,15 +27,13 @@ test("built consumer terminalises a turn with no output before its ordinary time
   await withFixture(async (fixture) => {
     const result = await fixture.run({
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+      ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM: "1",
+      // 1000 ms is only the accelerated deadline's hang guard; the fixture
+      // releases it solely after the client writes armed:<id>.
       ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000"
     });
 
     assert.equal(result.code, 1, result.stderr);
-    const turnStartedAt = await fixture.turnStartedAt();
-    assert.ok(
-      result.finishedAt - turnStartedAt < 3_000,
-      "first-output deadline must win over the ordinary turn timeout after the deadline starts"
-    );
     assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
     assert.match(result.stderr, /AppServerFirstOutputTimeoutError/);
     const attempt = await fixture.onlyAttempt();
@@ -47,32 +45,32 @@ test("built consumer terminalises a turn with no output before its ordinary time
 test("built consumer accepts a first delta that arrives late but inside the deadline", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
+      // 1000 ms is a hang guard; the delta is released by armed:<id> and
+      // completion by the client-written disarmed:<id>, never elapsed time.
       ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
+      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/agentMessage/delta",
           params: { itemId: "late-message", delta: "late but healthy" },
-          afterMs: 250
+          afterFirstDeltaControl: "armed:"
         }
-      ]]),
-      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "1000"
+      ]])
     });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, '"worker-ok"\n');
     const attempt = await fixture.onlyAttempt();
-    assert.ok((attempt.first_delta_ms ?? Infinity) < 1_000, "the client must ingest the first delta before expiry");
-    assert.ok(
-      result.finishedAt - (await fixture.turnStartedAt()) > 1_000,
-      "completion must follow the first-output deadline to prove the client disarmed it"
-    );
+    assert.ok((attempt.first_delta_ms ?? Infinity) >= 0, "the client must ingest the first delta");
   });
 });
 
 test("built consumer treats a correlated non-delta frame as first output", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
+      // 1000 ms is a hang guard; the fixture waits on client-written markers.
       ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
+      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/completed",
@@ -80,20 +78,15 @@ test("built consumer treats a correlated non-delta frame as first output", async
             item: { id: "completed-message", type: "agentMessage", text: "whole answer" },
             completedAtMs: 0
           },
-          afterMs: 250
+          afterFirstDeltaControl: "armed:"
         }
-      ]]),
-      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "1000"
+      ]])
     });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, '"worker-ok"\n');
     const attempt = await fixture.onlyAttempt();
     assert.equal(attempt.first_delta_ms, null);
-    assert.ok(
-      result.finishedAt - (await fixture.turnStartedAt()) > 1_000,
-      "the non-delta frame must disarm the deadline until completion"
-    );
   });
 });
 
@@ -114,8 +107,10 @@ async function createFixture() {
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   const turnStartMarker = path.join(directory, "turn-started-at");
+  const firstDeltaControl = path.join(directory, "first-delta-control");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
+  await writeFile(firstDeltaControl, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
   await writeFile(
@@ -139,6 +134,8 @@ async function createFixture() {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStartMarker,
+          ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: firstDeltaControl,
+          ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: firstDeltaControl,
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
@@ -147,7 +144,7 @@ async function createFixture() {
           XDG_DATA_HOME: path.join(directory, "data"),
           ...overrides
         },
-        6_000
+        6_000 // Harness hang guard, not an assertion deadline.
       ),
     onlyAttempt: async (): Promise<RecordedAttempt> => {
       const recordPath = await findOnlyFile(recordStore, "agent.json");

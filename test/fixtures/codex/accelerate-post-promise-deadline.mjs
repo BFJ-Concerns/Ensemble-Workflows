@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 
 const nativeSetTimeout = globalThis.setTimeout;
@@ -24,13 +24,17 @@ globalThis.setTimeout = (callback, delay, ...args) => {
     } catch {
       return;
     }
-    if (!control.includes(`release:${id}\n`)) {
+    const releaseMarker = `release:${id}\n`;
+    if (!control.includes(releaseMarker)) {
       return;
     }
+    // Consume this one-shot client-ready release: a later deadline must not
+    // inherit a release intended for an earlier timer.
+    writeFileSync(controlPath, control.replace(releaseMarker, ""));
     nativeClearInterval(timer);
     controlledTimers.delete(timer);
     callback(...args);
-  }, 5);
+  }, 5); // Hang-guard poll; only the client-written release marker fires the deadline.
   controlledTimers.set(timer, id);
   timer.unref();
   return timer;

@@ -41,12 +41,12 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
       assert.equal(peer.code, 0, peer.stderr);
       assert.equal(peer.stdout, '"worker-ok"\n');
     }
-    assert.equal((await schemaDirectories(cacheDirectory)).length, 1, "parallel fixture consumers must share one schema set");
     assert.deepEqual(
       await uncachedSchemaEntries(directory),
       [],
       "a SIGKILLed fixture must not leave a per-process schema directory in its system temporary directory"
     );
+    assert.equal((await schemaDirectories(cacheDirectory)).length, 1, "parallel fixture consumers must share one schema set");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

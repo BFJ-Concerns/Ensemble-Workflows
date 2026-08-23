@@ -112,7 +112,8 @@ The side-channel is an ambient, environment-level concern, so it is configured b
 environment variable rather than a run-tuning flag:
 
 - `ENSEMBLE_STATUS=off` (or `0`/`false`/`no`) disables it.
-- `ENSEMBLE_STATUS_DIR` overrides the directory unconditionally.
+- `ENSEMBLE_STATUS_DIR` overrides the directory; as with the default, it is
+  honoured only when the path is an existing directory.
 
 Consumers read and parse this file directly; Ensemble deliberately provides no
 rendering command. Treat a snapshot whose `updatedAt` is more than 30 seconds
@@ -290,7 +291,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
 - `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
-- `worktree`: isolated worktree `branch` and `base_commit`, otherwise `null`.
+- `worktree`: isolated worktree `branch`, `base_commit`, and `tip_commit`,
+  otherwise `null`.
 - `label`, `phase`, and `status`.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.

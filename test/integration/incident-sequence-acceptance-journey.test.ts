@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import test from "node:test";
+
+const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const appServerFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
+const archiveConsumerPath = path.resolve("test/consumers/read-incident-sequence-record.mjs");
+
+test("accepted request, partial output, overload, and termination retain one causal attempt across consumers", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-incident-sequence-"));
+  const binDirectory = path.join(directory, "bin");
+  const fakeCodex = path.join(binDirectory, "codex");
+  const capturePath = path.join(directory, "codex-input.jsonl");
+  const workflowPath = path.join(directory, "workflow.js");
+  const dataHome = path.join(directory, "data");
+  const identifier = "INCIDENT_SEQUENCE_ACCEPTANCE_71";
+
+  try {
+    await mkdir(binDirectory);
+    await writeFile(capturePath, "");
+    await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
+    await chmod(fakeCodex, 0o755);
+    await writeFile(
+      workflowPath,
+      `
+        export const meta = { task: { id: ${JSON.stringify(identifier)} } };
+        return await agent(${JSON.stringify(`dispatch ${identifier}`)}, { engine: "codex", maxAttempts: 1 });
+      `
+    );
+
+    const overloadSequence = [[
+      {
+        method: "item/agentMessage/delta",
+        params: { delta: `partial ${identifier}` },
+        allowMalformed: "the established fixture omits the schema-required itemId for this partial-output regression"
+      },
+      {
+        method: "error",
+        params: {
+          error: {
+            message: `overload ${identifier}`,
+            additionalDetails: `provider terminal cause ${identifier}`,
+            codexErrorInfo: "serverOverloaded"
+          },
+          willRetry: false
+        }
+      }
+    ]];
+    const environment = {
+      ...process.env,
+      PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
+      ENSEMBLE_CODEX_SCHEMA_CLI: await executablePath("codex"),
+      ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
+      ENSEMBLE_STATUS: "0",
+      XDG_DATA_HOME: dataHome
+    };
+
+    // The fixture supplies only the on-demand overload. The built bundle,
+    // caller-visible process result, dispatch protocol, and archive are real.
+    const caller = await runNode([bundledCliPath, workflowPath], environment);
+    assert.equal(caller.code, 1, caller.stderr);
+    assert.equal(caller.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
+    assert.match(caller.stderr, /AppServerOverloadedError/);
+    assert.match(caller.stderr, new RegExp(`overload ${identifier}`));
+    assert.equal((caller.stderr.match(/AppServerOverloadedError/g) ?? []).length, 1);
+
+    const messages = (await readFile(capturePath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { method?: string; params?: { input?: Array<{ text?: string }> } });
+    const turnStarts = messages.filter((message) => message.method === "turn/start");
+    assert.equal(turnStarts.length, 1);
+    assert.equal(turnStarts[0]?.params?.input?.[0]?.text, `dispatch ${identifier}`);
+
+    // This consumer deliberately has only the resolved data home and
+    // identifier: it rebuilds the causal join from the sealed archive in a
+    // separate process.
+    const consumer = await runNode([archiveConsumerPath, dataHome, identifier], { ...process.env });
+    assert.equal(consumer.code, 0, consumer.stderr);
+    assert.deepEqual(JSON.parse(consumer.stdout), {
+      task: identifier,
+      prompt: `dispatch ${identifier}`,
+      partial: `partial ${identifier}`,
+      failure: `turn notification failed (serverOverloaded): serverOverloaded: overload ${identifier}: provider terminal cause ${identifier}; data: {"error":{"message":"overload ${identifier}","additionalDetails":"provider terminal cause ${identifier}","codexErrorInfo":"serverOverloaded"},"willRetry":false,"threadId":"thread-1","turnId":"turn-1"}`
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function executablePath(name: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("which", [name], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(`required executable ${name} is unavailable: ${stderr}`));
+      }
+    });
+  });
+}
+
+function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.once("error", reject);
+    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+  });
+}

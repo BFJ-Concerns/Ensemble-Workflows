@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import test from "node:test";
 
 import { CodexAppServerTransport } from "../../src/app-server.js";
+import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
 
@@ -1456,7 +1457,10 @@ test("built bundle times out an output-silent worker while its tool remains acti
     });
     try {
       const threadId = await transport.openThread({});
-      await assert.rejects(() => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 150 }));
+      await assert.rejects(
+        () => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 150 }),
+        TurnTimeoutError
+      );
       timeoutAt = Date.now();
       await progressAfterTimeout;
     } finally {

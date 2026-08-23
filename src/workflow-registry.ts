@@ -3,6 +3,8 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { PreSpawnAuthorError } from "./errors.js";
+
 export type WorkflowReference = string | { scriptPath: string };
 
 export interface SavedWorkflowMeta {
@@ -34,12 +36,16 @@ export interface WorkflowRegistryListing {
 
 export type WorkflowMetaReader = (source: string, filename: string) => unknown;
 
-export class WorkflowResolutionError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = new.target.name;
-  }
-}
+/**
+ * A `workflow()` reference the runtime cannot resolve — a mistyped saved
+ * name, an unreadable scriptPath, an ambiguous registry match. Raised
+ * before any worker spawns, so it sits in the exempt pre-spawn
+ * author-error family and propagates out of the combinators rather than
+ * collapsing to `null` (the contract's fail-loud criterion; a fan-out of
+ * identically-mistyped references must not filter to a silent empty
+ * success).
+ */
+export class WorkflowResolutionError extends PreSpawnAuthorError {}
 
 export class NestedWorkflowError extends WorkflowResolutionError {
   constructor() {

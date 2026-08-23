@@ -45,6 +45,7 @@ export {
 } from "./completion-sentinel.js";
 export type { CompletionSentinelOptions, SentinelOutcome } from "./completion-sentinel.js";
 export {
+  PreSpawnAuthorError,
   attachPartialWorkerText,
   partialWorkerTextOf,
   attachWorkerExitStatus,

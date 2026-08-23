@@ -5,8 +5,22 @@ export class EnsembleError extends Error {
   }
 }
 
+/**
+ * The exempt pre-spawn author-error family. The combinators deliberately
+ * collapse runtime worker failures to `null`, but any rejection the runtime
+ * raises *before a worker spawns* — from any hook — propagates out of
+ * `parallel()`/`pipeline()` and fails the run: a fan-out of
+ * identically-invalid calls would otherwise return an array of nulls that
+ * `.filter(Boolean)` turns into a silent empty success with no worker ever
+ * run. The membership is a criterion — any rejection raised before a worker
+ * spawns — not a closed list: a new pre-spawn rejection joins by extending
+ * this class, and the combinators and the CLI's clean-line rendering pick it
+ * up with no further change.
+ */
+export class PreSpawnAuthorError extends EnsembleError {}
+
 /** A workflow-authored agent option that the runtime cannot honour. */
-export class AgentOptionRejectedError extends EnsembleError {}
+export class AgentOptionRejectedError extends PreSpawnAuthorError {}
 
 /**
  * Terminalisation invariant: whatever ends a turn, the text the worker had

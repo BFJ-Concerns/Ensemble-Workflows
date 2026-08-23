@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { AgentOptionRejectedError } from "./errors.js";
+import { PreSpawnAuthorError } from "./errors.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, runWorkflowScript, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -864,7 +864,10 @@ function formatError(error: unknown): string {
   if (error instanceof CliUsageError) {
     return error.message;
   }
-  if (error instanceof AgentOptionRejectedError) {
+  // The pre-spawn author-error family — rejected options, unresolvable
+  // workflow() references, nesting violations — is the author's to fix:
+  // one clean line, no stack.
+  if (error instanceof PreSpawnAuthorError) {
     return `${error.name}: ${error.message}`;
   }
   // Workflow-authoring errors are the author's to fix, not runtime defects:

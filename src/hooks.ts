@@ -1,5 +1,5 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
-import { AgentOptionRejectedError } from "./errors.js";
+import { PreSpawnAuthorError } from "./errors.js";
 
 import type { AgentOptions, Budget, EngineName } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
@@ -92,7 +92,10 @@ export async function parallel<T>(
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof AgentOptionRejectedError) {
+        // The exempt family, not one class: any pre-spawn author error —
+        // a rejected option, an unresolvable workflow() reference, a
+        // nesting violation — fails the run rather than nulling the slot.
+        if (error instanceof PreSpawnAuthorError) {
           throw error;
         }
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
@@ -120,7 +123,7 @@ export async function pipeline<Item>(
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof AgentOptionRejectedError) {
+          if (error instanceof PreSpawnAuthorError) {
             throw error;
           }
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);

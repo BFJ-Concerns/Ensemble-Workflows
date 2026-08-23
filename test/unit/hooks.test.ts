@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { RemovedAgentOptionError } from "../../src/errors.js";
 import { parallel, pipeline } from "../../src/hooks.js";
+import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
 test("parallel returns null for throwing thunks and logs the failure", async () => {
   const logs: string[] = [];
@@ -36,6 +37,56 @@ test("parallel propagates a rejected agent option", async () => {
         () => {}
       ),
     RemovedAgentOptionError
+  );
+});
+
+test("parallel propagates every pre-spawn author error, not only rejected options", async () => {
+  // The exempt membership is the criterion — any rejection raised before a
+  // worker spawns — so an unresolvable workflow() reference inside a
+  // fan-out fails the run. Collapsed to null, a fan-out of identically
+  // mistyped references would .filter(Boolean) into a silent empty success.
+  await assert.rejects(
+    () =>
+      parallel(
+        [
+          () => "first",
+          () => {
+            throw new WorkflowResolutionError('workflow("mistyped-name") was not found');
+          }
+        ],
+        () => {}
+      ),
+    WorkflowResolutionError
+  );
+
+  // The nesting violation is named by the contract as the same family.
+  await assert.rejects(
+    () =>
+      parallel(
+        [
+          () => {
+            throw new NestedWorkflowError();
+          }
+        ],
+        () => {}
+      ),
+    NestedWorkflowError
+  );
+});
+
+test("pipeline propagates an unresolvable workflow() reference", async () => {
+  await assert.rejects(
+    () =>
+      pipeline(
+        ["item"],
+        [
+          () => {
+            throw new WorkflowResolutionError('workflow({ scriptPath }) could not read ./absent.js');
+          }
+        ],
+        () => {}
+      ),
+    WorkflowResolutionError
   );
 });
 

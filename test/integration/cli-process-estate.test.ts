@@ -1426,6 +1426,61 @@ test("built CLI interrupts a turn that times out before any turn notification", 
   }
 });
 
+test("built bundle times out an output-silent worker while its tool remains active", async () => {
+  // Manufactured-condition exception: a live engine cannot be made to emit
+  // tool progress while withholding all further worker output on cue. The
+  // recording app-server fixture supplies exactly that condition, and this
+  // drives the shipped bundle rather than importing the runtime directly.
+  const fixture = await createProcessFixture("tool-active-output-silent");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  const capturePath = path.join(path.dirname(fixture.script), "codex-input.jsonl");
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "tool-active-output-silent-deadline",
+          description: "Bound an output-silent turn despite app-server tool progress"
+        };
+        return await agent("wait for a tool that never returns output", {
+          engine: "codex",
+          maxAttempts: 1,
+          timeoutMs: 1_000
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      5_000
+    );
+
+    assert.equal(result.code, 1, `tool-active deadline did not fire before the test kill switch\n${result.stderr}`);
+    assert.match(result.stderr, /TurnTimeoutError/);
+    const events = (await readFile(capturePath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { fixtureEvent?: { method?: string } });
+    assert.ok(
+      events.filter((event) => event.fixtureEvent?.method === "item/mcpToolCall/progress").length >= 2,
+      `the fixture must keep tool activity flowing across the deadline; saw ${JSON.stringify(events)}`
+    );
+    const messages = await fixture.messages();
+    assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
+    assert.equal(messages.at(-1)?.method, "turn/interrupt");
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.status, "timed-out");
+    assert.equal(agent.attempts[0]?.raw_output, "partial before ongoing tool activity");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI keeps a non-overload notification terminal and renders its diagnostic", async () => {
   const fixture = await createProcessFixture("scoped-terminal-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
@@ -1842,7 +1897,8 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
       (await readFile(capturePath, "utf8"))
         .split("\n")
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as RecordedMessage),
+        .map((line) => JSON.parse(line) as RecordedMessage & { fixtureEvent?: unknown })
+        .filter((message) => message.fixtureEvent === undefined),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

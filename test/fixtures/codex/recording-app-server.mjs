@@ -3,6 +3,7 @@
 import { appendFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { setInterval } from "node:timers";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -32,6 +33,7 @@ const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFT
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
+const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 let threadCounter = 0;
 let turnCounter = 0;
@@ -39,6 +41,11 @@ const pendingTurns = [];
 
 const send = (message, schemaPath, payload = message, options) => {
   validateCodexFixturePayload(schemaPath, payload, options);
+  if (toolActiveOutputSilent && message.method === "item/mcpToolCall/progress" && capturePath !== undefined) {
+    // Keep the manufactured condition observable without mixing server frames
+    // with the client's normal request capture shape.
+    appendFileSync(capturePath, `${JSON.stringify({ fixtureEvent: message })}\n`);
+  }
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
 const finishTurn = (threadId, turnId) => {
@@ -190,6 +197,23 @@ const handleLine = (line) => {
       delete turnStarted.params.threadId;
     }
     send(turnStarted, "ServerNotification.json");
+    if (toolActiveOutputSilent) {
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId, turnId, delta: "partial before ongoing tool activity" }
+      }, "ServerNotification.json", undefined, {
+        allowMalformed: "the deadline proof needs only the output-bearing delta, whose established fixture shape omits itemId"
+      });
+      setInterval(() => {
+        send({
+          method: "item/mcpToolCall/progress",
+          params: { threadId, turnId, itemId: "tool-1", message: "tool still active" }
+        }, "ServerNotification.json", undefined, {
+          allowMalformed: "the controlled deadline condition needs the app-server tool-progress envelope"
+        });
+      }, 20);
+      return;
+    }
     if (schemaDrift === "allowed--32001") {
       send({
         method: "error",

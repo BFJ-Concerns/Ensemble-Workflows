@@ -33,6 +33,7 @@ const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFT
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
+const signalAfterInitialise = process.env.ENSEMBLE_FAKE_CODEX_SIGNAL_AFTER_INITIALISE;
 const turnStartError = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_TURN_START_ERROR ?? "null");
 const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT === "1";
 const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS ?? "20");
@@ -148,6 +149,9 @@ const handleLine = (line) => {
       delete result.userAgent;
     }
     send({ id: message.id, result }, "v1/InitializeResponse.json", result);
+    if (signalAfterInitialise !== undefined) {
+      process.kill(process.pid, signalAfterInitialise);
+    }
     return;
   }
   if (message.method === "thread/start") {

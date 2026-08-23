@@ -213,14 +213,13 @@ const handleLine = (line) => {
       return;
     }
     if (oversizedLineBytes > 0) {
-      // This cannot be elicited from a live provider on cue. Deliberately
-      // bypass schema validation: the valid frame is oversized by
-      // construction and exists to exercise the client's bounded stdout
-      // assembly before ordinary payload handling can consume it.
-      process.stdout.write(`${JSON.stringify({
+      // This cannot be elicited from a live provider on cue. Its payload is
+      // still protocol-valid: exercise the client boundary without opening a
+      // hole in the fixture's wire-schema guard.
+      send({
         method: "item/agentMessage/delta",
-        params: { threadId, turnId, delta: "x".repeat(oversizedLineBytes) }
-      })}\n`);
+        params: { threadId, turnId, itemId: `agent-message-${turnId}`, delta: "x".repeat(oversizedLineBytes) }
+      }, "ServerNotification.json");
     }
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {

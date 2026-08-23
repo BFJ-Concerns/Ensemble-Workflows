@@ -73,6 +73,18 @@ test("caller-authored notification sequences validate by default", async () => {
   assert.match(result.stderr, /additional properties/);
 });
 
+test("the oversized-line fixture knob emits a schema-validated notification", async () => {
+  const result = await runFixture(undefined, undefined, 1_048_577);
+
+  assert.ok(result.code === 0 || result.signal === "SIGTERM", result.stderr);
+  assert.ok(
+    result.validations.some(
+      (entry) => entry.schemaPath === "ServerNotification.json" && entry.outcome === "valid"
+    )
+  );
+  assert.ok(result.messages.some((message) => message.method === "item/agentMessage/delta"));
+});
+
 interface ValidationRecord {
   schemaPath: string;
   outcome: "valid" | "allowed-malformed";
@@ -84,7 +96,7 @@ interface WireMessage {
   params?: { error?: { code: number; message: string; data?: unknown } };
 }
 
-async function runFixture(schemaDrift?: string, notificationSequences?: unknown[]): Promise<{
+async function runFixture(schemaDrift?: string, notificationSequences?: unknown[], oversizedLineBytes?: number): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
@@ -105,7 +117,8 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
         ...(notificationSequences === undefined ? {} : {
           ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notificationSequences)
         }),
-        ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift })
+        ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift }),
+        ...(oversizedLineBytes === undefined ? {} : { ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES: String(oversizedLineBytes) })
       },
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -122,7 +135,7 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
-      if (stdout.split("\n").filter(Boolean).length >= 5) {
+      if ((stdout.match(/\n/g) ?? []).length >= 5) {
         child.kill("SIGTERM");
       }
     });

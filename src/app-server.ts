@@ -87,7 +87,8 @@ const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
  * upstream assembly that would otherwise retain an arbitrarily large line.
  */
 const MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
-const DECODE_FAILURE_LINE_PREFIX_BYTES = 512;
+const DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -443,12 +444,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     let byteLength = 0;
     let prefix = Buffer.alloc(0);
     let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
 
     const resetLine = (): void => {
       chunks = [];
       byteLength = 0;
       prefix = Buffer.alloc(0);
       discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
     };
     const retain = (chunk: Buffer): void => {
       if (chunk.length === 0) {
@@ -456,9 +459,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       chunks.push(chunk);
       byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_LINE_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_LINE_PREFIX_BYTES - prefix.length)]);
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
       }
+    };
+    const reportOversizedLine = (): void => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = (): void => {
+      // Match readline's CRLF treatment while applying the byte limit before
+      // decoding or JSON parsing.
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
+      this.#handleLine(line);
     };
 
     this.#process.stdout.on("data", (chunk: Buffer) => {
@@ -469,27 +482,27 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const segment = chunk.subarray(offset, end);
 
         if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
           if (newline !== -1) {
+            reportOversizedLine();
             resetLine();
           }
         } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
           retain(segment);
           if (newline !== -1) {
-            // Match readline's CRLF treatment while applying the byte limit
-            // before decoding or JSON parsing.
-            const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-            resetLine();
-            this.#handleLine(line);
+            handleRetainedLine();
           }
         } else {
           const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
           retain(segment.subarray(0, retainedBytes));
-          // Report immediately on crossing the bound, then discard until the
-          // newline so one hostile frame cannot retain more memory or poison
-          // the following valid frame.
-          this.#reportDecodeFailure(MAX_APP_SERVER_STDOUT_LINE_BYTES + 1, prefix.toString("utf8"));
+          // Discard through the newline so one hostile frame cannot retain
+          // more memory or poison the following valid frame. Count the
+          // discarded bytes as we go: decode diagnostics retain the
+          // incumbent field's meaning even for a bounded frame.
           discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
           if (newline !== -1) {
+            reportOversizedLine();
             resetLine();
           }
         }
@@ -497,6 +510,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
     });
     this.#process.stdout.once("end", () => {
+      // readline flushes a final unterminated line on EOF. Keep that
+      // diagnostic/decoding behaviour at this replacement boundary.
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
       if (this.#hasExited) {
         return;
       }
@@ -536,7 +557,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // decode must be visible as a decode failure, not resurface later as
       // an unattributable turn timeout. The line is retained bounded — the
       // point is attribution, not archiving an arbitrarily large payload.
-      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_BYTES));
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
       return;
     }
 

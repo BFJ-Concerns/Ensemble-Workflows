@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { CodexAppServerTransport } from "../../src/app-server.js";
+import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
 
@@ -1558,6 +1560,89 @@ test("built CLI interrupts a turn that times out before any turn notification", 
   }
 });
 
+test("built bundle times out an output-silent worker while its tool remains active", { timeout: 20_000 }, async () => {
+  // Manufactured-condition exception: a live engine cannot be made to emit
+  // tool progress while withholding all further worker output on cue. The
+  // recording app-server fixture supplies exactly that condition. The direct
+  // transport leg observes client ingress; the following process leg drives
+  // the shipped bundle and proves terminalisation and archival behaviour.
+  const fixture = await createProcessFixture("tool-active-output-silent");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  try {
+    let timeoutAt: number | null = null;
+    let resolveProgressAfterTimeout: (() => void) | undefined;
+    const progressAfterTimeout = new Promise<void>((resolve) => {
+      resolveProgressAfterTimeout = resolve;
+    });
+    const transport = await CodexAppServerTransport.start({
+      cwd: process.cwd(),
+      codexBin: fixture.codexBin,
+      workerEnv: {
+        ENSEMBLE_CODEX_SCHEMA_CLI: fixture.schemaCli,
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60"
+      },
+      requestTimeoutMs: 1_000,
+      startupHandshakeTimeoutMs: 1_000,
+      clientName: "ensemble-process-estate",
+      clientVersion: "0.0.0",
+      onEvent: (event) => {
+        if (event.method === "item/mcpToolCall/progress" && timeoutAt !== null && event.receivedAt > timeoutAt) {
+          resolveProgressAfterTimeout?.();
+        }
+      }
+    });
+    try {
+      const threadId = await transport.openThread({});
+      await assert.rejects(
+        () => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 450 }),
+        TurnTimeoutError
+      );
+      timeoutAt = Date.now();
+      await progressAfterTimeout;
+    } finally {
+      await transport.close();
+    }
+
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "tool-active-output-silent-deadline",
+          description: "Bound an output-silent turn despite app-server tool progress"
+        };
+        return await agent("wait for a tool that never returns output", {
+          engine: "codex",
+          maxAttempts: 1,
+          timeoutMs: 3_000
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      15_000
+    );
+
+    assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
+    assert.match(result.stderr, /TurnTimeoutError/);
+    const messages = await fixture.messages();
+    assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
+    assert.equal(messages.at(-1)?.method, "turn/interrupt");
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.status, "timed-out");
+    assert.equal(agent.attempts[0]?.raw_output, "partial before ongoing tool activity");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI keeps a non-overload notification terminal and renders its diagnostic", async () => {
   const fixture = await createProcessFixture("scoped-terminal-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
@@ -1933,6 +2018,8 @@ interface RecordedAgent {
 interface ProcessFixture {
   script: string;
   dataHome: string;
+  codexBin: string;
+  schemaCli: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1973,11 +2060,14 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   env.ENSEMBLE_FAKE_CODEX_CAPTURE = capturePath;
   env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE = validationCapturePath;
   env.ENSEMBLE_FAKE_CODEX_RESPONSE = response;
-  env.ENSEMBLE_CODEX_SCHEMA_CLI = await executablePath("codex");
+  const schemaCli = await executablePath("codex");
+  env.ENSEMBLE_CODEX_SCHEMA_CLI = schemaCli;
 
   return {
     script,
     dataHome: path.join(directory, "data"),
+    codexBin: fakeCodex,
+    schemaCli,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>

@@ -324,6 +324,37 @@ test("per-turn timeout carries the worker's partial text", async () => {
   }
 });
 
+test("per-turn timeout is not deferred by ongoing MCP tool progress", { timeout: 1_000 }, async () => {
+  // The tool keeps reporting progress past this deadline, while the worker
+  // produces neither more text nor usage. This is deliberately distinct from
+  // the idle-hang regression above: resetting or rearming the turn deadline
+  // on side traffic would let this turn run indefinitely.
+  const codexBin = await fakeCodexFailingTurnServer("tool-active-output-silent");
+  const toolProgress: unknown[] = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => {
+      if (event.method === "item/mcpToolCall/progress") {
+        toolProgress.push(event);
+      }
+    }
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "remain silent while the tool works", { timeoutMs: 150 }),
+      (error: unknown) => {
+        assert.ok(error instanceof TurnTimeoutError);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+    assert.ok(toolProgress.length >= 2, "the tool must remain active across the output-silent deadline");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("transport close carries each live turn's own partial text", async () => {
   const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
   let deltaArrived: () => void = () => undefined;
@@ -877,6 +908,7 @@ async function fakeCodexFailingTurnServer(
     | "turn-start-error"
     | "oversized-line"
     | "just-under-limit-line"
+    | "tool-active-output-silent"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -1006,6 +1038,13 @@ reader.on("line", (line) => {
           clearInterval(tick);
         }
       }, 5);
+    } else if (mode === "tool-active-output-silent") {
+      // The product must not mistake ongoing tool activity for worker output:
+      // the scripted heartbeats cross the per-turn deadline without a later
+      // delta, item completion, or usage update.
+      setInterval(() => {
+        send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "item-1", message: "tool still active" } });
+      }, 20);
     }
     // hang-after-delta: send nothing further.
   }

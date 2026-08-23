@@ -3,6 +3,7 @@
 import { appendFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { setInterval } from "node:timers";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -33,6 +34,8 @@ const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1"
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 const turnStartError = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_TURN_START_ERROR ?? "null");
+const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT === "1";
+const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS ?? "20");
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
 const oversizedLineBytes = Number(process.env.ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES ?? "0");
@@ -221,6 +224,19 @@ const handleLine = (line) => {
       delete turnStarted.params.threadId;
     }
     send(turnStarted, "ServerNotification.json");
+    if (toolActiveOutputSilent) {
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId, turnId, itemId: "agent-message-1", delta: "partial before ongoing tool activity" }
+      }, "ServerNotification.json");
+      setInterval(() => {
+        send({
+          method: "item/mcpToolCall/progress",
+          params: { threadId, turnId, itemId: "tool-1", message: "tool still active" }
+        }, "ServerNotification.json");
+      }, toolProgressIntervalMs);
+      return;
+    }
     if (schemaDrift === "allowed--32001") {
       send({
         method: "error",

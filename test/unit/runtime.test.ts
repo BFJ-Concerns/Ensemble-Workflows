@@ -122,6 +122,31 @@ class ClosingTransport implements RuntimeTransport {
   }
 }
 
+class NonSettlingCloseTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly started: Promise<void>;
+  #markStarted: (() => void) | null = null;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.#markStarted = resolve;
+    });
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  runTurn(): Promise<TurnResult> {
+    this.#markStarted?.();
+    return new Promise(() => undefined);
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 class InvalidOutputDuringCloseTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   readonly started: Promise<void>;
@@ -1419,6 +1444,59 @@ test("a run-record write failure surfaces as an event and never fails the agent"
     { method: "runRecord/writeFailed", message: "disk full" },
     { method: "runRecord/writeFailed", message: "disk full" }
   ]);
+});
+
+test("a run-end record write failure remains an observability event", async () => {
+  const transport = new NonSettlingCloseTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async () => {
+      throw new Error("disk full");
+    }
+  } as unknown as RunRecordWriter);
+  const events: Array<{ method: string; message: unknown }> = [];
+  runtime.onEvent((event) => {
+    if (event.method === "runRecord/writeFailed") {
+      events.push({ method: event.method, message: event.params.message });
+    }
+  });
+
+  void runtime.agent("abandoned", { engine: "codex" });
+  await transport.started;
+  await runtime.close("interrupted");
+
+  // The second event is the close-time replacement write. Its failure does
+  // not escape close() or create an invented agent failure.
+  assert.deepEqual(events, [
+    { method: "runRecord/writeFailed", message: "disk full" },
+    { method: "runRecord/writeFailed", message: "disk full" }
+  ]);
+});
+
+test("runtime close terminalises an unsettled dispatch record", async () => {
+  const transport = new NonSettlingCloseTransport();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  void runtime.agent("abandoned", { engine: "codex" });
+  await transport.started;
+  await runtime.close("interrupted");
+
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.status, "in-progress");
+  assert.equal(records[1]?.status, "interrupted");
+  assert.deepEqual(records[1]?.attempts, []);
 });
 
 // The Claude engine is now implemented; it is driven through the runtime with a

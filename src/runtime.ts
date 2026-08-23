@@ -92,6 +92,10 @@ export class EnsembleRuntime {
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
+  // Every dispatched record remains here until its own agent() call settles.
+  // close() uses this to terminalise work a failed workflow abandoned before
+  // the normal per-agent settlement path could run.
+  #unsettledAgentRecords = new Map<number, RuntimeAgentRecord>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
   #closed = false;
 
@@ -267,20 +271,25 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    this.#unsettledAgentRecords.set(agentId, agentRecord);
     // Dispatch-time record: persisted in-progress before the engine is
     // called, so a worker that dies uncleanly still leaves evidence it was
     // asked. Settlement overwrites this same record (last write wins).
-    await this.#recordAgentSafely(agentRecord);
-    const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
-    if (options.identity === true) {
-      // Identified resolution (result identity is opt-in): the
-      // envelope wraps every resolution, a schema call's null collapse
-      // included, so a fan-in that keeps the envelope still knows which
-      // worker failed. The durable record is unchanged — it already
-      // carries label and phase as first-class fields.
-      return { label: options.label ?? null, phase: options.phase ?? null, output };
+    try {
+      await this.#recordAgentSafely(agentRecord);
+      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      if (options.identity === true) {
+        // Identified resolution: the
+        // envelope wraps every resolution, a schema call's null collapse
+        // included, so a fan-in that keeps the envelope still knows which
+        // worker failed. The durable record is unchanged — it already
+        // carries label and phase as first-class fields.
+        return { label: options.label ?? null, phase: options.phase ?? null, output };
+      }
+      return output;
+    } finally {
+      this.#unsettledAgentRecords.delete(agentId);
     }
-    return output;
   }
 
   async #runAdmitted(
@@ -396,6 +405,17 @@ export class EnsembleRuntime {
     this.#closed = true;
     this.#admission.close();
     await this.#engines.close();
+    await Promise.all(
+      [...this.#unsettledAgentRecords.values()]
+        .filter((record) => record.status === "in-progress")
+        .map(async (record) => {
+          // The run outcome is the only fact known about an abandoned leg.
+          // Keep the dispatch record's evidence (including its empty attempts)
+          // and overwrite that one record through the normal writer path.
+          record.status = this.#shutdownAgentStatus;
+          await this.#recordAgentSafely(record);
+        })
+    );
   }
 
   #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {

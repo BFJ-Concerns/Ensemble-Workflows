@@ -457,6 +457,55 @@ test("built CLI propagates removed options from parallel when a sibling succeeds
   }
 });
 
+test("built CLI terminalises an abandoned parallel sibling in the sealed archive", async () => {
+  const fixture = await createProcessFixture("parallel-abandoned-record");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "parallel-abandoned-record",
+          description: "A pre-spawn failure abandons an already-dispatched sibling"
+        };
+        return await parallel([
+          ...Array.from({ length: 24 }, (_, index) => () => agent("wait in the scheduler", {
+            engine: "codex",
+            label: "abandoned-sibling-" + index,
+            maxAttempts: 1
+          })),
+          () =>
+            agent("reject before spawn", {
+              engine: "codex",
+              sandbox: "read-only",
+              maxAttempts: 1
+            })
+        ]);
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      ["--concurrency=codex=1", fixture.script],
+      {
+        ENSEMBLE_RUN_RECORD: "1"
+      },
+      5_000
+    );
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /sandbox[\s\S]*removed/i);
+    const agents = await readArchivedAgentsInSeparateProcess(fixture.dataHome);
+    const abandoned = agents.find((agent) => agent.label === "abandoned-sibling-23");
+    assert.ok(abandoned, "expected the separately-read archive to contain the abandoned sibling");
+    // This is the discriminating assertion: before run-end finalisation, this
+    // exact sibling remained in-progress with no attempts after sealing.
+    assert.equal(abandoned.status, "failed");
+    assert.deepEqual(abandoned.attempts, []);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI rejects an unrecognised option before opening that worker", async () => {
   const fixture = await createProcessFixture("unknown-option-rejection");
 
@@ -1799,6 +1848,7 @@ interface RecordedAgent {
 
 interface ProcessFixture {
   script: string;
+  dataHome: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1833,6 +1883,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
 
   return {
     script,
+    dataHome: path.join(directory, "data"),
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>
@@ -1845,6 +1896,21 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
         .map((line) => JSON.parse(line) as RecordedMessage),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
+  const reader = [
+    'const { readdirSync, readFileSync } = require("node:fs");',
+    'const { join, basename } = require("node:path");',
+    'const root = process.argv[1];',
+    'const agents = readdirSync(root, { recursive: true })',
+    '  .filter((entry) => basename(entry) === "agent.json")',
+    '  .map((entry) => JSON.parse(readFileSync(join(root, entry), "utf8")));',
+    'process.stdout.write(JSON.stringify(agents));'
+  ].join("\n");
+  const result = await runProcess(process.execPath, ["-e", reader, dataHome], process.env);
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
 }
 
 async function executablePath(name: string): Promise<string> {

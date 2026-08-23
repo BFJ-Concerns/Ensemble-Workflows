@@ -17418,6 +17418,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
+  // Every dispatched record remains here until its own agent() call settles.
+  // close() uses this to terminalise work a failed workflow abandoned before
+  // the normal per-agent settlement path could run.
+  #unsettledAgentRecords = /* @__PURE__ */ new Map();
   #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
@@ -17544,12 +17548,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
-    await this.#recordAgentSafely(agentRecord);
-    const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
-    if (options.identity === true) {
-      return { label: options.label ?? null, phase: options.phase ?? null, output };
+    this.#unsettledAgentRecords.set(agentId, agentRecord);
+    try {
+      await this.#recordAgentSafely(agentRecord);
+      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      if (options.identity === true) {
+        return { label: options.label ?? null, phase: options.phase ?? null, output };
+      }
+      return output;
+    } finally {
+      this.#unsettledAgentRecords.delete(agentId);
     }
-    return output;
   }
   async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
     let started = false;
@@ -17641,6 +17650,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#closed = true;
     this.#admission.close();
     await this.#engines.close();
+    await Promise.all(
+      [...this.#unsettledAgentRecords.values()].filter((record) => record.status === "in-progress").map(async (record) => {
+        record.status = this.#shutdownAgentStatus;
+        await this.#recordAgentSafely(record);
+      })
+    );
   }
   #terminalAgentStatus(error, record) {
     if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {

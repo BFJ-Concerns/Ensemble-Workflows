@@ -52,6 +52,37 @@ export function partialWorkerTextOf(error: unknown): string | null {
 }
 
 /**
+ * The app-server's own account of a failed request or notification. This is
+ * deliberately a sibling evidence carrier, not an extension of the partial
+ * worker-text carrier: engine diagnostics and worker output are different
+ * facts with different producers.
+ */
+export interface AppServerDiagnostic {
+  code: number | string | null;
+  message: string;
+  payload: string;
+}
+
+interface AppServerDiagnosticCarrier {
+  appServerDiagnostic?: AppServerDiagnostic;
+}
+
+export function attachAppServerDiagnostic<T extends Error>(error: T, diagnostic: AppServerDiagnostic): T {
+  const carrier = error as T & AppServerDiagnosticCarrier;
+  if (carrier.appServerDiagnostic === undefined) {
+    carrier.appServerDiagnostic = diagnostic;
+  }
+  return error;
+}
+
+export function appServerDiagnosticOf(error: unknown): AppServerDiagnostic | null {
+  if (error instanceof Error) {
+    return (error as AppServerDiagnosticCarrier).appServerDiagnostic ?? null;
+  }
+  return null;
+}
+
+/**
  * How a worker process actually died, when the engine observed it. A sibling
  * carrier to the partial-text one above, and deliberately not a generalised
  * metadata channel: it carries exactly the evidence the contract names — the
@@ -107,6 +138,13 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
+/** A started turn that produced no output-bearing frame before its transport deadline. */
+export class AppServerFirstOutputTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
+  }
+}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -122,10 +160,18 @@ export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
   readonly code: number | string | undefined;
   readonly data?: unknown;
 
-  constructor(error: { code: number | string | undefined; message: string | undefined; data?: unknown }) {
+  constructor(
+    error: { code: number | string | undefined; message: string | undefined; data?: unknown },
+    diagnostic?: AppServerDiagnostic
+  ) {
+    const engineDiagnostic =
+      diagnostic === undefined
+        ? ""
+        : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
     super(
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " +
-        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",
+        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." +
+        engineDiagnostic,
       { cause: error }
     );
     this.code = error.code;

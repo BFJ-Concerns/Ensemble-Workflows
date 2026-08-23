@@ -12,6 +12,7 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   MissingEngineError,
+  appServerDiagnosticOf,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -75,6 +76,11 @@ interface AgentExecutionResult {
   value: unknown;
 }
 
+interface UnsettledAgentRecord {
+  record: RuntimeAgentRecord;
+  stage: "dispatching" | "admitting";
+}
+
 type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionResult }
   | { ok: false; error: unknown };
@@ -94,6 +100,13 @@ export class EnsembleRuntime {
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
   #executingAgentRecords = new Map<EngineName, Set<RuntimeAgentRecord>>();
+  // Every dispatched record remains here until its own agent() call settles.
+  // close() uses this to terminalise work a run ended before
+  // the normal per-agent settlement path could run.
+  #unsettledAgentRecords = new Map<number, UnsettledAgentRecord>();
+  // Once close() has made the only honest terminal transition for a record,
+  // late shutdown rejections must not overwrite it with an invented outcome.
+  #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
   #closed = false;
 
@@ -164,6 +177,7 @@ export class EnsembleRuntime {
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
         : {}),
+      ...(options.firstDeltaTimeoutMs !== undefined ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {}),
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
@@ -282,20 +296,29 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
     // Dispatch-time record: persisted in-progress before the engine is
     // called, so a worker that dies uncleanly still leaves evidence it was
     // asked. Settlement overwrites this same record (last write wins).
-    await this.#recordAgentSafely(agentRecord);
-    const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
-    if (options.identity === true) {
-      // Identified resolution (result identity is opt-in): the
-      // envelope wraps every resolution, a schema call's null collapse
-      // included, so a fan-in that keeps the envelope still knows which
-      // worker failed. The durable record is unchanged — it already
-      // carries label and phase as first-class fields.
-      return { label: options.label ?? null, phase: options.phase ?? null, output };
+    try {
+      await this.#recordAgentSafely(agentRecord);
+      const unsettled = this.#unsettledAgentRecords.get(agentId);
+      if (unsettled !== undefined) {
+        unsettled.stage = "admitting";
+      }
+      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      if (options.identity === true) {
+        // Identified resolution (result identity is opt-in): the
+        // envelope wraps every resolution, a schema call's null collapse
+        // included, so a fan-in that keeps the envelope still knows which
+        // worker failed. The durable record is unchanged — it already
+        // carries label and phase as first-class fields.
+        return { label: options.label ?? null, phase: options.phase ?? null, output };
+      }
+      return output;
+    } finally {
+      this.#unsettledAgentRecords.delete(agentId);
     }
-    return output;
   }
 
   async #runAdmitted(
@@ -324,7 +347,7 @@ export class EnsembleRuntime {
         agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
-        await this.#recordAgentSafely(agentRecord);
+        await this.#recordSettlementSafely(agentId, agentRecord);
       }
       throw error;
     }
@@ -365,7 +388,7 @@ export class EnsembleRuntime {
           output: execution.value
         });
       }
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -375,7 +398,7 @@ export class EnsembleRuntime {
       agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       throw error;
     } finally {
       executingRecords.delete(agentRecord);
@@ -405,6 +428,13 @@ export class EnsembleRuntime {
     }
   }
 
+  async #recordSettlementSafely(agentId: number, record: RuntimeAgentRecord): Promise<void> {
+    if (this.#abandonedAgentIds.has(agentId)) {
+      return;
+    }
+    await this.#recordAgentSafely(record);
+  }
+
   /**
    * Outputs of every worker that finished successfully, in completion order.
    * The CLI reads this to assemble a partial result if the whole-workflow
@@ -418,6 +448,19 @@ export class EnsembleRuntime {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
     this.#admission.close();
+    await Promise.all(
+      [...this.#unsettledAgentRecords.values()]
+        .filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress")
+        .map(async ({ record }) => {
+          // The harness knows only that this leg outlived the run. Keep the
+          // dispatch evidence and name that absence of an observed outcome.
+          this.#abandonedAgentIds.add(record.id);
+          // Keep the dispatch record's evidence (including its empty attempts)
+          // and overwrite that one record through the normal writer path.
+          record.status = "abandoned";
+          await this.#recordAgentSafely(record);
+        })
+    );
     await this.#engines.close();
   }
 
@@ -585,7 +628,17 @@ export class EnsembleRuntime {
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -662,7 +715,17 @@ export class EnsembleRuntime {
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -821,13 +884,15 @@ function attemptRecord(
   validatedOutput: unknown,
   startedAtMs: number,
   result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null,
-  workerExit: { exitCode: number | null; signal: string | null } | null = null
+  workerExit: { exitCode: number | null; signal: string | null } | null = null,
+  appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null
 ): RuntimeAgentAttemptRecord {
   return {
     attempt,
     status,
     failure,
     workerExit,
+    appServerDiagnostic,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),

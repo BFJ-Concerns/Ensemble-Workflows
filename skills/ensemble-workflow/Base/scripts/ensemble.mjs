@@ -13577,6 +13577,11 @@ var RunRecordWriter = class _RunRecordWriter {
         status: attempt.status,
         failure: attempt.failure,
         worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
+          code: attempt.appServerDiagnostic.code,
+          message: attempt.appServerDiagnostic.message,
+          payload: attempt.appServerDiagnostic.payload
+        },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         started_at: attempt.startedAt,
@@ -13937,6 +13942,19 @@ function partialWorkerTextOf(error) {
   }
   return null;
 }
+function attachAppServerDiagnostic(error, diagnostic) {
+  const carrier = error;
+  if (carrier.appServerDiagnostic === void 0) {
+    carrier.appServerDiagnostic = diagnostic;
+  }
+  return error;
+}
+function appServerDiagnosticOf(error) {
+  if (error instanceof Error) {
+    return error.appServerDiagnostic ?? null;
+  }
+  return null;
+}
 function attachWorkerExitStatus(error, exit) {
   const carrier = error;
   if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === void 0) {
@@ -13972,6 +13990,11 @@ var AppServerOverloadedError = class extends AppServerRequestError {
 };
 var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
 };
+var AppServerFirstOutputTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
+  }
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -13980,9 +14003,10 @@ var AppServerStartupTimeoutError = class extends EnsembleError {
 var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   code;
   data;
-  constructor(error) {
+  constructor(error, diagnostic) {
+    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
     super(
-      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
       { cause: error }
     );
     this.code = error.code;
@@ -14791,7 +14815,11 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -14835,6 +14863,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #process;
   #requestTimeoutMs;
   #retryPromiseSilenceTimeoutMs;
+  #firstDeltaTimeoutMs;
   #startupHandshakeTimeoutMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
@@ -14848,6 +14877,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -15061,11 +15091,73 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
   }
   #wireReader() {
-    const reader = createInterface({ input: this.#process.stdout });
-    reader.on("line", (line) => {
+    let chunks = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+    const resetLine = () => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk) => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = () => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = () => {
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
       this.#handleLine(line);
+    };
+    this.#process.stdout.on("data", (chunk) => {
+      let offset2 = 0;
+      while (offset2 < chunk.length) {
+        const newline = chunk.indexOf(10, offset2);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset2, end);
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset2 = newline === -1 ? chunk.length : newline + 1;
+      }
     });
-    reader.once("close", () => {
+    this.#process.stdout.once("end", () => {
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
       if (this.#hasExited) {
         return;
       }
@@ -15093,14 +15185,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     const parsed = parseRpcMessage(line);
     if (parsed === null) {
-      this.#onEvent?.({
-        method: "transport/decodeFailed",
-        params: {
-          byteLength: Buffer.byteLength(line, "utf8"),
-          linePrefix: line.slice(0, 512)
-        },
-        receivedAt: Date.now()
-      });
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
       return;
     }
     const id = typeof parsed.id === "number" ? parsed.id : null;
@@ -15116,6 +15201,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== void 0) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstDeltaDeadline(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -15128,6 +15214,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method !== null) {
       this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
     }
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
   }
   #handleResponse(id, message) {
     const pending = this.#pending.get(id);
@@ -15161,6 +15254,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
     }
     const now = Date.now();
     if (isTurnProgressNotification(method)) {
@@ -15210,14 +15306,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
+        const diagnostic = { code: "systemError", message: "systemError", data: params };
         void this.#rejectTurn(
           threadId,
           turn,
-          new AppServerRequestError(method, {
-            code: "systemError",
-            message: "systemError",
-            data: params
-          })
+          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -15231,10 +15324,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
           void this.#rejectTurn(
             threadId,
             turn,
-            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
           );
           return;
         }
@@ -15289,12 +15386,26 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       void this.#rejectTurn(
         threadId,
         turn,
-        new AppServerRetryPromiseBrokenError(
-          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-          diagnostic
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
         )
       );
     }, this.#retryPromiseSilenceTimeoutMs);
+  }
+  #disarmFirstDeltaDeadline(turn) {
+    if (turn.firstDeltaDeadline !== void 0) {
+      clearTimeout(turn.firstDeltaDeadline);
+      turn.firstDeltaDeadline = void 0;
+    }
+  }
+  #armFirstDeltaDeadline(threadId, turn) {
+    turn.firstDeltaDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
+    }, this.#firstDeltaTimeoutMs);
   }
   /**
    * The single terminal path for a failing turn. Every way a turn can end
@@ -15309,6 +15420,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     if (turn.turnId !== void 0) {
       void this.#sendUnacknowledgedRequest("turn/interrupt", {
         threadId,
@@ -15322,6 +15434,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result = {
@@ -15382,6 +15495,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
+      firstDeltaDeadline: void 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -15395,6 +15509,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         );
       }, timeoutMs)
     };
+    this.#armFirstDeltaDeadline(threadId, state);
     return state;
   }
   #sendApprovalDenial(id) {
@@ -15434,20 +15549,21 @@ ${this.#stderrTail.join("\n")}` : "";
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
-  if (errorPayload.code === -32001) {
-    return new AppServerBackpressureError(method, errorPayload);
-  }
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
-  return new AppServerRequestError(method, errorPayload);
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
 }
 function appServerErrorFromNotification(params) {
   const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+  const error = errorPayload.code === "serverOverloaded" ? new AppServerOverloadedError("turn notification", errorPayload) : new AppServerRequestError("turn notification", errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
 }
 function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
@@ -15475,6 +15591,9 @@ function isTurnProgressNotification(method) {
   // resuming — the reset set's rationale. Counting it would let a
   // promise/heartbeat alternation defeat the consecutive-promise bound.
   method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
 }
 function turnIdFromParams(params) {
   if (typeof params.turnId === "string") {
@@ -17385,6 +17504,7 @@ async function createDefaultEngineRegistry(options) {
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+    ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
@@ -17436,6 +17556,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #completed = [];
   #runRecorder = null;
   #executingAgentRecords = /* @__PURE__ */ new Map();
+  // Every dispatched record remains here until its own agent() call settles.
+  // close() uses this to terminalise work a run ended before
+  // the normal per-agent settlement path could run.
+  #unsettledAgentRecords = /* @__PURE__ */ new Map();
+  // Once close() has made the only honest terminal transition for a record,
+  // late shutdown rejections must not overwrite it with an invented outcome.
+  #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
@@ -17487,6 +17614,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+      ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
@@ -17570,12 +17698,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
-    await this.#recordAgentSafely(agentRecord);
-    const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
-    if (options.identity === true) {
-      return { label: options.label ?? null, phase: options.phase ?? null, output };
+    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+    try {
+      await this.#recordAgentSafely(agentRecord);
+      const unsettled = this.#unsettledAgentRecords.get(agentId);
+      if (unsettled !== void 0) {
+        unsettled.stage = "admitting";
+      }
+      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      if (options.identity === true) {
+        return { label: options.label ?? null, phase: options.phase ?? null, output };
+      }
+      return output;
+    } finally {
+      this.#unsettledAgentRecords.delete(agentId);
     }
-    return output;
   }
   async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
     let started = false;
@@ -17594,7 +17731,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
-        await this.#recordAgentSafely(agentRecord);
+        await this.#recordSettlementSafely(agentId, agentRecord);
       }
       throw error;
     }
@@ -17624,7 +17761,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           output: execution.value
         });
       }
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -17634,7 +17771,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       throw error;
     } finally {
       executingRecords.delete(agentRecord);
@@ -17662,6 +17799,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
+  async #recordSettlementSafely(agentId, record) {
+    if (this.#abandonedAgentIds.has(agentId)) {
+      return;
+    }
+    await this.#recordAgentSafely(record);
+  }
   /**
    * Outputs of every worker that finished successfully, in completion order.
    * The CLI reads this to assemble a partial result if the whole-workflow
@@ -17674,6 +17817,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
     this.#admission.close();
+    await Promise.all(
+      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+        this.#abandonedAgentIds.add(record.id);
+        record.status = "abandoned";
+        await this.#recordAgentSafely(record);
+      })
+    );
     await this.#engines.close();
   }
   #terminalAgentStatus(error, record) {
@@ -17816,7 +17966,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17879,7 +18039,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       } catch (error) {
         const failure = failureFromError(error);
         agentRecord.attempts.push(
-          attemptRecord(attempt, "failed", failure, partialWorkerTextOf(error), null, startedAt, null, workerExitStatusOf(error))
+          attemptRecord(
+            attempt,
+            "failed",
+            failure,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            null,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error)
+          )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
           throw error;
@@ -17997,12 +18167,13 @@ function requireTransport(transport) {
   }
   return transport;
 }
-function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null) {
+function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null) {
   return {
     attempt,
     status,
     failure,
     workerExit,
+    appServerDiagnostic,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),

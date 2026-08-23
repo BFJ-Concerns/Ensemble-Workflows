@@ -4,10 +4,12 @@ import { createInterface } from "node:readline";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  AppServerFirstOutputTimeoutError,
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
+  attachAppServerDiagnostic,
   attachPartialWorkerText,
   attachWorkerExitStatus,
   CodexSchemaSubsetUnsupportedError,
@@ -60,6 +62,7 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
+  firstDeltaDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
@@ -75,12 +78,25 @@ const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
  */
 const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
+ * A started turn that remains completely silent costs a worker slot without
+ * producing evidence. Healthy long turns disarm this on their first output-bearing frame.
+ */
+const DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1_000;
+/**
  * How long a stdout EOF waits for the process's own exit event before
  * terminalising as "stdout closed". Long enough for a reaped death's status
  * to arrive (same-tick in practice), short enough that a live server that
  * closed its pipe still fails promptly.
  */
 const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+/**
+ * Upper bound for one newline-delimited app-server frame before parsing. The
+ * payload-depth cap protects the parsed shape; this bound protects the
+ * upstream assembly that would otherwise retain an arbitrarily large line.
+ */
+const MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+const DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -95,6 +111,7 @@ export interface CodexAppServerTransportOptions {
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
+  firstDeltaTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -165,6 +182,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
   #retryPromiseSilenceTimeoutMs: number;
+  #firstDeltaTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
@@ -180,6 +198,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs =
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -432,11 +451,84 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   #wireReader(): void {
-    const reader = createInterface({ input: this.#process.stdout });
-    reader.on("line", (line) => {
+    let chunks: Buffer[] = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+
+    const resetLine = (): void => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk: Buffer): void => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = (): void => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = (): void => {
+      // Match readline's CRLF treatment while applying the byte limit before
+      // decoding or JSON parsing.
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
       this.#handleLine(line);
+    };
+
+    this.#process.stdout.on("data", (chunk: Buffer) => {
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset, end);
+
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          // Discard through the newline so one hostile frame cannot retain
+          // more memory or poison the following valid frame. Count the
+          // discarded bytes as we go: decode diagnostics retain the
+          // incumbent field's meaning even for a bounded frame.
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset = newline === -1 ? chunk.length : newline + 1;
+      }
     });
-    reader.once("close", () => {
+    this.#process.stdout.once("end", () => {
+      // readline flushes a final unterminated line on EOF. Keep that
+      // diagnostic/decoding behaviour at this replacement boundary.
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
       if (this.#hasExited) {
         return;
       }
@@ -476,14 +568,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // decode must be visible as a decode failure, not resurface later as
       // an unattributable turn timeout. The line is retained bounded — the
       // point is attribution, not archiving an arbitrarily large payload.
-      this.#onEvent?.({
-        method: "transport/decodeFailed",
-        params: {
-          byteLength: Buffer.byteLength(line, "utf8"),
-          linePrefix: line.slice(0, 512)
-        },
-        receivedAt: Date.now()
-      });
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
       return;
     }
 
@@ -505,6 +590,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstDeltaDeadline(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -519,6 +605,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method !== null) {
       this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
     }
+  }
+
+  #reportDecodeFailure(byteLength: number, linePrefix: string): void {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
   }
 
   #handleResponse(id: number, message: RpcMessage): void {
@@ -565,6 +659,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
+      // `turn/started` only acknowledges acceptance. Every later correlated
+      // server notification is output from the live turn — streamed text,
+      // tool work, usage, routing, status, or a terminal item — and proves
+      // it is no longer silently stuck before producing anything.
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstDeltaDeadline(turn);
+      }
     }
 
     const now = Date.now();
@@ -622,14 +723,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
+        const diagnostic = { code: "systemError", message: "systemError", data: params };
         void this.#rejectTurn(
           threadId,
           turn,
-          new AppServerRequestError(method, {
-            code: "systemError",
-            message: "systemError",
-            data: params
-          })
+          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -645,10 +743,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
           void this.#rejectTurn(
             threadId,
             turn,
-            new AppServerRetryPromiseBrokenError("turn notification", errorPayloadFromNotification(params))
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
           );
           return;
         }
@@ -714,12 +816,28 @@ export class CodexAppServerTransport implements RuntimeTransport {
       void this.#rejectTurn(
         threadId,
         turn,
-        new AppServerRetryPromiseBrokenError(
-          `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-          diagnostic
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
         )
       );
     }, this.#retryPromiseSilenceTimeoutMs);
+  }
+
+  #disarmFirstDeltaDeadline(turn: TurnState): void {
+    if (turn.firstDeltaDeadline !== undefined) {
+      clearTimeout(turn.firstDeltaDeadline);
+      turn.firstDeltaDeadline = undefined;
+    }
+  }
+
+  #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
+    turn.firstDeltaDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
+    }, this.#firstDeltaTimeoutMs);
   }
 
   /**
@@ -737,6 +855,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     if (turn.turnId !== undefined) {
       // #writeLine enters stdin.write synchronously, preserving wire order;
       // neither write completion nor the app-server response may delay the
@@ -756,6 +875,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmFirstDeltaDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
@@ -825,6 +945,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
+      firstDeltaDeadline: undefined,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -841,6 +962,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
               );
             }, timeoutMs)
     };
+    this.#armFirstDeltaDeadline(threadId, state);
     return state;
   }
 
@@ -889,21 +1011,35 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
   // Exact code matches outrank the substring scan: a payload that merely
   // *mentions* invalid_json_schema (say, inside a backpressure diagnostic)
   // must not be reclassified as a terminal schema rejection.
-  if (errorPayload.code === -32001) {
-    return new AppServerBackpressureError(method, errorPayload);
-  }
-  if (payloadContainsInvalidJsonSchema(errorPayload)) {
-    return new CodexSchemaSubsetUnsupportedError(errorPayload);
-  }
-  return new AppServerRequestError(method, errorPayload);
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error =
+    errorPayload.code === -32001
+      ? new AppServerBackpressureError(method, errorPayload)
+      : payloadContainsInvalidJsonSchema(errorPayload)
+        ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic)
+        : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
 }
 
 function appServerErrorFromNotification(params: JsonObject): Error {
   const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return new AppServerOverloadedError("turn notification", errorPayload);
-  }
-  return new AppServerRequestError("turn notification", errorPayload);
+  const error =
+    errorPayload.code === "serverOverloaded"
+      ? new AppServerOverloadedError("turn notification", errorPayload)
+      : new AppServerRequestError("turn notification", errorPayload);
+  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+}
+
+function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {
+  code: number | string | null;
+  message: string;
+  payload: string;
+} {
+  return {
+    code: payload.code ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
 }
 
 function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
@@ -951,6 +1087,16 @@ function isTurnProgressNotification(method: string): boolean {
     // promise/heartbeat alternation defeat the consecutive-promise bound.
     (method.startsWith("item/") && method !== "item/mcpToolCall/progress")
   );
+}
+
+/**
+ * `turn/started` establishes a turn but does not show it doing useful work;
+ * retaining the first-output deadline through that acknowledgement catches a
+ * turn that accepts and then stalls. Any subsequent correlated server frame
+ * is observable output and therefore disarms that deadline.
+ */
+function isOutputBearingTurnFrame(method: string): boolean {
+  return method !== "turn/started";
 }
 
 /**

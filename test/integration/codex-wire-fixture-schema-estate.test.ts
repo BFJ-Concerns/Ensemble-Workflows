@@ -49,7 +49,10 @@ test("the -32001 regression uses an opt-out required by the locally closed pinne
   assert.deepEqual(optOut, {
     schemaPath: "ServerNotification.json",
     outcome: "allowed-malformed",
-    reason: "the -32001 classifier regression deliberately includes schema-forbidden error fields"
+    reason: "the -32001 classifier regression deliberately includes schema-forbidden error fields",
+    method: "error",
+    threadId: "thread-1",
+    turnId: "turn-1"
   });
   const emittedError = result.messages.find((message) => message.method === "error");
   assert.ok(emittedError?.params?.error);
@@ -73,18 +76,48 @@ test("caller-authored notification sequences validate by default", async () => {
   assert.match(result.stderr, /additional properties/);
 });
 
+test("the oversized-line fixture knob emits a schema-validated notification", async () => {
+  const oversizedLineBytes = 1_048_577;
+  const result = await runFixture(undefined, undefined, oversizedLineBytes);
+
+  assert.ok(result.code === 0 || result.signal === "SIGTERM", result.stderr);
+  const delta = result.messages.find((message) => message.method === "item/agentMessage/delta");
+  assert.ok(delta?.params?.delta);
+  assert.equal(Buffer.byteLength(delta.params.delta), oversizedLineBytes);
+  assert.ok(result.validations.some((entry) =>
+    entry.schemaPath === "ServerNotification.json"
+    && entry.outcome === "valid"
+    && entry.method === delta.method
+    && entry.threadId === delta.params?.threadId
+    && entry.turnId === delta.params?.turnId
+    && entry.itemId === delta.params?.itemId
+    && entry.deltaByteLength === Buffer.byteLength(delta.params?.delta ?? "")
+  ));
+});
+
 interface ValidationRecord {
   schemaPath: string;
   outcome: "valid" | "allowed-malformed";
   reason?: string;
+  method?: string;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  deltaByteLength?: number;
 }
 
 interface WireMessage {
   method?: string;
-  params?: { error?: { code: number; message: string; data?: unknown } };
+  params?: {
+    error?: { code: number; message: string; data?: unknown };
+    threadId?: string;
+    turnId?: string;
+    itemId?: string;
+    delta?: string;
+  };
 }
 
-async function runFixture(schemaDrift?: string, notificationSequences?: unknown[]): Promise<{
+async function runFixture(schemaDrift?: string, notificationSequences?: unknown[], oversizedLineBytes?: number): Promise<{
   code: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
@@ -105,7 +138,8 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
         ...(notificationSequences === undefined ? {} : {
           ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(notificationSequences)
         }),
-        ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift })
+        ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift }),
+        ...(oversizedLineBytes === undefined ? {} : { ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES: String(oversizedLineBytes) })
       },
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -122,7 +156,7 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
-      if (stdout.split("\n").filter(Boolean).length >= 5) {
+      if ((stdout.match(/\n/g) ?? []).length >= 5) {
         child.kill("SIGTERM");
       }
     });

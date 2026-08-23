@@ -21,7 +21,7 @@ const SCHEMA_VERSION = 2;
 const MANIFEST_PATH = "manifest.json";
 
 type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
-type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
 type AccountingSource = "provider-reported" | "estimated";
 type ParseRoute = "direct" | "object-fallback" | "array-fallback";
 
@@ -61,6 +61,11 @@ export interface RuntimeAgentAttemptRecord {
    * returned normally or its engine has no process handle to observe.
    */
   workerExit: { exitCode: number | null; signal: string | null } | null;
+  /**
+   * The Codex app-server diagnostic observed for this failed attempt. Null
+   * when the engine supplied no diagnostic, rather than an inferred cause.
+   */
+  appServerDiagnostic: { code: number | string | null; message: string; payload: string } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   startedAt: string;
@@ -539,6 +544,14 @@ export class RunRecordWriter {
           attempt.workerExit === null
             ? null
             : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        app_server_diagnostic:
+          attempt.appServerDiagnostic === null
+            ? null
+            : {
+                code: attempt.appServerDiagnostic.code,
+                message: attempt.appServerDiagnostic.message,
+                payload: attempt.appServerDiagnostic.payload
+              },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         started_at: attempt.startedAt,

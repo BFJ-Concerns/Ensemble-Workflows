@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { CodexAppServerTransport } from "../../src/app-server.js";
+import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
 
@@ -13,6 +15,7 @@ import type { EngineName } from "../../src/types.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
+const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
@@ -453,6 +456,51 @@ test("built CLI propagates removed options from parallel when a sibling succeeds
     assert.equal(envelope.reason, "failed");
     assert.ok(Array.isArray(envelope.completed));
     assert.match(result.stderr, /sandbox[\s\S]*removed/i);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI terminalises an abandoned parallel sibling in the sealed archive", async () => {
+  const fixture = await createProcessFixture("parallel-abandoned-record");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "parallel-abandoned-record",
+          description: "A run timeout abandons siblings while their dispatch records are still writing"
+        };
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        return await parallel([
+          ...Array.from({ length: 16 }, (_, index) => () => agent("wait in the recorder", {
+            engine: "codex",
+            label: "abandoned-sibling-" + index,
+            maxAttempts: 1
+          }))
+        ]);
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      ["--timeout=20", "--concurrency=codex=1", fixture.script],
+      {
+        ENSEMBLE_RUN_RECORD: "1",
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${delayedAgentWritePreloadPath}`.trim()
+      },
+      5_000
+    );
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /Workflow timed out/i);
+    const agents = await readArchivedAgentsInSeparateProcess(fixture.dataHome);
+    const abandoned = agents.find((agent) => agent.label === "abandoned-sibling-15");
+    assert.ok(abandoned, "expected the separately-read archive to contain the abandoned sibling");
+    // This is the discriminating assertion: before run-end finalisation, this
+    // exact sibling remained in-progress with no attempts after sealing.
+    assert.equal(abandoned.status, "abandoned", JSON.stringify(agents.map((agent) => [agent.label, agent.status])));
+    assert.deepEqual(abandoned.attempts, []);
   } finally {
     await fixture.cleanup();
   }
@@ -1306,9 +1354,92 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
     assert.match(agent.attempts[0]?.failure?.message ?? "", /serverOverloaded/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /Upstream capacity is temporarily exhausted/);
     assert.match(agent.attempts[0]?.failure?.message ?? "", /gateway detail: server_is_overloaded/);
+    assert.deepEqual(agent.attempts[0]?.app_server_diagnostic, {
+      code: "serverOverloaded",
+      message: "serverOverloaded: Upstream capacity is temporarily exhausted; invalid_json_schema is not the cause: gateway detail: server_is_overloaded",
+      payload: JSON.stringify({ ...overload, threadId: "thread-1", turnId: "turn-1" })
+    });
     assert.equal(agent.attempts[1]?.status, "complete");
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test("built CLI records observed request and notification diagnostics, but not an unobserved timeout cause", async () => {
+  const cases = [
+    {
+      name: "request",
+      scriptOptions: "",
+      env: {
+        ENSEMBLE_FAKE_CODEX_TURN_START_ERROR: JSON.stringify({
+          code: -32603,
+          message: "upstream refused the turn; invalid_json_schema is not the cause",
+          data: { detail: "real request cause" }
+        })
+      },
+      stderr: /-32603.*upstream refused the turn.*real request cause/s,
+      diagnostic: {
+        code: -32603,
+        message: "upstream refused the turn; invalid_json_schema is not the cause",
+        payload: '{"detail":"real request cause"}'
+      }
+    },
+    {
+      name: "notification",
+      scriptOptions: "",
+      env: {
+        ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE: JSON.stringify([
+          { error: { message: "notification cause", codexErrorInfo: "serverOverloaded" }, willRetry: false }
+        ])
+      },
+      stderr: /notification cause/,
+      diagnostic: {
+        code: "serverOverloaded",
+        message: "serverOverloaded: notification cause",
+        payload: /notification cause/
+      }
+    },
+    {
+      name: "timeout",
+      scriptOptions: ", timeoutMs: 50",
+      env: { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1" },
+      stderr: /timed out after 50ms/,
+      diagnostic: null
+    }
+  ] as const;
+
+  for (const entry of cases) {
+    const fixture = await createProcessFixture(`diagnostic-${entry.name}`);
+    const recordStore = path.join(path.dirname(fixture.script), "records");
+    try {
+      await writeFile(
+        fixture.script,
+        `export const meta = { name: "diagnostic-${entry.name}" }; return await agent("fail", { engine: "codex", maxAttempts: 1${entry.scriptOptions} });`
+      );
+      const result = await fixture.runWithEnv({
+        ...entry.env,
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, entry.stderr);
+
+      const diagnostic = (await loadOnlyAgentRecord(recordStore)).attempts[0]?.app_server_diagnostic;
+      if (entry.diagnostic === null) {
+        assert.equal(diagnostic, null);
+      } else {
+        assert.ok(diagnostic);
+        assert.equal(diagnostic.code, entry.diagnostic.code);
+        assert.equal(diagnostic.message, entry.diagnostic.message);
+        if (typeof entry.diagnostic.payload === "string") {
+          assert.equal(diagnostic.payload, entry.diagnostic.payload);
+        } else {
+          assert.match(diagnostic.payload, entry.diagnostic.payload);
+        }
+      }
+    } finally {
+      await fixture.cleanup();
+    }
   }
 });
 
@@ -1428,6 +1559,95 @@ test("built CLI interrupts a turn that times out before any turn notification", 
     );
     assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
     assert.equal((await loadOnlyAgentRecord(recordStore)).status, "timed-out");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+// The 20 s cap is the mutation backstop, not a fit to the ~4.4 s this test
+// takes when it passes: under mutation the deadline never fires, and this cap
+// is what converts that hang into a failure. Trimming it toward the observed
+// runtime removes the only thing that makes the mutation legible, and leaves
+// no margin on a loaded machine. The fixture's own timings are scaled with it
+// (ratios unchanged, deadline:kill-switch still 1:5).
+test("built bundle times out an output-silent worker while its tool remains active", { timeout: 20_000 }, async () => {
+  // Manufactured-condition exception: a live engine cannot be made to emit
+  // tool progress while withholding all further worker output on cue. The
+  // recording app-server fixture supplies exactly that condition. The direct
+  // transport leg observes client ingress; the following process leg drives
+  // the shipped bundle and proves terminalisation and archival behaviour.
+  const fixture = await createProcessFixture("tool-active-output-silent");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  try {
+    let timeoutAt: number | null = null;
+    let resolveProgressAfterTimeout: (() => void) | undefined;
+    const progressAfterTimeout = new Promise<void>((resolve) => {
+      resolveProgressAfterTimeout = resolve;
+    });
+    const transport = await CodexAppServerTransport.start({
+      cwd: process.cwd(),
+      codexBin: fixture.codexBin,
+      workerEnv: {
+        ENSEMBLE_CODEX_SCHEMA_CLI: fixture.schemaCli,
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60"
+      },
+      requestTimeoutMs: 1_000,
+      startupHandshakeTimeoutMs: 1_000,
+      clientName: "ensemble-process-estate",
+      clientVersion: "0.0.0",
+      onEvent: (event) => {
+        if (event.method === "item/mcpToolCall/progress" && timeoutAt !== null && event.receivedAt > timeoutAt) {
+          resolveProgressAfterTimeout?.();
+        }
+      }
+    });
+    try {
+      const threadId = await transport.openThread({});
+      await assert.rejects(
+        () => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 450 }),
+        TurnTimeoutError
+      );
+      timeoutAt = Date.now();
+      await progressAfterTimeout;
+    } finally {
+      await transport.close();
+    }
+
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "tool-active-output-silent-deadline",
+          description: "Bound an output-silent turn despite app-server tool progress"
+        };
+        return await agent("wait for a tool that never returns output", {
+          engine: "codex",
+          maxAttempts: 1,
+          timeoutMs: 3_000
+        });
+      `
+    );
+
+    const result = await fixture.runArgsWithEnv(
+      [fixture.script],
+      {
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60",
+        ENSEMBLE_RUN_RECORD: "1",
+        ENSEMBLE_RUN_RECORD_DIR: recordStore
+      },
+      15_000
+    );
+
+    assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
+    assert.match(result.stderr, /TurnTimeoutError/);
+    const messages = await fixture.messages();
+    assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
+    assert.equal(messages.at(-1)?.method, "turn/interrupt");
+    const agent = await loadOnlyAgentRecord(recordStore);
+    assert.equal(agent.status, "timed-out");
+    assert.equal(agent.attempts[0]?.raw_output, "partial before ongoing tool activity");
   } finally {
     await fixture.cleanup();
   }
@@ -1795,17 +2015,21 @@ interface RecordedMessage {
 }
 
 interface RecordedAgent {
-  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+  status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
   parse_route: "direct" | "object-fallback" | "array-fallback" | null;
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
+    app_server_diagnostic: { code: number | string | null; message: string; payload: string } | null;
     raw_output: string | null;
   }>;
 }
 
 interface ProcessFixture {
   script: string;
+  dataHome: string;
+  codexBin: string;
+  schemaCli: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1851,10 +2075,14 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   env.ENSEMBLE_FAKE_CODEX_CAPTURE = capturePath;
   env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE = validationCapturePath;
   env.ENSEMBLE_FAKE_CODEX_RESPONSE = response;
-  env.ENSEMBLE_CODEX_SCHEMA_CLI = await executablePath("codex");
+  const schemaCli = await executablePath("codex");
+  env.ENSEMBLE_CODEX_SCHEMA_CLI = schemaCli;
 
   return {
     script,
+    dataHome: path.join(directory, "data"),
+    codexBin: fakeCodex,
+    schemaCli,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>
@@ -1874,6 +2102,21 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
         .map((line) => JSON.parse(line) as ValidationRecord),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
+  const reader = [
+    'const { readdirSync, readFileSync } = require("node:fs");',
+    'const { join, basename } = require("node:path");',
+    'const root = process.argv[1];',
+    'const agents = readdirSync(root, { recursive: true })',
+    '  .filter((entry) => basename(entry) === "agent.json")',
+    '  .map((entry) => JSON.parse(readFileSync(join(root, entry), "utf8")));',
+    'process.stdout.write(JSON.stringify(agents));'
+  ].join("\n");
+  const result = await runProcess(process.execPath, ["-e", reader, dataHome], process.env);
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
 }
 
 async function executablePath(name: string): Promise<string> {

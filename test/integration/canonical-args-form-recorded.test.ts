@@ -6,13 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-const isLive = process.env.ENSEMBLE_LIVE === "1";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const archiveVerifierPath = path.resolve("test/consumers/verify-args.mjs");
 const execFileAsync = promisify(execFile);
 
-test("live built bundle archives independently verifiable root and child canonical args", { skip: !isLive }, async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-canonical-args-live-"));
+test("built bundle archives independently verifiable root and child canonical args", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-canonical-args-"));
   const recordStore = path.join(directory, "records");
   const root = path.join(directory, "root.js");
   const child = path.join(directory, "child.js");

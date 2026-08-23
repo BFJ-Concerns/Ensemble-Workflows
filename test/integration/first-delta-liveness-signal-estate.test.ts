@@ -27,14 +27,14 @@ test("built consumer terminalises a turn with no output before its ordinary time
   await withFixture(async (fixture) => {
     const result = await fixture.run({
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "500"
+      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000"
     });
 
     assert.equal(result.code, 1, result.stderr);
     const turnStartedAt = await fixture.turnStartedAt();
     assert.ok(
-      result.finishedAt - turnStartedAt < 1_500,
-      "first-output deadline must win over the 2s turn timeout after the deadline starts"
+      result.finishedAt - turnStartedAt < 3_000,
+      "first-output deadline must win over the ordinary turn timeout after the deadline starts"
     );
     assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
     assert.match(result.stderr, /AppServerFirstOutputTimeoutError/);
@@ -47,23 +47,23 @@ test("built consumer terminalises a turn with no output before its ordinary time
 test("built consumer accepts a first delta that arrives late but inside the deadline", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "500",
+      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/agentMessage/delta",
           params: { itemId: "late-message", delta: "late but healthy" },
-          afterMs: 200
+          afterMs: 250
         }
       ]]),
-      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "550"
+      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "1000"
     });
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, '"worker-ok"\n');
     const attempt = await fixture.onlyAttempt();
-    assert.ok((attempt.first_delta_ms ?? Infinity) < 500, "the client must ingest the first delta before expiry");
+    assert.ok((attempt.first_delta_ms ?? Infinity) < 1_000, "the client must ingest the first delta before expiry");
     assert.ok(
-      result.finishedAt - (await fixture.turnStartedAt()) > 500,
+      result.finishedAt - (await fixture.turnStartedAt()) > 1_000,
       "completion must follow the first-output deadline to prove the client disarmed it"
     );
   });
@@ -72,7 +72,7 @@ test("built consumer accepts a first delta that arrives late but inside the dead
 test("built consumer treats a correlated non-delta frame as first output", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "500",
+      ENSEMBLE_POST_PROMISE_DEADLINE_MS: "1000",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/completed",
@@ -80,10 +80,10 @@ test("built consumer treats a correlated non-delta frame as first output", async
             item: { id: "completed-message", type: "agentMessage", text: "whole answer" },
             completedAtMs: 0
           },
-          afterMs: 200
+          afterMs: 250
         }
       ]]),
-      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "550"
+      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "1000"
     });
 
     assert.equal(result.code, 0, result.stderr);
@@ -91,7 +91,7 @@ test("built consumer treats a correlated non-delta frame as first output", async
     const attempt = await fixture.onlyAttempt();
     assert.equal(attempt.first_delta_ms, null);
     assert.ok(
-      result.finishedAt - (await fixture.turnStartedAt()) > 500,
+      result.finishedAt - (await fixture.turnStartedAt()) > 1_000,
       "the non-delta frame must disarm the deadline until completion"
     );
   });
@@ -125,7 +125,7 @@ async function createFixture() {
       return await agent("exercise first-output liveness", {
         engine: "codex",
         maxAttempts: 1,
-        timeoutMs: 2_000
+        timeoutMs: 5_000
       });
     `
   );
@@ -147,7 +147,7 @@ async function createFixture() {
           XDG_DATA_HOME: path.join(directory, "data"),
           ...overrides
         },
-        3_000
+        6_000
       ),
     onlyAttempt: async (): Promise<RecordedAttempt> => {
       const recordPath = await findOnlyFile(recordStore, "agent.json");

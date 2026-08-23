@@ -153,10 +153,18 @@ export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
   readonly code: number | string | undefined;
   readonly data?: unknown;
 
-  constructor(error: { code: number | string | undefined; message: string | undefined; data?: unknown }) {
+  constructor(
+    error: { code: number | string | undefined; message: string | undefined; data?: unknown },
+    diagnostic?: AppServerDiagnostic
+  ) {
+    const engineDiagnostic =
+      diagnostic === undefined
+        ? ""
+        : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
     super(
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " +
-        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",
+        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." +
+        engineDiagnostic,
       { cause: error }
     );
     this.code = error.code;

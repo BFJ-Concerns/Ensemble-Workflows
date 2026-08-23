@@ -894,13 +894,14 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
   // Exact code matches outrank the substring scan: a payload that merely
   // *mentions* invalid_json_schema (say, inside a backpressure diagnostic)
   // must not be reclassified as a terminal schema rejection.
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
   const error =
     errorPayload.code === -32001
       ? new AppServerBackpressureError(method, errorPayload)
       : payloadContainsInvalidJsonSchema(errorPayload)
-        ? new CodexSchemaSubsetUnsupportedError(errorPayload)
+        ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic)
         : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+  return attachAppServerDiagnostic(error, diagnostic);
 }
 
 function appServerErrorFromNotification(params: JsonObject): Error {

@@ -13967,9 +13967,10 @@ var AppServerStartupTimeoutError = class extends EnsembleError {
 var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   code;
   data;
-  constructor(error) {
+  constructor(error, diagnostic) {
+    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
     super(
-      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side.",
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
       { cause: error }
     );
     this.code = error.code;
@@ -15425,8 +15426,9 @@ ${this.#stderrTail.join("\n")}` : "";
   }
 };
 function appServerErrorFromPayload(method, errorPayload) {
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload) : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
 }
 function appServerErrorFromNotification(params) {
   const errorPayload = errorPayloadFromNotification(params);

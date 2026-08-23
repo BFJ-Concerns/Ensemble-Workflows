@@ -1323,13 +1323,17 @@ test("built CLI records observed request and notification diagnostics, but not a
       scriptOptions: "",
       env: {
         ENSEMBLE_FAKE_CODEX_TURN_START_ERROR: JSON.stringify({
-          code: -32001,
-          message: "request backpressure",
-          data: { detail: "request payload" }
+          code: -32603,
+          message: "upstream refused the turn; invalid_json_schema is not the cause",
+          data: { detail: "real request cause" }
         })
       },
-      stderr: /request backpressure/,
-      diagnostic: { code: -32001, message: "request backpressure", payload: '{"detail":"request payload"}' }
+      stderr: /-32603.*upstream refused the turn.*real request cause/s,
+      diagnostic: {
+        code: -32603,
+        message: "upstream refused the turn; invalid_json_schema is not the cause",
+        payload: '{"detail":"real request cause"}'
+      }
     },
     {
       name: "notification",

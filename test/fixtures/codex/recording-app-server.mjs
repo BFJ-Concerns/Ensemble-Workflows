@@ -3,6 +3,7 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { setTimeout as wait } from "node:timers/promises";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -87,7 +88,6 @@ const notificationParamsForTurn = (notification, threadId, turnId) => {
   }
   return params;
 };
-const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
 const completeTurn = async ({ threadId, turnId, turnIndex }) => {
   if (emitDecodeFailure) {
     process.stdout.write("this is not JSON at all\n");

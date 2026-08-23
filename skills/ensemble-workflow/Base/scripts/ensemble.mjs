@@ -13344,6 +13344,7 @@ var RunRecordWriter = class _RunRecordWriter {
     const harnessRoot = await findHarnessRoot() ?? options.cwd;
     const packageInfo = await readPackageInfo(harnessRoot);
     const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const canonicalArgs = canonicalJson(options.args);
     const writer = new _RunRecordWriter(archiveDir, options.cwd, {
       schema_version: SCHEMA_VERSION,
       kind: "run_manifest",
@@ -13360,7 +13361,8 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       args: {
         archive_path: "args.json",
-        sha256: sha256(canonicalJson(options.args))
+        canonical_archive_path: "args.canonical.json",
+        sha256: sha256(canonicalArgs)
       },
       meta: {
         task: null,
@@ -13404,7 +13406,8 @@ var RunRecordWriter = class _RunRecordWriter {
           },
           args: {
             archive_path: "args.json",
-            sha256: sha256(canonicalJson(options.args))
+            canonical_archive_path: "args.canonical.json",
+            sha256: sha256(canonicalArgs)
           }
         }
       ],
@@ -13417,6 +13420,7 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "run_args",
       value: options.args
     });
+    await writer.#writeText("args.canonical.json", canonicalArgs);
     if (gitStart.diffPath !== null) {
       await writer.#trackFile(gitStart.diffPath);
     }
@@ -13453,12 +13457,15 @@ var RunRecordWriter = class _RunRecordWriter {
       const directory = `workflows/${padId(ordinal)}`;
       const sourcePath = `${directory}/workflow.js`;
       const argsPath = `${directory}/args.json`;
+      const canonicalArgsPath = `${directory}/args.canonical.json`;
+      const canonicalArgs = canonicalJson(args);
       await this.#writeText(sourcePath, invocation.source);
       await this.#writeJson(argsPath, {
         schema_version: SCHEMA_VERSION,
         kind: "workflow_args",
         value: args
       });
+      await this.#writeText(canonicalArgsPath, canonicalArgs);
       this.manifest.workflow_invocations.push({
         ordinal,
         parent: invocation.parentOrdinal,
@@ -13469,7 +13476,8 @@ var RunRecordWriter = class _RunRecordWriter {
         },
         args: {
           archive_path: argsPath,
-          sha256: sha256(canonicalJson(args))
+          canonical_archive_path: canonicalArgsPath,
+          sha256: sha256(canonicalArgs)
         }
       });
       await this.#writeManifest();

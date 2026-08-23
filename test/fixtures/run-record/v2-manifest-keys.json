@@ -1,22 +1,29 @@
-[
-  "args",
-  "cli_flags",
-  "concurrency",
-  "cost_rollup",
-  "ended_at",
-  "environment",
-  "files",
-  "git",
-  "harness",
-  "kind",
-  "meta",
-  "namespace",
-  "result",
-  "run_id",
-  "run_uuid",
-  "schema_version",
-  "started_at",
-  "status",
-  "workflow",
-  "workflow_invocations"
-]
+{
+  "args": [
+    "archive_path",
+    "canonical_archive_path",
+    "sha256"
+  ],
+  "manifest": [
+    "args",
+    "cli_flags",
+    "concurrency",
+    "cost_rollup",
+    "ended_at",
+    "environment",
+    "files",
+    "git",
+    "harness",
+    "kind",
+    "meta",
+    "namespace",
+    "result",
+    "run_id",
+    "run_uuid",
+    "schema_version",
+    "started_at",
+    "status",
+    "workflow",
+    "workflow_invocations"
+  ]
+}

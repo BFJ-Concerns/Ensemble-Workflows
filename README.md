@@ -259,7 +259,10 @@ The manifest is `manifest.json`. Its top-level fields are:
   `"interrupted"`.
 - `started_at` / `ended_at`: ISO timestamps; `ended_at` is `null` until final.
 - `workflow`: original path, archived `workflow.js`, and SHA-256.
-- `args`: archived `args.json` and SHA-256 of canonical args JSON.
+- `args`: the descriptive `args.json` envelope, the separately archived
+  `canonical_archive_path` containing the exact canonical args JSON text, and
+  its SHA-256. Consumers recompute `args.sha256` from that canonical artefact;
+  it is not the hash of the envelope bytes.
 - `meta`: raw workflow meta and `task` copied verbatim, or `null`.
 - `cli_flags`: parsed run-tuning flags.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty.

@@ -34,6 +34,7 @@ const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1"
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT === "1";
+const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS ?? "20");
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 let threadCounter = 0;
 let turnCounter = 0;
@@ -202,7 +203,7 @@ const handleLine = (line) => {
           method: "item/mcpToolCall/progress",
           params: { threadId, turnId, itemId: "tool-1", message: "tool still active" }
         }, "ServerNotification.json");
-      }, 20);
+      }, toolProgressIntervalMs);
       return;
     }
     if (schemaDrift === "allowed--32001") {

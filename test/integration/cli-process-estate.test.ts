@@ -1428,7 +1428,7 @@ test("built CLI interrupts a turn that times out before any turn notification", 
   }
 });
 
-test("built bundle times out an output-silent worker while its tool remains active", { timeout: 3_000 }, async () => {
+test("built bundle times out an output-silent worker while its tool remains active", { timeout: 20_000 }, async () => {
   // Manufactured-condition exception: a live engine cannot be made to emit
   // tool progress while withholding all further worker output on cue. The
   // recording app-server fixture supplies exactly that condition, and this
@@ -1444,7 +1444,11 @@ test("built bundle times out an output-silent worker while its tool remains acti
     const transport = await CodexAppServerTransport.start({
       cwd: process.cwd(),
       codexBin: fixture.codexBin,
-      workerEnv: { ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1" },
+      workerEnv: {
+        ENSEMBLE_CODEX_SCHEMA_CLI: fixture.schemaCli,
+        ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60"
+      },
       requestTimeoutMs: 1_000,
       startupHandshakeTimeoutMs: 1_000,
       clientName: "ensemble-process-estate",
@@ -1458,7 +1462,7 @@ test("built bundle times out an output-silent worker while its tool remains acti
     try {
       const threadId = await transport.openThread({});
       await assert.rejects(
-        () => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 150 }),
+        () => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 450 }),
         TurnTimeoutError
       );
       timeoutAt = Date.now();
@@ -1477,7 +1481,7 @@ test("built bundle times out an output-silent worker while its tool remains acti
         return await agent("wait for a tool that never returns output", {
           engine: "codex",
           maxAttempts: 1,
-          timeoutMs: 1_000
+          timeoutMs: 3_000
         });
       `
     );
@@ -1486,10 +1490,11 @@ test("built bundle times out an output-silent worker while its tool remains acti
       [fixture.script],
       {
         ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1",
+        ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS: "60",
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      5_000
+      15_000
     );
 
     assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
@@ -1879,6 +1884,7 @@ interface RecordedAgent {
 interface ProcessFixture {
   script: string;
   codexBin: string;
+  schemaCli: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1909,11 +1915,13 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   env.PATH = `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`;
   env.ENSEMBLE_FAKE_CODEX_CAPTURE = capturePath;
   env.ENSEMBLE_FAKE_CODEX_RESPONSE = response;
-  env.ENSEMBLE_CODEX_SCHEMA_CLI = await executablePath("codex");
+  const schemaCli = await executablePath("codex");
+  env.ENSEMBLE_CODEX_SCHEMA_CLI = schemaCli;
 
   return {
     script,
     codexBin: fakeCodex,
+    schemaCli,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>

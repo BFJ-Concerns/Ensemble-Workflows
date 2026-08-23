@@ -12,6 +12,7 @@ import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
@@ -1386,9 +1387,10 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
   }
 });
 
-test("built CLI interrupts a turn that times out before any turn notification", async () => {
+test("built CLI interrupts a turn that times out before any turn notification", { timeout: 45_000 }, async () => {
   const fixture = await createProcessFixture("interrupt-timeout-before-notification");
   const recordStore = path.join(path.dirname(fixture.script), "records");
+  const timeoutControl = path.join(path.dirname(fixture.script), "turn-timeout-control");
   try {
     await writeFile(
       fixture.script,
@@ -1400,19 +1402,21 @@ test("built CLI interrupts a turn that times out before any turn notification", 
         return await agent("time out before a notification", {
           engine: "codex",
           maxAttempts: 1,
-          timeoutMs: 100
+          timeoutMs: 30000
         });
       `
     );
 
-    const result = await fixture.runArgsWithEnv(
-      [fixture.script],
+    const result = await fixture.runNodeArgsWithEnv(
+      ["--import", turnTimeoutAcceleratorPath, bundledCliPath, fixture.script],
       {
         ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+        ENSEMBLE_TURN_TIMEOUT_CONTROL: timeoutControl,
+        ENSEMBLE_TURN_TIMEOUT_MS: "30000",
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      45_000,
     );
 
     assert.equal(result.code, 1, `turn timeout did not reject before the test kill switch\n${result.stderr}`);
@@ -1809,6 +1813,11 @@ interface ProcessFixture {
     overrides: NodeJS.ProcessEnv,
     timeoutMs?: number,
   ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runNodeArgsWithEnv: (
+    args: string[],
+    overrides: NodeJS.ProcessEnv,
+    timeoutMs?: number,
+  ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runWithEnv: (overrides: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   messages: () => Promise<RecordedMessage[]>;
   validations: () => Promise<ValidationRecord[]>;
@@ -1850,6 +1859,8 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>
       runNode([bundledCliPath, ...args], { ...env, ...overrides }, timeoutMs),
+    runNodeArgsWithEnv: (args, overrides, timeoutMs) =>
+      runNode(args, { ...env, ...overrides }, timeoutMs),
     runWithEnv: (overrides) => runNode([bundledCliPath, script], { ...env, ...overrides }),
     messages: async () =>
       (await readFile(capturePath, "utf8"))

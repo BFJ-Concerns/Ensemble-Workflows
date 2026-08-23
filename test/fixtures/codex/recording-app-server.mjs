@@ -34,6 +34,7 @@ const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTER
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
+const turnTimeoutControl = process.env.ENSEMBLE_TURN_TIMEOUT_CONTROL;
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -193,6 +194,9 @@ const handleLine = (line) => {
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
+      if (turnTimeoutControl !== undefined) {
+        appendFileSync(turnTimeoutControl, "release\n");
+      }
       return;
     }
     const turnStarted = {

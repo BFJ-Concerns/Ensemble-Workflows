@@ -12,10 +12,11 @@ const deadlineAcceleratorPath = path.resolve(
 );
 
 interface Action {
-  type: "delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
+  type: "deadline" | "delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
   text?: string;
   diagnostic?: string;
   afterMs?: number;
+  requireDisarm?: boolean;
 }
 
 interface ProcessResult {
@@ -24,12 +25,13 @@ interface ProcessResult {
   stderr: string;
 }
 
-test("built consumer terminalises permanent silence after a retry promise with its evidence intact", async () => {
+test("built consumer terminalises permanent silence after a retry promise with its evidence intact", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run(
       [[
         { type: "delta", text: "PARTIAL_BEFORE_SILENCE" },
         { type: "promise", diagnostic: "PROMISE_ABANDONED_41" },
+        { type: "deadline" },
         { type: "silence" }
       ]],
       1
@@ -49,13 +51,14 @@ test("built consumer terminalises permanent silence after a retry promise with i
   });
 });
 
-test("built consumer continues after a post-promise delta disarms the silence deadline", async () => {
+test("built consumer continues after a post-promise delta disarms the silence deadline", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("DELTA_FIRST_ATTEMPT"),
       [
         { type: "promise", diagnostic: "DELTA_RECOVERY_PROMISE" },
         { type: "delta", text: "recovery-in-progress", afterMs: 10 },
+        { type: "deadline", requireDisarm: true },
         { type: "success", text: "delta-recovered", afterMs: 100 }
       ]
     ]);
@@ -66,7 +69,7 @@ test("built consumer continues after a post-promise delta disarms the silence de
   });
 });
 
-test("built consumer returns a recovered answer when the app-server keeps its retry promise", async () => {
+test("built consumer returns a recovered answer when the app-server keeps its retry promise", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("SUCCESS_FIRST_ATTEMPT"),
@@ -84,13 +87,14 @@ test("built consumer returns a recovered answer when the app-server keeps its re
   });
 });
 
-test("built consumer rejects promise and MCP-progress alternation at the bounded count", async () => {
+test("built consumer rejects promise and MCP-progress alternation at the bounded count", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const alternating = [{ type: "delta", text: "PARTIAL_BEFORE_HEARTBEATS" } as Action];
     for (let index = 0; index < 6; index += 1) {
       alternating.push({ type: "promise", diagnostic: `ALTERNATING_PROMISE_${index}` });
       alternating.push({ type: "mcp-progress" });
     }
+    alternating.push({ type: "deadline" });
     alternating.push({ type: "silence" });
 
     const result = await fixture.run([alternating], 1);
@@ -103,13 +107,14 @@ test("built consumer rejects promise and MCP-progress alternation at the bounded
   });
 });
 
-test("built consumer answers a turn-scoped request and continues after it disarms the deadline", async () => {
+test("built consumer answers a turn-scoped request and continues after it disarms the deadline", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("APPROVAL_FIRST_ATTEMPT"),
       [
         { type: "promise", diagnostic: "APPROVAL_RECOVERY_PROMISE" },
         { type: "approval", afterMs: 10 },
+        { type: "deadline", requireDisarm: true },
         { type: "success", text: "approval-request-handled", afterMs: 100 }
       ]
     ]);
@@ -127,6 +132,7 @@ function abandonedAttempt(partialText: string): Action[] {
   return [
     { type: "delta", text: partialText },
     { type: "promise", diagnostic: `ABANDONED_${partialText}` },
+    { type: "deadline" },
     { type: "silence" }
   ];
 }
@@ -156,10 +162,12 @@ async function createFixture() {
   const binDirectory = path.join(directory, "bin");
   const fakeCodex = path.join(binDirectory, "codex");
   const capturePath = path.join(directory, "codex-input.jsonl");
+  const deadlineControlPath = path.join(directory, "deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
+  await writeFile(deadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
 
@@ -181,6 +189,7 @@ async function createFixture() {
           ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
+          ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
           ENSEMBLE_POST_PROMISE_DEADLINE_MS: "60",
           ENSEMBLE_RUN_RECORD: "1",
@@ -188,7 +197,7 @@ async function createFixture() {
           ENSEMBLE_STATUS: "0",
           XDG_DATA_HOME: path.join(directory, "data")
         },
-        2_000
+        45_000
       );
     },
     attempts: async (): Promise<RecordedAttempt[]> => {

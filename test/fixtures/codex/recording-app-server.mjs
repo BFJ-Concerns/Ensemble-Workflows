@@ -33,6 +33,7 @@ const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1"
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
+const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
 let threadCounter = 0;
 let turnCounter = 0;
 const pendingTurns = [];
@@ -85,6 +86,9 @@ const notificationParamsForTurn = (notification, threadId, turnId) => {
   return params;
 };
 const completeTurn = ({ threadId, turnId, turnIndex }) => {
+  if (emitDecodeFailure) {
+    process.stdout.write("this is not JSON at all\n");
+  }
   const notificationSequence = notificationSequences[turnIndex];
   if (notificationSequence !== undefined) {
     for (const notification of notificationSequence) {

@@ -758,6 +758,7 @@ function agentRecord(
     concurrencyGroup: engine,
     schema: null,
     parseRoute: null,
+    decodeFailure: null,
     rawOutput: "ok",
     validatedOutput: "ok",
     queuedMs: 0,

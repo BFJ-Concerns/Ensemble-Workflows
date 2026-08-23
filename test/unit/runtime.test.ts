@@ -532,6 +532,45 @@ test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex c
   await assert.rejects(() => runtime.agent("blocked", { engine: "codex" }), BudgetExceededError);
 });
 
+test("an active Codex record retains a decode diagnostic without failing its worker", async () => {
+  class DecodeFailureTransport extends FakeTransport {
+    #runtime: (() => EnsembleRuntime | null) | undefined;
+
+    bind(runtime: () => EnsembleRuntime | null): void {
+      this.#runtime = runtime;
+    }
+
+    override async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+      this.#runtime?.()?.handleTransportEvent({
+        method: "transport/decodeFailed",
+        receivedAt: Date.now(),
+        params: { byteLength: 22, linePrefix: "this is not JSON at all" }
+      });
+      return await super.runTurn(threadId, prompt, options);
+    }
+  }
+
+  const transport = new DecodeFailureTransport([turn("worker-ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  transport.bind(() => runtime);
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  assert.equal(await runtime.agent("continue after bad frame", { engine: "codex" }), "worker-ok");
+  assert.equal(records.length, 2);
+  assert.equal(records[0]?.decodeFailure, null);
+  assert.deepEqual(records.at(-1)?.decodeFailure, {
+    byteLength: 22,
+    linePrefix: "this is not JSON at all"
+  });
+});
+
 test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry cannot replace the provoking failure", async () => {
   // A transport that fails retryably on every attempt, exhausting the codex
   // ceiling from the *first* attempt's usage — the interleaving that used to

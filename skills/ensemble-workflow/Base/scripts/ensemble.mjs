@@ -13537,6 +13537,10 @@ var RunRecordWriter = class _RunRecordWriter {
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       parse_route: record.parseRoute,
+      decode_failure: record.decodeFailure === null ? null : {
+        byte_length: record.decodeFailure.byteLength,
+        line_prefix: record.decodeFailure.linePrefix
+      },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       queued_ms: record.queuedMs,
@@ -17398,6 +17402,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
+  #executingAgentRecords = /* @__PURE__ */ new Map();
   #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
@@ -17495,6 +17500,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
         this.progress.markChanged();
       }
     }
+    if (event.method === "transport/decodeFailed") {
+      const diagnostic = decodeFailureDiagnosticFromParams(event.params);
+      if (diagnostic !== null) {
+        for (const record of this.#executingAgentRecords.get(engine) ?? []) {
+          record.decodeFailure = diagnostic;
+        }
+      }
+    }
     this.#emitEvent(event);
   }
   handleTransportEvent(event) {
@@ -17556,6 +17569,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #executeAgent(engine, prompt, options, agentId, agentRecord, queuedAt) {
     const executionStartedAt = Date.now();
     this.progress.startAgent(agentId);
+    const executingRecords = this.#executingAgentRecords.get(engine.name) ?? /* @__PURE__ */ new Set();
+    this.#executingAgentRecords.set(engine.name, executingRecords);
+    executingRecords.add(agentRecord);
     try {
       const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
       const outcome = execution.status === "complete" ? "done" : "failed";
@@ -17587,6 +17603,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.validatedOutput = null;
       await this.#recordAgentSafely(agentRecord);
       throw error;
+    } finally {
+      executingRecords.delete(agentRecord);
+      if (executingRecords.size === 0) {
+        this.#executingAgentRecords.delete(engine.name);
+      }
     }
   }
   /**
@@ -17922,6 +17943,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       concurrencyGroup: engine,
       schema: options.schema ?? null,
       parseRoute: null,
+      decodeFailure: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,
@@ -17987,6 +18009,9 @@ function lastRawOutput(record) {
     }
   }
   return null;
+}
+function decodeFailureDiagnosticFromParams(params) {
+  return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
 }
 
 // src/hooks.ts

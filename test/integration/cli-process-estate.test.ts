@@ -1316,8 +1316,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
     [
       {
         method: "item/agentMessage/delta",
-        params: { delta: "partial before overload" },
-        allowMalformed: "this established regression payload omits the schema-required itemId"
+        params: { delta: "partial before overload", itemId: "agent-message-turn-1" }
       },
       {
         method: "error",

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
+import { setTimeout } from "node:timers";
 
 const writeFile = fs.promises.writeFile;
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
@@ -69,6 +69,26 @@ const finishTurn = (threadId, turnId) => {
       }
     }
   }, "ServerNotification.json");
+};
+const releaseTurnTimeoutAfterClientProcessesStart = () => {
+  if (turnTimeoutControl === undefined) {
+    return;
+  }
+  const waitForClient = () => {
+    let control = "";
+    try {
+      control = readFileSync(turnTimeoutControl, "utf8");
+    } catch {
+      // The preload creates the control file when it arms the per-turn timer.
+    }
+    if (control.includes("turn-start-processed\n")) {
+      appendFileSync(turnTimeoutControl, "release\n");
+      return;
+    }
+    const poll = globalThis.setTimeout(waitForClient, 5);
+    poll.unref();
+  };
+  waitForClient();
 };
 const notificationParamsForTurn = (notification, threadId, turnId) => {
   const params = {
@@ -194,9 +214,7 @@ const handleLine = (line) => {
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
-      if (turnTimeoutControl !== undefined) {
-        appendFileSync(turnTimeoutControl, "release\n");
-      }
+      releaseTurnTimeoutAfterClientProcessesStart();
       return;
     }
     const turnStarted = {

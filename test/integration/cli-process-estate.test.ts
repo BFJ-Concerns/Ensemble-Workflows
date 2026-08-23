@@ -1402,7 +1402,7 @@ test("built CLI interrupts a turn that times out before any turn notification", 
         return await agent("time out before a notification", {
           engine: "codex",
           maxAttempts: 1,
-          timeoutMs: 30000
+          timeoutMs: 30001
         });
       `
     );
@@ -1412,7 +1412,7 @@ test("built CLI interrupts a turn that times out before any turn notification", 
       {
         ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
         ENSEMBLE_TURN_TIMEOUT_CONTROL: timeoutControl,
-        ENSEMBLE_TURN_TIMEOUT_MS: "30000",
+        ENSEMBLE_TURN_TIMEOUT_MS: "30001",
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },

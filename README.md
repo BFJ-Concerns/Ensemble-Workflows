@@ -291,7 +291,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `id`, `creation_order`, `concurrency_group`.
 - `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
 - `worktree`: isolated worktree `branch` and `base_commit`, otherwise `null`.
-- `label`, `phase`, and `status`.
+- `label`, `phase`, and `status`. Agent status is `"in-progress"`,
+  `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
+  `"abandoned"` means the run ended while the dispatch record was still being
+  persisted, so the harness did not observe an agent outcome.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.
 - `validated_output`: validated object/text result, or `null` on failure.

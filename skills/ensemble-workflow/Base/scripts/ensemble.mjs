@@ -17419,9 +17419,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #completed = [];
   #runRecorder = null;
   // Every dispatched record remains here until its own agent() call settles.
-  // close() uses this to terminalise work a failed workflow abandoned before
+  // close() uses this to terminalise work a run ended before
   // the normal per-agent settlement path could run.
   #unsettledAgentRecords = /* @__PURE__ */ new Map();
+  // Once close() has made the only honest terminal transition for a record,
+  // late shutdown rejections must not overwrite it with an invented outcome.
+  #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
@@ -17548,9 +17551,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
-    this.#unsettledAgentRecords.set(agentId, agentRecord);
+    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
     try {
       await this.#recordAgentSafely(agentRecord);
+      const unsettled = this.#unsettledAgentRecords.get(agentId);
+      if (unsettled !== void 0) {
+        unsettled.stage = "admitting";
+      }
       const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         return { label: options.label ?? null, phase: options.phase ?? null, output };
@@ -17577,7 +17584,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
-        await this.#recordAgentSafely(agentRecord);
+        await this.#recordSettlementSafely(agentId, agentRecord);
       }
       throw error;
     }
@@ -17604,7 +17611,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           output: execution.value
         });
       }
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -17614,7 +17621,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
-      await this.#recordAgentSafely(agentRecord);
+      await this.#recordSettlementSafely(agentId, agentRecord);
       throw error;
     }
   }
@@ -17637,6 +17644,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
+  async #recordSettlementSafely(agentId, record) {
+    if (this.#abandonedAgentIds.has(agentId)) {
+      return;
+    }
+    await this.#recordAgentSafely(record);
+  }
   /**
    * Outputs of every worker that finished successfully, in completion order.
    * The CLI reads this to assemble a partial result if the whole-workflow
@@ -17649,13 +17662,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
     this.#admission.close();
-    await this.#engines.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()].filter((record) => record.status === "in-progress").map(async (record) => {
-        record.status = this.#shutdownAgentStatus;
+      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+        this.#abandonedAgentIds.add(record.id);
+        record.status = "abandoned";
         await this.#recordAgentSafely(record);
       })
     );
+    await this.#engines.close();
   }
   #terminalAgentStatus(error, record) {
     if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {

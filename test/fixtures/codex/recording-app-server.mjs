@@ -200,17 +200,13 @@ const handleLine = (line) => {
     if (toolActiveOutputSilent) {
       send({
         method: "item/agentMessage/delta",
-        params: { threadId, turnId, delta: "partial before ongoing tool activity" }
-      }, "ServerNotification.json", undefined, {
-        allowMalformed: "the deadline proof needs only the output-bearing delta, whose established fixture shape omits itemId"
-      });
+        params: { threadId, turnId, itemId: "agent-message-1", delta: "partial before ongoing tool activity" }
+      }, "ServerNotification.json");
       setInterval(() => {
         send({
           method: "item/mcpToolCall/progress",
           params: { threadId, turnId, itemId: "tool-1", message: "tool still active" }
-        }, "ServerNotification.json", undefined, {
-          allowMalformed: "the controlled deadline condition needs the app-server tool-progress envelope"
-        });
+        }, "ServerNotification.json");
       }, 20);
       return;
     }

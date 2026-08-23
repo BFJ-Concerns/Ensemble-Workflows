@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { CodexAppServerTransport } from "../../src/app-server.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
 
@@ -1426,15 +1427,42 @@ test("built CLI interrupts a turn that times out before any turn notification", 
   }
 });
 
-test("built bundle times out an output-silent worker while its tool remains active", async () => {
+test("built bundle times out an output-silent worker while its tool remains active", { timeout: 3_000 }, async () => {
   // Manufactured-condition exception: a live engine cannot be made to emit
   // tool progress while withholding all further worker output on cue. The
   // recording app-server fixture supplies exactly that condition, and this
   // drives the shipped bundle rather than importing the runtime directly.
   const fixture = await createProcessFixture("tool-active-output-silent");
   const recordStore = path.join(path.dirname(fixture.script), "records");
-  const capturePath = path.join(path.dirname(fixture.script), "codex-input.jsonl");
   try {
+    let timeoutAt: number | null = null;
+    let resolveProgressAfterTimeout: (() => void) | undefined;
+    const progressAfterTimeout = new Promise<void>((resolve) => {
+      resolveProgressAfterTimeout = resolve;
+    });
+    const transport = await CodexAppServerTransport.start({
+      cwd: process.cwd(),
+      codexBin: fixture.codexBin,
+      workerEnv: { ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPUT_SILENT: "1" },
+      requestTimeoutMs: 1_000,
+      startupHandshakeTimeoutMs: 1_000,
+      clientName: "ensemble-process-estate",
+      clientVersion: "0.0.0",
+      onEvent: (event) => {
+        if (event.method === "item/mcpToolCall/progress" && timeoutAt !== null && event.receivedAt > timeoutAt) {
+          resolveProgressAfterTimeout?.();
+        }
+      }
+    });
+    try {
+      const threadId = await transport.openThread({});
+      await assert.rejects(() => transport.runTurn(threadId, "observe tool traffic after timeout", { timeoutMs: 150 }));
+      timeoutAt = Date.now();
+      await progressAfterTimeout;
+    } finally {
+      await transport.close();
+    }
+
     await writeFile(
       fixture.script,
       `
@@ -1460,16 +1488,8 @@ test("built bundle times out an output-silent worker while its tool remains acti
       5_000
     );
 
-    assert.equal(result.code, 1, `tool-active deadline did not fire before the test kill switch\n${result.stderr}`);
+    assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
     assert.match(result.stderr, /TurnTimeoutError/);
-    const events = (await readFile(capturePath, "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { fixtureEvent?: { method?: string } });
-    assert.ok(
-      events.filter((event) => event.fixtureEvent?.method === "item/mcpToolCall/progress").length >= 2,
-      `the fixture must keep tool activity flowing across the deadline; saw ${JSON.stringify(events)}`
-    );
     const messages = await fixture.messages();
     assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
     assert.equal(messages.at(-1)?.method, "turn/interrupt");
@@ -1854,6 +1874,7 @@ interface RecordedAgent {
 
 interface ProcessFixture {
   script: string;
+  codexBin: string;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -1888,6 +1909,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
 
   return {
     script,
+    codexBin: fakeCodex,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>

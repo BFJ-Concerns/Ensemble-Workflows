@@ -81,6 +81,13 @@ const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
  * closed its pipe still fails promptly.
  */
 const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+/**
+ * Upper bound for one newline-delimited app-server frame before parsing. The
+ * payload-depth cap protects the parsed shape; this bound protects the
+ * upstream assembly that would otherwise retain an arbitrarily large line.
+ */
+const MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+const DECODE_FAILURE_LINE_PREFIX_BYTES = 512;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -432,11 +439,64 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   #wireReader(): void {
-    const reader = createInterface({ input: this.#process.stdout });
-    reader.on("line", (line) => {
-      this.#handleLine(line);
+    let chunks: Buffer[] = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+
+    const resetLine = (): void => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+    };
+    const retain = (chunk: Buffer): void => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_LINE_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_LINE_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+
+    this.#process.stdout.on("data", (chunk: Buffer) => {
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset, end);
+
+        if (discardingOversizedLine) {
+          if (newline !== -1) {
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            // Match readline's CRLF treatment while applying the byte limit
+            // before decoding or JSON parsing.
+            const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+            resetLine();
+            this.#handleLine(line);
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          // Report immediately on crossing the bound, then discard until the
+          // newline so one hostile frame cannot retain more memory or poison
+          // the following valid frame.
+          this.#reportDecodeFailure(MAX_APP_SERVER_STDOUT_LINE_BYTES + 1, prefix.toString("utf8"));
+          discardingOversizedLine = true;
+          if (newline !== -1) {
+            resetLine();
+          }
+        }
+        offset = newline === -1 ? chunk.length : newline + 1;
+      }
     });
-    reader.once("close", () => {
+    this.#process.stdout.once("end", () => {
       if (this.#hasExited) {
         return;
       }
@@ -476,14 +536,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // decode must be visible as a decode failure, not resurface later as
       // an unattributable turn timeout. The line is retained bounded — the
       // point is attribution, not archiving an arbitrarily large payload.
-      this.#onEvent?.({
-        method: "transport/decodeFailed",
-        params: {
-          byteLength: Buffer.byteLength(line, "utf8"),
-          linePrefix: line.slice(0, 512)
-        },
-        receivedAt: Date.now()
-      });
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_BYTES));
       return;
     }
 
@@ -519,6 +572,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method !== null) {
       this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
     }
+  }
+
+  #reportDecodeFailure(byteLength: number, linePrefix: string): void {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
   }
 
   #handleResponse(id: number, message: RpcMessage): void {

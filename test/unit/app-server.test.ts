@@ -524,6 +524,46 @@ test("an undecodable inbound frame leaves a decode diagnostic event", async () =
   }
 });
 
+test("an oversized stdout frame leaves bounded decode evidence and the transport processes the next line", async () => {
+  const codexBin = await fakeCodexLineCapServer("over");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "survive oversized provider frame", {});
+
+    const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
+    assert.equal(decodeFailures.length, 1);
+    assert.equal(decodeFailures[0]?.params.byteLength, 1_048_577);
+    assert.equal(String(decodeFailures[0]?.params.linePrefix).length, 512);
+    assert.equal(result.text, "answer after oversized frame");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a just-under-limit stdout frame is processed normally", async () => {
+  const codexBin = await fakeCodexLineCapServer("under");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "accept just-under provider frame", {});
+
+    assert.equal(events.filter((event) => event.method === "transport/decodeFailed").length, 0);
+    assert.ok(result.text.length > 1_000_000);
+    assert.match(result.text, /^under-limit frame/);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("Codex app-server initialize uses the startup handshake budget", async () => {
   const codexBin = await fakeCodexAppServer({ initializeDelayMs: 0, respondToInitialize: true });
   const transport = await CodexAppServerTransport.start({
@@ -866,6 +906,53 @@ reader.on("line", (line) => {
       }, 5);
     }
     // hang-after-delta: send nothing further.
+  }
+});
+`
+  );
+  await chmod(bin, 0o755);
+  return bin;
+}
+
+/** A fake app-server that places a deliberately sized frame before a normal completion. */
+async function fakeCodexLineCapServer(mode: "over" | "under"): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-line-cap-"));
+  const bin = path.join(directory, "codex");
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+
+if (process.argv[2] !== "app-server") {
+  process.exit(2);
+}
+
+const mode = ${JSON.stringify(mode)};
+const reader = createInterface({ input: process.stdin });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+
+reader.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "thread/start") {
+    send({ id: message.id, result: { thread: { id: "thread-1" } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    send({ id: message.id, result: {} });
+    if (mode === "over") {
+      process.stdout.write("x".repeat(1_048_577) + "\\n");
+      send({ method: "item/completed", params: { threadId: "thread-1", item: { itemType: "agentMessage", text: "answer after oversized frame" } } });
+    } else {
+      const prefix = "under-limit frame";
+      const frame = { method: "item/agentMessage/delta", params: { threadId: "thread-1", delta: prefix } };
+      const delta = prefix + "x".repeat(1_048_575 - Buffer.byteLength(JSON.stringify(frame)));
+      send({ method: "item/agentMessage/delta", params: { threadId: "thread-1", delta } });
+    }
+    send({ method: "turn/completed", params: { threadId: "thread-1" } });
   }
 });
 `

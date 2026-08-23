@@ -524,6 +524,25 @@ test("an unterminated undecodable inbound frame leaves a decode diagnostic event
   }
 });
 
+test("a newline-terminated undecodable inbound frame leaves a decode diagnostic event", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("terminated-garbage-line");
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => events.push({ method: event.method, params: event.params as Record<string, unknown> })
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "emit terminated garbage", {}), AppServerExitedError);
+    const decodeFailures = events.filter((event) => event.method === "transport/decodeFailed");
+    assert.equal(decodeFailures.length, 1);
+    assert.match(String(decodeFailures[0]?.params.linePrefix), /^this is not JSON/);
+    assert.ok(Number(decodeFailures[0]?.params.byteLength) > 0);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("an oversized stdout frame leaves bounded decode evidence and the transport processes the next line", async () => {
   const codexBin = await fakeCodexFailingTurnServer("oversized-line");
   const events: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -785,6 +804,7 @@ async function fakeCodexFailingTurnServer(
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
+    | "terminated-garbage-line"
     | "delta-no-turn-start-ack"
     | "item-then-error"
     | "promise-then-silence"
@@ -868,6 +888,8 @@ reader.on("line", (line) => {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all", () => process.exit(7));
+    } else if (mode === "terminated-garbage-line") {
+      process.stdout.write("this is not JSON at all\\n", () => process.exit(7));
     } else if (mode === "promise-then-silence") {
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "stream disconnected before completion", codexErrorInfo: "serverOverloaded" } } });
       // Then nothing at all: the silence deadline is the only way out.

@@ -1,4 +1,5 @@
 import Ajv from "ajv";
+import { Buffer } from "node:buffer";
 import { appendFileSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -132,7 +133,7 @@ function killProcessGroup(pid) {
 
 export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
   if (options.allowMalformed !== undefined) {
-    recordValidation({ schemaPath, outcome: "allowed-malformed", reason: options.allowMalformed });
+    recordValidation({ schemaPath, outcome: "allowed-malformed", reason: options.allowMalformed, ...notificationIdentity(payload) });
     return payload;
   }
 
@@ -148,8 +149,26 @@ export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
     const detail = ajv.errorsText(validate.errors, { separator: "; " });
     throw new Error(`Codex fixture payload failed ${schemaPath} validation: ${detail}`);
   }
-  recordValidation({ schemaPath, outcome: "valid" });
+  recordValidation({ schemaPath, outcome: "valid", ...notificationIdentity(payload) });
   return payload;
+}
+
+function notificationIdentity(payload) {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return {};
+  }
+  const { method, params } = payload;
+  if (typeof method !== "string" || params === null || typeof params !== "object" || Array.isArray(params)) {
+    return {};
+  }
+  const { threadId, turnId, itemId, delta } = params;
+  return {
+    method,
+    ...(typeof threadId !== "string" ? {} : { threadId }),
+    ...(typeof turnId !== "string" ? {} : { turnId }),
+    ...(typeof itemId !== "string" ? {} : { itemId }),
+    ...(typeof delta !== "string" ? {} : { deltaByteLength: Buffer.byteLength(delta) })
+  };
 }
 
 function closeDeclaredObjects(value) {

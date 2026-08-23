@@ -483,6 +483,7 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
     (error: unknown) => {
       assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
       assert.match(error.message, /outside Codex's accepted subset or malformed/);
+      assert.doesNotMatch(error.message, /turn\/start failed/);
       assert.match(error.message, /-32602/);
       assert.match(error.message, /invalid_json_schema/);
       assert.match(error.message, /required key missing from properties/);

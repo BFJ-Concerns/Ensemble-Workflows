@@ -101,6 +101,7 @@ test("built consumer rejects promise and MCP-progress alternation at the bounded
 
     assert.equal(result.code, 1, result.stderr);
     assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.doesNotMatch(result.stderr, /silent for 900000ms after a promised retry/);
     assert.match(result.stderr, /ALTERNATING_PROMISE_5/);
     const attempts = await fixture.attempts();
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_HEARTBEATS");

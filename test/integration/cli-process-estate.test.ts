@@ -1560,6 +1560,12 @@ test("built CLI interrupts a turn that times out before any turn notification", 
   }
 });
 
+// The 20 s cap is the mutation backstop, not a fit to the ~4.4 s this test
+// takes when it passes: under mutation the deadline never fires, and this cap
+// is what converts that hang into a failure. Trimming it toward the observed
+// runtime removes the only thing that makes the mutation legible, and leaves
+// no margin on a loaded machine. The fixture's own timings are scaled with it
+// (ratios unchanged, deadline:kill-switch still 1:5).
 test("built bundle times out an output-silent worker while its tool remains active", { timeout: 20_000 }, async () => {
   // Manufactured-condition exception: a live engine cannot be made to emit
   // tool progress while withholding all further worker output on cue. The

@@ -90,10 +90,11 @@ test("built consumer returns a recovered answer when the app-server keeps its re
 test("built consumer rejects promise and MCP-progress alternation at the bounded count", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const alternating = [{ type: "delta", text: "PARTIAL_BEFORE_HEARTBEATS" } as Action];
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       alternating.push({ type: "promise", diagnostic: `ALTERNATING_PROMISE_${index}` });
       alternating.push({ type: "mcp-progress" });
     }
+    alternating.push({ type: "promise", diagnostic: "ALTERNATING_PROMISE_5" });
     alternating.push({ type: "deadline" });
     alternating.push({ type: "silence" });
 

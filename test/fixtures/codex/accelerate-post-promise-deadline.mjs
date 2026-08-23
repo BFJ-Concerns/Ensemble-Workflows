@@ -7,11 +7,16 @@ const nativeClearTimeout = globalThis.clearTimeout;
 const nativeClearInterval = globalThis.clearInterval;
 const acceleratedMs = Number(process.env.ENSEMBLE_POST_PROMISE_DEADLINE_MS ?? "60");
 const controlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
+const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 let deadlineCount = 0;
 const controlledTimers = new Map();
 
 globalThis.setTimeout = (callback, delay, ...args) => {
-  if (delay !== 15 * 60 * 1_000 || controlPath === undefined) {
+  const callbackText = Function.prototype.toString.call(callback);
+  const expectedError = deadlineKind === "first-delta"
+    ? "AppServerFirstOutputTimeoutError"
+    : "AppServerRetryPromiseBrokenError";
+  if (delay !== 15 * 60 * 1_000 || controlPath === undefined || !callbackText.includes(expectedError)) {
     return nativeSetTimeout(callback, delay === 15 * 60 * 1_000 ? acceleratedMs : delay, ...args);
   }
 

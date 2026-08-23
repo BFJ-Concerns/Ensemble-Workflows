@@ -136,6 +136,7 @@ async function createFixture() {
           ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStartMarker,
           ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: firstDeltaControl,
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: firstDeltaControl,
+          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "first-delta",
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,

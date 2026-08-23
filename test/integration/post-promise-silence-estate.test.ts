@@ -192,6 +192,7 @@ async function createFixture() {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
+          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
           ENSEMBLE_POST_PROMISE_DEADLINE_MS: "60",
           ENSEMBLE_RUN_RECORD: "1",

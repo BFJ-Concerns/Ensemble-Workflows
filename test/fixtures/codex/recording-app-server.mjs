@@ -130,12 +130,16 @@ const handleLine = (line) => {
 
   const message = JSON.parse(line);
   if (message.method === "initialize") {
-    send(
-      { id: message.id, result: {} },
-      "v1/InitializeResponse.json",
-      {},
-      { allowMalformed: "the established fixture predates required initialise metadata" }
-    );
+    const result = {
+      codexHome: process.cwd(),
+      platformFamily: "unix",
+      platformOs: "linux",
+      userAgent: "ensemble-recording-fixture"
+    };
+    if (schemaDrift === "missing-initialize-user-agent") {
+      delete result.userAgent;
+    }
+    send({ id: message.id, result }, "v1/InitializeResponse.json", result);
     return;
   }
   if (message.method === "thread/start") {
@@ -143,17 +147,31 @@ const handleLine = (line) => {
     const response = {
       id: message.id,
       result: {
-        thread: { id: `thread-${threadCounter}` },
+        thread: {
+          cliVersion: "ensemble-recording-fixture",
+          createdAt: Math.floor(Date.now() / 1_000),
+          cwd: process.cwd(),
+          ephemeral: true,
+          id: `thread-${threadCounter}`,
+          modelProvider: "openai",
+          preview: "",
+          projectId: null,
+          sessionId: `fixture-session-${threadCounter}`,
+          source: "appServer",
+          status: { type: "idle" },
+          turns: [],
+          updatedAt: Math.floor(Date.now() / 1_000)
+        },
+        approvalPolicy: "never",
+        approvalsReviewer: "user",
+        cwd: process.cwd(),
         model: "gpt-estate-recorder",
-        reasoningEffort: "medium"
+        modelProvider: "openai",
+        reasoningEffort: "medium",
+        sandbox: { type: "dangerFullAccess" }
       }
     };
-    send(
-      response,
-      "v2/ThreadStartResponse.json",
-      response.result,
-      { allowMalformed: "the established fixture omits server-owned thread metadata" }
-    );
+    send(response, "v2/ThreadStartResponse.json", response.result);
     return;
   }
   if (message.method === "turn/interrupt") {

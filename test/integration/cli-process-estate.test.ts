@@ -1316,8 +1316,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
     [
       {
         method: "item/agentMessage/delta",
-        params: { delta: "partial before overload" },
-        allowMalformed: "this established regression payload omits the schema-required itemId"
+        params: { delta: "partial before overload", itemId: "agent-message-turn-1" }
       },
       {
         method: "error",
@@ -1359,6 +1358,10 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
+      const overloadPayloadOptOut = (await fixture.validations()).find(
+        (validation) => validation.outcome === "allowed-malformed"
+      );
+      assert.equal(overloadPayloadOptOut, undefined, "the overload payload must validate without its itemId opt-out");
       if (interruptResponse === "withheld") {
         assert.ok(
           elapsedMs < 10_000,
@@ -1808,7 +1811,14 @@ interface ProcessFixture {
   ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runWithEnv: (overrides: NodeJS.ProcessEnv) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   messages: () => Promise<RecordedMessage[]>;
+  validations: () => Promise<ValidationRecord[]>;
   cleanup: () => Promise<void>;
+}
+
+interface ValidationRecord {
+  outcome: "valid" | "allowed-malformed";
+  reason?: string;
+  schemaPath: string;
 }
 
 async function createProcessFixture(name: string, response = "worker-ok"): Promise<ProcessFixture> {
@@ -1816,9 +1826,11 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   const binDirectory = path.join(directory, "bin");
   const fakeCodex = path.join(binDirectory, "codex");
   const capturePath = path.join(directory, "codex-input.jsonl");
+  const validationCapturePath = path.join(directory, "codex-validation.jsonl");
   const script = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
+  await writeFile(validationCapturePath, "");
   await writeFile(
     fakeCodex,
     `#!/usr/bin/env node\nimport ${JSON.stringify(path.resolve("test/fixtures/codex/recording-app-server.mjs"))};\n`
@@ -1828,6 +1840,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   const env = isolatedEnvironment(directory);
   env.PATH = `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`;
   env.ENSEMBLE_FAKE_CODEX_CAPTURE = capturePath;
+  env.ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE = validationCapturePath;
   env.ENSEMBLE_FAKE_CODEX_RESPONSE = response;
   env.ENSEMBLE_CODEX_SCHEMA_CLI = await executablePath("codex");
 
@@ -1843,6 +1856,11 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as RecordedMessage),
+    validations: async () =>
+      (await readFile(validationCapturePath, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as ValidationRecord),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

@@ -1359,7 +1359,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
       const overloadPayloadOptOut = (await fixture.validations()).find(
-        (validation) => validation.reason?.includes("schema-required itemId")
+        (validation) => validation.outcome === "allowed-malformed"
       );
       assert.equal(overloadPayloadOptOut, undefined, "the overload payload must validate without its itemId opt-out");
       if (interruptResponse === "withheld") {

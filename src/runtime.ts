@@ -37,6 +37,7 @@ import type {
   EngineConcurrencyCaps,
   EngineName,
   IdentifiedAgentResult,
+  JsonObject,
   JsonSchema,
   RuntimeEvent,
   RuntimeOptions,
@@ -92,6 +93,7 @@ export class EnsembleRuntime {
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
+  #executingAgentRecords = new Map<EngineName, Set<RuntimeAgentRecord>>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
   #closed = false;
 
@@ -216,6 +218,19 @@ export class EnsembleRuntime {
       }
     }
 
+    if (event.method === "transport/decodeFailed") {
+      // An undecodable frame has no parseable thread id to correlate. Keep its
+      // already-bounded evidence on the Codex records that were executing when
+      // the shared transport received it; settlement writes it through the
+      // existing transition path rather than creating a progress write.
+      const diagnostic = decodeFailureDiagnosticFromParams(event.params);
+      if (diagnostic !== null) {
+        for (const record of this.#executingAgentRecords.get(engine) ?? []) {
+          record.decodeFailure = diagnostic;
+        }
+      }
+    }
+
     this.#emitEvent(event);
   }
 
@@ -325,6 +340,9 @@ export class EnsembleRuntime {
   ): Promise<unknown> {
     const executionStartedAt = Date.now();
     this.progress.startAgent(agentId);
+    const executingRecords = this.#executingAgentRecords.get(engine.name) ?? new Set<RuntimeAgentRecord>();
+    this.#executingAgentRecords.set(engine.name, executingRecords);
+    executingRecords.add(agentRecord);
     try {
       const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
       const outcome = execution.status === "complete" ? "done" : "failed";
@@ -359,6 +377,11 @@ export class EnsembleRuntime {
       agentRecord.validatedOutput = null;
       await this.#recordAgentSafely(agentRecord);
       throw error;
+    } finally {
+      executingRecords.delete(agentRecord);
+      if (executingRecords.size === 0) {
+        this.#executingAgentRecords.delete(engine.name);
+      }
     }
   }
 
@@ -755,6 +778,7 @@ export class EnsembleRuntime {
       concurrencyGroup: engine,
       schema: options.schema ?? null,
       parseRoute: null,
+      decodeFailure: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,
@@ -852,4 +876,10 @@ function lastRawOutput(record: RuntimeAgentRecord): string | null {
     }
   }
   return null;
+}
+
+function decodeFailureDiagnosticFromParams(params: JsonObject): { byteLength: number; linePrefix: string } | null {
+  return typeof params.byteLength === "number" && typeof params.linePrefix === "string"
+    ? { byteLength: params.byteLength, linePrefix: params.linePrefix }
+    : null;
 }

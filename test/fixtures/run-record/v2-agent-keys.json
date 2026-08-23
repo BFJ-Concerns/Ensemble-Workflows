@@ -2,6 +2,7 @@
   "attempts",
   "concurrency_group",
   "creation_order",
+  "decode_failure",
   "effort",
   "engine",
   "execution_ms",

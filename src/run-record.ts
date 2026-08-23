@@ -72,6 +72,12 @@ export interface RuntimeAgentAttemptRecord {
   diagnostics?: JsonObject;
 }
 
+/** Bounded evidence emitted when the Codex transport cannot decode an inbound frame. */
+export interface DecodeFailureDiagnostic {
+  byteLength: number;
+  linePrefix: string;
+}
+
 export interface RuntimeAgentRecord {
   id: number;
   engine: EngineName;
@@ -103,6 +109,8 @@ export interface RuntimeAgentRecord {
   schema: JsonSchema | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
+  /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
+  decodeFailure: DecodeFailureDiagnostic | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   queuedMs: number;
@@ -512,6 +520,13 @@ export class RunRecordWriter {
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       parse_route: record.parseRoute,
+      decode_failure:
+        record.decodeFailure === null
+          ? null
+          : {
+              byte_length: record.decodeFailure.byteLength,
+              line_prefix: record.decodeFailure.linePrefix
+            },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       queued_ms: record.queuedMs,

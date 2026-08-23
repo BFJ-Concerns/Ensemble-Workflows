@@ -944,7 +944,10 @@ reader.on("line", (line) => {
   if (message.method === "turn/start") {
     send({ id: message.id, result: {} });
     if (mode === "over") {
-      process.stdout.write("x".repeat(1_048_577) + "\\n");
+      const prefix = "over-limit frame";
+      const frame = { method: "item/agentMessage/delta", params: { threadId: "thread-1", delta: prefix } };
+      const delta = prefix + "x".repeat(1_048_577 - Buffer.byteLength(JSON.stringify(frame)));
+      send({ method: "item/agentMessage/delta", params: { threadId: "thread-1", delta } });
       send({ method: "item/completed", params: { threadId: "thread-1", item: { itemType: "agentMessage", text: "answer after oversized frame" } } });
     } else {
       const prefix = "under-limit frame";

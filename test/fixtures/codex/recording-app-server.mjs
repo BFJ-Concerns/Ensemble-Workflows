@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
 
@@ -32,6 +32,8 @@ const stallAfterNotificationSequence = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFT
 const rejectInterrupt = process.env.ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT === "1";
 const withholdInterruptResponse = process.env.ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE === "1";
 const stallAfterTurnStart = process.env.ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START === "1";
+const completionDelayMs = Number(process.env.ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS ?? "0");
+const turnStartMarkerPath = process.env.ENSEMBLE_FAKE_CODEX_TURN_START_MARKER;
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
 let threadCounter = 0;
@@ -85,13 +87,17 @@ const notificationParamsForTurn = (notification, threadId, turnId) => {
   }
   return params;
 };
-const completeTurn = ({ threadId, turnId, turnIndex }) => {
+const wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs));
+const completeTurn = async ({ threadId, turnId, turnIndex }) => {
   if (emitDecodeFailure) {
     process.stdout.write("this is not JSON at all\n");
   }
   const notificationSequence = notificationSequences[turnIndex];
   if (notificationSequence !== undefined) {
     for (const notification of notificationSequence) {
+      if (notification.afterMs !== undefined) {
+        await wait(notification.afterMs);
+      }
       send({
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
@@ -100,6 +106,9 @@ const completeTurn = ({ threadId, turnId, turnIndex }) => {
       });
     }
     if (!stallAfterNotificationSequence) {
+      if (completionDelayMs > 0) {
+        await wait(completionDelayMs);
+      }
       finishTurn(threadId, turnId);
     }
     return;
@@ -172,6 +181,9 @@ const handleLine = (line) => {
     const { threadId } = message.params;
     turnCounter += 1;
     const turnId = `turn-${turnCounter}`;
+    if (turnStartMarkerPath !== undefined) {
+      writeFileSync(turnStartMarkerPath, String(Date.now()));
+    }
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
@@ -215,7 +227,7 @@ const handleLine = (line) => {
     pendingTurns.push({ threadId, turnId, turnIndex: turnCounter - 1 });
     if (pendingTurns.length >= barrierSize) {
       for (const pending of pendingTurns.splice(0)) {
-        completeTurn(pending);
+        void completeTurn(pending);
       }
     }
   }

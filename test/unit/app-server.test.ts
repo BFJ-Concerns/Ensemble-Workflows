@@ -11,7 +11,7 @@ import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.j
 import {
   AppServerBackpressureError,
   AppServerExitedError,
-  AppServerFirstDeltaTimeoutError,
+  AppServerFirstOutputTimeoutError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   CodexSchemaSubsetUnsupportedError,
@@ -349,7 +349,7 @@ test("itemText reaches the terminal rejection when no deltas were streamed", asy
   }
 });
 
-test("a started turn with no first delta expires before its ordinary timeout and records the terminal attempt", async () => {
+test("a started turn with no output expires before its ordinary timeout and records the terminal attempt", async () => {
   const codexBin = await fakeCodexFailingTurnServer("no-first-delta");
   const runtime = await createRuntime({
     codexBin,
@@ -366,17 +366,17 @@ test("a started turn with no first delta expires before its ordinary timeout and
     await assert.rejects(
       () => runtime.agent("start but never speak", { engine: "codex", timeoutMs: 2_000, maxAttempts: 1 }),
       (error: unknown) => {
-        assert.ok(error instanceof AppServerFirstDeltaTimeoutError);
-        assert.match(error.message, /first agent-message delta within 250ms/);
+        assert.ok(error instanceof AppServerFirstOutputTimeoutError);
+        assert.match(error.message, /first output-bearing frame within 250ms/);
         return true;
       }
     );
-    assert.ok(Date.now() - startedAt < 1_000, "first-delta expiry must win over the 2s turn timeout");
+    assert.ok(Date.now() - startedAt < 1_000, "first-output expiry must win over the 2s turn timeout");
     const attempt = records.at(-1)?.attempts.at(-1);
     assert.equal(records.at(-1)?.status, "failed");
     assert.equal(attempt?.status, "failed");
-    assert.equal(attempt?.failure?.kind, "AppServerFirstDeltaTimeoutError");
-    assert.match(attempt?.failure?.message ?? "", /first agent-message delta within 250ms/);
+    assert.equal(attempt?.failure?.kind, "AppServerFirstOutputTimeoutError");
+    assert.match(attempt?.failure?.message ?? "", /first output-bearing frame within 250ms/);
   } finally {
     await runtime.close();
   }
@@ -854,7 +854,7 @@ reader.on("line", (line) => {
     send({ method: "turn/started", params: { threadId } });
     if (mode === "no-first-delta") {
       // The accepted turn stays alive but never produces output: only the
-      // client's first-delta deadline can free the worker slot.
+      // client's first-output deadline can free the worker slot.
       return;
     }
     if (mode === "delayed-first-delta") {

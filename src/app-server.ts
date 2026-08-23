@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
-  AppServerFirstDeltaTimeoutError,
+  AppServerFirstOutputTimeoutError,
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
@@ -78,7 +78,7 @@ const MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
  * A started turn that remains completely silent costs a worker slot without
- * producing evidence. Healthy long turns disarm this on their first delta.
+ * producing evidence. Healthy long turns disarm this on their first output-bearing frame.
  */
 const DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
@@ -749,7 +749,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
     turn.firstDeltaDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstDeltaTimeoutError(this.#firstDeltaTimeoutMs));
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
     }, this.#firstDeltaTimeoutMs);
   }
 

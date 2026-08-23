@@ -107,10 +107,10 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
-/** A started turn that never produced an agent-message delta before its transport deadline. */
-export class AppServerFirstDeltaTimeoutError extends EnsembleError {
+/** A started turn that produced no output-bearing frame before its transport deadline. */
+export class AppServerFirstOutputTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
-    super(`codex app-server turn did not deliver its first agent-message delta within ${timeoutMs}ms`);
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
   }
 }
 

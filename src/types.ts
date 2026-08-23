@@ -57,7 +57,7 @@ export interface RuntimeOptions {
    */
   retryPromiseSilenceTimeoutMs?: number;
   /**
-   * Bounds a started Codex turn's wait for its first agent-message delta;
+   * Bounds a started Codex turn's wait for its first output-bearing frame;
    * expiry terminalises the turn. A library-level option like
    * `requestTimeoutMs` — deliberately not a CLI flag or ambient setting.
    * Defaults to 15 minutes.

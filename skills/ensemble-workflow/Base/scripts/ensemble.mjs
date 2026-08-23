@@ -13972,9 +13972,9 @@ var AppServerOverloadedError = class extends AppServerRequestError {
 };
 var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
 };
-var AppServerFirstDeltaTimeoutError = class extends EnsembleError {
+var AppServerFirstOutputTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
-    super(`codex app-server turn did not deliver its first agent-message delta within ${timeoutMs}ms`);
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
   }
 };
 var AppServerStartupTimeoutError = class extends EnsembleError {
@@ -15316,7 +15316,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   #armFirstDeltaDeadline(threadId, turn) {
     turn.firstDeltaDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstDeltaTimeoutError(this.#firstDeltaTimeoutMs));
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
     }, this.#firstDeltaTimeoutMs);
   }
   /**

@@ -345,8 +345,10 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
       // Settled means the daemon itself says generation is over ("idle", or a
       // `state` of done); a failed roster query ("unknown") and an active
-      // "busy" both reset the window rather than feed it.
-      if (status.state === "done" || status.status === "idle") {
+      // "busy" both reset the window rather than feed it. A worker with no
+      // transcript at all is the first-life guard's diagnosis, not this
+      // one's — collection presumes there is something to collect from.
+      if (sawLife && (status.state === "done" || status.status === "idle")) {
         settledPolls += 1;
         if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
           throw new ClaudeCollectionError(

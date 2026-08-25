@@ -12,7 +12,7 @@ import { ClaudeDispatchError } from "./errors.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (observed as orphaned
+ * worker escaped the cancellation plumbing entirely (witnessed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -394,10 +394,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       }
     }
     await delay(this.#reapGraceMs);
-    for (const pid of tagged) {
-      if (!processAlive(pid)) {
-        continue;
-      }
+    // Re-establish identity before escalating: a pid from the first scan can
+    // exit during the grace period and be reused by an unrelated process, so
+    // a bare liveness check is not authority for SIGKILL — only a process
+    // still carrying the tag is.
+    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {
@@ -564,11 +565,3 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH");
-  }
-}

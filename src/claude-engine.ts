@@ -298,12 +298,19 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
-        // Evidence means output *this turn produced*: for a correction the
-        // transcript pre-exists, so only entries beyond the high-water mark
-        // count as a sign of life on the supervision surface.
-        if (!evidenceReported && transcript.entries.length > fromIndex) {
+        // Evidence means output *the worker produced this turn*: only an
+        // assistant entry beyond the high-water mark counts. The transcript's
+        // first entry is routinely the persisted user prompt (and a steer
+        // injects another), so counting any entry would certify output that
+        // never happened. The callback is observability — a throw inside it
+        // must never affect the turn.
+        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
-          onLiveEvidence?.();
+          try {
+            onLiveEvidence?.();
+          } catch {
+            // Liveness reporting must never take the turn down with it.
+          }
         }
         if (turnComplete(transcript.entries, fromIndex)) {
           return transcript;
@@ -334,7 +341,10 @@ export class ClaudeEngineInvocation implements EngineInvocation {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        const mark = transcript?.entries.length ?? fromIndex;
+        // Re-read at nudge time: entries written between the loop-top read
+        // and the blocked observation would otherwise satisfy the receipt's
+        // growth test immediately, acknowledging a nudge never received.
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
         const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!steered) {
           throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
@@ -574,6 +584,15 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
     return { kind: "claude-collection-error", message: error.message };
   }
   return { kind: "claude-dispatch-error", message: error.message };
+}
+
+function hasAssistantEntrySince(entries: TranscriptEntry[], fromIndex: number): boolean {
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    if (entries[index]?.type === "assistant") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {

@@ -287,14 +287,40 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
     );
     await chmod(stubPath, 0o755);
 
-    // A descendant as the worker would have left it: alive, and carrying the
-    // dispatch tag it inherited through the settings-file env block.
+    // Two descendants as the worker would have left them: alive, and
+    // carrying the dispatch tag they inherited through the settings-file env
+    // block. The second ignores SIGTERM, so it exercises the escalation —
+    // which must re-establish identity by re-scan (a pid can be reused
+    // during the grace period) before SIGKILL.
     const straggler = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       env: { ...process.env, [WORKER_MARKER_VARIABLE]: name },
       stdio: "ignore"
     });
+    const readyPath = path.join(dir, "stubborn-ready");
+    const stubborn = spawn(
+      process.execPath,
+      [
+        "-e",
+        `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");`
+      ],
+      {
+        env: { ...process.env, [WORKER_MARKER_VARIABLE]: name },
+        stdio: "ignore"
+      }
+    );
     const exited = new Promise<void>((resolve) => straggler.once("exit", () => resolve()));
+    const stubbornExited = new Promise<void>((resolve) => stubborn.once("exit", () => resolve()));
     await new Promise<void>((resolve) => straggler.once("spawn", () => resolve()));
+    // The TERM handler must be installed before the reap fires, or the
+    // default disposition kills the child and the escalation goes untested.
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      try {
+        await readFile(readyPath, "utf8");
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
 
     const controlPlane = new ClaudeCliControlPlane({
       claudeBin: stubPath,
@@ -306,7 +332,9 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
     await controlPlane.stop(handle);
 
     await exited;
+    await stubbornExited;
     assert.equal(straggler.exitCode === null ? straggler.signalCode : straggler.exitCode, "SIGTERM");
+    assert.equal(stubborn.signalCode, "SIGKILL");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

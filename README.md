@@ -148,10 +148,12 @@ JSON object with these fields:
   `"opencode"`), `state` (`"queued"` or `"running"`), nullable string
   `label` and `phase`, and two liveness stamps (numbers or `null`, Unix epoch
   milliseconds): `startedAtMs`, when the worker left the queue and began
-  executing, and `firstEvidenceAtMs`, when the engine first observed a sign of
-  worker output. Together they let a supervisor tell a healthy-but-slow leg
-  (recent evidence) from a stalled one (running long with none) without
-  killing the worker to find out.
+  executing, and `firstEvidenceAtMs`, when the engine first observed the
+  worker produce output. The stamp is earliest-wins and never updated, so
+  the supported reading is: a leg running long with **no** evidence at all
+  has never produced output and is suspect; a leg with evidence has
+  produced output at least once. The fields do not distinguish a leg
+  streaming now from one that stalled after its first output.
 
 Example:
 

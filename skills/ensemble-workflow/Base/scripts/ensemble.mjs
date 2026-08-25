@@ -15910,10 +15910,7 @@ var ClaudeCliControlPlane = class {
       }
     }
     await delay(this.#reapGraceMs);
-    for (const pid of tagged) {
-      if (!processAlive(pid)) {
-        continue;
-      }
+    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {
@@ -16046,14 +16043,6 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH");
-  }
 }
 
 // src/claude-engine.ts
@@ -16364,9 +16353,12 @@ var ClaudeEngineInvocation = class {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
-        if (!evidenceReported && transcript.entries.length > fromIndex) {
+        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
-          onLiveEvidence?.();
+          try {
+            onLiveEvidence?.();
+          } catch {
+          }
         }
         if (turnComplete(transcript.entries, fromIndex)) {
           return transcript;
@@ -16394,7 +16386,7 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        const mark = transcript?.entries.length ?? fromIndex;
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
         const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!steered) {
           throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
@@ -16603,6 +16595,14 @@ function claudeAttemptFailure(error) {
   }
   return { kind: "claude-dispatch-error", message: error.message };
 }
+function hasAssistantEntrySince(entries, fromIndex) {
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    if (entries[index]?.type === "assistant") {
+      return true;
+    }
+  }
+  return false;
+}
 function delay2(ms, signal, abortError) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -16753,6 +16753,12 @@ var OpenCodeEngineInvocation = class {
           exportDiagnostic = { status: "parse-failed", error: parsedExport.error };
         }
       }
+    }
+    if (this.#abortController.signal.aborted) {
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
     }
     let text = fallback;
     if (exportData !== null) {

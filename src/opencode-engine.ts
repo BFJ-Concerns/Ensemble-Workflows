@@ -243,6 +243,16 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
         }
       }
     }
+    if (this.#abortController.signal.aborted) {
+      // Cancellation can also land while the export subprocess runs; a
+      // cancelled attempt must terminalise as a shutdown here too, never be
+      // classified as a run failure the loop would redispatch or dressed up
+      // as a success from fallback text.
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
+    }
     let text = fallback;
     if (exportData !== null) {
       const exportedText = finalAssistantText(exportData);
@@ -260,8 +270,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
             cost: exportData.info?.cost ?? null
           };
     // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it repeats the defect of spend that never reaches
-    // the ledger, behind a narrower gate. The identifiers
+    // spend — suppressing it reintroduces a fixed defect (spend that
+    // never reaches the ledger), behind a narrower gate. The identifiers
     // exist only to attribute the event, so a missing id gets a synthetic,
     // clearly-labelled one rather than costing the accounting.
     const usageEvent =
@@ -280,7 +290,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 
     if (run.exitCode !== 0) {
       // An operational failure consumes a bounded retry attempt, the
-      // contract documented for every engine — so it returns
+      // contract the usage brief documents for every engine — so it returns
       // as a failed result the shared loop governs (imitating the Claude
       // engine's failedTurnResult), not a thrown error that would propagate
       // on the attempt it occurs. For a subprocess engine a retry means a

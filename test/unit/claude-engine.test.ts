@@ -912,3 +912,30 @@ test("Claude reports liveness evidence when the transcript first shows this turn
     await invocation.close?.();
   });
 });
+
+test("Claude liveness evidence waits for an assistant entry, not the persisted prompt", async () => {
+  // The transcript's first entry is routinely the persisted user prompt
+  // (SlowAliveControlPlane reproduces that platform behaviour). Evidence
+  // must not fire until the worker's own assistant entry lands — a stamp on
+  // the prompt entry would certify output that never happened.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-evidence-order-"));
+  try {
+    const controlPlane = new SlowAliveControlPlane(dir);
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    let evidenceAtPollCount = -1;
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onLiveEvidence: () => {
+        evidenceAtPollCount = controlPlane.pollCount;
+      }
+    });
+    assert.equal(result.text, '{"ok":true}');
+    // The assistant entry is appended at the third poll; earlier evidence
+    // could only have come from the prompt entry.
+    assert.ok(evidenceAtPollCount >= 3, `evidence fired at poll ${evidenceAtPollCount}`);
+    await invocation.close?.();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

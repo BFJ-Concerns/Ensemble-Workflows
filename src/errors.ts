@@ -232,6 +232,14 @@ export class ClaudeValveError extends ClaudeWorkerError {}
 
 export class ClaudeTranscriptError extends ClaudeWorkerError {}
 
+/**
+ * The daemon reports the session settled, but its transcript never proved the
+ * turn complete and holds no final assistant text to collect. Collection
+ * failure must be loud: the alternative is a poll loop spinning silently
+ * behind a worker that will never say more.
+ */
+export class ClaudeCollectionError extends ClaudeWorkerError {}
+
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
     super(

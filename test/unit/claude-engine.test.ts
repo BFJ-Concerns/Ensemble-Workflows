@@ -33,7 +33,7 @@ import type {
 interface ScriptedTurn {
   busyPolls?: number;
   outcome?: "complete" | "blocked";
-  assistant?: { text?: string; stop?: string; output?: number; input?: number; cached?: number; model?: string };
+  assistant?: { text?: string; stop?: string | null; output?: number; input?: number; cached?: number; model?: string };
 }
 
 class FakeControlPlane implements ClaudeControlPlane {
@@ -166,7 +166,10 @@ function assistantLine(assistant: ScriptedTurn["assistant"] & object): string {
       role: "assistant",
       ...(assistant.model !== undefined ? { model: assistant.model } : {}),
       content,
-      stop_reason: assistant.stop ?? "end_turn",
+      // `null` is a deliberate script value — a finished answer observed in a
+      // real transcript can carry `stop_reason: null` — so only `undefined`
+      // falls back to the terminal default.
+      stop_reason: assistant.stop === undefined ? "end_turn" : assistant.stop,
       ...(usage !== undefined ? { usage } : {})
     }
   });
@@ -822,4 +825,73 @@ test("an unpinned Claude call emits a visibility event; a pinned one does not", 
       }
     }
   );
+});
+
+test("a finished answer is collected while descendants keep the session busy", async () => {
+  // The live failure this guards against: a process the worker itself spawned
+  // held the roster at `busy` for 22+ minutes after a complete answer was on
+  // disk. busyPolls never runs out here — only the transcript can end the
+  // turn, so a build that gates the transcript read on "not busy" times out.
+  await withControlPlane(
+    [{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "collected promptly" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      try {
+        const result = await runtime.agent("finish while your child runs", { engine: "claude" });
+        assert.equal(result, "collected promptly");
+        assert.equal(controlPlane.stopCount, 1);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("an uncollectable settled session fails loudly with its partial text retained", async () => {
+  // A settled daemon beside a transcript that never proves the turn complete
+  // is what a killed worker's partial answer looks like (`stop_reason: null`
+  // on the final assistant entry). Collection must fail loudly with the
+  // partial retained as evidence — never spin, and never promote the partial
+  // to a success a downstream stage would trust.
+  await withControlPlane([{ assistant: { text: "half an answer", stop: null } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+    } as unknown as RunRecordWriter);
+    try {
+      await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+      const settledRecord = records.at(-1);
+      assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-collection-error");
+      assert.match(
+        settledRecord?.attempts[0]?.failure?.message ?? "",
+        /settled but its transcript never proved the turn complete/
+      );
+      assert.equal(settledRecord?.attempts[0]?.rawOutput, "half an answer");
+      assert.equal(controlPlane.stopCount, 1);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+test("a settled session with no assistant text fails loudly with the collection diagnostic", async () => {
+  // The same bound with nothing on disk at all: the leg cannot be collected,
+  // and that is a named failure consuming its attempt — never a silent spin
+  // behind a worker that will never say more.
+  await withControlPlane([{}], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+    } as unknown as RunRecordWriter);
+    try {
+      await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+      const settledRecord = records.at(-1);
+      assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-collection-error");
+      assert.equal(controlPlane.stopCount, 1);
+    } finally {
+      await runtime.close();
+    }
+  });
 });

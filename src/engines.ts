@@ -51,7 +51,8 @@ export interface EngineAttemptFailure {
     | "claude-first-life-timeout"
     | "claude-blocked"
     | "claude-valve-error"
-    | "claude-transcript-error";
+    | "claude-transcript-error"
+    | "claude-collection-error";
   message: string;
 }
 

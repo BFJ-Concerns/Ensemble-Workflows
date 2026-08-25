@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
+  ClaudeCollectionError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
   ClaudeTranscriptError,
@@ -57,6 +58,16 @@ let dispatchCounter = 0;
 // A worker can briefly drop out of the roster while parking/respawning; only a
 // run of misses is treated as genuine absence (each poll is one roster query).
 const MAX_CONSECUTIVE_ABSENCES = 3;
+
+// How many consecutive polls the daemon must report the session settled
+// (idle/done) while the transcript still fails to prove the turn complete
+// before collection fails loudly. A handful of polls, not one: a single idle
+// reading can race the daemon's own bookkeeping between the last delta and
+// the transcript flush, and an in-session correction passes through idle
+// between the steer's receipt and generation. Once the window is spent, the
+// session will never say more — waiting longer is the silent stall this
+// bound exists to remove.
+const SETTLED_CONFIRMATION_POLLS = 5;
 
 /**
  * One `agent({ engine: 'claude' })` call, as a stateful invocation across the
@@ -238,11 +249,29 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   /**
    * Poll until the worker's turn is complete, returning the transcript at that
-   * point. Completion is read from the transcript (`turnComplete`), not the
-   * daemon's unreliable `state` field; `state: blocked` still drives bounded
-   * valve recovery. A transient roster-query failure reports `present: false`
-   * only after `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not
-   * kill a live worker.
+   * point. The transcript is the authoritative completion signal and is
+   * checked on **every** poll, before the roster state is interpreted: the
+   * daemon's `state` is unreliable, and a live process the worker itself
+   * spawned can hold the roster at `busy` long after the answer is on disk —
+   * gating the transcript read on "not busy" left a finished, schema-valid
+   * answer uncollected for 22+ minutes behind a worker-spawned child.
+   *
+   * Two ways out, and no silent third:
+   * - the transcript proves the turn complete (`turnComplete`) → collect;
+   * - the daemon stably reports the session settled while the transcript
+   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
+   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
+   *   *not* a collect-on-best-evidence path: a settled daemon beside an
+   *   unproven transcript is exactly what a killed worker's partial answer
+   *   looks like, and promoting that to a success would hand downstream
+   *   stages a truncated answer as if it were the real one. The partial text
+   *   rides the failure (the shared catch attaches it), and the bounded
+   *   retry re-asks.
+   *
+   * `state: blocked` still drives bounded valve recovery, and a transient
+   * roster-query failure reports `present: false` only after
+   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * live worker.
    */
   async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
@@ -253,20 +282,25 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     let sawLife = fromIndex > 0;
     let nudges = 0;
     let absences = 0;
+    let settledPolls = 0;
 
     for (;;) {
       this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-
-      if (!sawLife) {
-        sawLife = (await this.#tryReadTranscript(handle)) !== null;
-        if (!sawLife && Date.now() >= firstLifeDeadline) {
-          throw new ClaudeFirstLifeTimeoutError(
-            `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
-          );
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null) {
+        sawLife = true;
+        if (turnComplete(transcript.entries, fromIndex)) {
+          return transcript;
         }
       }
+      if (!sawLife && Date.now() >= firstLifeDeadline) {
+        throw new ClaudeFirstLifeTimeoutError(
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+        );
+      }
+
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
 
       if (!status.present) {
         absences += 1;
@@ -284,7 +318,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const mark = transcript?.entries.length ?? fromIndex;
         const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!steered) {
           throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
@@ -293,13 +327,18 @@ export class ClaudeEngineInvocation implements EngineInvocation {
         continue;
       }
 
-      // Not actively generating: the turn may be complete. The transcript is the
-      // authoritative signal — confirm the latest assistant message has settled.
-      if (status.status !== "busy") {
-        const transcript = await this.#tryReadTranscript(handle);
-        if (transcript !== null && turnComplete(transcript.entries, fromIndex)) {
-          return transcript;
+      // Settled means the daemon itself says generation is over ("idle", or a
+      // `state` of done); a failed roster query ("unknown") and an active
+      // "busy" both reset the window rather than feed it.
+      if (status.state === "done" || status.status === "idle") {
+        settledPolls += 1;
+        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
+          throw new ClaudeCollectionError(
+            "session settled but its transcript never proved the turn complete"
+          );
         }
+      } else {
+        settledPolls = 0;
       }
 
       if (Date.now() >= deadline) {
@@ -512,6 +551,9 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   }
   if (error instanceof ClaudeTranscriptError) {
     return { kind: "claude-transcript-error", message: error.message };
+  }
+  if (error instanceof ClaudeCollectionError) {
+    return { kind: "claude-collection-error", message: error.message };
   }
   return { kind: "claude-dispatch-error", message: error.message };
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RemovedAgentOptionError } from "../../src/errors.js";
+import { RemovedAgentOptionError, attachAgentIdentity } from "../../src/errors.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
@@ -166,4 +166,41 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
   // The live TokenBudget's mutators must not reach script code.
   assert.equal("record" in hooks.budget, false);
   assert.equal("events" in hooks.budget, false);
+});
+
+test("parallel resolves an identified failure to its envelope, not bare null", async () => {
+  // An identity: true call that fails operationally inside a fan-out
+  // keeps its identity — the carrier the runtime attached becomes the
+  // resolved envelope, with output null carrying the collapse.
+  const failure = attachAgentIdentity(new Error("worker died"), { label: "verify", phase: "check" });
+  const logs: string[] = [];
+
+  const results = await parallel(
+    [
+      () => "first",
+      () => {
+        throw failure;
+      }
+    ],
+    (message) => logs.push(message)
+  );
+
+  assert.deepEqual(results, ["first", { label: "verify", phase: "check", output: null }]);
+  assert.match(logs[0] ?? "", /parallel thunk 1 failed/);
+});
+
+test("pipeline resolves an identified failed item to its envelope", async () => {
+  const failure = attachAgentIdentity(new Error("stage died"), { label: "leg", phase: null });
+
+  const results = await pipeline(
+    ["item"],
+    [
+      () => {
+        throw failure;
+      }
+    ],
+    () => {}
+  );
+
+  assert.deepEqual(results, [{ label: "leg", phase: null, output: null }]);
 });

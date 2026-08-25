@@ -13,6 +13,7 @@ import {
   EngineShutdownError,
   MissingEngineError,
   appServerDiagnosticOf,
+  attachAgentIdentity,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -308,7 +309,7 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution: the
+        // Identified resolution (result identity is opt-in): the
         // envelope wraps every resolution, a schema call's null collapse
         // included, so a fan-in that keeps the envelope still knows which
         // worker failed. The durable record is unchanged — it already
@@ -316,6 +317,15 @@ export class EnsembleRuntime {
         return { label: options.label ?? null, phase: options.phase ?? null, output };
       }
       return output;
+    } catch (error) {
+      if (options.identity === true && error instanceof Error) {
+        // An identified call keeps its identity through operational failure:
+        // the combinators' collapse reads this carrier and resolves
+        // { label, phase, output: null } instead of bare null. The call's
+        // own contract is unchanged — the error still propagates.
+        attachAgentIdentity(error, { label: options.label ?? null, phase: options.phase ?? null });
+      }
+      throw error;
     } finally {
       this.#unsettledAgentRecords.delete(agentId);
     }

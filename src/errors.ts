@@ -117,6 +117,40 @@ export function workerExitStatusOf(error: unknown): WorkerExitStatus | null {
   return null;
 }
 
+/**
+ * The identity an `identity: true` call declared, riding an operational
+ * failure out of `agent()` so a combinator's collapse can keep it (an
+ * identified leg's failure resolves `{ label, phase, output: null }`, never
+ * bare `null`). A sibling carrier to the ones above, and deliberately not a
+ * general metadata channel: it carries exactly the identity the envelope
+ * needs, only on calls that opted in. Attachment never overwrites an earlier
+ * value, so the identity closest to the failing call wins over a later
+ * re-wrap.
+ */
+export interface AgentCallIdentity {
+  label: string | null;
+  phase: string | null;
+}
+
+interface AgentIdentityCarrier {
+  agentCallIdentity?: AgentCallIdentity;
+}
+
+export function attachAgentIdentity<T extends Error>(error: T, identity: AgentCallIdentity): T {
+  const carrier = error as T & AgentIdentityCarrier;
+  if (carrier.agentCallIdentity === undefined) {
+    carrier.agentCallIdentity = identity;
+  }
+  return error;
+}
+
+export function agentIdentityOf(error: unknown): AgentCallIdentity | null {
+  if (error instanceof Error) {
+    return (error as AgentIdentityCarrier).agentCallIdentity ?? null;
+  }
+  return null;
+}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

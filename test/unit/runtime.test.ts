@@ -1640,3 +1640,35 @@ test("fallbackModel is rejected on the Codex engine before any worker spawns", a
   );
   assert.equal(transport.openedThreads.length, 0);
 });
+
+test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
+  // agent() attaches the call's declared identity to the operational
+  // failure it throws, and the combinator's collapse resolves the
+  // envelope. An unidentified sibling still collapses to bare null.
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 2,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: async () => {
+        throw new Error("worker transport died");
+      }
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1
+  });
+
+  const results = await parallel(
+    [
+      () => runtime.agent("fail identified", { engine: "claude", identity: true, label: "verify", phase: "check" }),
+      () => runtime.agent("fail bare", { engine: "claude" })
+    ],
+    () => undefined
+  );
+
+  assert.deepEqual(results, [{ label: "verify", phase: "check", output: null }, null]);
+});

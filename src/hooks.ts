@@ -1,5 +1,5 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
-import { PreSpawnAuthorError } from "./errors.js";
+import { PreSpawnAuthorError, agentIdentityOf } from "./errors.js";
 
 import type { AgentOptions, Budget, EngineName } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
@@ -99,6 +99,14 @@ export async function parallel<T>(
           throw error;
         }
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
+        // An identified call's failure keeps its identity: the carrier
+        // the runtime attached becomes the envelope the fan-in reads, with
+        // output null carrying the collapse. The envelope *is* the thunk's
+        // declared resolution shape for an identity: true call.
+        const identity = agentIdentityOf(error);
+        if (identity !== null) {
+          return { label: identity.label, phase: identity.phase, output: null } as Awaited<T>;
+        }
         return null;
       }
     })
@@ -127,6 +135,13 @@ export async function pipeline<Item>(
             throw error;
           }
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
+          // Same identity-preserving collapse as parallel(): the failed
+          // item resolves its identity envelope when the failing call
+          // declared one, bare null otherwise.
+          const identity = agentIdentityOf(error);
+          if (identity !== null) {
+            return { label: identity.label, phase: identity.phase, output: null };
+          }
           return null;
         }
       }

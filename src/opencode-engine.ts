@@ -36,6 +36,8 @@ export interface OpenCodeRunOptions {
   variant?: string;
   /** Aborting terminates the subprocess (SIGTERM, escalating to SIGKILL). */
   signal?: AbortSignal;
+  /** Called once, on the run's first stdout chunk — the earliest observable sign of worker output. */
+  onFirstData?: () => void;
 }
 
 export interface OpenCodeRunResult {
@@ -126,7 +128,16 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       args.push("--variant", options.variant);
     }
     args.push(options.prompt);
-    return runProcess(this.#bin, args, options.cwd, this.#env, options.timeoutMs, this.#killGraceMs, options.signal);
+    return runProcess(
+      this.#bin,
+      args,
+      options.cwd,
+      this.#env,
+      options.timeoutMs,
+      this.#killGraceMs,
+      options.signal,
+      options.onFirstData
+    );
   }
 
   async exportSession(sessionId: string, cwd: string, signal?: AbortSignal): Promise<OpenCodeSessionExportResult> {
@@ -187,6 +198,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       providerModel: this.#providerModel,
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
+      ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -395,7 +407,8 @@ function runProcess(
   env: NodeJS.ProcessEnv,
   timeoutMs: number | undefined,
   killGraceMs = 5_000,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  onFirstData?: () => void
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -429,8 +442,20 @@ function runProcess(
       abortSignal?.addEventListener("abort", terminate, { once: true });
     }
 
+    let firstDataSeen = false;
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdout.on("data", (chunk) => {
+      if (!firstDataSeen) {
+        firstDataSeen = true;
+        // Liveness reporting is observability; it must never fail the run.
+        try {
+          onFirstData?.();
+        } catch {
+          // Swallowed deliberately.
+        }
+      }
+      stdout.push(chunk);
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {

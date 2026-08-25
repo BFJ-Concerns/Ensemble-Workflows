@@ -143,6 +143,12 @@ export interface TurnStartOptions {
   // Omitted → no per-turn deadline (unbounded). There is no default; a backstop
   // is the orchestrator's choice (see the skill's backstop section).
   timeoutMs?: number;
+  /**
+   * Called once, when the turn's first output-bearing frame arrives — the
+   * same frame class that disarms the first-output deadline. Live liveness
+   * evidence for a supervisor; never affects the turn's own outcome.
+   */
+  onFirstOutput?: () => void;
 }
 
 export interface ThreadStartOptions {

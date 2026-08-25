@@ -61,6 +61,13 @@ export interface EngineAttemptFailure {
 export interface EngineAttemptContext {
   attempt: number;
   previousFailure?: EngineAttemptFailure;
+  /**
+   * Called at the first observed sign of worker output — a transcript
+   * appearing, a streamed frame, a first stdout chunk. Engines may call it
+   * more than once (per attempt, or per frame kind); the consumer keeps the
+   * earliest observation, so callers need no dedup of their own.
+   */
+  onLiveEvidence?: () => void;
 }
 
 export interface EngineAttemptResult extends TurnResult {
@@ -169,10 +176,14 @@ class CodexEngineInvocation implements EngineInvocation {
     // Codex retries open a fresh thread, so the correction rides the prompt —
     // the same degraded-correction shape the opencode engine uses.
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
 
-  async #runTurnInCwd(prompt: string, cwd: string | undefined): Promise<TurnResult> {
+  async #runTurnInCwd(
+    prompt: string,
+    cwd: string | undefined,
+    onLiveEvidence: (() => void) | undefined
+  ): Promise<TurnResult> {
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {})
     });
@@ -181,7 +192,8 @@ class CodexEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {})
+      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
+      ...(onLiveEvidence !== undefined ? { onFirstOutput: onLiveEvidence } : {})
     });
   }
 

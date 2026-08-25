@@ -55,6 +55,9 @@ interface TurnState {
   turnId: string | undefined;
   startedAt: number;
   firstDeltaAt: number | null;
+  /** Whether the supervisor-facing first-output callback has fired for this turn. */
+  firstOutputSeen: boolean;
+  onFirstOutput: (() => void) | undefined;
   completedAt: number | null;
   deltaText: string;
   itemText?: string;
@@ -285,7 +288,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
-    const state = this.#createTurnState(threadId, options.timeoutMs);
+    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
     this.#turns.set(threadId, state);
     // The turn can terminalise while turn/start is still awaiting its
     // response (timeout, close, process death, an early error frame). This
@@ -591,6 +594,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
           this.#disarmFirstDeltaDeadline(turn);
+          this.#noteTurnFirstOutput(turn);
         }
       }
       this.#sendApprovalDenial(id);
@@ -665,6 +669,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // it is no longer silently stuck before producing anything.
       if (isOutputBearingTurnFrame(method)) {
         this.#disarmFirstDeltaDeadline(turn);
+        this.#noteTurnFirstOutput(turn);
       }
     }
 
@@ -834,6 +839,26 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
+  /**
+   * Fire the supervisor-facing first-output callback, once per turn. Called
+   * only from the frame-driven sites (an output-bearing notification, a
+   * turn-scoped server request) — never from the completion/rejection
+   * teardown, which also disarms the deadline but proves nothing about
+   * output. The callback is observability: a throw inside it must never
+   * affect the turn.
+   */
+  #noteTurnFirstOutput(turn: TurnState): void {
+    if (turn.firstOutputSeen) {
+      return;
+    }
+    turn.firstOutputSeen = true;
+    try {
+      turn.onFirstOutput?.();
+    } catch {
+      // Liveness reporting must never take the turn down with it.
+    }
+  }
+
   #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
     turn.firstDeltaDeadline = setTimeout(() => {
       void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
@@ -926,7 +951,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   }
 
-  #createTurnState(threadId: string, timeoutMs: number | undefined): TurnState {
+  #createTurnState(
+    threadId: string,
+    timeoutMs: number | undefined,
+    onFirstOutput: (() => void) | undefined
+  ): TurnState {
     let resolveTurn: (result: TurnResult) => void = () => undefined;
     let rejectTurn: (reason: Error) => void = () => undefined;
     const promise = new Promise<TurnResult>((resolve, reject) => {
@@ -939,6 +968,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       turnId: undefined,
       startedAt: Date.now(),
       firstDeltaAt: null,
+      firstOutputSeen: false,
+      onFirstOutput,
       completedAt: null,
       deltaText: "",
       items: new Map<string, number>(),

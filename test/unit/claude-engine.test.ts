@@ -895,3 +895,20 @@ test("a settled session with no assistant text fails loudly with the collection 
     }
   });
 });
+
+test("Claude reports liveness evidence when the transcript first shows this turn's output", async () => {
+  await withControlPlane([{ busyPolls: 2, assistant: { text: "ok" } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    const invocation = adapter.createInvocation("go", {});
+    let evidence = 0;
+    const result = await invocation.runAttempt({
+      attempt: 1,
+      onLiveEvidence: () => {
+        evidence += 1;
+      }
+    });
+    assert.equal(result.text, "ok");
+    assert.equal(evidence, 1);
+    await invocation.close?.();
+  });
+});

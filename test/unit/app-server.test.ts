@@ -1206,3 +1206,27 @@ function restoreEnv(name: string, saved: string | undefined): void {
     process.env[name] = saved;
   }
 }
+
+test("the first output-bearing frame fires the supervisor-facing liveness callback once", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("delayed-first-delta");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    firstDeltaTimeoutMs: 250
+  });
+  try {
+    const threadId = await transport.openThread({});
+    let fires = 0;
+    const result = await transport.runTurn(threadId, "speak slowly", {
+      timeoutMs: 2_000,
+      onFirstOutput: () => {
+        fires += 1;
+      }
+    });
+    assert.equal(result.text, "the delayed whole answer");
+    // Later output frames (the completed item, turn completion) must not
+    // re-fire it: once per turn is the contract.
+    assert.equal(fires, 1);
+  } finally {
+    await transport.close();
+  }
+});

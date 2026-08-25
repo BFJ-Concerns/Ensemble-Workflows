@@ -236,3 +236,26 @@ test("the live agent list is bounded and lists running agents before queued ones
   assert.equal(snapshot.agents.length, 64);
   assert.ok(snapshot.agents.every((agent) => agent.state === "running"));
 });
+
+test("liveness stamps ride the live agent snapshot, earliest evidence winning", () => {
+  let clock = 1_000;
+  const progress = progressAt(() => (clock += 1));
+  const id = progress.queueAgent({ engine: "claude", label: null, phase: null });
+  let agent = progress.snapshot().agents[0];
+  assert.equal(agent?.startedAtMs, null);
+  assert.equal(agent?.firstEvidenceAtMs, null);
+
+  progress.startAgent(id);
+  const startedAt = progress.snapshot().agents[0]?.startedAtMs;
+  assert.equal(typeof startedAt, "number");
+
+  progress.noteAgentEvidence(id);
+  const firstEvidence = progress.snapshot().agents[0]?.firstEvidenceAtMs;
+  assert.equal(typeof firstEvidence, "number");
+  assert.ok((firstEvidence ?? 0) > (startedAt ?? 0));
+
+  // Engines may report on every attempt; the earliest observation is kept.
+  progress.noteAgentEvidence(id);
+  agent = progress.snapshot().agents[0];
+  assert.equal(agent?.firstEvidenceAtMs, firstEvidence);
+});

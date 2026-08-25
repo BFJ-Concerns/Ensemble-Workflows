@@ -145,8 +145,13 @@ JSON object with these fields:
   `null`. Spend and ceilings are per-engine and are never summed.
 - `agents`: array of live worker objects, capped for file size. Each object has
   numeric `id` and `attempt`, `engine` (`"codex"`, `"claude"`, or
-  `"opencode"`), `state` (`"queued"` or `"running"`), and nullable string
-  `label` and `phase`.
+  `"opencode"`), `state` (`"queued"` or `"running"`), nullable string
+  `label` and `phase`, and two liveness stamps (numbers or `null`, Unix epoch
+  milliseconds): `startedAtMs`, when the worker left the queue and began
+  executing, and `firstEvidenceAtMs`, when the engine first observed a sign of
+  worker output. Together they let a supervisor tell a healthy-but-slow leg
+  (recent evidence) from a stalled one (running long with none) without
+  killing the worker to find out.
 
 Example:
 
@@ -201,7 +206,9 @@ Example:
       "label": "scan",
       "phase": "Verify",
       "state": "running",
-      "attempt": 1
+      "attempt": 1,
+      "startedAtMs": 1766491209000,
+      "firstEvidenceAtMs": 1766491211200
     }
   ]
 }

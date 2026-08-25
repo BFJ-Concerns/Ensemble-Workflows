@@ -308,7 +308,7 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution (result identity is opt-in): the
+        // Identified resolution: the
         // envelope wraps every resolution, a schema call's null collapse
         // included, so a fan-in that keeps the envelope still knows which
         // worker failed. The durable record is unchanged — it already
@@ -601,6 +601,7 @@ export class EnsembleRuntime {
       try {
         const result = await invocation.runAttempt({
           attempt,
+          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
@@ -666,6 +667,7 @@ export class EnsembleRuntime {
       try {
         const result = await invocation.runAttempt({
           attempt,
+          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);

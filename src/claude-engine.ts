@@ -148,7 +148,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
         const handle = this.#handle as ClaudeSessionHandle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex);
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
       }
 
       // First attempt, or a correction we cannot do in-session: (re)dispatch.
@@ -156,7 +156,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       if (this.#handle !== null) {
         await this.#teardown();
       }
-      return await this.#dispatchAndCollect(previousFailure);
+      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
     } catch (error) {
       if (error instanceof Error) {
         await this.#attachLatestWorkerText(error, fromIndex);
@@ -189,7 +189,10 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     await this.#closePromise;
   }
 
-  async #dispatchAndCollect(previousFailure: EngineAttemptFailure | undefined): Promise<TurnResult> {
+  async #dispatchAndCollect(
+    previousFailure: EngineAttemptFailure | undefined,
+    onLiveEvidence: (() => void) | undefined
+  ): Promise<TurnResult> {
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
       name: this.#nextName(),
@@ -207,14 +210,15 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       throw new EngineShutdownError("claude");
     }
 
-    const transcript = await this.#runToCompletion(handle, 0);
+    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
     return this.#buildResult(handle, transcript, 0);
   }
 
   async #correctInSession(
     handle: ClaudeSessionHandle,
     previousFailure: EngineAttemptFailure,
-    fromIndex: number
+    fromIndex: number,
+    onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
     const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!steered) {
@@ -222,7 +226,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     }
 
     await this.#awaitReceipt(handle, fromIndex);
-    const transcript = await this.#runToCompletion(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
@@ -273,7 +277,11 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
    * live worker.
    */
-  async #runToCompletion(handle: ClaudeSessionHandle, fromIndex: number): Promise<TranscriptFile> {
+  async #runToCompletion(
+    handle: ClaudeSessionHandle,
+    fromIndex: number,
+    onLiveEvidence: (() => void) | undefined
+  ): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
     const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
     const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
@@ -283,12 +291,20 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     let nudges = 0;
     let absences = 0;
     let settledPolls = 0;
+    let evidenceReported = false;
 
     for (;;) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
+        // Evidence means output *this turn produced*: for a correction the
+        // transcript pre-exists, so only entries beyond the high-water mark
+        // count as a sign of life on the supervision surface.
+        if (!evidenceReported && transcript.entries.length > fromIndex) {
+          evidenceReported = true;
+          onLiveEvidence?.();
+        }
         if (turnComplete(transcript.entries, fromIndex)) {
           return transcript;
         }

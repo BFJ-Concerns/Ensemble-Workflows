@@ -23,6 +23,16 @@ export interface LiveAgentSnapshot {
   state: AgentState;
   /** 1 on the first try; >1 while a retry/correction is in flight. */
   attempt: number;
+  /**
+   * Epoch ms the worker left the queue and began executing; null while
+   * queued. With `firstEvidenceAtMs` this is the liveness evidence a
+   * supervisor reads mid-run: a leg running for minutes with no evidence is
+   * suspect, one with recent evidence is healthy-but-slow — the distinction
+   * that stops a healthy worker being killed on a misread.
+   */
+  startedAtMs: number | null;
+  /** Epoch ms of the first observed sign of worker output; null until the engine reports one. */
+  firstEvidenceAtMs: number | null;
 }
 
 export interface EngineProgressSnapshot {
@@ -71,6 +81,8 @@ interface AgentRecord {
   phase: string | null;
   state: AgentState;
   attempt: number;
+  startedAt: number | null;
+  firstEvidenceAt: number | null;
 }
 
 interface EngineCounters {
@@ -149,7 +161,9 @@ export class RunProgress {
       label: input.label,
       phase: input.phase ?? this.#currentPhase,
       state: "queued",
-      attempt: 1
+      attempt: 1,
+      startedAt: null,
+      firstEvidenceAt: null
     });
     this.#counters(input.engine).queued += 1;
     this.#touch();
@@ -163,9 +177,24 @@ export class RunProgress {
       return;
     }
     record.state = "running";
+    record.startedAt = this.#now();
     const counters = this.#counters(record.engine);
     counters.queued -= 1;
     counters.active += 1;
+    this.#touch();
+  }
+
+  /**
+   * Records the first observed sign of worker output for a live agent.
+   * Idempotent — the earliest observation wins — so engines may report on
+   * every attempt without the consumer losing the original timestamp.
+   */
+  noteAgentEvidence(id: number): void {
+    const record = this.#live.get(id);
+    if (record === undefined || record.firstEvidenceAt !== null) {
+      return;
+    }
+    record.firstEvidenceAt = this.#now();
     this.#touch();
   }
 
@@ -275,7 +304,9 @@ export class RunProgress {
       label: record.label,
       phase: record.phase,
       state: record.state,
-      attempt: record.attempt
+      attempt: record.attempt,
+      startedAtMs: record.startedAt,
+      firstEvidenceAtMs: record.firstEvidenceAt
     }));
   }
 

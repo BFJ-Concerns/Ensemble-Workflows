@@ -1205,3 +1205,46 @@ function restoreEnv(name: string, saved: string | undefined): void {
     process.env[name] = saved;
   }
 }
+
+test("opencode forwards liveness evidence, fired by the real runner's first stdout chunk", async () => {
+  // Forwarding half: the invocation hands the agent-level callback through as
+  // the run's onFirstData.
+  const runner = new FakeOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ runner });
+  const invocation = adapter.createInvocation("say", { timeoutMs: 1_000, model: "glm-5.2" });
+  let evidence = 0;
+  await invocation.runAttempt({
+    attempt: 1,
+    onLiveEvidence: () => {
+      evidence += 1;
+    }
+  });
+  runner.runs[0]?.onFirstData?.();
+  assert.equal(evidence, 1);
+
+  // Firing half: the CLI runner reports the first stdout chunk exactly once.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-first-data-"));
+  try {
+    const stub = path.join(dir, "opencode-stub.mjs");
+    await writeFile(
+      stub,
+      `#!/usr/bin/env node\nprocess.stdout.write("one\\n");\nsetTimeout(() => { process.stdout.write("two\\n"); }, 20);\n`
+    );
+    await chmod(stub, 0o755);
+    let fires = 0;
+    const cliRunner = new OpenCodeCliRunner(stub);
+    const result = await cliRunner.run({
+      prompt: "p",
+      cwd: dir,
+      providerModel: "m",
+      timeoutMs: 5_000,
+      onFirstData: () => {
+        fires += 1;
+      }
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(fires, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

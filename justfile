@@ -24,7 +24,10 @@ bundle-fresh:
 # Alias for `verify`, kept for muscle memory.
 ci: verify
 
-# ESLint across the repo.
+# ESLint over the repo's own roots (src, test, scripts, the config itself) —
+# enumerated rather than `.`, so a repo-shaped directory at the root (a
+# registered comparison worktree, a nested checkout) is never walked and can
+# never fail the gate on its own copied files.
 lint:
     npm run lint
 

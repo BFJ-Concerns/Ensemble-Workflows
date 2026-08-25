@@ -17,6 +17,7 @@ import {
 } from "./concurrency-defaults.js";
 
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
+import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
@@ -52,7 +53,8 @@ export interface EngineAttemptFailure {
     | "claude-blocked"
     | "claude-valve-error"
     | "claude-transcript-error"
-    | "claude-collection-error";
+    | "claude-collection-error"
+    | "opencode-run-error";
   message: string;
 }
 
@@ -64,6 +66,12 @@ export interface EngineAttemptContext {
 export interface EngineAttemptResult extends TurnResult {
   /** Operational failure that should retain its identity through the shared retry loop. */
   attemptFailure?: EngineAttemptFailure;
+  /**
+   * How the worker process died, when the engine observed it — the same
+   * evidence a thrown failure carries via `attachWorkerExitStatus`, riding a
+   * failed result so classifying a failure engine-side never discards it.
+   */
+  workerExit?: WorkerExitStatus;
 }
 
 export interface EngineInvocation {

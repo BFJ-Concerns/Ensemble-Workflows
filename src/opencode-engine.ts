@@ -2,10 +2,16 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
-import { EngineShutdownError, OpenCodeRunError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
+import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
 
-import type { EngineAttemptContext, EngineAttemptFailure, EngineInvocation, EngineTurnOptions } from "./engines.js";
-import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
+import type {
+  EngineAttemptContext,
+  EngineAttemptFailure,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions
+} from "./engines.js";
+import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent } from "./types.js";
 
 export interface OpenCodeRunner {
   run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult>;
@@ -148,7 +154,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closePromise: Promise<void> | null = null;
-  #settlement: Promise<TurnResult> | null = null;
+  #settlement: Promise<EngineAttemptResult> | null = null;
   #onClose: ((invocation: OpenCodeEngineInvocation) => void) | undefined;
 
   constructor(options: OpenCodeEngineInvocationOptions) {
@@ -162,7 +168,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     this.#onClose = options.onClose;
   }
 
-  runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+  runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     // close() must be able to await a live attempt so cancellation is not
     // "torn down under a caller still running": track the settlement.
     const settlement = this.#runAttempt(context);
@@ -174,7 +180,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     });
   }
 
-  async #runAttempt(context: EngineAttemptContext): Promise<TurnResult> {
+  async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
@@ -242,8 +248,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
             cost: exportData.info?.cost ?? null
           };
     // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it reintroduces a fixed defect (spend that
-    // never reaches the ledger), behind a narrower gate. The identifiers
+    // spend — suppressing it repeats the defect of spend that never reaches
+    // the ledger, behind a narrower gate. The identifiers
     // exist only to attribute the event, so a missing id gets a synthetic,
     // clearly-labelled one rather than costing the accounting.
     const usageEvent =
@@ -261,13 +267,36 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     ];
 
     if (run.exitCode !== 0) {
-      // Evidence of *how* the process died rides the failure beside the
-      // worker's partial text: exit status or terminating signal, so a
-      // killed leg is distinguishable from one that returned nothing.
-      throw attachWorkerExitStatus(
-        attachPartialWorkerText(new OpenCodeRunError(openCodeFailureMessage(run, parsedRun.events)), text),
-        { exitCode: run.exitCode, signal: run.signal }
-      );
+      // An operational failure consumes a bounded retry attempt, the
+      // contract documented for every engine — so it returns
+      // as a failed result the shared loop governs (imitating the Claude
+      // engine's failedTurnResult), not a thrown error that would propagate
+      // on the attempt it occurs. For a subprocess engine a retry means a
+      // fresh dispatch with the failure folded into the next prompt.
+      // Evidence rides the result: the worker's partial text, its usage and
+      // transcript, and *how* the process died — exit status or terminating
+      // signal — so a killed leg is distinguishable from one that returned
+      // nothing.
+      return {
+        text,
+        resolvedModel: this.#providerModel,
+        attemptFailure: {
+          kind: "opencode-run-error",
+          message: openCodeFailureMessage(run, parsedRun.events)
+        },
+        workerExit: { exitCode: run.exitCode, signal: run.signal },
+        deltaText: text,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        transcripts,
+        diagnostics: {
+          opencode: {
+            session_export: exportDiagnostic
+          }
+        }
+      };
     }
 
     return {

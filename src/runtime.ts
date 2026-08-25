@@ -921,7 +921,16 @@ function recordOperationalFailure(
     return undefined;
   }
   record.attempts.push(
-    attemptRecord(attempt, "failed", result.attemptFailure, result.text, null, startedAtMs, result)
+    attemptRecord(
+      attempt,
+      "failed",
+      result.attemptFailure,
+      result.text,
+      null,
+      startedAtMs,
+      result,
+      result.workerExit ?? null
+    )
   );
   return result.attemptFailure;
 }

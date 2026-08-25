@@ -336,9 +336,11 @@ timer behind its filesystem watch rather than trusting the file absolutely.
   appended otherwise); codex and opencode retry with the failure appended to
   the prompt.
 - **Operational worker failures** on Claude and opencode (dispatch died, poll
-  timed out, transcript unreadable, subprocess killed on deadline) degrade to
+  timed out, transcript unreadable, session settled without a provable
+  completion, subprocess killed on deadline, run exited non-zero) degrade to
   an empty attempt inside the retry loop — they consume attempts rather than
-  hanging or throwing. A Codex turn timeout or non-retryable app-server error
+  hanging or throwing, with the worker's partial text, exit evidence, and the
+  engine's own diagnostic retained in the failed attempt record. A Codex turn timeout or non-retryable app-server error
   **throws** out of `agent()`. JSON-RPC backpressure while starting a turn and
   a terminal notification whose `error.codexErrorInfo` is
   `serverOverloaded` retry within the attempt bound; either throws if it

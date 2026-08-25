@@ -13,7 +13,9 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 
 for (const scenario of [
   { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ },
-  { engine: "opencode", model: "glm-5.2", error: /OpenCodeRunError/ }
+  // An opencode run failure consumes its (single) attempt, so exhaustion
+  // surfaces the engine diagnostic through the empty-output error.
+  { engine: "opencode", model: "glm-5.2", error: /opencode run failed/ }
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,

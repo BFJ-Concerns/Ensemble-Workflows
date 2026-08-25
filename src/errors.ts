@@ -258,14 +258,6 @@ export class OpenCodeModelNotRegisteredError extends AgentOptionRejectedError {
   }
 }
 
-export class OpenCodeWorkerError extends EnsembleError {}
-
-export class OpenCodeRunError extends OpenCodeWorkerError {
-  constructor(message: string) {
-    super(message);
-  }
-}
-
 function renderDiagnostic(value: unknown): string {
   try {
     return JSON.stringify(value) ?? "undefined";

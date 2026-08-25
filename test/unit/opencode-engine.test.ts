@@ -15,13 +15,12 @@ import {
   EngineShutdownError,
   FallbackModelUnsupportedError,
   OpenCodeModelNotRegisteredError,
-  OpenCodeModelRequiredError,
-  OpenCodeRunError,
-  partialWorkerTextOf,
-  workerExitStatusOf
+  OpenCodeModelRequiredError
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+
+import type { RuntimeAgentRecord } from "../../src/run-record.js";
 
 import type {
   OpenCodeRunOptions,
@@ -37,11 +36,14 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
   exports: string[] = [];
 
   #runResult: OpenCodeRunResult;
+  /** Per-attempt overrides, consumed in dispatch order; the base result serves any attempt beyond the list. */
+  #runResults: Array<Partial<OpenCodeRunResult>>;
   #exportResult: OpenCodeSessionExportResult;
 
   constructor(
     options: {
       runResult?: Partial<OpenCodeRunResult>;
+      runResults?: Array<Partial<OpenCodeRunResult>>;
       exportText?: string | null;
       exportResult?: OpenCodeSessionExportResult;
     } = {}
@@ -54,6 +56,7 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       durationMs: 12,
       ...options.runResult
     };
+    this.#runResults = [...(options.runResults ?? [])];
     this.#exportResult =
       options.exportResult ??
       (options.exportText === null
@@ -63,7 +66,7 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
     this.runs.push(options);
-    return this.#runResult;
+    return { ...this.#runResult, ...this.#runResults.shift() };
   }
 
   async exportSession(sessionId: string): Promise<OpenCodeSessionExportResult> {
@@ -132,17 +135,19 @@ test("opencode run failure preserves stream text and the engine diagnostic in th
   runtime.setRunRecorder(writer);
 
   try {
+    // The failure consumes the bounded attempt: with maxAttempts 1 the loop
+    // exhausts and surfaces the engine's own diagnostic in the final error,
+    // while the attempt record retains the partial text and classification.
     await assert.rejects(runtime.agent("fail after writing", { engine: "opencode", model: "glm-5.2" }), (error: unknown) => {
-      assert.ok(error instanceof OpenCodeRunError);
+      assert.ok(error instanceof EmptyAgentOutputError);
       assert.match(error.message, /provider connection lost/);
-      assert.equal(partialWorkerTextOf(error), "partial from opencode");
       return true;
     });
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       attempts: Array<{ raw_output: string | null; failure: { kind: string; message: string } }>;
     };
     assert.equal(agent.attempts[0]?.raw_output, "partial from opencode");
-    assert.equal(agent.attempts[0]?.failure.kind, "OpenCodeRunError");
+    assert.equal(agent.attempts[0]?.failure.kind, "opencode-run-error");
     assert.match(agent.attempts[0]?.failure.message ?? "", /provider connection lost/);
   } finally {
     await runtime.close();
@@ -184,11 +189,7 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   runtime.setRunRecorder(writer);
 
   try {
-    await assert.rejects(runtime.agent("get killed", { engine: "opencode", model: "glm-5.2" }), (error: unknown) => {
-      assert.ok(error instanceof OpenCodeRunError);
-      assert.deepEqual(workerExitStatusOf(error), { exitCode: null, signal: "SIGKILL" });
-      return true;
-    });
+    await assert.rejects(runtime.agent("get killed", { engine: "opencode", model: "glm-5.2" }), EmptyAgentOutputError);
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       attempts: Array<{
         worker_exit: { exit_code: number | null; signal: string | null } | null;
@@ -202,6 +203,39 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
     await runtime.close();
     await rm(cwd, { recursive: true, force: true });
     await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("an opencode run failure consumes an attempt and the retry redispatches with the failure", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-retry-cwd-"));
+  // First dispatch dies operationally; the second succeeds. The documented
+  // retry contract: the failure spends one of the bounded attempts, and the
+  // fresh dispatch carries the failure folded into its prompt.
+  const runner = new FakeOpenCodeRunner({
+    runResults: [{ exitCode: 7, stderr: "provider fell over" }]
+  });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    defaultMaxAttempts: 2
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    const result = await runtime.agent("recover on the second dispatch", { engine: "opencode", model: "glm-5.2" });
+    assert.equal(result, "final answer");
+    assert.equal(runner.runs.length, 2);
+    assert.match(runner.runs[1]?.prompt ?? "", /A previous attempt failed \(opencode-run-error\): opencode run failed: provider fell over/);
+    const settledRecord = records.at(-1);
+    assert.equal(settledRecord?.attempts.length, 2);
+    assert.equal(settledRecord?.attempts[0]?.failure?.kind, "opencode-run-error");
+    assert.deepEqual(settledRecord?.attempts[0]?.workerExit, { exitCode: 7, signal: null });
+    assert.equal(settledRecord?.attempts[1]?.status, "complete");
+  } finally {
+    await runtime.close();
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 

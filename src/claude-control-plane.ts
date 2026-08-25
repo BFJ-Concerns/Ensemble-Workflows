@@ -177,9 +177,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // carries only this run's declarations and never touches the operator's
     // own settings.
     const settingsDir = await this.#writeWorkerSettings(options.name);
-    if (settingsDir !== null) {
-      args.push("--settings", path.join(settingsDir, "settings.json"));
-    }
+    args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     try {
       // Prompts routinely contain whole diffs and can exceed the platform's argv
@@ -209,20 +207,18 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         await delay(500);
       }
     } finally {
-      if (settingsDir !== null) {
-        if (registered === null) {
-          // The dispatch never produced a session, so nothing will read the
-          // file again. Best-effort: cleanup failure must never mask the
-          // dispatch error being thrown past this block.
-          await this.#removeSettingsDir(settingsDir);
-        } else {
-          // The session is live and Claude Code watches settings files for
-          // changes, so the file keeps the session's own lifetime: stop()
-          // removes it. Deleting it here — the moment the roster registers —
-          // would risk the daemon observing a mid-session removal of the
-          // very variables the file exists to hold.
-          this.#settingsDirs.set(registered.sessionId, settingsDir);
-        }
+      if (registered === null) {
+        // The dispatch never produced a session, so nothing will read the
+        // file again. Best-effort: cleanup failure must never mask the
+        // dispatch error being thrown past this block.
+        await this.#removeSettingsDir(settingsDir);
+      } else {
+        // The session is live and Claude Code watches settings files for
+        // changes, so the file keeps the session's own lifetime: stop()
+        // removes it. Deleting it here — the moment the roster registers —
+        // would risk the daemon observing a mid-session removal of the
+        // very variables the file exists to hold.
+        this.#settingsDirs.set(registered.sessionId, settingsDir);
       }
     }
     if (registered === null) {
@@ -243,7 +239,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string): Promise<string | null> {
+  async #writeWorkerSettings(dispatchName: string): Promise<string> {
     const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
     const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
     try {

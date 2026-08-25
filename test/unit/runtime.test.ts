@@ -780,7 +780,11 @@ test("Codex agents pass only turn options that remain configurable", async () =>
   await runtime.agent("read", { engine: "codex" });
 
   assert.deepEqual(transport.openedThreads, [{ cwd: "/fake/repo" }]);
-  assert.deepEqual(transport.turns[0]?.options, { timeoutMs: 1_000 });
+  // The liveness callback is runtime plumbing on every turn; the remaining
+  // options are the configurable surface this test pins.
+  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.equal(typeof onFirstOutput, "function");
+  assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
 });
 
 test("a per-call cwd reaches the Codex thread and overrides the run-wide cwd", async () => {
@@ -826,7 +830,9 @@ test("worktree isolation uses the isolated cwd and records the finished worktree
       cwd: "/fake/worktree-1"
     }
   ]);
-  assert.deepEqual(transport.turns[0]?.options, { timeoutMs: 1_000 });
+  const { onFirstOutput, ...turnOptions } = transport.turns[0]?.options ?? {};
+  assert.equal(typeof onFirstOutput, "function");
+  assert.deepEqual(turnOptions, { timeoutMs: 1_000 });
   assert.deepEqual(runtime.worktrees, [
     {
       path: "/fake/worktree-1",
@@ -1662,7 +1668,7 @@ test("an identified operational failure inside parallel resolves its envelope, n
     defaultMaxAttempts: 1
   });
 
-  const results = await parallel(
+  const results = await parallel<unknown>(
     [
       () => runtime.agent("fail identified", { engine: "claude", identity: true, label: "verify", phase: "check" }),
       () => runtime.agent("fail bare", { engine: "claude" })

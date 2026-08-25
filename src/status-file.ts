@@ -167,6 +167,20 @@ export class StatusFileWriter {
       } catch (error) {
         if (!isNodeError(error) || error.code !== "EEXIST") {
           this.#reportError(error);
+          // Any other link failure must not fall through to the unlink
+          // below — that would destroy the foreign snapshot outright.
+          // Restore by rename instead: atomic, and the clobber it risks (a
+          // publication racing in after the failed link) is confined to
+          // this already-failing path.
+          try {
+            await this.#fileOperations.rename(claim, target);
+          } catch (renameError) {
+            // Both restore routes failed: leave the claim in place — the
+            // content is preserved for the next run's stale-artefact sweep,
+            // which beats deleting the only copy.
+            this.#reportError(renameError);
+          }
+          return;
         }
       }
     }

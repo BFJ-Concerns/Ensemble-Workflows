@@ -181,7 +181,11 @@ test("StatusFileWriter close cannot unlink a snapshot replaced after its ownersh
   assert.equal(survivor.runId, "another-run");
 });
 
-test("StatusFileWriter close removes its claim when restoring another run fails", async () => {
+test("StatusFileWriter close restores another run's snapshot by rename when the no-clobber link fails", async () => {
+  // A failed link() must not fall through to the claim unlink — that
+  // destroyed the foreign snapshot outright (its public name empty, its
+  // content parked under a name nothing reads). The rename fallback puts it
+  // back and consumes the claim in the same motion.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
   const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
@@ -202,8 +206,47 @@ test("StatusFileWriter close removes its claim when restoring another run fails"
 
   await assert.doesNotReject(writer.close());
 
+  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
+  assert.equal(survivor.runId, "another-run");
   const claims = (await readdir(dir)).filter((entry) => entry.endsWith(".remove"));
   assert.deepEqual(claims, []);
+});
+
+test("StatusFileWriter close keeps its claim when no restore route succeeds", async () => {
+  // Both restore routes forced down: the claim is deliberately left in
+  // place — the foreign snapshot's only remaining copy — for a later run's
+  // stale-artefact sweep, rather than unlinked into nothing.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
+  const file = path.join(dir, STATUS_FILENAME);
+  const progress = newProgress();
+  const { rename } = await import("node:fs/promises");
+  const errors: unknown[] = [];
+  const writer = new StatusFileWriter({
+    progress,
+    dir,
+    onError: (error) => errors.push(error),
+    fileOperations: {
+      link: async () => {
+        throw Object.assign(new Error("forced link failure"), { code: "EIO" });
+      },
+      rename: async (source, destination) => {
+        if (source.endsWith(".remove")) {
+          throw Object.assign(new Error("forced rename failure"), { code: "EIO" });
+        }
+        await rename(source, destination);
+      }
+    }
+  });
+  await waitForFile(file);
+  await writeFile(file, `${JSON.stringify({ schema: 1, runId: "another-run", state: "running" })}\n`);
+
+  await assert.doesNotReject(writer.close());
+
+  const claims = (await readdir(dir)).filter((entry) => entry.endsWith(".remove"));
+  assert.equal(claims.length, 1);
+  const preserved = JSON.parse(await readFile(path.join(dir, claims[0]!), "utf8")) as { runId: string };
+  assert.equal(preserved.runId, "another-run");
+  assert.equal(errors.length, 2);
 });
 
 test("StatusFileWriter sweeps dead-process artefacts without touching live-process artefacts", async () => {

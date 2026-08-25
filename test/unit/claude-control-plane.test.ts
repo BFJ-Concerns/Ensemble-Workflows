@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { ClaudeCliControlPlane } from "../../src/claude-control-plane.js";
+import { spawn } from "node:child_process";
+
+import { ClaudeCliControlPlane, WORKER_MARKER_VARIABLE } from "../../src/claude-control-plane.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
@@ -177,14 +179,17 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     });
     const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
 
-    // The flag was passed and the file carried exactly the declared env block —
-    // the harness writes only its own declarations, never a merge of the
-    // operator's settings (Claude Code's own additive layering does the merge).
+    // The flag was passed and the file carried exactly the declared env block
+    // plus the dispatch's ownership tag — the harness writes only its own
+    // declarations, never a merge of the operator's settings (Claude Code's
+    // own additive layering does the merge).
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
     const flagIndex = dispatchArgv.indexOf("--settings");
     assert.notEqual(flagIndex, -1);
     const settingsPath = dispatchArgv[flagIndex + 1]!;
-    assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), { env: declared });
+    assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      env: { ...declared, [WORKER_MARKER_VARIABLE]: name }
+    });
 
     // The file holds credentials: private file in a private directory, and it
     // lives exactly as long as the session — present while live, gone on stop().
@@ -199,7 +204,11 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
   }
 });
 
-test("no declared worker environment dispatches without a settings flag", async () => {
+test("an undeclared worker environment still dispatches with the ownership tag alone", async () => {
+  // The settings file is written on every dispatch now: the tag is what lets
+  // stop() reap the worker's surviving descendants, and an untagged worker
+  // would be an unowned one. With nothing declared, the tag is the file's
+  // whole content.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-no-settings-"));
   try {
     const argvPath = path.join(dir, "dispatch-argv.json");
@@ -239,7 +248,65 @@ test("no declared worker environment dispatches without a settings flag", async 
     await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
-    assert.ok(!dispatchArgv.includes("--settings"));
+    const flagIndex = dispatchArgv.indexOf("--settings");
+    assert.notEqual(flagIndex, -1);
+    assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
+      env: { [WORKER_MARKER_VARIABLE]: name }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stop reaps a surviving process tagged with the dispatch's marker", async () => {
+  // The failure this closes: descendants of a daemon-hosted worker reparent
+  // to the user session when the worker dies, and nothing in the harness
+  // could reach them. The tag inherits through every spawn, so stop() can.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-reap-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000006";
+    const name = "reap-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "reap-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    // A descendant as the worker would have left it: alive, and carrying the
+    // dispatch tag it inherited through the settings-file env block.
+    const straggler = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      env: { ...process.env, [WORKER_MARKER_VARIABLE]: name },
+      stdio: "ignore"
+    });
+    const exited = new Promise<void>((resolve) => straggler.once("exit", () => resolve()));
+    await new Promise<void>((resolve) => straggler.once("spawn", () => resolve()));
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      reapGraceMs: 100
+    });
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    await controlPlane.stop(handle);
+
+    await exited;
+    assert.equal(straggler.exitCode === null ? straggler.signalCode : straggler.exitCode, "SIGTERM");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

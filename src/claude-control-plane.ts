@@ -1,9 +1,21 @@
 import { execFile, spawn } from "node:child_process";
-import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import { ClaudeDispatchError } from "./errors.js";
+
+/**
+ * Per-dispatch ownership tag. The variable rides the same settings-file `env`
+ * block that delivers the declared worker environment, so every process the
+ * worker spawns — however deeply, and however it is later reparented —
+ * inherits it. That inheritance is what gives worker-spawned subprocesses a
+ * named owner: `stop()` reaps any surviving process still carrying the
+ * dispatch's tag, closing the gap where descendants of a daemon-hosted
+ * worker escaped the cancellation plumbing entirely (observed as orphaned
+ * children burning CPU for ~90 minutes after their worker died).
+ */
+export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 
 /**
  * The seam between the Claude engine's orchestration brain and the actual
@@ -89,6 +101,10 @@ export interface ClaudeCliControlPlaneOptions {
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
   dispatchTimeoutMs?: number;
+  /** Grace between SIGTERM and SIGKILL when reaping tagged descendants at stop(). */
+  reapGraceMs?: number;
+  /** The proc filesystem root the reaper scans. Injectable for tests; on a platform without one the reap is a no-op. */
+  procDir?: string;
   /** tmux valve settle times after attach, before submit and before kill. */
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
@@ -112,6 +128,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #tmuxBin: string;
   #projectsDir: string;
   #dispatchTimeoutMs: number;
+  #reapGraceMs: number;
+  #procDir: string;
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
@@ -132,6 +150,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#env = { ...process.env, ...this.#workerEnv };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    this.#reapGraceMs = options.reapGraceMs ?? 5_000;
+    this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
@@ -214,19 +234,20 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /**
    * Write the per-dispatch settings file carrying the declared worker
-   * environment, or return null when nothing is declared (no flag is passed
-   * and behaviour matches a run that declares nothing). The file
-   * carries the declared values — gateway credentials among them — so it
-   * lives in its own mkdtemp directory (0o700 by construction, unguessable
-   * name) and the file itself is 0o600.
+   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * Written on every dispatch: the tag is what lets `stop()` reap the
+   * worker's surviving descendants, so an untagged worker would be an
+   * unowned one. (This supersedes the earlier no-declaration-no-flag
+   * behaviour, which predated descendant ownership.) The file can carry
+   * credentials — gateway values among the declared variables — so it lives
+   * in its own mkdtemp directory (0o700 by construction, unguessable name)
+   * and the file itself is 0o600.
    */
   async #writeWorkerSettings(dispatchName: string): Promise<string | null> {
-    if (Object.keys(this.#workerEnv).length === 0) {
-      return null;
-    }
+    const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
     const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
     try {
-      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env: this.#workerEnv })}\n`, {
+      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env })}\n`, {
         mode: 0o600
       });
     } catch (error) {
@@ -342,6 +363,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
     await this.#run(this.#claudeBin, ["stop", handle.id]);
+    // The session is over; anything still carrying its tag is a descendant
+    // the daemon will never reap (they reparent to the user session, not to
+    // the harness). Ownership means killing them here, not warning about them.
+    await this.#reapTaggedDescendants(handle.name);
     await this.#run(this.#claudeBin, ["rm", handle.id]);
     // The session is gone, so its settings file (which carries the declared
     // gateway values) goes with it. Same best-effort discipline as above.
@@ -350,6 +375,71 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       this.#settingsDirs.delete(handle.sessionId);
       await this.#removeSettingsDir(settingsDir);
     }
+  }
+
+  /**
+   * Kill every surviving process tagged with this dispatch's marker:
+   * SIGTERM first, then SIGKILL for anything still alive after the grace
+   * period. Best-effort throughout — reaping is cleanup, and a scan or kill
+   * failure must never mask the turn's real outcome. On a platform without
+   * a readable proc filesystem the scan finds nothing and the reap is a
+   * no-op.
+   */
+  async #reapTaggedDescendants(dispatchName: string): Promise<void> {
+    const tagged = await this.#findTaggedProcesses(dispatchName);
+    if (tagged.length === 0) {
+      return;
+    }
+    for (const pid of tagged) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Already gone, or not ours to signal.
+      }
+    }
+    await delay(this.#reapGraceMs);
+    for (const pid of tagged) {
+      if (!processAlive(pid)) {
+        continue;
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone, or not ours to signal.
+      }
+    }
+  }
+
+  /** Pids (other than our own) whose environment carries this dispatch's tag. */
+  async #findTaggedProcesses(dispatchName: string): Promise<number[]> {
+    const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
+    let entries: string[];
+    try {
+      entries = await readdir(this.#procDir);
+    } catch {
+      return [];
+    }
+    const pids: number[] = [];
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) {
+        continue;
+      }
+      const pid = Number(entry);
+      if (pid === process.pid) {
+        continue;
+      }
+      let environ: string;
+      try {
+        environ = await readFile(path.join(this.#procDir, entry, "environ"), "utf8");
+      } catch {
+        // Another user's process, or one that exited mid-scan.
+        continue;
+      }
+      if (environ.split("\0").includes(needle)) {
+        pids.push(pid);
+      }
+    }
+    return pids;
   }
 
   async tmuxAvailable(): Promise<boolean> {
@@ -476,4 +566,13 @@ function delay(ms: number): Promise<void> {
   return new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH");
+  }
 }

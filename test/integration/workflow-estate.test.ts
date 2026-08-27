@@ -32,7 +32,11 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
-  return stderr.replace(announcement, "");
+  const withoutSentinel = stderr.replace(announcement, "");
+  const runRecordAnnouncement = /^\[run-record-archive\] .+\n/gm;
+  const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
+  assert.ok(runRecordMatches.length <= 1, `expected at most one run-record announcement, got:\n${stderr}`);
+  return withoutSentinel.replace(runRecordAnnouncement, "");
 }
 
 class CaptureStream extends Writable {

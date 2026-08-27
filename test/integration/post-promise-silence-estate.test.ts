@@ -12,10 +12,11 @@ const deadlineAcceleratorPath = path.resolve(
 );
 
 interface Action {
-  type: "delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
+  type: "deadline" | "delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
   text?: string;
   diagnostic?: string;
   afterMs?: number;
+  requireDisarm?: boolean;
 }
 
 interface ProcessResult {
@@ -24,12 +25,13 @@ interface ProcessResult {
   stderr: string;
 }
 
-test("built consumer terminalises permanent silence after a retry promise with its evidence intact", async () => {
+test("built consumer terminalises permanent silence after a retry promise with its evidence intact", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run(
       [[
         { type: "delta", text: "PARTIAL_BEFORE_SILENCE" },
         { type: "promise", diagnostic: "PROMISE_ABANDONED_41" },
+        { type: "deadline" },
         { type: "silence" }
       ]],
       1
@@ -46,16 +48,18 @@ test("built consumer terminalises permanent silence after a retry promise with i
     assert.equal(attempts[0]?.status, "failed");
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_SILENCE");
     assert.match(attempts[0]?.failure?.message ?? "", /PROMISE_ABANDONED_41/);
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
-test("built consumer continues after a post-promise delta disarms the silence deadline", async () => {
+test("built consumer continues after a post-promise delta disarms the silence deadline", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("DELTA_FIRST_ATTEMPT"),
       [
         { type: "promise", diagnostic: "DELTA_RECOVERY_PROMISE" },
         { type: "delta", text: "recovery-in-progress", afterMs: 10 },
+        { type: "deadline", requireDisarm: true },
         { type: "success", text: "delta-recovered", afterMs: 100 }
       ]
     ]);
@@ -63,10 +67,11 @@ test("built consumer continues after a post-promise delta disarms the silence de
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `"delta-recovered"\n`);
     assert.equal((await fixture.attempts()).length, 2);
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
-test("built consumer returns a recovered answer when the app-server keeps its retry promise", async () => {
+test("built consumer returns a recovered answer when the app-server keeps its retry promise", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("SUCCESS_FIRST_ATTEMPT"),
@@ -81,35 +86,41 @@ test("built consumer returns a recovered answer when the app-server keeps its re
     const attempts = await fixture.attempts();
     assert.equal(attempts.length, 2);
     assert.equal(attempts[1]?.status, "complete");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
-test("built consumer rejects promise and MCP-progress alternation at the bounded count", async () => {
+test("built consumer rejects promise and MCP-progress alternation at the bounded count", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const alternating = [{ type: "delta", text: "PARTIAL_BEFORE_HEARTBEATS" } as Action];
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 5; index += 1) {
       alternating.push({ type: "promise", diagnostic: `ALTERNATING_PROMISE_${index}` });
       alternating.push({ type: "mcp-progress" });
     }
+    alternating.push({ type: "promise", diagnostic: "ALTERNATING_PROMISE_5" });
+    alternating.push({ type: "deadline" });
     alternating.push({ type: "silence" });
 
     const result = await fixture.run([alternating], 1);
 
     assert.equal(result.code, 1, result.stderr);
     assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.doesNotMatch(result.stderr, /silent for 900000ms after a promised retry/);
     assert.match(result.stderr, /ALTERNATING_PROMISE_5/);
     const attempts = await fixture.attempts();
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_HEARTBEATS");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
-test("built consumer answers a turn-scoped request and continues after it disarms the deadline", async () => {
+test("built consumer answers a turn-scoped request and continues after it disarms the deadline", { timeout: 45_000 }, async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run([
       abandonedAttempt("APPROVAL_FIRST_ATTEMPT"),
       [
         { type: "promise", diagnostic: "APPROVAL_RECOVERY_PROMISE" },
         { type: "approval", afterMs: 10 },
+        { type: "deadline", requireDisarm: true },
         { type: "success", text: "approval-request-handled", afterMs: 100 }
       ]
     ]);
@@ -120,6 +131,7 @@ test("built consumer answers a turn-scoped request and continues after it disarm
       (message) => message.id === 10_001 && message.result?.decision === "denied"
     );
     assert.equal(denial?.result?.reason, "Ensemble workers run with approvalPolicy never");
+    assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
   });
 });
 
@@ -127,8 +139,19 @@ function abandonedAttempt(partialText: string): Action[] {
   return [
     { type: "delta", text: partialText },
     { type: "promise", diagnostic: `ABANDONED_${partialText}` },
+    { type: "deadline" },
     { type: "silence" }
   ];
+}
+
+function assertFirstOutputDeadlineDisarmed(control: string): void {
+  const armed = [...control.matchAll(/armed:first-delta:(\d+)/g)].at(-1)?.[1];
+  assert.notEqual(armed, undefined, "the client must control its first-output deadline");
+  assert.match(
+    control,
+    new RegExp(`disarmed:first-delta:${armed}`),
+    "the first output must disarm its client-controlled deadline"
+  );
 }
 
 interface RecordedAttempt {
@@ -156,10 +179,12 @@ async function createFixture() {
   const binDirectory = path.join(directory, "bin");
   const fakeCodex = path.join(binDirectory, "codex");
   const capturePath = path.join(directory, "codex-input.jsonl");
+  const deadlineControlPath = path.join(directory, "deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
+  await writeFile(deadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
 
@@ -181,14 +206,15 @@ async function createFixture() {
           ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
+          ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
+          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
-          ENSEMBLE_POST_PROMISE_DEADLINE_MS: "60",
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
           ENSEMBLE_STATUS: "0",
           XDG_DATA_HOME: path.join(directory, "data")
         },
-        2_000
+        45_000
       );
     },
     attempts: async (): Promise<RecordedAttempt[]> => {
@@ -201,6 +227,7 @@ async function createFixture() {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as RecordedMessage),
+    deadlineControl: () => readFile(deadlineControlPath, "utf8"),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

@@ -15,11 +15,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import process from "node:process";
-import { clearTimeout, setTimeout } from "node:timers";
+import { clearInterval, clearTimeout, setInterval, setTimeout } from "node:timers";
 import { createHash } from "node:crypto";
 
 const VALIDATOR_ACTIVE = "ENSEMBLE_CODEX_SCHEMA_VALIDATOR_ACTIVE";
 const commandTimeoutMs = Number(process.env.ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS ?? "120000");
+const timeoutControlPath = process.env.ENSEMBLE_CODEX_SCHEMA_TIMEOUT_CONTROL;
 
 if (!Number.isInteger(commandTimeoutMs) || commandTimeoutMs < 1) {
   throw new Error("ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS must be a positive integer");
@@ -79,10 +80,13 @@ function runCodexSchemaCommand(args) {
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
 
-    const timeout = setTimeout(() => {
+    const terminate = () => {
       timedOut = true;
       killProcessGroup(child.pid);
-    }, commandTimeoutMs);
+    };
+    const timeout = timeoutControlPath === undefined
+      ? setTimeout(terminate, commandTimeoutMs)
+      : controlledTimeout(terminate, timeoutControlPath);
 
     child.once("error", (error) => {
       clearTimeout(timeout);
@@ -103,6 +107,19 @@ function runCodexSchemaCommand(args) {
       }
     });
   });
+}
+
+function controlledTimeout(callback, controlPath) {
+  appendFileSync(controlPath, "armed\n");
+  const interval = setInterval(() => {
+    if (!readFileSync(controlPath, "utf8").includes("release\n")) {
+      return;
+    }
+    clearInterval(interval);
+    callback();
+  }, 5);
+  interval.unref();
+  return interval;
 }
 
 function killProcessGroup(pid) {

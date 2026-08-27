@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -116,13 +116,15 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
   }
 });
 
-test("timed-out schema fixture child leaves no process-group descendants", { timeout: 20_000 }, async (t) => {
+test("timed-out schema fixture child leaves no process-group descendants", { timeout: 45_000 }, async (t) => {
   const estate = await createEstate("descendant-cleanup");
   const processRecord = path.join(estate.directory, "processes.json");
+  const timeoutControl = path.join(estate.directory, "timeout-control");
   const descendant = path.join(estate.directory, "descendant.mjs");
   const hangingCodex = path.join(estate.directory, "hanging-codex");
   const hangingCodexPayload = path.join(estate.directory, "hanging-codex.mjs");
   await writeFile(descendant, "setInterval(() => {}, 1000);\n");
+  await writeFile(timeoutControl, "");
   await writeFile(
     hangingCodexPayload,
     `#!/usr/bin/env node
@@ -157,7 +159,8 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
     {
       ...estate.environment,
       ENSEMBLE_CODEX_SCHEMA_CLI: hangingCodex,
-      ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS: "250"
+      ENSEMBLE_CODEX_SCHEMA_COMMAND_TIMEOUT_MS: "30000",
+      ENSEMBLE_CODEX_SCHEMA_TIMEOUT_CONTROL: timeoutControl
     }
   );
 
@@ -169,7 +172,8 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
       () => process.kill(record.childPid, 0),
       `recorded descendant ${record.childPid} was not live before the schema-command timeout`
     );
-    const result = await withDeadline(scoped.result, 7_000, "fixture-driving CLI did not time out").catch(async (error: unknown) => {
+    await appendFile(timeoutControl, "release\n");
+    const result = await withDeadline(scoped.result, 45_000, "fixture-driving CLI did not time out").catch(async (error: unknown) => {
       await killScopeMain(scoped.unit);
       const survivors = await processGroupMembers(record.pgid);
       t.diagnostic(JSON.stringify({ timedOutDriver: true, processGroup: record.pgid, survivors }));
@@ -188,7 +192,7 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
     })));
     t.diagnostic(JSON.stringify({ recorded: records, observations, result }));
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Codex fixture schema command timed out after 250ms/);
+    assert.match(result.stderr, /Codex fixture schema command timed out after 30000ms/);
     for (const observation of observations) {
       assert.deepEqual(observation.survivors, []);
     }
@@ -352,7 +356,7 @@ async function observeScope(unit: string, child: ReturnType<typeof spawn>): Prom
 }
 
 async function waitForJsonLine(file: string): Promise<{ pid: number; pgid: number; childPid: number; args: string[] }> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 6_000; attempt += 1) {
     try {
       const line = (await readFile(file, "utf8")).split("\n").find(Boolean);
       if (line !== undefined) {

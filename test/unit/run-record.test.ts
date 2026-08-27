@@ -586,7 +586,7 @@ test("cost roll-up degrades to token-only accounting on unlike currencies", asyn
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; currency: string | null; source: string } }>>;
   };
-  const bucket = manifest.cost_rollup.opencode?.["glm-5.2"];
+  const bucket = manifest.cost_rollup.opencode?.unresolved;
   assert.ok(bucket);
   assert.equal(bucket.tokens.totalTokens, 7);
   assert.equal(bucket.cost.amount, null);

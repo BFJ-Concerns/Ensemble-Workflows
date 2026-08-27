@@ -579,7 +579,7 @@ test("the workflow --strip tuning flag reaches the runtime as the run-wide strip
     const exitCode = await runEnsembleCli(["--strip", "agents", workflowPath], {
       stdout,
       stderr,
-      createRuntime: async (options) => {
+      createRuntime: async (options = {}) => {
         captured.push(options.strip);
         return fixedEngineRuntime(engine, 3, options);
       }

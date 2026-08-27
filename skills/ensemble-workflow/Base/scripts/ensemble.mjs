@@ -12998,7 +12998,7 @@ import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile7 } from "node:fs/promises";
-import path10 from "node:path";
+import path11 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -13314,20 +13314,435 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/errors.ts
+var EnsembleError = class extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+};
+var PreSpawnAuthorError = class extends EnsembleError {
+};
+var AgentOptionRejectedError = class extends PreSpawnAuthorError {
+};
+function attachPartialWorkerText(error, text) {
+  const carrier = error;
+  if (text.length > 0 && carrier.partialWorkerText === void 0) {
+    carrier.partialWorkerText = text;
+  }
+  return error;
+}
+function partialWorkerTextOf(error) {
+  if (error instanceof Error) {
+    const text = error.partialWorkerText;
+    if (typeof text === "string" && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
+function attachAppServerDiagnostic(error, diagnostic) {
+  const carrier = error;
+  if (carrier.appServerDiagnostic === void 0) {
+    carrier.appServerDiagnostic = diagnostic;
+  }
+  return error;
+}
+function appServerDiagnosticOf(error) {
+  if (error instanceof Error) {
+    return error.appServerDiagnostic ?? null;
+  }
+  return null;
+}
+function attachWorkerExitStatus(error, exit) {
+  const carrier = error;
+  if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === void 0) {
+    carrier.workerExitStatus = exit;
+  }
+  return error;
+}
+function workerExitStatusOf(error) {
+  if (error instanceof Error) {
+    const exit = error.workerExitStatus;
+    if (exit !== void 0) {
+      return exit;
+    }
+  }
+  return null;
+}
+function attachAgentIdentity(error, identity) {
+  const carrier = error;
+  if (carrier.agentCallIdentity === void 0) {
+    carrier.agentCallIdentity = identity;
+  }
+  return error;
+}
+function agentIdentityOf(error) {
+  if (error instanceof Error) {
+    return error.agentCallIdentity ?? null;
+  }
+  return null;
+}
+var AppServerExitedError = class extends EnsembleError {
+};
+var AppServerRequestError = class extends EnsembleError {
+  code;
+  data;
+  constructor(method, error) {
+    const code = error.code === void 0 ? "" : ` (${String(error.code)})`;
+    const data2 = error.data === void 0 ? "" : `; data: ${renderDiagnostic(error.data)}`;
+    super(`${method} failed${code}: ${error.message ?? "unknown app-server error"}${data2}`, { cause: error });
+    this.code = error.code;
+    this.data = error.data;
+  }
+};
+var AppServerBackpressureError = class extends AppServerRequestError {
+};
+var AppServerOverloadedError = class extends AppServerRequestError {
+};
+var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
+};
+var AppServerFirstOutputTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
+  }
+};
+var AppServerStartupTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
+  }
+};
+var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
+  code;
+  data;
+  constructor(error, diagnostic) {
+    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
+    super(
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
+      { cause: error }
+    );
+    this.code = error.code;
+    this.data = error.data;
+  }
+};
+var BudgetExceededError = class extends EnsembleError {
+  constructor(engine, total, spent) {
+    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
+  }
+};
+var MissingEngineError = class extends AgentOptionRejectedError {
+  constructor() {
+    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
+  }
+};
+var UnknownEngineError = class extends AgentOptionRejectedError {
+  constructor(engine) {
+    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
+  }
+};
+var EngineShutdownError = class extends EnsembleError {
+  constructor(engine) {
+    super(`${engine} engine is shutting down`);
+  }
+};
+var EmptyAgentOutputError = class extends EnsembleError {
+};
+var ClaudeWorkerError = class extends EnsembleError {
+};
+var ClaudeDispatchError = class extends ClaudeWorkerError {
+};
+var ClaudePollTimeoutError = class extends ClaudeWorkerError {
+};
+var ClaudeFirstLifeTimeoutError = class extends ClaudeWorkerError {
+};
+var ClaudeBlockedError = class extends ClaudeWorkerError {
+};
+var ClaudeValveError = class extends ClaudeWorkerError {
+};
+var ClaudeTranscriptError = class extends ClaudeWorkerError {
+};
+var ClaudeCollectionError = class extends ClaudeWorkerError {
+};
+var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
+  constructor(registered) {
+    super(
+      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
+  constructor(model, registered) {
+    super(
+      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+function renderDiagnostic(value) {
+  try {
+    return JSON.stringify(value) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable diagnostic: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
+  constructor(cwd, options) {
+    super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
+  }
+};
+var TurnTimeoutError = class extends EnsembleError {
+  constructor(message) {
+    super(message);
+  }
+};
+var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
+  constructor(engine) {
+    super(
+      `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
+    );
+  }
+};
+var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
+  constructor(engine, capability, detail) {
+    super(
+      `the ${engine} engine cannot strip the ${JSON.stringify(capability)} capability: ${detail}. The worker was not dispatched. Remove the strip request, or use an engine that can enforce it.`
+    );
+  }
+};
+var RemovedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option) {
+    super(
+      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
+    );
+  }
+};
+var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option, recognised) {
+    super(
+      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
+  constructor(option, value, expected) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)} value ${formatAgentOptionValue(value)}; expected ${expected}`
+    );
+  }
+};
+var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
+  constructor(message, options) {
+    super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  }
+};
+function formatAgentOptionValue(value) {
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "undefined") {
+    return String(value);
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n`;
+  }
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// src/capability-stripping.ts
+var STRIPPABLE_CAPABILITIES = ["skills", "agents"];
+var CAPABILITY_SET = new Set(STRIPPABLE_CAPABILITIES);
+function assertValidStripOption(value) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !CAPABILITY_SET.has(entry))) {
+    throw new InvalidAgentOptionValueError(
+      "strip",
+      value,
+      `an array of capability names from: ${STRIPPABLE_CAPABILITIES.join(", ")}`
+    );
+  }
+}
+function effectiveStrip(runWide, perCall) {
+  return [.../* @__PURE__ */ new Set([...runWide ?? [], ...perCall ?? []])];
+}
+function resolveStripEnforcement(engine, table, strip) {
+  const routes = {};
+  for (const capability of strip) {
+    const enforcement = table?.[capability];
+    if (enforcement === void 0 || enforcement.route === "unsupported") {
+      throw new CapabilityStripUnsupportedError(
+        engine,
+        capability,
+        enforcement?.detail ?? "the engine declares no capability-stripping surface"
+      );
+    }
+    routes[capability] = { route: enforcement.route, detail: enforcement.detail };
+  }
+  return routes;
+}
+
 // src/completion-sentinel.ts
 import { mkdir as mkdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import path3 from "node:path";
+import path4 from "node:path";
 
 // src/run-record.ts
 import { createHash } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
-import path2 from "node:path";
+import path3 from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/node-version.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import path2 from "node:path";
 import { fileURLToPath } from "node:url";
+function requiredNodeRange(fromUrl = import.meta.url) {
+  if (">=24.14.0".trim().length > 0) {
+    return ">=24.14.0".trim();
+  }
+  const metadata = readHarnessPackageMetadata(fromUrl);
+  const range = metadata.engines?.node;
+  if (typeof range !== "string" || range.trim().length === 0) {
+    throw new Error("package.json is missing engines.node");
+  }
+  return range.trim();
+}
+function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
+  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
+}
+function satisfiesNodeRange(version2, range) {
+  const minimum = parseMinimumRange(range);
+  const actual = parseVersion(version2);
+  if (minimum === null || actual === null) {
+    throw new Error(`Unsupported Node version range: ${range}`);
+  }
+  if (actual.major !== minimum.major) {
+    return actual.major > minimum.major;
+  }
+  if (actual.minor !== minimum.minor) {
+    return actual.minor > minimum.minor;
+  }
+  return actual.patch >= minimum.patch;
+}
+function parseMinimumRange(range) {
+  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0)
+  };
+}
+function parseVersion(version2) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function readHarnessPackageMetadata(fromUrl) {
+  let current2 = path2.dirname(fileURLToPath(fromUrl));
+  while (true) {
+    const candidate = path2.join(current2, "package.json");
+    try {
+      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
+      if (metadata.name === "ensemble-workflows") {
+        return metadata;
+      }
+    } catch {
+    }
+    const parent = path2.dirname(current2);
+    if (parent === current2) {
+      throw new Error("Could not locate ensemble-workflows package.json");
+    }
+    current2 = parent;
+  }
+}
+
+// src/harness-version.ts
+function harnessVersion(fromUrl = import.meta.url) {
+  if ("0.0.1".trim().length > 0) {
+    return "0.0.1".trim();
+  }
+  const version2 = readHarnessPackageMetadata(fromUrl).version;
+  return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
+}
+
+// src/usage-summary.ts
+var ENGINE_INCLUSION_RULES = {
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
+};
+function summariseUsage(engine, events) {
+  if (events.length === 0) {
+    return null;
+  }
+  const rules = ENGINE_INCLUSION_RULES[engine];
+  let fresh = 0;
+  let cached = 0;
+  let cacheCreation = 0;
+  let cacheCreationSeparable = true;
+  let output = 0;
+  let reasoning = 0;
+  let unclassified = 0;
+  for (const event of events) {
+    const delta = event.last;
+    cached += delta.cachedInputTokens;
+    if (delta.cacheCreationInputTokens === void 0) {
+      cacheCreationSeparable = false;
+    } else {
+      cacheCreation += delta.cacheCreationInputTokens;
+    }
+    const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
+    const deltaOutput = rules.reasoningWithinOutput ? Math.max(0, delta.outputTokens - delta.reasoningOutputTokens) : delta.outputTokens;
+    fresh += deltaFresh;
+    reasoning += delta.reasoningOutputTokens;
+    output += deltaOutput;
+    unclassified += Math.max(
+      0,
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + delta.reasoningOutputTokens)
+    );
+  }
+  const separableReasoning = rules.reasoningSeparable ? reasoning : null;
+  return {
+    freshInputTokens: fresh,
+    cachedInputTokens: cached,
+    ...cacheCreationSeparable ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation } : {},
+    outputTokens: separableReasoning === null ? output + reasoning : output,
+    reasoningOutputTokens: separableReasoning,
+    unclassifiedTokens: unclassified,
+    // The total is the class sum by construction, so the vocabulary's
+    // disjoint-and-summing invariant cannot drift from the fields beside it.
+    totalTokens: fresh + cached + output + reasoning + unclassified
+  };
+}
+function addUsageSummary(target, delta) {
+  const splitSurvives = target.cacheReadTokens !== void 0 && target.cacheCreationTokens !== void 0 && delta.cacheReadTokens !== void 0 && delta.cacheCreationTokens !== void 0;
+  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
+  return {
+    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
+    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
+    ...splitSurvives ? {
+      cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
+      cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
+    } : {},
+    outputTokens: reasoningSurvives || target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null ? target.outputTokens + delta.outputTokens : target.outputTokens + (target.reasoningOutputTokens ?? 0) + delta.outputTokens + (delta.reasoningOutputTokens ?? 0),
+    reasoningOutputTokens: reasoningSurvives ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0) : null,
+    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
+    totalTokens: target.totalTokens + delta.totalTokens
+  };
+}
+
+// src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 2;
+var SCHEMA_VERSION = 3;
 var MANIFEST_PATH = "manifest.json";
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
@@ -13563,6 +13978,7 @@ var RunRecordWriter = class _RunRecordWriter {
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
+      strip: record.strip,
       parse_route: record.parseRoute,
       decode_failure: record.decodeFailure === null ? null : {
         byte_length: record.decodeFailure.byteLength,
@@ -13570,6 +13986,10 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
+      // Summary usage in the declared vocabulary, or the reason there is
+      // none — an agent with no usage data must be legible as "unknown for
+      // this reason", never indistinguishable from zero spend.
+      usage: agentUsage(record),
       queued_ms: record.queuedMs,
       execution_ms: record.executionMs,
       attempts: record.attempts.map((attempt) => ({
@@ -13584,6 +14004,7 @@ var RunRecordWriter = class _RunRecordWriter {
         },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
+        resolved_model: attempt.resolvedModel,
         started_at: attempt.startedAt,
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
@@ -13627,16 +14048,16 @@ var RunRecordWriter = class _RunRecordWriter {
 `);
   }
   async #writeText(relativePath, content) {
-    const destination = path2.join(this.archiveDir, relativePath);
-    await mkdir(path2.dirname(destination), { recursive: true });
-    const temporary = path2.join(path2.dirname(destination), `.${path2.basename(destination)}${this.#tmpSuffix()}`);
+    const destination = path3.join(this.archiveDir, relativePath);
+    await mkdir(path3.dirname(destination), { recursive: true });
+    const temporary = path3.join(path3.dirname(destination), `.${path3.basename(destination)}${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, content);
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
-    const destination = path2.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path2.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
+    const destination = path3.join(this.archiveDir, MANIFEST_PATH);
+    const temporary = path3.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
 `);
   }
@@ -13647,7 +14068,7 @@ var RunRecordWriter = class _RunRecordWriter {
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
   async #trackFile(relativePath) {
-    const absolute = path2.join(this.archiveDir, relativePath);
+    const absolute = path3.join(this.archiveDir, relativePath);
     const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
     this.#files.set(relativePath, {
       path: relativePath,
@@ -13656,21 +14077,30 @@ var RunRecordWriter = class _RunRecordWriter {
     });
   }
 };
+function agentUsage(record) {
+  const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
+  const summary = summariseUsage(record.engine, events);
+  if (summary !== null) {
+    return { summary };
+  }
+  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+}
 function buildCostRollup(records) {
   const rollup = {};
   const unlikeCurrencies = /* @__PURE__ */ new Set();
   for (const record of records) {
     const engine = record.engine;
-    const model = record.model ?? "default";
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= {
-      tokens: zeroUsage(),
-      cost: { amount: null, currency: null, source: "estimated" }
-    };
-    const bucket = rollup[engine][model];
     for (const attempt of record.attempts) {
+      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
+      if (summary === null) {
+        continue;
+      }
+      const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
+      rollup[engine] ??= {};
+      const existing = rollup[engine][model];
+      rollup[engine][model] = existing === void 0 ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } } : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
+      const bucket = rollup[engine][model];
       for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last, engine);
         addProviderCost(bucket.cost, event, unlikeCurrencies);
       }
     }
@@ -13699,34 +14129,11 @@ function addProviderCost(target, event, unlikeCurrencies) {
     target.currency = currency;
   }
 }
-function addUsage(target, delta, engine) {
-  target.cachedInputTokens += delta.cachedInputTokens;
-  target.inputTokens += delta.inputTokens;
-  target.outputTokens += delta.outputTokens;
-  target.reasoningOutputTokens += delta.reasoningOutputTokens;
-  target.totalTokens += delta.totalTokens;
-  const creation = delta.cacheCreationInputTokens ?? 0;
-  target.cacheCreationTokens += creation;
-  target.cacheReadTokens += Math.max(0, delta.cachedInputTokens - creation);
-  target.freshInputTokens += engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-}
-function zeroUsage() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-    freshInputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0
-  };
-}
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
 }
 function runDirectoryFor(storeDir, namespace, runUuid) {
-  return path2.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
+  return path3.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
 }
 async function deriveNamespace(cwd) {
   const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
@@ -13748,7 +14155,7 @@ async function readGitState(cwd, diffPath, archiveDir) {
   if (dirty === true) {
     const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
     if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path2.join(archiveDir, diffPath), diff);
+      await writeStandaloneText(path3.join(archiveDir, diffPath), diff);
       archivedDiffPath = diffPath;
     }
   }
@@ -13756,28 +14163,28 @@ async function readGitState(cwd, diffPath, archiveDir) {
 }
 async function readPackageInfo(cwd) {
   try {
-    const text = await readFile(path2.join(cwd, "package.json"), "utf8");
+    const text = await readFile(path3.join(cwd, "package.json"), "utf8");
     const parsed = JSON.parse(text);
     return {
       name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
-      version: typeof parsed.version === "string" ? parsed.version : "0.0.0"
+      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
     };
   } catch {
-    return { name: "ensemble-workflows", version: "0.0.0" };
+    return { name: "ensemble-workflows", version: harnessVersion() };
   }
 }
 async function findHarnessRoot() {
-  let current2 = path2.dirname(fileURLToPath(import.meta.url));
+  let current2 = path3.dirname(fileURLToPath2(import.meta.url));
   for (; ; ) {
     try {
-      const text = await readFile(path2.join(current2, "package.json"), "utf8");
+      const text = await readFile(path3.join(current2, "package.json"), "utf8");
       const parsed = JSON.parse(text);
       if (parsed.name === "ensemble-workflows") {
         return current2;
       }
     } catch {
     }
-    const parent = path2.dirname(current2);
+    const parent = path3.dirname(current2);
     if (parent === current2) {
       return null;
     }
@@ -13836,8 +14243,8 @@ async function hashFile(filePath) {
   return createHash("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
-  await mkdir(path2.dirname(destination), { recursive: true });
-  const temporary = path2.join(path2.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await mkdir(path3.dirname(destination), { recursive: true });
+  const temporary = path3.join(path3.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
   await writeAndRename(temporary, destination, content);
 }
 async function writeAndRename(temporary, destination, content) {
@@ -13874,7 +14281,7 @@ var CompletionSentinel = class {
   async prepare(options, onError) {
     try {
       const runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      this.#path = path3.join(runDir, SENTINEL_FILENAME);
+      this.#path = path4.join(runDir, SENTINEL_FILENAME);
       return this.#path;
     } catch (error) {
       onError(error);
@@ -13899,7 +14306,7 @@ var CompletionSentinel = class {
       ended_at: (/* @__PURE__ */ new Date()).toISOString()
     };
     try {
-      await mkdir2(path3.dirname(this.#path), { recursive: true });
+      await mkdir2(path4.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
         await writeFile2(temporary, `${JSON.stringify(payload, null, 2)}
@@ -13914,233 +14321,6 @@ var CompletionSentinel = class {
     }
   }
 };
-
-// src/errors.ts
-var EnsembleError = class extends Error {
-  constructor(message, options) {
-    super(message, options);
-    this.name = new.target.name;
-  }
-};
-var PreSpawnAuthorError = class extends EnsembleError {
-};
-var AgentOptionRejectedError = class extends PreSpawnAuthorError {
-};
-function attachPartialWorkerText(error, text) {
-  const carrier = error;
-  if (text.length > 0 && carrier.partialWorkerText === void 0) {
-    carrier.partialWorkerText = text;
-  }
-  return error;
-}
-function partialWorkerTextOf(error) {
-  if (error instanceof Error) {
-    const text = error.partialWorkerText;
-    if (typeof text === "string" && text.length > 0) {
-      return text;
-    }
-  }
-  return null;
-}
-function attachAppServerDiagnostic(error, diagnostic) {
-  const carrier = error;
-  if (carrier.appServerDiagnostic === void 0) {
-    carrier.appServerDiagnostic = diagnostic;
-  }
-  return error;
-}
-function appServerDiagnosticOf(error) {
-  if (error instanceof Error) {
-    return error.appServerDiagnostic ?? null;
-  }
-  return null;
-}
-function attachWorkerExitStatus(error, exit) {
-  const carrier = error;
-  if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === void 0) {
-    carrier.workerExitStatus = exit;
-  }
-  return error;
-}
-function workerExitStatusOf(error) {
-  if (error instanceof Error) {
-    const exit = error.workerExitStatus;
-    if (exit !== void 0) {
-      return exit;
-    }
-  }
-  return null;
-}
-function attachAgentIdentity(error, identity) {
-  const carrier = error;
-  if (carrier.agentCallIdentity === void 0) {
-    carrier.agentCallIdentity = identity;
-  }
-  return error;
-}
-function agentIdentityOf(error) {
-  if (error instanceof Error) {
-    return error.agentCallIdentity ?? null;
-  }
-  return null;
-}
-var AppServerExitedError = class extends EnsembleError {
-};
-var AppServerRequestError = class extends EnsembleError {
-  code;
-  data;
-  constructor(method, error) {
-    const code = error.code === void 0 ? "" : ` (${String(error.code)})`;
-    const data2 = error.data === void 0 ? "" : `; data: ${renderDiagnostic(error.data)}`;
-    super(`${method} failed${code}: ${error.message ?? "unknown app-server error"}${data2}`, { cause: error });
-    this.code = error.code;
-    this.data = error.data;
-  }
-};
-var AppServerBackpressureError = class extends AppServerRequestError {
-};
-var AppServerOverloadedError = class extends AppServerRequestError {
-};
-var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
-};
-var AppServerFirstOutputTimeoutError = class extends EnsembleError {
-  constructor(timeoutMs) {
-    super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
-  }
-};
-var AppServerStartupTimeoutError = class extends EnsembleError {
-  constructor(timeoutMs) {
-    super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
-  }
-};
-var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
-  code;
-  data;
-  constructor(error, diagnostic) {
-    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
-    super(
-      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
-      { cause: error }
-    );
-    this.code = error.code;
-    this.data = error.data;
-  }
-};
-var BudgetExceededError = class extends EnsembleError {
-  constructor(engine, total, spent) {
-    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
-  }
-};
-var MissingEngineError = class extends AgentOptionRejectedError {
-  constructor() {
-    super("agent() requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'");
-  }
-};
-var UnknownEngineError = class extends AgentOptionRejectedError {
-  constructor(engine) {
-    super(`Unknown agent engine ${JSON.stringify(engine)}; expected 'codex', 'claude', or 'opencode'`);
-  }
-};
-var EngineShutdownError = class extends EnsembleError {
-  constructor(engine) {
-    super(`${engine} engine is shutting down`);
-  }
-};
-var EmptyAgentOutputError = class extends EnsembleError {
-};
-var ClaudeWorkerError = class extends EnsembleError {
-};
-var ClaudeDispatchError = class extends ClaudeWorkerError {
-};
-var ClaudePollTimeoutError = class extends ClaudeWorkerError {
-};
-var ClaudeFirstLifeTimeoutError = class extends ClaudeWorkerError {
-};
-var ClaudeBlockedError = class extends ClaudeWorkerError {
-};
-var ClaudeValveError = class extends ClaudeWorkerError {
-};
-var ClaudeTranscriptError = class extends ClaudeWorkerError {
-};
-var ClaudeCollectionError = class extends ClaudeWorkerError {
-};
-var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
-  constructor(registered) {
-    super(
-      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    );
-  }
-};
-var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
-  constructor(model, registered) {
-    super(
-      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    );
-  }
-};
-function renderDiagnostic(value) {
-  try {
-    return JSON.stringify(value) ?? "undefined";
-  } catch (error) {
-    return `[unrenderable diagnostic: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-}
-var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
-  constructor(cwd, options) {
-    super(`isolation:'worktree' requires cwd to be inside a git repository: ${cwd}`, options);
-  }
-};
-var TurnTimeoutError = class extends EnsembleError {
-  constructor(message) {
-    super(message);
-  }
-};
-var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
-  constructor(engine) {
-    super(
-      `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
-    );
-  }
-};
-var RemovedAgentOptionError = class extends AgentOptionRejectedError {
-  constructor(option) {
-    super(
-      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
-    );
-  }
-};
-var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
-  constructor(option, recognised) {
-    super(
-      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
-    );
-  }
-};
-var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
-  constructor(option, value, expected) {
-    super(
-      `Invalid agent() option ${JSON.stringify(option)} value ${formatAgentOptionValue(value)}; expected ${expected}`
-    );
-  }
-};
-var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
-  constructor(message, options) {
-    super(`agent schema does not compile as JSON Schema: ${message}`, options);
-  }
-};
-function formatAgentOptionValue(value) {
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "undefined") {
-    return String(value);
-  }
-  if (typeof value === "bigint") {
-    return `${String(value)}n`;
-  }
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
 
 // src/opencode-model-registry.ts
 var MODELS = [
@@ -14243,7 +14423,8 @@ var AGENT_OPTION_KEYS = Object.keys({
   maxAttempts: true,
   label: true,
   phase: true,
-  identity: true
+  identity: true,
+  strip: true
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
@@ -14264,6 +14445,9 @@ function assertValidAgentOptions(options) {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.identity !== void 0 && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+  }
+  if (values.strip !== void 0) {
+    assertValidStripOption(values.strip);
   }
 }
 function assertFallbackModelSupported(engine, fallbackModel) {
@@ -14296,13 +14480,13 @@ function assertPositiveIntegerOption(options, option, maximum) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/agent-placement.ts
-import path5 from "node:path";
+import path6 from "node:path";
 
 // src/worktree-isolation.ts
 import { randomUUID } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
 import { mkdir as mkdir3, rmdir } from "node:fs/promises";
-import path4 from "node:path";
+import path5 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
 var GitWorktreeIsolationManager = class {
@@ -14313,8 +14497,8 @@ var GitWorktreeIsolationManager = class {
     const repoRoot = await this.#gitRepoRoot(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path4.join(path4.dirname(repoRoot), `${path4.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir3(path4.dirname(worktreePath), { recursive: true });
+    const worktreePath = path5.join(path5.dirname(repoRoot), `${path5.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir3(path5.dirname(worktreePath), { recursive: true });
     await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
@@ -14345,7 +14529,7 @@ var GitWorktreeIsolationManager = class {
     await git2(repoRoot, ["branch", "-D", worktree.branch]);
     this.#worktreeRoots.delete(worktree.path);
     try {
-      await rmdir(path4.dirname(worktree.path));
+      await rmdir(path5.dirname(worktree.path));
     } catch {
     }
     return {
@@ -14356,7 +14540,7 @@ var GitWorktreeIsolationManager = class {
     };
   }
   async #gitRepoRoot(baseCwd) {
-    const resolvedCwd = path4.resolve(baseCwd);
+    const resolvedCwd = path5.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === void 0) {
       repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
@@ -14405,7 +14589,7 @@ var AgentPlacementManager = class {
   baseCwd;
   #worktreeManager;
   constructor(options) {
-    this.baseCwd = path5.resolve(options.baseCwd);
+    this.baseCwd = path6.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
   }
   async open(options) {
@@ -14424,7 +14608,7 @@ var AgentPlacementManager = class {
   }
 };
 function resolveAgentCwd(baseCwd, requestedCwd) {
-  return path5.resolve(baseCwd, requestedCwd ?? ".");
+  return path6.resolve(baseCwd, requestedCwd ?? ".");
 }
 
 // src/admission.ts
@@ -15701,7 +15885,7 @@ function itemTypeFromItem(item) {
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
 import { access, mkdtemp, readFile as readFile2, readdir, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir2, tmpdir } from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var ClaudeCliControlPlane = class {
   #claudeBin;
@@ -15723,7 +15907,7 @@ var ClaudeCliControlPlane = class {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
     this.#env = { ...process.env, ...this.#workerEnv };
-    this.#projectsDir = options.projectsDir ?? path6.join(homedir2(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path7.join(homedir2(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -15742,8 +15926,8 @@ var ClaudeCliControlPlane = class {
     if (options.fallbackModel !== void 0) {
       args.push("--fallback-model", options.fallbackModel);
     }
-    const settingsDir = await this.#writeWorkerSettings(options.name);
-    args.push("--settings", path6.join(settingsDir, "settings.json"));
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    args.push("--settings", path7.join(settingsDir, "settings.json"));
     let registered = null;
     try {
       const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
@@ -15789,11 +15973,12 @@ var ClaudeCliControlPlane = class {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName) {
+  async #writeWorkerSettings(dispatchName, permissionDenyRules) {
     const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
-    const dir = await mkdtemp(path6.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const dir = await mkdtemp(path7.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
     try {
-      await writeFile3(path6.join(dir, "settings.json"), `${JSON.stringify({ env })}
+      await writeFile3(path7.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -15833,7 +16018,7 @@ var ClaudeCliControlPlane = class {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path6.join(this.#projectsDir, dir, filename);
+      const candidate = path7.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -15937,7 +16122,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile2(path6.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile2(path7.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -16131,7 +16316,7 @@ function usageSince(entries, fromIndex = 0) {
     lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
   }
   if (!sawUsage) {
-    return zeroUsage2();
+    return zeroUsage();
   }
   const lastCached = lastCacheRead + lastCacheCreation;
   return {
@@ -16173,7 +16358,7 @@ function asRecord(value) {
 function numeric(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
-function zeroUsage2() {
+function zeroUsage() {
   return {
     cachedInputTokens: 0,
     inputTokens: 0,
@@ -16184,6 +16369,13 @@ function zeroUsage2() {
 }
 
 // src/claude-engine.ts
+var CAPABILITY_DENY_RULES = {
+  skills: ["Skill"],
+  agents: ["Task", "Agent"]
+};
+function permissionDenyRulesFor(strip) {
+  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+}
 var dispatchCounter = 0;
 var MAX_CONSECUTIVE_ABSENCES = 3;
 var SETTLED_CONFIRMATION_POLLS = 5;
@@ -16269,13 +16461,15 @@ var ClaudeEngineInvocation = class {
     await this.#closePromise;
   }
   async #dispatchAndCollect(previousFailure, onLiveEvidence) {
+    const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
       name: this.#nextName(),
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {}
+      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}
     });
     this.#handle = handle;
     if (this.#closed) {
@@ -17545,6 +17739,19 @@ var EngineRegistry = class {
 var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
+  /**
+   * Both named minimum capabilities are judged `absent` on Codex: the
+   * app-server tool surface (shell, apply_patch, web search, view image,
+   * MCP) has no skill system and no subagent tool, so there is nothing to
+   * strip and the request is satisfied by construction. The judgement is
+   * dated (2026-08-27, Codex CLI 0.5x app-server): a Codex release that
+   * grows either capability re-opens it — the recorded `absent` route in
+   * the archive is what makes that auditable.
+   */
+  capabilities = {
+    skills: { route: "absent", detail: "the Codex app-server tool surface has no skill system" },
+    agents: { route: "absent", detail: "the Codex app-server tool surface has no subagent tool" }
+  };
   #transport;
   #scheduler;
   constructor(options) {
@@ -17597,6 +17804,18 @@ var CodexEngineInvocation = class {
 var ClaudeEngineAdapter = class {
   name = "claude";
   concurrency;
+  /**
+   * Claude strips both named minimum capabilities mechanically: permission
+   * deny rules ride the per-dispatch settings file the control plane
+   * already writes (the one surface measured to reach the daemon-served
+   * session), and deny rules outrank every allow layer and permission
+   * mode, `--dangerously-skip-permissions` included — the live tests
+   * assert that at the worker itself.
+   */
+  capabilities = {
+    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+  };
   #scheduler;
   #cwd;
   #controlPlane;
@@ -17640,6 +17859,23 @@ var ClaudeEngineAdapter = class {
 var OpenCodeEngineAdapter = class {
   name = "opencode";
   concurrency;
+  /**
+   * opencode has a real subagent/task surface (and a skills route via
+   * plugins), but the harness has not yet measured a config route that
+   * strips either — so both fail loud pre-spawn rather than dispatch an
+   * unrestricted worker under a restriction the author believes is in
+   * force. Wiring the config route flips these entries with evidence.
+   */
+  capabilities = {
+    skills: {
+      route: "unsupported",
+      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+    },
+    agents: {
+      route: "unsupported",
+      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+    }
+  };
   #scheduler;
   #cwd;
   #runner;
@@ -17750,6 +17986,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #placement;
   #defaultTurnTimeoutMs;
   #defaultMaxAttempts;
+  /** Run-wide capability strip, united with each call's own list. */
+  #strip;
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -17764,6 +18002,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #shutdownAgentStatus = "interrupted";
   #closed = false;
   constructor(options) {
+    if (options.strip !== void 0) {
+      assertValidStripOption(options.strip);
+    }
+    this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
       runId: options.runId ?? randomUUID4(),
@@ -17816,7 +18058,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
-      clientVersion: options.clientVersion ?? "0.0.0",
+      clientVersion: options.clientVersion ?? harnessVersion(),
       onEvent: (event) => {
         runtime?.handleEngineEvent("codex", event);
       },
@@ -17834,7 +18076,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
       ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
       ...options.agentCeiling !== void 0 ? { agentCeiling: options.agentCeiling } : {},
-      defaultMaxAttempts: options.defaultMaxAttempts ?? 3
+      defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
+      ...options.strip !== void 0 ? { strip: options.strip } : {}
     });
     return runtime;
   }
@@ -17881,6 +18124,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       assertCompilableSchema(options.schema);
     }
     const engine = this.#engineFor(options.engine);
+    const strip = effectiveStrip(this.#strip, options.strip);
+    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
@@ -17895,7 +18141,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
     this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
     try {
       await this.#recordAgentSafely(agentRecord);
@@ -17903,7 +18149,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (unsettled !== void 0) {
         unsettled.stage = "admitting";
       }
-      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         return { label: options.label ?? null, phase: options.phase ?? null, output };
       }
@@ -18325,10 +18571,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
+      ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options) {
+  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
     return {
       id,
       engine,
@@ -18350,6 +18597,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
+      strip: stripRoutes === null || options.strip === void 0 ? null : { requested: [...options.strip], enforcement: stripRoutes },
       parseRoute: null,
       decodeFailure: null,
       rawOutput: null,
@@ -18383,6 +18631,10 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
     endedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    // Per-attempt served-model identity: retries can open fresh threads that
+    // resolve differently, so each attempt keeps its own answer rather than
+    // inheriting the agent-level last-write-wins field.
+    resolvedModel: result?.resolvedModel ?? null,
     durationMs: result?.durationMs ?? null,
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
@@ -18534,7 +18786,7 @@ import vm from "node:vm";
 import { randomUUID as randomUUID5 } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path8 from "node:path";
+import path9 from "node:path";
 import { pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -24231,7 +24483,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 import { constants } from "node:fs";
 import { access as access2, readdir as readdir2, readFile as readFile4 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -24240,10 +24492,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path7.join(homedir3(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path8.join(homedir3(), ".local", "share");
   return {
-    project: path7.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path7.join(dataHome2, "ensemble", "workflows")
+    project: path8.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path8.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -24253,7 +24505,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path7.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path8.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -24323,7 +24575,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path7.join(dir, entry.name);
+    const scriptPath = path8.join(dir, entry.name);
     try {
       const source = await readFile4(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
@@ -24463,8 +24715,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path8.resolve(options.filename);
-  const cwd = options.cwd ?? path8.dirname(resolvedFilename);
+  const resolvedFilename = path9.resolve(options.filename);
+  const cwd = options.cwd ?? path9.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -24909,7 +25161,7 @@ function skipBlockComment(source, start) {
 // src/status-file.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
 import { link, readFile as readFile6, readdir as readdir3, rename as rename3, unlink, writeFile as writeFile4 } from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
 var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
@@ -24975,14 +25227,14 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     await this.#initialSweep;
-    const target = path9.join(this.#dir, STATUS_FILENAME);
+    const target = path10.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, target);
   }
   async #removeSnapshot() {
-    const target = path9.join(this.#dir, STATUS_FILENAME);
+    const target = path10.join(this.#dir, STATUS_FILENAME);
     const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
@@ -25041,7 +25293,7 @@ var StatusFileWriter = class {
         continue;
       }
       try {
-        await this.#fileOperations.unlink(path9.join(this.#dir, entry));
+        await this.#fileOperations.unlink(path10.join(this.#dir, entry));
       } catch (error) {
         if (!isNodeError2(error) || error.code !== "ENOENT") {
           this.#reportError(error);
@@ -25136,6 +25388,7 @@ async function runEnsembleCli(argv, options = {}) {
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
+      ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
     });
@@ -25315,7 +25568,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     return {
-      workflowPath: path10.join(cwd, "<ensemble-agent>"),
+      workflowPath: path11.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -25327,7 +25580,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path10.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path11.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readFile7(workflowPath, "utf8"),
@@ -25353,6 +25606,7 @@ function cliFlags(invocation) {
     ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
+    ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -25444,7 +25698,8 @@ async function parseWorkflowInvocation(argv, cwd) {
       budget: { type: "string", multiple: true },
       "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
-      timeout: { type: "string" }
+      timeout: { type: "string" },
+      strip: { type: "string", multiple: true }
     },
     strict: true,
     allowPositionals: false
@@ -25456,6 +25711,7 @@ async function parseWorkflowInvocation(argv, cwd) {
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const strip = parseStripList(parsed.values.strip);
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -25464,7 +25720,8 @@ async function parseWorkflowInvocation(argv, cwd) {
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
-    ...timeoutMs !== void 0 ? { timeoutMs } : {}
+    ...timeoutMs !== void 0 ? { timeoutMs } : {},
+    ...strip !== void 0 ? { strip } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
@@ -25484,6 +25741,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
         identity: { type: "boolean" },
         schema: { type: "string" },
         "max-attempts": { type: "string" },
+        strip: { type: "string", multiple: true },
         task: { type: "string" },
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
@@ -25516,6 +25774,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
+  const strip = parseStripList(parsed.values.strip);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -25527,7 +25786,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     ...isolation !== void 0 ? { isolation } : {},
     ...parsed.values.identity === true ? { identity: true } : {},
     ...schema !== void 0 ? { schema } : {},
-    ...maxAttempts !== void 0 ? { maxAttempts } : {}
+    ...maxAttempts !== void 0 ? { maxAttempts } : {},
+    ...strip !== void 0 ? { strip } : {}
   };
   return {
     kind: "agent",
@@ -25555,6 +25815,19 @@ function parseIsolation(value) {
     throw new CliUsageError(`--isolation must be worktree, got ${value}`);
   }
   return value;
+}
+function parseStripList(values) {
+  if (values === void 0) {
+    return void 0;
+  }
+  for (const value of values) {
+    if (!STRIPPABLE_CAPABILITIES.includes(value)) {
+      throw new CliUsageError(
+        `--strip must name a capability from: ${STRIPPABLE_CAPABILITIES.join(", ")}; got ${value}`
+      );
+    }
+  }
+  return [...new Set(values)];
 }
 function splitTuningFlags(argv) {
   const tuningArgs = [];
@@ -25598,10 +25871,10 @@ function splitTuningFlags(argv) {
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -25614,7 +25887,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path10.resolve(cwd, filename);
+    const filePath = path11.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile7(filePath, "utf8");
@@ -25706,10 +25979,10 @@ function parseMaxAttempts(value) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""
@@ -25738,79 +26011,6 @@ function formatError3(error) {
 }
 function isError(error) {
   return Error.isError(error);
-}
-
-// src/node-version.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import path11 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-function requiredNodeRange(fromUrl = import.meta.url) {
-  if (">=24.14.0".trim().length > 0) {
-    return ">=24.14.0".trim();
-  }
-  const metadata = readPackageMetadata(fromUrl);
-  const range = metadata.engines?.node;
-  if (typeof range !== "string" || range.trim().length === 0) {
-    throw new Error("package.json is missing engines.node");
-  }
-  return range.trim();
-}
-function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
-  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
-}
-function satisfiesNodeRange(version2, range) {
-  const minimum = parseMinimumRange(range);
-  const actual = parseVersion(version2);
-  if (minimum === null || actual === null) {
-    throw new Error(`Unsupported Node version range: ${range}`);
-  }
-  if (actual.major !== minimum.major) {
-    return actual.major > minimum.major;
-  }
-  if (actual.minor !== minimum.minor) {
-    return actual.minor > minimum.minor;
-  }
-  return actual.patch >= minimum.patch;
-}
-function parseMinimumRange(range) {
-  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2] ?? 0),
-    patch: Number(match[3] ?? 0)
-  };
-}
-function parseVersion(version2) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3])
-  };
-}
-function readPackageMetadata(fromUrl) {
-  let current2 = path11.dirname(fileURLToPath2(fromUrl));
-  while (true) {
-    const candidate = path11.join(current2, "package.json");
-    try {
-      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
-      if (metadata.name === "ensemble-workflows") {
-        return metadata;
-      }
-    } catch {
-    }
-    const parent = path11.dirname(current2);
-    if (parent === current2) {
-      throw new Error("Could not locate ensemble-workflows package.json");
-    }
-    current2 = parent;
-  }
 }
 
 // src/cli/ensemble.ts

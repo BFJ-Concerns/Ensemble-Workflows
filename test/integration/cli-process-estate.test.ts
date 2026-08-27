@@ -2144,12 +2144,16 @@ function runProcess(
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     ENSEMBLE_RUN_RECORD: "0",
     ENSEMBLE_STATUS: "0",
     XDG_DATA_HOME: path.join(directory, "data")
   };
+  // Isolation here is by data home: an inherited store override (the suite
+  // runner's own per-run temp store) would silently win over it.
+  delete env.ENSEMBLE_RUN_RECORD_DIR;
+  return env;
 }
 
 async function findOnlyFile(root: string, basename: string): Promise<string> {

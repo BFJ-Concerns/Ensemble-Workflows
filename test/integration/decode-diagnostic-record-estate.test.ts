@@ -66,6 +66,9 @@ async function createFixture() {
           ENSEMBLE_CODEX_SCHEMA_CLI: realCodex,
           ENSEMBLE_FAKE_CODEX_DECODE_FAILURE: decode ? "1" : "0",
           ENSEMBLE_RUN_RECORD: "1",
+          // Explicit store: an inherited ENSEMBLE_RUN_RECORD_DIR (the suite
+          // runner's own per-run temp store) would win over the data home.
+          ENSEMBLE_RUN_RECORD_DIR: path.join(decode ? decodeDataHome : cleanDataHome, "ensemble"),
           ENSEMBLE_STATUS: "0",
           XDG_DATA_HOME: decode ? decodeDataHome : cleanDataHome
         }

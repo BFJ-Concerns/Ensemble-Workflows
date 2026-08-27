@@ -49,7 +49,7 @@ test("accepted request, partial output, overload, and termination retain one cau
         }
       }
     ]];
-    const environment = {
+    const environment: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       ENSEMBLE_CODEX_SCHEMA_CLI: await executablePath("codex"),
@@ -58,6 +58,9 @@ test("accepted request, partial output, overload, and termination retain one cau
       ENSEMBLE_STATUS: "0",
       XDG_DATA_HOME: dataHome
     };
+    // Isolation here is by data home: an inherited store override (the suite
+    // runner's own per-run temp store) would silently win over it.
+    delete environment.ENSEMBLE_RUN_RECORD_DIR;
 
     // The fixture supplies only the on-demand overload. The built bundle,
     // caller-visible process result, dispatch protocol, and archive are real.

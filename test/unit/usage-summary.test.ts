@@ -15,13 +15,14 @@ test("no events yields null, never a zero-spend summary", () => {
 
 test("codex spend maps by subtraction: cached out of input, reasoning out of output", () => {
   const summary = summariseUsage("codex", [
-    event({ cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 2, totalTokens: 27 })
+    event({ cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 2, totalTokens: 25 })
   ]);
   assert.deepEqual(summary, {
     freshInputTokens: 12,
     cachedInputTokens: 8,
     outputTokens: 3,
     reasoningOutputTokens: 2,
+    unclassifiedTokens: 0,
     totalTokens: 25
   });
 });
@@ -44,6 +45,7 @@ test("claude spend keeps reasoning unknowable (null) and splits cache where repo
     cacheCreationTokens: 3,
     outputTokens: 40,
     reasoningOutputTokens: null,
+    unclassifiedTokens: 0,
     totalTokens: 270
   });
 });
@@ -66,7 +68,25 @@ test("opencode spend is already disjoint: classes pass through and sum", () => {
     cacheCreationTokens: 1,
     outputTokens: 9,
     reasoningOutputTokens: 6,
+    unclassifiedTokens: 0,
     totalTokens: 49
+  });
+});
+
+test("a wholly unclassifiable event keeps its reported spend as unclassified, never zero", () => {
+  // opencode's total-only steps: the aggregate carries spend only in the
+  // engine total. Erasing it into an all-zero summary would make reported
+  // spend indistinguishable from no spend.
+  const summary = summariseUsage("opencode", [
+    event({ cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 100 })
+  ]);
+  assert.deepEqual(summary, {
+    freshInputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    unclassifiedTokens: 100,
+    totalTokens: 100
   });
 });
 
@@ -94,6 +114,7 @@ test("merging drops a split that not every contributor carries", () => {
     cachedInputTokens: 15,
     outputTokens: 2,
     reasoningOutputTokens: null,
+    unclassifiedTokens: 0,
     totalTokens: 19
   });
 });

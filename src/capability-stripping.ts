@@ -63,19 +63,23 @@ export function effectiveStrip(
   return [...new Set([...(runWide ?? []), ...(perCall ?? [])])];
 }
 
+/** An enforcement route that lets a worker dispatch, with its provenance. */
+export type DischargedEnforcement = { route: "config" | "absent"; detail: string };
+
 /**
  * Pre-spawn enforcement check: every requested capability must resolve to a
  * `config` or `absent` route on the target engine's declared table. An
  * engine with no table cannot enforce anything — fail closed, same as an
- * `unsupported` entry. Returns the per-capability routes for the durable
- * record, so the archive shows how each strip was discharged.
+ * `unsupported` entry. Returns each capability's route *and* the table's
+ * detail string for the durable record, so the archive carries the
+ * judgement an `absent` route rests on, not just the word.
  */
 export function resolveStripEnforcement(
   engine: EngineName,
   table: EngineCapabilityTable | undefined,
   strip: readonly StrippableCapability[]
-): Partial<Record<StrippableCapability, "config" | "absent">> {
-  const routes: Partial<Record<StrippableCapability, "config" | "absent">> = {};
+): Partial<Record<StrippableCapability, DischargedEnforcement>> {
+  const routes: Partial<Record<StrippableCapability, DischargedEnforcement>> = {};
   for (const capability of strip) {
     const enforcement = table?.[capability];
     if (enforcement === undefined || enforcement.route === "unsupported") {
@@ -85,7 +89,7 @@ export function resolveStripEnforcement(
         enforcement?.detail ?? "the engine declares no capability-stripping surface"
       );
     }
-    routes[capability] = enforcement.route;
+    routes[capability] = { route: enforcement.route, detail: enforcement.detail };
   }
   return routes;
 }

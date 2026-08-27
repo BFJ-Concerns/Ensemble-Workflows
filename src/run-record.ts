@@ -17,7 +17,7 @@ import { harnessVersion } from "./harness-version.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
-import type { StrippableCapability } from "./capability-stripping.js";
+import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
@@ -73,6 +73,8 @@ export interface RuntimeAgentAttemptRecord {
   appServerDiagnostic: { code: number | string | null; message: string; payload: string } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
+  /** The served model this attempt's engine reported, when it reported one. */
+  resolvedModel: string | null;
   startedAt: string;
   endedAt: string;
   durationMs: number | null;
@@ -127,7 +129,7 @@ export interface RuntimeAgentRecord {
    */
   strip: {
     requested: StrippableCapability[];
-    enforcement: Partial<Record<StrippableCapability, "config" | "absent">>;
+    enforcement: Partial<Record<StrippableCapability, DischargedEnforcement>>;
   } | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
@@ -573,6 +575,7 @@ export class RunRecordWriter {
               },
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
+        resolved_model: attempt.resolvedModel,
         started_at: attempt.startedAt,
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
@@ -669,28 +672,30 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
   const unlikeCurrencies = new Set<UsageRollup["cost"]>();
   for (const record of records) {
     const engine = record.engine;
-    const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
-    const summary = summariseUsage(engine, events);
-    if (summary === null) {
-      // No usage events, nothing to roll up — the agent's own record says
-      // why (its `usage.unavailable` reason); a zero bucket here would read
-      // as zero spend, which is a different claim.
-      continue;
-    }
-    // Spend is keyed under the model that actually served the turns. An
-    // agent whose served model was never learned lands under the literal
-    // "unresolved" rather than borrowing the requested pin — a rollup label
-    // is a claim about what ran, not about what was asked for.
-    const model = record.resolvedModel ?? "unresolved";
-    rollup[engine] ??= {};
-    const existing = rollup[engine][model];
-    rollup[engine][model] =
-      existing === undefined
-        ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } }
-        : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
-    const bucket = rollup[engine][model];
-    for (const event of events) {
-      addProviderCost(bucket.cost, event, unlikeCurrencies);
+    // Spend is keyed under the model that actually served each attempt's
+    // turns — attempts can resolve different served models (a retry opens a
+    // fresh thread), so attribution is per attempt, falling back to the
+    // agent-level answer and then to the literal "unresolved". Never the
+    // requested pin: a rollup label is a claim about what ran, not about
+    // what was asked for. A no-event attempt adds no bucket — the
+    // agent's own record says why (its `usage.unavailable` reason); a zero
+    // bucket would read as zero spend, which is a different claim.
+    for (const attempt of record.attempts) {
+      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
+      if (summary === null) {
+        continue;
+      }
+      const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
+      rollup[engine] ??= {};
+      const existing = rollup[engine][model];
+      rollup[engine][model] =
+        existing === undefined
+          ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } }
+          : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
+      const bucket = rollup[engine][model];
+      for (const event of attempt.tokenUsageEvents) {
+        addProviderCost(bucket.cost, event, unlikeCurrencies);
+      }
     }
   }
   return rollup;

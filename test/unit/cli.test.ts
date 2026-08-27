@@ -530,8 +530,8 @@ test("ensemble agent honours --max-attempts and rejects invalid values before an
 });
 
 test("ensemble agent threads --strip to the worker and rejects unknown capabilities cleanly", async () => {
-  // The honoured value is observed at the engine: the fixed engine's claude
-  // capability table is absent, so the runtime's own fail-loud enforcement
+  // The honoured value is observed at the engine: the fixed codex stub
+  // declares no capability table, so the runtime's own fail-loud enforcement
   // rejects the dispatch — zero attempts — proving the flag reached agent()
   // rather than being swallowed by the parser.
   const engine = new FixedResponseEngine("codex", "never dispatched");

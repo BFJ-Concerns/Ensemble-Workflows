@@ -32,7 +32,9 @@ test("enforcement resolution returns routes for config and absent, and fails lou
     skills: { route: "config", detail: "settings deny rules" },
     agents: { route: "unsupported", detail: "no measured route" }
   };
-  assert.deepEqual(resolveStripEnforcement("claude", table, ["skills"]), { skills: "config" });
+  assert.deepEqual(resolveStripEnforcement("claude", table, ["skills"]), {
+    skills: { route: "config", detail: "settings deny rules" }
+  });
   assert.throws(() => resolveStripEnforcement("claude", table, ["skills", "agents"]), CapabilityStripUnsupportedError);
   // No declared table fails closed: an adapter that never considered
   // stripping must not dispatch an unrestricted worker under a restriction.

@@ -277,7 +277,7 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     args: [],
     cliFlags: { jsonArgs: false }
   });
-  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 27)));
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 25)));
   await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, 0, 25)));
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
@@ -297,6 +297,7 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     cachedInputTokens: 8,
     outputTokens: 3,
     reasoningOutputTokens: 2,
+    unclassifiedTokens: 0,
     totalTokens: 25
   });
   // Claude separates neither reasoning nor (here) the cache split: reasoning
@@ -307,6 +308,7 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     cachedInputTokens: 8,
     outputTokens: 5,
     reasoningOutputTokens: null,
+    unclassifiedTokens: 0,
     totalTokens: 25
   });
 });
@@ -355,7 +357,7 @@ test("each agent record carries its usage in the declared vocabulary, or the rea
     args: [],
     cliFlags: { jsonArgs: false }
   });
-  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 27)));
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 25)));
   const noUsage = agentRecord(2, "claude", null, 0);
   noUsage.attempts[0]!.tokenUsageEvents = [];
   await writer.recordAgent(noUsage);
@@ -375,6 +377,7 @@ test("each agent record carries its usage in the declared vocabulary, or the rea
       cachedInputTokens: 8,
       outputTokens: 3,
       reasoningOutputTokens: 2,
+      unclassifiedTokens: 0,
       totalTokens: 25
     }
   });
@@ -827,6 +830,7 @@ function agentRecord(
         appServerDiagnostic: null,
         rawOutput: "ok",
         validatedOutput: "ok",
+        resolvedModel: null,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,

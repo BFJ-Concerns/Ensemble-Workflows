@@ -4,6 +4,8 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+
+import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import {
@@ -853,7 +855,7 @@ export class EnsembleRuntime {
     engine: EngineName,
     prompt: string,
     options: Partial<AgentOptions>,
-    stripRoutes: Partial<Record<StrippableCapability, "config" | "absent">> | null = null
+    stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null
   ): RuntimeAgentRecord {
     return {
       id,
@@ -923,7 +925,10 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<TurnResult, "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics"> | null,
+  result: Pick<
+    TurnResult,
+    "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics" | "resolvedModel"
+  > | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null
 ): RuntimeAgentAttemptRecord {
@@ -937,6 +942,10 @@ function attemptRecord(
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
     endedAt: new Date().toISOString(),
+    // Per-attempt served-model identity: retries can open fresh threads that
+    // resolve differently, so each attempt keeps its own answer rather than
+    // inheriting the agent-level last-write-wins field.
+    resolvedModel: result?.resolvedModel ?? null,
     durationMs: result?.durationMs ?? null,
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],

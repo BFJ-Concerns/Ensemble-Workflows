@@ -12,7 +12,7 @@ import { ClaudeDispatchError } from "./errors.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (observed as orphaned
+ * worker escaped the cancellation plumbing entirely (witnessed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -52,8 +52,10 @@ export interface ClaudeDispatchOptions {
   /**
    * Permission deny rules for the worker session (capability stripping).
    * Delivered through the per-dispatch settings file — the surface
-   * measured to reach the daemon-served session — as `permissions.deny`,
-   * which outranks every allow layer and permission mode.
+   * measured to reach the daemon-served session — as `permissions.deny`.
+   * That deny rules outrank every allow layer and permission mode
+   * (`--dangerously-skip-permissions` included) is a stated judgement
+   * until a live test observes it at a real worker.
    */
   permissionDenyRules?: string[];
 }
@@ -249,8 +251,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
     const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
     // The deny block joins the same single-purpose file rather than a second
-    // artefact: deny rules union additively across settings layers and beat
-    // every allow, so carrying only this dispatch's rules never touches the
+    // artefact. The measured additive layering (2026-08-07) covered the
+    // env block; that deny rules likewise union across layers and beat
+    // every allow is Claude Code's documented model, held as a judgement
+    // until a live test observes it at a real worker. Either
+    // way the file carries only this dispatch's rules and never touches the
     // operator's own permission configuration.
     const settings =
       permissionDenyRules !== undefined && permissionDenyRules.length > 0

@@ -18,11 +18,14 @@ import type { EngineName, TokenUsageEvent } from "./types.js";
  *   whole generation. `null` is never zero: a zero from a separating
  *   engine says "no reasoning spend", a `null` says "not knowable".
  *
+ * - `unclassifiedTokens` — spend the engine reported in its own total that
+ *   none of the declared classes covers (opencode steps carrying `total`
+ *   alone are the known case). Naming it keeps the summary honest in both
+ *   directions: no class absorbs tokens by lying about what they were, and
+ *   no reported spend is erased into an all-zero summary.
+ *
  * The engine-native usage events remain untouched beneath the summaries —
- * the vocabulary governs the summary, not the evidence. Tokens an engine
- * reports only as an unclassifiable total (opencode steps carrying `total`
- * alone) stay in that native evidence: no declared class may absorb them
- * without lying about what they were.
+ * the vocabulary governs the summary, not the evidence.
  */
 export interface UsageSummary {
   freshInputTokens: number;
@@ -31,6 +34,7 @@ export interface UsageSummary {
   cacheCreationTokens?: number;
   outputTokens: number;
   reasoningOutputTokens: number | null;
+  unclassifiedTokens: number;
   totalTokens: number;
 }
 
@@ -38,17 +42,29 @@ export interface UsageSummary {
  * The one inclusion rule per engine, in one place — the shared
  * `TokenUsageBreakdown` deliberately preserves each engine's native field
  * semantics, so the summary boundary is where those semantics are mapped
- * onto the declared classes:
+ * onto the declared classes. Each row states how it is known: "measured"
+ * rows are verifiable from this repository's own capture code; "judgement"
+ * rows are claims about upstream payloads the repo cannot verify by
+ * construction, checked by reconciling the recorded summaries against the
+ * native usage events kept beside them in the run record.
  *
- * - **codex** reports `inputTokens` *including* the cached share, and
- *   `outputTokens` *including* the reasoning share — both are subtracted
- *   out to keep the classes disjoint.
+ * - **codex** reports `inputTokens` *including* the cached share (measured:
+ *   the ~2× dashboard overcount that motivated this vocabulary), and
+ *   `outputTokens`
+ *   *including* the reasoning share (judgement, 2026-08-27, from OpenAI
+ *   usage-field semantics) — both are subtracted out to keep the classes
+ *   disjoint.
  * - **claude** reports `inputTokens` *excluding* cache, `cachedInputTokens`
- *   as reads + creation (with the creation share carried separately), and
- *   no reasoning split — reasoning is `null` and rides `outputTokens`.
- * - **opencode** reports input, output, reasoning, and cache all
- *   disjointly; cache creation is separable only when the stream carried a
- *   cache object.
+ *   as reads + creation with the creation share carried separately, and no
+ *   reasoning split — reasoning is `null` and rides `outputTokens`
+ *   (measured: `usageSince` in `src/claude-transcript.ts` builds exactly
+ *   this shape).
+ * - **opencode** reports input, output, reasoning, and cache all disjointly
+ *   (measured harness-side: `aggregateOpenCodeUsage` in
+ *   `src/opencode-engine.ts` sums them into its total; the disjointness of
+ *   the upstream fields themselves is judgement, reconciled the same
+ *   way); cache
+ *   creation is separable only when the stream carried a cache object.
  */
 const ENGINE_INCLUSION_RULES: Record<
   EngineName,
@@ -77,6 +93,7 @@ export function summariseUsage(engine: EngineName, events: readonly TokenUsageEv
   let cacheCreationSeparable = true;
   let output = 0;
   let reasoning = 0;
+  let unclassified = 0;
   for (const event of events) {
     const delta = event.last;
     cached += delta.cachedInputTokens;
@@ -85,13 +102,22 @@ export function summariseUsage(engine: EngineName, events: readonly TokenUsageEv
     } else {
       cacheCreation += delta.cacheCreationInputTokens;
     }
-    fresh += rules.cachedWithinInput
+    const deltaFresh = rules.cachedWithinInput
       ? Math.max(0, delta.inputTokens - delta.cachedInputTokens)
       : delta.inputTokens;
-    reasoning += delta.reasoningOutputTokens;
-    output += rules.reasoningWithinOutput
+    const deltaOutput = rules.reasoningWithinOutput
       ? Math.max(0, delta.outputTokens - delta.reasoningOutputTokens)
       : delta.outputTokens;
+    fresh += deltaFresh;
+    reasoning += delta.reasoningOutputTokens;
+    output += deltaOutput;
+    // Spend the engine's own total covers but no class does — opencode's
+    // total-only steps are the known case. Counting it keeps a wholly
+    // unclassifiable event from collapsing into a zero-spend summary.
+    unclassified += Math.max(
+      0,
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + delta.reasoningOutputTokens)
+    );
   }
   const separableReasoning = rules.reasoningSeparable ? reasoning : null;
   return {
@@ -102,9 +128,10 @@ export function summariseUsage(engine: EngineName, events: readonly TokenUsageEv
       : {}),
     outputTokens: separableReasoning === null ? output + reasoning : output,
     reasoningOutputTokens: separableReasoning,
+    unclassifiedTokens: unclassified,
     // The total is the class sum by construction, so the vocabulary's
     // disjoint-and-summing invariant cannot drift from the fields beside it.
-    totalTokens: fresh + cached + output + reasoning
+    totalTokens: fresh + cached + output + reasoning + unclassified
   };
 }
 
@@ -141,18 +168,7 @@ export function addUsageSummary(target: UsageSummary, delta: UsageSummary): Usag
     reasoningOutputTokens: reasoningSurvives
       ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0)
       : null,
+    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
     totalTokens: target.totalTokens + delta.totalTokens
-  };
-}
-
-export function zeroUsageSummary(): UsageSummary {
-  return {
-    freshInputTokens: 0,
-    cachedInputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
   };
 }

@@ -1675,7 +1675,10 @@ test("a config-enforced strip reaches the engine and the durable record", async 
   await runtime.agent("restricted work", { engine: "claude", strip: ["skills"] });
 
   assert.deepEqual(seenStrips, [["skills"]]);
-  assert.deepEqual(records[0]?.strip, { requested: ["skills"], enforcement: { skills: "config" } });
+  assert.deepEqual(records[0]?.strip, {
+    requested: ["skills"],
+    enforcement: { skills: { route: "config", detail: "settings deny rules" } }
+  });
   await runtime.close();
 });
 
@@ -1740,7 +1743,10 @@ test("an absent capability is satisfied by construction and recorded as absent",
   const output = await runtime.agent("unrestricted anyway", { engine: "codex", strip: ["skills"] });
 
   assert.equal(output, "ok");
-  assert.deepEqual(records.at(-1)?.strip, { requested: ["skills"], enforcement: { skills: "absent" } });
+  assert.deepEqual(records.at(-1)?.strip, {
+    requested: ["skills"],
+    enforcement: { skills: { route: "absent", detail: "no skill system" } }
+  });
   await runtime.close();
 });
 

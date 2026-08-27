@@ -814,18 +814,33 @@ test("a script exporting only meta and defaults still runs", async () => {
 });
 
 test("non-export top-level export property syntax remains V8's to execute", async () => {
-  const result = await runWorkflowScript({
-    filename: "v8-top-level-syntax.js",
-    runtime,
-    log: () => {},
-    source: `
-      export const meta = { name: "v8-top-level-syntax" };
-      const parsed = JSON.parse('{"export": "value"}');
-      return parsed?.export;
-    `
-  });
+  const scenarios = [
+    {
+      name: "optional property",
+      body: `const parsed = JSON.parse('{"export": "value"}'); return parsed?.export;`,
+      expected: "value"
+    },
+    {
+      name: "operator continuation",
+      body: `const obj = JSON.parse('{"export": 3}'); return obj.export * 2;`,
+      expected: 6
+    },
+    {
+      name: "ASI declaration continuation",
+      body: `const obj = JSON.parse('{"export": 3}'); const value = obj.export\nconst next = value + 1; return next;`,
+      expected: 4
+    }
+  ];
 
-  assert.equal(result.result, "value");
+  for (const scenario of scenarios) {
+    const result = await runWorkflowScript({
+      filename: `v8-top-level-${scenario.name}.js`,
+      runtime,
+      log: () => {},
+      source: `export const meta = { name: "v8-top-level-syntax" };\n${scenario.body}`
+    });
+    assert.equal(result.result, scenario.expected, scenario.name);
+  }
 });
 
 test("an unsupported export after a template literal fails before any worker spawns", async () => {

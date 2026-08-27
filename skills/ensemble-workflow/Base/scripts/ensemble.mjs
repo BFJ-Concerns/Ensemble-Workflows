@@ -7163,7 +7163,7 @@ var require_acorn = __commonJS({
         parser.nextToken();
         return parser.parseExpression();
       };
-      Parser3.tokenizer = function tokenizer4(input, options) {
+      Parser3.tokenizer = function tokenizer3(input, options) {
         return new this(options, input);
       };
       Object.defineProperties(Parser3.prototype, prototypeAccessors2);
@@ -12266,7 +12266,7 @@ var require_acorn = __commonJS({
       function parseExpressionAt2(input, pos, options) {
         return Parser3.parseExpressionAt(input, pos, options);
       }
-      function tokenizer3(input, options) {
+      function tokenizer2(input, options) {
         return Parser3.tokenizer(input, options);
       }
       exports2.Node = Node3;
@@ -12289,7 +12289,7 @@ var require_acorn = __commonJS({
       exports2.parseExpressionAt = parseExpressionAt2;
       exports2.tokContexts = types2;
       exports2.tokTypes = types$12;
-      exports2.tokenizer = tokenizer3;
+      exports2.tokenizer = tokenizer2;
       exports2.version = version2;
     }));
   }
@@ -24475,9 +24475,6 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
-function tokenizer2(input, options) {
-  return Parser.tokenizer(input, options);
-}
 
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
@@ -24830,7 +24827,7 @@ function extractWorkflowSource(source) {
     }
   }
   const bodySource = withoutBom.slice(bodyStart);
-  const unsupportedExport = findUnsupportedTopLevelExport(bodySource);
+  const unsupportedExport = findUnsupportedTopLevelExport(withoutBom);
   if (unsupportedExport !== null) {
     throw new WorkflowScriptError(
       `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
@@ -24843,67 +24840,51 @@ function extractWorkflowSource(source) {
   };
 }
 function findUnsupportedTopLevelExport(source) {
-  let tokens;
+  let program;
   try {
-    tokens = [...tokenizer2(source, { ecmaVersion: "latest", sourceType: "module" })];
+    program = parse3(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // Workflow bodies intentionally permit top-level return because the
+      // runtime wraps them in an async function before V8 imports them.
+      allowReturnOutsideFunction: true
+    });
   } catch {
     return null;
   }
-  let nesting = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (nesting === 0 && isExportDeclarationStart(tokens, index, source)) {
-      const description = describeTopLevelExport(tokens, index, source);
-      if (description !== "export const defaults") {
-        return `\`${description}\``;
-      }
-    }
-    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[" || token.type.label === "${") {
-      nesting += 1;
-    } else if (token.type.label === "}" || token.type.label === ")" || token.type.label === "]") {
-      nesting -= 1;
+  for (const node of program.body) {
+    if (isModuleExport(node) && !isSupportedWorkflowExport(node)) {
+      return `\`${describeTopLevelExport(node, source)}\``;
     }
   }
   return null;
 }
-function isExportDeclarationStart(tokens, index, source) {
-  const token = tokens[index];
-  const next = tokens[index + 1];
-  if (token?.type.label !== "export" || next === void 0) {
+function isModuleExport(node) {
+  return node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration";
+}
+function isSupportedWorkflowExport(node) {
+  if (node.type !== "ExportNamedDeclaration" || node.declaration?.type !== "VariableDeclaration") {
     return false;
   }
-  switch (next.type.label) {
-    case "default":
-    case "{":
-    case "*":
-    case "var":
-    case "let":
-    case "const":
-    case "function":
-    case "class":
-      return true;
-    case "name":
-      return source.slice(next.start, next.end) === "async" && tokens[index + 2]?.type.label === "function";
-    default:
-      return false;
-  }
+  const [declaration] = node.declaration.declarations ?? [];
+  return node.declaration.kind === "const" && (node.declaration.declarations?.length ?? 0) === 1 && (declaration?.id?.name === "meta" || declaration?.id?.name === "defaults");
 }
-function describeTopLevelExport(tokens, index, source) {
-  const next = tokens[index + 1];
-  if (next === void 0) {
-    return "export";
-  }
-  if (next.type.label === "default") {
+function describeTopLevelExport(node, source) {
+  if (node.type === "ExportDefaultDeclaration") {
     return "export default";
   }
-  if (next.type.label === "{" || next.type.label === "*") {
-    return source.slice(tokens[index].start, next.end);
+  if (node.type === "ExportAllDeclaration") {
+    return "export *";
   }
-  const name = tokens[index + 2];
-  if (name?.type.label === "name") {
-    return source.slice(tokens[index].start, name.end);
+  const declaration = node.declaration;
+  if (declaration?.type === "VariableDeclaration") {
+    const name = declaration.declarations?.[0]?.id?.name;
+    return name === void 0 ? `export ${declaration.kind ?? ""}`.trim() : `export ${declaration.kind} ${name}`;
   }
-  return source.slice(tokens[index].start, next.end);
+  if ((declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") && declaration.id?.name !== void 0) {
+    return `export ${declaration.type === "FunctionDeclaration" ? "function" : "class"} ${declaration.id.name}`;
+  }
+  return source.slice(node.start, node.end);
 }
 function readWorkflowDefaults(defaultsSource, filename = "workflow.js", openCodeModelRegistry) {
   if (defaultsSource === null) {

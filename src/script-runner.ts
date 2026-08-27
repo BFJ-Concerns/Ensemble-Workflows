@@ -360,7 +360,7 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
   }
 
   const bodySource = withoutBom.slice(bodyStart);
-  const unsupportedExport = findUnsupportedTopLevelExport(bodySource);
+  const unsupportedExport = findUnsupportedTopLevelExport(withoutBom);
   if (unsupportedExport !== null) {
     throw new WorkflowScriptError(
       `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
@@ -375,87 +375,84 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
 }
 
 /**
- * Reject exports that the wrapper would embed inside its async body before
- * importing that wrapper. This is intentionally only a token scan: Acorn is
- * not the syntax authority, so any tokenisation disagreement leaves the
- * source for V8 to judge at import time. It recognises export-declaration
- * forms, rather than every `export` keyword: property access such as
- * `result.export` remains ordinary V8 syntax. `export const defaults` stays
- * with the existing placement diagnostic, which explains why that otherwise
- * supported declaration must immediately follow `meta`.
+ * Reject actual module export declarations that the wrapper would embed
+ * inside its async body before importing that wrapper. Acorn is not the
+ * syntax authority, so a parsing disagreement leaves the source for V8 to
+ * judge at import time. Looking at Program-body AST nodes, rather than
+ * keyword tokens, keeps property access such as `result.export` as ordinary
+ * V8 syntax regardless of the tokens that follow it. `export const defaults`
+ * stays with the existing placement diagnostic, which explains why that
+ * otherwise supported declaration must immediately follow `meta`.
  */
 function findUnsupportedTopLevelExport(source: string): string | null {
-  let tokens: Array<acorn.Token>;
+  let program: WorkflowProgram;
   try {
-    tokens = [...acorn.tokenizer(source, { ecmaVersion: "latest", sourceType: "module" })];
+    program = acorn.parse(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // Workflow bodies intentionally permit top-level return because the
+      // runtime wraps them in an async function before V8 imports them.
+      allowReturnOutsideFunction: true
+    }) as WorkflowProgram;
   } catch {
     return null;
   }
 
-  let nesting = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (nesting === 0 && isExportDeclarationStart(tokens, index, source)) {
-      const description = describeTopLevelExport(tokens, index, source);
-      if (description !== "export const defaults") {
-        return `\`${description}\``;
-      }
-    }
-
-    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[" || token.type.label === "${") {
-      nesting += 1;
-    } else if (token.type.label === "}" || token.type.label === ")" || token.type.label === "]") {
-      nesting -= 1;
+  for (const node of program.body) {
+    if (isModuleExport(node) && !isSupportedWorkflowExport(node)) {
+      return `\`${describeTopLevelExport(node, source)}\``;
     }
   }
   return null;
 }
 
-function isExportDeclarationStart(tokens: Array<acorn.Token>, index: number, source: string): boolean {
-  const token = tokens[index];
-  const next = tokens[index + 1];
-  if (token?.type.label !== "export" || next === undefined) {
-    return false;
-  }
-
-  // Acorn tokenises a property named `export` as the keyword too. The forms
-  // below are the only starts of an ECMAScript export declaration, so `.` and
-  // `?.` property access (and any other ordinary body expression) stays with
-  // V8 rather than receiving an authoring diagnostic from this pre-spawn
-  // check.
-  switch (next.type.label) {
-    case "default":
-    case "{":
-    case "*":
-    case "var":
-    case "let":
-    case "const":
-    case "function":
-    case "class":
-      return true;
-    case "name":
-      return source.slice(next.start, next.end) === "async" && tokens[index + 2]?.type.label === "function";
-    default:
-      return false;
-  }
+interface WorkflowProgram extends acorn.Node {
+  body: WorkflowProgramNode[];
 }
 
-function describeTopLevelExport(tokens: Array<acorn.Token>, index: number, source: string): string {
-  const next = tokens[index + 1];
-  if (next === undefined) {
-    return "export";
+interface WorkflowProgramNode extends acorn.Node {
+  declaration?: {
+    type?: string;
+    kind?: string;
+    id?: { name?: string };
+    declarations?: Array<{ id?: { name?: string } }>;
+  };
+}
+
+function isModuleExport(node: WorkflowProgramNode): boolean {
+  return (
+    node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration"
+  );
+}
+
+function isSupportedWorkflowExport(node: WorkflowProgramNode): boolean {
+  if (node.type !== "ExportNamedDeclaration" || node.declaration?.type !== "VariableDeclaration") {
+    return false;
   }
-  if (next.type.label === "default") {
+  const [declaration] = node.declaration.declarations ?? [];
+  return (
+    node.declaration.kind === "const" &&
+    (node.declaration.declarations?.length ?? 0) === 1 &&
+    (declaration?.id?.name === "meta" || declaration?.id?.name === "defaults")
+  );
+}
+
+function describeTopLevelExport(node: WorkflowProgramNode, source: string): string {
+  if (node.type === "ExportDefaultDeclaration") {
     return "export default";
   }
-  if (next.type.label === "{" || next.type.label === "*") {
-    return source.slice(tokens[index]!.start, next.end);
+  if (node.type === "ExportAllDeclaration") {
+    return "export *";
   }
-  const name = tokens[index + 2];
-  if (name?.type.label === "name") {
-    return source.slice(tokens[index]!.start, name.end);
+  const declaration = node.declaration;
+  if (declaration?.type === "VariableDeclaration") {
+    const name = declaration.declarations?.[0]?.id?.name;
+    return name === undefined ? `export ${declaration.kind ?? ""}`.trim() : `export ${declaration.kind} ${name}`;
   }
-  return source.slice(tokens[index]!.start, next.end);
+  if ((declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") && declaration.id?.name !== undefined) {
+    return `export ${declaration.type === "FunctionDeclaration" ? "function" : "class"} ${declaration.id.name}`;
+  }
+  return source.slice(node.start, node.end);
 }
 
 /** Evaluate and shape-check a script's `export const defaults` block. */

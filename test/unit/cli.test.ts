@@ -40,16 +40,16 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
   const withoutSentinel = stderr.replace(announcement, "");
-  const runRecordAnnouncement = /^\[run-record\] .+\n/gm;
+  const runRecordAnnouncement = /^\[run-record-archive\] .+\n/gm;
   const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
   assert.equal(runRecordMatches.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
   return withoutSentinel.replace(runRecordAnnouncement, "");
 }
 
 function announcedRunRecord(stderr: string): { run_id: string; archive_path: string } {
-  const lines = stderr.split("\n").filter((line) => line.startsWith("[run-record] "));
+  const lines = stderr.split("\n").filter((line) => line.startsWith("[run-record-archive] "));
   assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
-  return JSON.parse(lines[0]!.slice("[run-record] ".length)) as { run_id: string; archive_path: string };
+  return JSON.parse(lines[0]!.slice("[run-record-archive] ".length)) as { run_id: string; archive_path: string };
 }
 
 test("caller identity links each workflow archive to its invoking session", async () => {
@@ -961,6 +961,22 @@ test("CLI reports usage errors without a stack trace", async () => {
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
+});
+
+test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
+  for (const argv of [
+    ["--caller-identity", "   ", "workflow.js"],
+    ["agent", "--engine=codex", "--caller-identity", "\t", "prompt"]
+  ]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(argv, { stdout, stderr });
+
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.match(stderr.text(), /--caller-identity must be a non-empty string/);
+    assert.doesNotMatch(stderr.text(), /\n\s+at /, "usage errors print without a stack trace");
+  }
 });
 
 test("CLI wires per-engine budget ceilings into the workflow runtime", async () => {

@@ -905,7 +905,7 @@ function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv)
 
 function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   try {
-    stderr.write(`[run-record] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}\n`);
+    stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}\n`);
   } catch {
     // The archive already exists. A broken supervision stream must not turn a
     // durable-record success into a failed run.

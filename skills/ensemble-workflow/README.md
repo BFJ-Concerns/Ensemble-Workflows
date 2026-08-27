@@ -348,7 +348,7 @@ launcher leaves no sentinel — a supervisor should keep a scheduled fallback
 timer behind its filesystem watch rather than trusting the file absolutely.
 
 **Archive announcement.** When durable recording is enabled, startup also
-prints one `[run-record] ` line followed by JSON with `run_id` and
+prints one `[run-record-archive] ` line followed by JSON with `run_id` and
 `archive_path`. A tracker can parse that one line to resolve the archive the
 same process has just created; an announcement failure does not fail the run.
 

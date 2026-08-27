@@ -14,7 +14,16 @@ test("caller identity has a named environment route without widening ambient set
       cwd
     });
     assert.equal(CALLER_IDENTITY_ENV, "ENSEMBLE_CALLER_IDENTITY");
-    assert.deepEqual(settings.agentCeiling, { value: null, layer: "default" });
+    assert.equal("callerIdentity" in settings, false);
+    assert.deepEqual(Object.keys(settings).sort(), [
+      "agentCeiling",
+      "concurrencyCaps",
+      "configFile",
+      "runRecordDir",
+      "runRecordStoreDir",
+      "statusDir",
+      "workerEnvironment"
+    ]);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

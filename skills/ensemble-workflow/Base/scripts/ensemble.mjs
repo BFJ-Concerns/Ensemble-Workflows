@@ -26006,7 +26006,7 @@ function resolveCallerIdentity(flag, env) {
 }
 function announceRunRecord(writer, stderr) {
   try {
-    stderr.write(`[run-record] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}
+    stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}
 `);
   } catch {
   }

@@ -17861,22 +17861,23 @@ var OpenCodeEngineAdapter = class {
   concurrency;
   /**
    * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
-   * `permission.task` and `permission.skill`, but `opencode run` supplies no
-   * per-dispatch config flag. Redirecting XDG_CONFIG_HOME can load denial
-   * rules, but replaces rather than overlays the caller's global config, so
-   * it cannot preserve the provider/model configuration a normal dispatch
-   * requires. Both capabilities therefore fail loud pre-spawn rather than
-   * dispatch an unrestricted worker under a restriction the author believes
-   * is in force. A future CLI config-overlay route re-opens this judgement.
+   * `permission.task` and `permission.skill`, and
+   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
+   * measurement is not worker-boundary proof, though: the available live
+   * dispatches timed out before producing output, so this unit has not shown
+   * that either explicit deny stops a worker. Both capabilities therefore
+   * fail loud pre-spawn rather than dispatch a worker under a restriction the
+   * author believes is in force. A successful deny witness re-opens this
+   * judgement.
    */
   capabilities = {
     skills: {
       route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: permission.skill exists, but opencode run has no per-dispatch config overlay; XDG_CONFIG_HOME replaces caller configuration"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
     },
     agents: {
       route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: permission.task exists, but opencode run has no per-dispatch config overlay; XDG_CONFIG_HOME replaces caller configuration"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
   };
   #scheduler;

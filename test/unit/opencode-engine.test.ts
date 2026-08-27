@@ -363,11 +363,12 @@ test("opencode rejects fallbackModel before spawning", () => {
   assert.equal(runner.runs.length, 0);
 });
 
-test("opencode refuses each unsupported capability before the runner starts", async () => {
-  // Measured opencode 1.18.4 exposes task/skill permissions but no
-  // per-dispatch configuration overlay. The actual adapter must therefore
-  // reject both names before its runner sees a process, rather than
-  // silently dispatching with the caller's unrestricted configuration.
+test("opencode refuses unproven capability strips before the runner starts", async () => {
+  // Measured opencode 1.18.4 accepts OPENCODE_CONFIG_CONTENT as a merge
+  // overlay, including these deny keys. Config resolution is not a worker
+  // proof, however: until a live worker demonstrates that each deny takes
+  // effect, the adapter must reject both capability names before its runner
+  // sees a process rather than silently dispatching an unrestricted worker.
   for (const capability of ["skills", "agents"] as const) {
     const runner = new FakeOpenCodeRunner();
     const runtime = new EnsembleRuntime({
@@ -380,7 +381,8 @@ test("opencode refuses each unsupported capability before the runner starts", as
         (error: unknown) => {
           assert.ok(error instanceof CapabilityStripUnsupportedError);
           assert.match(error.message, new RegExp(`cannot strip the "${capability}" capability`));
-          assert.match(error.message, /opencode 1\.18\.4/);
+          assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
+          assert.match(error.message, /worker-boundary enforcement is unproven/);
           return true;
         }
       );

@@ -15122,7 +15122,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      ephemeral: true
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {}
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -17786,7 +17787,8 @@ var CodexEngineInvocation = class {
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
     const threadId = await this.#transport.openThread({
-      ...cwd !== void 0 ? { cwd } : {}
+      ...cwd !== void 0 ? { cwd } : {},
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},

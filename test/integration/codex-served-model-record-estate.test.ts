@@ -28,6 +28,7 @@ test("built archive keeps a requested Codex pin distinct from the server-served 
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       ENSEMBLE_CODEX_SCHEMA_CLI: schemaCli,
       ENSEMBLE_FAKE_CODEX_SERVED_MODEL: "gpt-served",
+      ENSEMBLE_FAKE_CODEX_REQUIRE_THREAD_MODEL: "gpt-requested",
       ENSEMBLE_RUN_RECORD: "1",
       ENSEMBLE_RUN_RECORD_DIR: recordStore,
       ENSEMBLE_STATUS: "0",

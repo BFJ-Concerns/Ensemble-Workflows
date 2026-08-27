@@ -830,10 +830,12 @@ test("Codex app-server keeps the server-reported model when a turn requests a di
   });
 
   try {
-    const threadId = await transport.openThread({});
+    const threadId = await transport.openThread({ model: "gpt-requested" });
     const result = await transport.runTurn(threadId, "hello?", { model: "gpt-requested" });
 
     assert.equal(result.resolvedModel, "gpt-served");
+    const threadStart = JSON.parse((result.transcripts?.[0]?.content ?? "{}").split("\n")[0] ?? "{}").params;
+    assert.equal(threadStart?.model, "gpt-requested");
   } finally {
     await transport.close();
   }

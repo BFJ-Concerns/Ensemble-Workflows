@@ -16,6 +16,7 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
+import type { EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
@@ -40,6 +41,13 @@ export interface EngineTurnOptions {
   cwd?: string;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
+  /**
+   * The call's effective capability strip (run-wide ∪ per-call), already
+   * enforcement-checked by the runtime against this adapter's declared
+   * table. Adapters act only on their `config`-routed capabilities;
+   * `absent` ones need nothing by construction.
+   */
+  strip?: StrippableCapability[];
 }
 
 export interface EngineAttemptFailure {
@@ -89,6 +97,13 @@ export interface EngineInvocation {
 export interface EngineAdapter {
   readonly name: EngineName;
   readonly concurrency: number;
+  /**
+   * How this engine discharges each strippable capability. Absent
+   * reads as "cannot enforce anything": the runtime fails a strip request
+   * loud before the worker spawns, so an adapter that never considered
+   * stripping can never silently dispatch an unrestricted worker.
+   */
+  readonly capabilities?: EngineCapabilityTable;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
   close(): Promise<void>;
@@ -126,6 +141,19 @@ export interface CodexEngineAdapterOptions {
 export class CodexEngineAdapter implements EngineAdapter {
   readonly name = "codex" satisfies EngineName;
   readonly concurrency: number;
+  /**
+   * Both named minimum capabilities are judged `absent` on Codex: the
+   * app-server tool surface (shell, apply_patch, web search, view image,
+   * MCP) has no skill system and no subagent tool, so there is nothing to
+   * strip and the request is satisfied by construction. The judgement is
+   * dated (2026-08-27, Codex CLI 0.5x app-server): a Codex release that
+   * grows either capability re-opens it — the recorded `absent` route in
+   * the archive is what makes that auditable.
+   */
+  readonly capabilities: EngineCapabilityTable = {
+    skills: { route: "absent", detail: "the Codex app-server tool surface has no skill system" },
+    agents: { route: "absent", detail: "the Codex app-server tool surface has no subagent tool" }
+  };
 
   #transport: RuntimeTransport;
   #scheduler: Scheduler;
@@ -214,6 +242,18 @@ export interface ClaudeEngineAdapterOptions {
 export class ClaudeEngineAdapter implements EngineAdapter {
   readonly name = "claude" satisfies EngineName;
   readonly concurrency: number;
+  /**
+   * Claude strips both named minimum capabilities mechanically: permission
+   * deny rules ride the per-dispatch settings file the control plane
+   * already writes (the one surface measured to reach the daemon-served
+   * session), and deny rules outrank every allow layer and permission
+   * mode, `--dangerously-skip-permissions` included — the live tests
+   * assert that at the worker itself.
+   */
+  readonly capabilities: EngineCapabilityTable = {
+    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+  };
 
   #scheduler: Scheduler;
   #cwd: string;
@@ -278,6 +318,23 @@ export interface OpenCodeEngineAdapterOptions {
 export class OpenCodeEngineAdapter implements EngineAdapter {
   readonly name = "opencode" satisfies EngineName;
   readonly concurrency: number;
+  /**
+   * opencode has a real subagent/task surface (and a skills route via
+   * plugins), but the harness has not yet measured a config route that
+   * strips either — so both fail loud pre-spawn rather than dispatch an
+   * unrestricted worker under a restriction the author believes is in
+   * force. Wiring the config route flips these entries with evidence.
+   */
+  readonly capabilities: EngineCapabilityTable = {
+    skills: {
+      route: "unsupported",
+      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+    },
+    agents: {
+      route: "unsupported",
+      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+    }
+  };
 
   #scheduler: Scheduler;
   #cwd: string;

@@ -15,6 +15,7 @@ import type {
   TokenUsageEvent
 } from "./types.js";
 import type { Resolved } from "./ambient-settings.js";
+import type { StrippableCapability } from "./capability-stripping.js";
 
 const execFileAsync = promisify(execFile);
 const SCHEMA_VERSION = 2;
@@ -30,6 +31,7 @@ export interface CliFlagsRecord {
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
+  strip?: string[];
   jsonArgs: boolean;
 }
 
@@ -112,6 +114,18 @@ export interface RuntimeAgentRecord {
   creationOrder: number;
   concurrencyGroup: string;
   schema: JsonSchema | null;
+  /**
+   * The call's effective capability strip: the requested names and the
+   * per-capability route each resolved to on the dispatching engine's table
+   * (`config` = stripped through engine configuration, `absent` = the
+   * capability does not exist on that engine's tool surface). Null when
+   * nothing was stripped — the archive then shows the worker kept its
+   * engine's default tool surface.
+   */
+  strip: {
+    requested: StrippableCapability[];
+    enforcement: Partial<Record<StrippableCapability, "config" | "absent">>;
+  } | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
@@ -524,6 +538,7 @@ export class RunRecordWriter {
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
+      strip: record.strip,
       parse_route: record.parseRoute,
       decode_failure:
         record.decodeFailure === null

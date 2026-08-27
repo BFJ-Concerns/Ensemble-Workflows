@@ -5,6 +5,7 @@ import {
   RemovedAgentOptionError,
   UnrecognisedAgentOptionError
 } from "./errors.js";
+import { assertValidStripOption } from "./capability-stripping.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -31,7 +32,8 @@ const AGENT_OPTION_KEYS = Object.keys({
   maxAttempts: true,
   label: true,
   phase: true,
-  identity: true
+  identity: true,
+  strip: true
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
@@ -54,6 +56,9 @@ export function assertValidAgentOptions(options: object): void {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.identity !== undefined && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+  }
+  if (values.strip !== undefined) {
+    assertValidStripOption(values.strip);
   }
 }
 

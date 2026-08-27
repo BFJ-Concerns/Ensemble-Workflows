@@ -16,6 +16,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   EmptyAgentOutputError,
   EngineShutdownError,
+  CapabilityStripUnsupportedError,
   FallbackModelUnsupportedError,
   InvalidAgentOptionValueError,
   InvalidAgentSchemaError,
@@ -1606,6 +1607,155 @@ test("runtime close terminalises an unsettled dispatch record", async () => {
 // The Claude engine is now implemented; it is driven through the runtime with a
 // fake control plane in test/unit/claude-engine.test.ts. Routing to it (and the
 // isolation:'worktree' rejection) is covered there.
+
+
+test("an unenforceable capability strip fails loud before any worker spawns", async () => {
+  // A restriction the author asked for and did not get must never dispatch
+  // silently. An adapter with no capability table
+  // cannot enforce anything, so the strip is rejected pre-spawn: no
+  // invocation, no progress entry, no run record.
+  const invocations: string[] = [];
+  const engine: EngineAdapter = {
+    name: "opencode",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      invocations.push("spawned");
+      return { runAttempt: async () => turn("never") };
+    },
+    close: async () => undefined
+  };
+  const records: unknown[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("restricted work", { engine: "opencode", strip: ["skills"] }),
+    CapabilityStripUnsupportedError
+  );
+  assert.deepEqual(invocations, []);
+  assert.deepEqual(records, []);
+  await runtime.close();
+});
+
+test("a config-enforced strip reaches the engine and the durable record", async () => {
+  const seenStrips: Array<readonly string[] | undefined> = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    capabilities: {
+      skills: { route: "config", detail: "settings deny rules" },
+      agents: { route: "config", detail: "settings deny rules" }
+    },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seenStrips.push(options.strip);
+      return { runAttempt: async () => turn("done") };
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await runtime.agent("restricted work", { engine: "claude", strip: ["skills"] });
+
+  assert.deepEqual(seenStrips, [["skills"]]);
+  assert.deepEqual(records[0]?.strip, { requested: ["skills"], enforcement: { skills: "config" } });
+  await runtime.close();
+});
+
+test("run-wide and per-call strips unite; a call cannot lift the run-wide one", async () => {
+  const seenStrips: Array<readonly string[] | undefined> = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    capabilities: {
+      skills: { route: "config", detail: "settings deny rules" },
+      agents: { route: "config", detail: "settings deny rules" }
+    },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seenStrips.push(options.strip);
+      return { runAttempt: async () => turn("done") };
+    },
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    defaultMaxAttempts: 1,
+    strip: ["agents"]
+  });
+
+  await runtime.agent("adds one", { engine: "claude", strip: ["skills"] });
+  await runtime.agent("adds none", { engine: "claude" });
+
+  assert.deepEqual(seenStrips, [
+    ["agents", "skills"],
+    ["agents"]
+  ]);
+  await runtime.close();
+});
+
+test("an absent capability is satisfied by construction and recorded as absent", async () => {
+  // Codex's shape: the capability does not exist on the tool surface, so the
+  // request is vacuously met — the worker dispatches, and the archive shows
+  // the absent route rather than a silent skip.
+  const records: RuntimeAgentRecord[] = [];
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    capabilities: {
+      skills: { route: "absent", detail: "no skill system" },
+      agents: { route: "absent", detail: "no subagent tool" }
+    },
+    schedule: async (task) => task(),
+    createInvocation: () => ({ runAttempt: async () => turn("ok") }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const output = await runtime.agent("unrestricted anyway", { engine: "codex", strip: ["skills"] });
+
+  assert.equal(output, "ok");
+  assert.deepEqual(records.at(-1)?.strip, { requested: ["skills"], enforcement: { skills: "absent" } });
+  await runtime.close();
+});
+
+test("a malformed strip value is rejected before dispatch", async () => {
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  await assert.rejects(
+    () => runtime.agent("never starts", { engine: "codex", strip: ["shells"] as never }),
+    InvalidAgentOptionValueError
+  );
+  await runtime.close();
+});
 
 function turn(text: string): TurnResult {
   return {

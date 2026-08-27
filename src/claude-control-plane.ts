@@ -12,7 +12,7 @@ import { ClaudeDispatchError } from "./errors.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (witnessed as orphaned
+ * worker escaped the cancellation plumbing entirely (observed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -49,6 +49,13 @@ export interface ClaudeDispatchOptions {
   effort?: string;
   /** Declared degradation: passed as `--fallback-model` when the pinned model is unavailable. */
   fallbackModel?: string;
+  /**
+   * Permission deny rules for the worker session (capability stripping).
+   * Delivered through the per-dispatch settings file — the surface
+   * measured to reach the daemon-served session — as `permissions.deny`,
+   * which outranks every allow layer and permission mode.
+   */
+  permissionDenyRules?: string[];
 }
 
 export interface ClaudeSessionHandle {
@@ -176,7 +183,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // and user settings, declared keys winning collisions, so the file
     // carries only this run's declarations and never touches the operator's
     // own settings.
-    const settingsDir = await this.#writeWorkerSettings(options.name);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     try {
@@ -239,11 +246,19 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string): Promise<string> {
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
     const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
+    // The deny block joins the same single-purpose file rather than a second
+    // artefact: deny rules union additively across settings layers and beat
+    // every allow, so carrying only this dispatch's rules never touches the
+    // operator's own permission configuration.
+    const settings =
+      permissionDenyRules !== undefined && permissionDenyRules.length > 0
+        ? { env, permissions: { deny: permissionDenyRules } }
+        : { env };
     const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
     try {
-      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify({ env })}\n`, {
+      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify(settings)}\n`, {
         mode: 0o600
       });
     } catch (error) {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
+import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
@@ -54,6 +55,7 @@ import type {
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";
+import type { StrippableCapability } from "./capability-stripping.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
@@ -97,6 +99,8 @@ export class EnsembleRuntime {
   #placement: AgentPlacementManager;
   #defaultTurnTimeoutMs: number | undefined;
   #defaultMaxAttempts: number;
+  /** Run-wide capability strip, united with each call's own list. */
+  #strip: StrippableCapability[];
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -120,10 +124,17 @@ export class EnsembleRuntime {
     budgetCeilings?: EngineBudgetCeilings;
     defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
+    strip?: StrippableCapability[];
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
     now?: () => number;
   }) {
+    if (options.strip !== undefined) {
+      // A malformed run-wide strip fails at construction, before any call
+      // pays for a worker — same boundary as a malformed per-call value.
+      assertValidStripOption(options.strip);
+    }
+    this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
       runId: options.runId ?? randomUUID(),
@@ -201,7 +212,8 @@ export class EnsembleRuntime {
       ...(options.budgetCeilings !== undefined ? { budgetCeilings: options.budgetCeilings } : {}),
       ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
       ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
-      defaultMaxAttempts: options.defaultMaxAttempts ?? 3
+      defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
+      ...(options.strip !== undefined ? { strip: options.strip } : {})
     });
 
     return runtime;
@@ -267,6 +279,15 @@ export class EnsembleRuntime {
     }
 
     const engine = this.#engineFor(options.engine);
+    // Capability stripping is judged pre-spawn, like any other rejected
+    // option: the effective set is the run-wide list united with this
+    // call's, and every member must resolve to a config or absent route on
+    // the engine's declared table — an unenforceable strip throws before
+    // admission, so no worker ever dispatches under a restriction the
+    // author believes is in force but is not.
+    const strip = effectiveStrip(this.#strip, options.strip);
+    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     // The per-engine budget is an admission boundary, judged once per
     // agent() call, synchronously here — so the outcome depends only on
     // the script's dispatch order, never on how usage events interleave
@@ -296,7 +317,7 @@ export class EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, options);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
     this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
     // Dispatch-time record: persisted in-progress before the engine is
     // called, so a worker that dies uncleanly still leaves evidence it was
@@ -307,7 +328,7 @@ export class EnsembleRuntime {
       if (unsettled !== undefined) {
         unsettled.stage = "admitting";
       }
-      const output = await this.#runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         // Identified resolution (result identity is opt-in): the
         // envelope wraps every resolution, a schema call's null collapse
@@ -821,6 +842,7 @@ export class EnsembleRuntime {
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
+      ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {}),
       cwd
     };
   }
@@ -829,7 +851,8 @@ export class EnsembleRuntime {
     id: number,
     engine: EngineName,
     prompt: string,
-    options: Partial<AgentOptions>
+    options: Partial<AgentOptions>,
+    stripRoutes: Partial<Record<StrippableCapability, "config" | "absent">> | null = null
   ): RuntimeAgentRecord {
     return {
       id,
@@ -852,6 +875,10 @@ export class EnsembleRuntime {
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
+      strip:
+        stripRoutes === null || options.strip === undefined
+          ? null
+          : { requested: [...options.strip], enforcement: stripRoutes },
       parseRoute: null,
       decodeFailure: null,
       rawOutput: null,

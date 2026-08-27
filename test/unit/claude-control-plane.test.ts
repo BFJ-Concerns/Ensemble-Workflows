@@ -258,6 +258,66 @@ test("an undeclared worker environment still dispatches with the ownership tag a
   }
 });
 
+test("permission deny rules join the per-dispatch settings file beside the env block", async () => {
+  // Capability stripping rides the same single-purpose file as the
+  // worker environment: deny rules union additively across settings layers
+  // and beat every allow, so carrying only this dispatch's rules never
+  // touches the operator's own permission configuration.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-deny-rules-"));
+  try {
+    const argvPath = path.join(dir, "dispatch-argv.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000014";
+    const name = "deny-rules-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "deny-rules-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000
+    });
+    await controlPlane.dispatch({
+      prompt: "hello",
+      name,
+      cwd: dir,
+      permissionDenyRules: ["Skill", "Task", "Agent"]
+    });
+
+    const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+    const flagIndex = dispatchArgv.indexOf("--settings");
+    assert.notEqual(flagIndex, -1);
+    assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
+      env: { [WORKER_MARKER_VARIABLE]: name },
+      permissions: { deny: ["Skill", "Task", "Agent"] }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("stop reaps a surviving process tagged with the dispatch's marker", async () => {
   // The failure this closes: descendants of a daemon-hosted worker reparent
   // to the user session when the worker dies, and nothing in the harness

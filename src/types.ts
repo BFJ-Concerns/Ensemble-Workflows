@@ -1,3 +1,5 @@
+import type { StrippableCapability } from "./capability-stripping.js";
+
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
 
@@ -34,6 +36,14 @@ export interface AgentOptions {
    * which worker produced each survivor. Default resolution unchanged.
    */
   identity?: boolean;
+  /**
+   * Named tool-surface capabilities to strip from this worker, enforced
+   * through the engine's own configuration surface. United with the
+   * run-wide strip list; an engine that cannot enforce a requested strip
+   * fails loud before the worker spawns. Opt-in: an unstripped worker
+   * keeps its engine's default tool surface.
+   */
+  strip?: StrippableCapability[];
 }
 
 /** The identified resolution shape `identity: true` opts a call into. */
@@ -71,6 +81,13 @@ export interface RuntimeOptions {
    * reach another's workers.
    */
   workerEnvironment?: EngineWorkerEnvironment;
+  /**
+   * Run-wide capability strip: united with every call's own `strip`
+   * list before enforcement, so a run can restrict all its workers without
+   * each call restating it. Union only — a call cannot lift a run-wide
+   * strip.
+   */
+  strip?: StrippableCapability[];
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;
   clientName?: string;

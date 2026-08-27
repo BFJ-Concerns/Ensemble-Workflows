@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
+import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { PreSpawnAuthorError } from "./errors.js";
@@ -15,6 +16,7 @@ import { listSavedWorkflows } from "./workflow-registry.js";
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
+import type { StrippableCapability } from "./capability-stripping.js";
 import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
 import type { Readable, Writable } from "node:stream";
 
@@ -107,6 +109,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
+      ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
       ...(Object.keys(ambientSettings.workerEnvironment).length > 0
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
@@ -341,6 +344,8 @@ interface InvocationTuning {
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;
   timeoutMs?: number;
+  /** Run-wide capability strip, united with each call's own list. */
+  strip?: StrippableCapability[];
 }
 
 interface ParsedWorkflowInvocation extends InvocationTuning {
@@ -410,6 +415,7 @@ function cliFlags(invocation: ParsedInvocation): {
   agentCeiling?: number | null;
   concurrency?: Record<string, number>;
   timeoutMs?: number;
+  strip?: string[];
   jsonArgs: boolean;
 } {
   return {
@@ -417,6 +423,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.agentCeiling !== undefined ? { agentCeiling: invocation.agentCeiling } : {}),
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
+    ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -525,7 +532,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
       budget: { type: "string", multiple: true },
       "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
-      timeout: { type: "string" }
+      timeout: { type: "string" },
+      strip: { type: "string", multiple: true }
     },
     strict: true,
     allowPositionals: false
@@ -538,6 +546,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
   const agentCeiling = parseAgentCeiling(parsed.values["agent-ceiling"]);
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
+  const strip = parseStripList(parsed.values.strip);
 
   return {
     kind: "workflow",
@@ -547,7 +556,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
     ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
     ...(agentCeiling !== undefined ? { agentCeiling } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
-    ...(timeoutMs !== undefined ? { timeoutMs } : {})
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(strip !== undefined ? { strip } : {})
   };
 }
 
@@ -568,6 +578,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
         identity: { type: "boolean" },
         schema: { type: "string" },
         "max-attempts": { type: "string" },
+        strip: { type: "string", multiple: true },
         task: { type: "string" },
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
@@ -605,6 +616,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
+  const strip = parseStripList(parsed.values.strip);
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -618,7 +630,8 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     ...(isolation !== undefined ? { isolation } : {}),
     ...(parsed.values.identity === true ? { identity: true } : {}),
     ...(schema !== undefined ? { schema } : {}),
-    ...(maxAttempts !== undefined ? { maxAttempts } : {})
+    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+    ...(strip !== undefined ? { strip } : {})
   };
 
   return {
@@ -649,6 +662,20 @@ function parseIsolation(value: string | undefined): "worktree" | undefined {
     throw new CliUsageError(`--isolation must be worktree, got ${value}`);
   }
   return value;
+}
+
+function parseStripList(values: string[] | undefined): StrippableCapability[] | undefined {
+  if (values === undefined) {
+    return undefined;
+  }
+  for (const value of values) {
+    if (!(STRIPPABLE_CAPABILITIES as readonly string[]).includes(value)) {
+      throw new CliUsageError(
+        `--strip must name a capability from: ${STRIPPABLE_CAPABILITIES.join(", ")}; got ${value}`
+      );
+    }
+  }
+  return [...new Set(values)] as StrippableCapability[];
 }
 
 function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: string | undefined; scriptArgs: string[] } {
@@ -707,7 +734,8 @@ function isKnownOption(value: string): boolean {
     value === "--budget" ||
     value === "--agent-ceiling" ||
     value === "--concurrency" ||
-    value === "--timeout"
+    value === "--timeout" ||
+    value === "--strip"
   );
 }
 
@@ -717,7 +745,8 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--budget=") ||
     value.startsWith("--agent-ceiling=") ||
     value.startsWith("--concurrency=") ||
-    value.startsWith("--timeout=")
+    value.startsWith("--timeout=") ||
+    value.startsWith("--strip=")
   );
 }
 
@@ -845,10 +874,10 @@ function parseMaxAttempts(value: string | undefined): number | undefined {
 
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

@@ -529,6 +529,71 @@ test("ensemble agent honours --max-attempts and rejects invalid values before an
   assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
 });
 
+test("ensemble agent threads --strip to the worker and rejects unknown capabilities cleanly", async () => {
+  // The honoured value is observed at the engine: the fixed engine's claude
+  // capability table is absent, so the runtime's own fail-loud enforcement
+  // rejects the dispatch — zero attempts — proving the flag reached agent()
+  // rather than being swallowed by the parser.
+  const engine = new FixedResponseEngine("codex", "never dispatched");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--strip=skills", "prompt"], {
+    stdout,
+    stderr,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 3, options)
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(engine.attempts, 0);
+  assert.match(stderr.text(), /cannot strip the "skills" capability/);
+
+  // The parser's own rejection: an unknown capability is a usage error
+  // before worker creation — exit 2, one clean line, nothing dispatched.
+  const rejectedEngine = new FixedResponseEngine("codex", "never reached");
+  const rejectedStdout = new CaptureStream();
+  const rejectedStderr = new CaptureStream();
+  const rejectedExit = await runEnsembleCli(["agent", "--engine=codex", "--strip=shells", "prompt"], {
+    stdout: rejectedStdout,
+    stderr: rejectedStderr,
+    createRuntime: async (options) => fixedEngineRuntime(rejectedEngine, 3, options)
+  });
+
+  assert.equal(rejectedExit, 2);
+  assert.equal(rejectedEngine.attempts, 0);
+  assert.match(rejectedStderr.text(), /--strip must name a capability from: skills, agents; got shells/);
+  assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
+});
+
+test("the workflow --strip tuning flag reaches the runtime as the run-wide strip", async () => {
+  const captured: unknown[] = [];
+  const engine = new FixedResponseEngine("codex", "done");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-cli-strip-"));
+  try {
+    const workflowPath = path.join(dir, "strip.workflow.js");
+    await writeFile(
+      workflowPath,
+      'export const meta = { name: "strip-probe", description: "run-wide strip" };\nreturn await agent("go", { engine: "codex" });\n'
+    );
+    const exitCode = await runEnsembleCli(["--strip", "agents", workflowPath], {
+      stdout,
+      stderr,
+      createRuntime: async (options) => {
+        captured.push(options.strip);
+        return fixedEngineRuntime(engine, 3, options);
+      }
+    });
+    assert.equal(exitCode, 1);
+    assert.deepEqual(captured, [["agents"]]);
+    // The fixed engine declares no capability table, so the run-wide strip
+    // fails the dispatch loud — proof it reached agent() itself.
+    assert.match(stderr.text(), /cannot strip the "agents" capability/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensemble agent --identity prints the identified envelope and still fails on exhaustion", async () => {
   // Success: stdout matches agent()'s identified return contract exactly.
   const engine = new FixedResponseEngine("codex", "done");
@@ -798,10 +863,10 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
@@ -1389,10 +1454,10 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] <script.js> [args...]\n" +
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--task <identity>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
@@ -1747,7 +1812,8 @@ function fixedEngineRuntime(
   return new EnsembleRuntime({
     engines: new EngineRegistry([engine]),
     defaultMaxAttempts,
-    ...(options.cwd !== undefined ? { cwd: options.cwd } : {})
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.strip !== undefined ? { strip: options.strip } : {})
   });
 }
 

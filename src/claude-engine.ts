@@ -23,7 +23,24 @@ import type {
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";
+import type { StrippableCapability } from "./capability-stripping.js";
 import type { RuntimeEvent, TurnResult } from "./types.js";
+
+/**
+ * The Claude rendering of each strippable capability: the permission deny
+ * rules that remove it from the worker's tool surface. `agents` denies both
+ * spellings the subagent tool has shipped under — one capability, either
+ * name — and deny rules outrank every allow layer and permission mode, so
+ * the operator's own settings cannot quietly re-enable a stripped tool.
+ */
+const CAPABILITY_DENY_RULES: Record<StrippableCapability, readonly string[]> = {
+  skills: ["Skill"],
+  agents: ["Task", "Agent"]
+};
+
+export function permissionDenyRulesFor(strip: readonly StrippableCapability[] | undefined): string[] {
+  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+}
 
 /**
  * Tunables for the Claude worker lifecycle. All have defaults; tests inject tiny
@@ -193,13 +210,15 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     previousFailure: EngineAttemptFailure | undefined,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
+    const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
       name: this.#nextName(),
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {})
+      ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {}),
+      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
     });
     this.#handle = handle;
     if (this.#closed) {

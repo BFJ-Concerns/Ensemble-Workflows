@@ -14,12 +14,12 @@ older Nodes exit 1 with a version error):
 ```
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
   [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N|null] \
-  [--concurrency engine=N] [--timeout ms] <script.js> [args...]
+  [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] \
   [--fallback-model <model>] [--label <label>] [--phase <phase>] [--cwd <path>] \
   [--isolation worktree] [--identity] [--schema '<json>'|@file] \
-  [--max-attempts N] [--task <identity>] \
+  [--max-attempts N] [--strip capability] [--task <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
@@ -47,6 +47,11 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   `--fallback-model` supplies Claude's declared-degradation model and is
   rejected by the other engines. `--task` copies an optional identity into the
   run record for benchmark grouping.
+- `--strip capability` (repeatable) strips a named tool-surface capability —
+  `skills` or `agents` — from workers. Before a workflow script it applies
+  run-wide to every `agent()` call; on the `agent` subcommand it applies to
+  that worker. Enforcement and failure semantics are the `strip` option's
+  (see the options table).
 - Direct-agent `--cwd` and `--isolation worktree` use the same placement
   lifecycle as a scripted call. An isolated run reports its branch on stderr;
   a branch containing changed work is retained for recovery.
@@ -228,17 +233,25 @@ unknown values throw before any worker spawns.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are judged `absent` on Codex — its app-server tool surface has no skill system and no subagent tool, so the request is satisfied by construction and recorded as such. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file, and deny outranks every allow layer and permission mode | both **throw before the worker spawns**: no measured config route strips them yet, and a restriction asked for but not enforced must never dispatch silently |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
-Every worker is unrestricted: it can read and write wherever the user running
-the harness can and can reach the network. Codex receives this full-access
+Every worker is unrestricted by default: it can read and write wherever the
+user running the harness can and can reach the network. `strip` is the
+opt-in exception, and it restricts the named *tool-surface* capability only
+— stripping `agents` removes the subagent tool, not the worker's ability to
+run processes from a shell. The union of the run-wide list and the call's
+own list is enforced; a call can add strips but never lift a run-wide one.
+Each agent's durable record carries the requested names and the route each
+resolved to (`config` or `absent`), so the archive shows how every strip
+was discharged. Codex receives this full-access
 posture explicitly on every turn; Claude and opencode already run without an
 Ensemble-managed containment boundary. Backend web search remains available to
 Codex workers without an `agent()` option.
 
 An unrecognised option key or invalid harness-owned value throws before that
 call's worker spawns. The checked value domains are `isolation`, `timeoutMs`,
-`maxAttempts`, and `identity`; engine-owned and descriptive values such as `model`,
+`maxAttempts`, `identity`, and `strip`; engine-owned and descriptive values such as `model`,
 `effort`, `label`, and `phase` pass through unchecked. The removed `sandbox`,
 `network`, and `webSearch` keys receive a specific removal error rather than
 being ignored. The `timeoutMs` maximum is Node's largest faithfully

@@ -23,6 +23,7 @@
   "schema",
   "schema_version",
   "status",
+  "strip",
   "transcripts",
   "validated_output",
   "worktree"

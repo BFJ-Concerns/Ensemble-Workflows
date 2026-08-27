@@ -55,6 +55,7 @@ test("the first-output accelerator leaves post-promise silence at its own deadli
     const control = await fixture.firstOutputControl();
     assert.match(control, /armed:first-output:1/);
     assert.match(control, /disarmed:first-output:1/);
+    assert.doesNotMatch(control, /armed:first-output:2/);
     assert.match(
       control,
       /observed:retry-promise:900000/,

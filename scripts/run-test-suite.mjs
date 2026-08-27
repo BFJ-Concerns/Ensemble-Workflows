@@ -4,9 +4,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
 const schemaCacheDirectory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-schema-"));
-const child = spawn(process.execPath, ["--test", "dist/test/**/*.test.js"], {
-  env: { ...process.env, ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory },
+// The whole suite writes run records to a per-run temp store, so a test that
+// forgets to isolate itself cannot pollute the durable archive by omission
+// (22,127 fixture runs had accumulated there against ~4,200 real ones). An
+// ENSEMBLE_RUN_RECORD_DIR already set by the invoker is a deliberate choice
+// and wins; tests that set their own stores are likewise unaffected.
+const recordStoreDirectory = await mkdtemp(path.join(tmpdir(), "ensemble-test-run-records-"));
+const child = spawn(process.execPath, ["--test", testGlob], {
+  env: {
+    ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
+    ...process.env,
+    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory
+  },
   stdio: "inherit"
 });
 
@@ -15,6 +26,7 @@ async function finish(code, signal) {
   if (cleaning) return;
   cleaning = true;
   await rm(schemaCacheDirectory, { recursive: true, force: true });
+  await rm(recordStoreDirectory, { recursive: true, force: true });
   if (signal !== null) {
     process.kill(process.pid, signal);
   }

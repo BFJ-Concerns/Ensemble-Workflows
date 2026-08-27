@@ -16,7 +16,7 @@
     "build:skill": "node scripts/build-skill.mjs",
     "lint": "eslint src test scripts eslint.config.js",
     "test": "npm run build && node scripts/run-test-suite.mjs",
-    "test:live": "npm run build && ENSEMBLE_LIVE=1 node --test \"dist/test/live/**/*.test.js\""
+    "test:live": "npm run build && ENSEMBLE_LIVE=1 node scripts/run-test-suite.mjs \"dist/test/live/**/*.test.js\""
   },
   "engines": {
     "node": ">=24.14.0"

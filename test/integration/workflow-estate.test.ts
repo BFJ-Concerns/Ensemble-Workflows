@@ -885,6 +885,32 @@ test("CLI concurrency flag serialises Claude without reducing Codex concurrency"
   assert.equal(claude.maxActive, 1);
 });
 
+test("default Codex concurrency is hermetic to the caller environment", async () => {
+  const { exitCode, stderr, codex } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "default-codex-concurrency-is-hermetic" };
+      return await agent("use the default Codex concurrency", { engine: "codex" });
+    `,
+    { codexResponses: [{ text: "codex-default" }], claudeResponses: [] }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.equal(codex.concurrency, 12);
+});
+
+test("default Claude concurrency is hermetic to the caller environment", async () => {
+  const { exitCode, stderr, claude } = await runScriptWithCliEngines(
+    `
+      export const meta = { name: "default-claude-concurrency-is-hermetic" };
+      return await agent("use the default Claude concurrency", { engine: "claude" });
+    `,
+    { codexResponses: [], claudeResponses: [{ text: "claude-default" }] }
+  );
+
+  assert.equal(exitCode, 0, stderr);
+  assert.equal(claude.concurrency, 12);
+});
+
 test("removed options fail loudly on the real agent path before spawning", async () => {
   for (const scenario of [
     {
@@ -1511,7 +1537,7 @@ async function runScriptWithCliEngines(
   let runtime: EnsembleRuntime | null = null;
   let codex: ScriptedEngineAdapter | null = null;
   let claude: ScriptedEngineAdapter | null = null;
-  const defaultConcurrency = options.defaultConcurrency ?? 8;
+  const defaultConcurrency = options.defaultConcurrency ?? 12;
 
   const result = await runScriptWithRuntimeFactory(
     source,
@@ -1565,6 +1591,15 @@ async function runScriptWithRuntimeFactory(
   try {
     const exitCode = await runEnsembleCli([...cliArgs, script, ...scriptArgs], {
       cwd: directory,
+      // The integration estate observes CLI defaults.  The caller's settings
+      // still govern the product; this controlled environment merely prevents
+      // a developer's shell from changing the test's asserted baseline.
+      env: {
+        ...process.env,
+        ENSEMBLE_CONCURRENCY_CODEX: undefined,
+        ENSEMBLE_CONCURRENCY_CLAUDE: undefined,
+        XDG_CONFIG_HOME: directory
+      },
       stdout,
       stderr,
       createRuntime

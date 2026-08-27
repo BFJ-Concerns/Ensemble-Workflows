@@ -23,7 +23,7 @@ if (process.argv.includes("generate-json-schema")) {
   process.exit(2);
 }
 
-const { codexFixtureSchemaIncludesProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
+const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
@@ -227,7 +227,9 @@ const handleLine = (line) => {
           id: `thread-${threadCounter}`,
           modelProvider: "openai",
           preview: "",
-          projectId: null,
+          ...(codexFixtureSchemaIncludesDefinitionProperty("v2/ThreadStartResponse.json", "Thread", "projectId")
+            ? { projectId: null }
+            : {}),
           sessionId: `fixture-session-${threadCounter}`,
           source: "appServer",
           status: { type: "idle" },
@@ -235,9 +237,7 @@ const handleLine = (line) => {
           updatedAt: Math.floor(Date.now() / 1_000)
         },
         approvalPolicy: "never",
-        ...(codexFixtureSchemaIncludesProperty("v2/ThreadStartResponse.json", "approvalsReviewer")
-          ? { approvalsReviewer: "user" }
-          : {}),
+        approvalsReviewer: "user",
         cwd: process.cwd(),
         model: "gpt-estate-recorder",
         modelProvider: "openai",

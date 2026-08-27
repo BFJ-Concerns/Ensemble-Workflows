@@ -45,9 +45,9 @@ test("built CLI accepts all repaired recording-fixture payloads without opt-outs
   });
 });
 
-test("recorded thread/start frame also satisfies a closed installed-CLI schema shape", async () => {
+test("recorded thread/start frame also satisfies the closed legacy schema shape", async () => {
   await withFixture(async (fixture) => {
-    const result = await fixture.run({}, { closeThreadStartSchema: true });
+    const result = await fixture.run({}, { useLegacyThreadStartSchema: true });
 
     assert.equal(result.code, 0, result.stderr);
     const validations = await fixture.validations();
@@ -76,7 +76,7 @@ interface ValidationRecord {
 interface Fixture {
   run: (
     overrides?: NodeJS.ProcessEnv,
-    options?: { closeThreadStartSchema?: boolean }
+    options?: { useLegacyThreadStartSchema?: boolean }
   ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   validations: () => Promise<ValidationRecord[]>;
 }
@@ -100,8 +100,8 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
     const codexCli = await executablePath("codex");
     await run({
     run: async (overrides = {}, options = {}) => {
-      const schemaCli = options.closeThreadStartSchema
-        ? await closedThreadStartSchemaCli(directory, codexCli)
+      const schemaCli = options.useLegacyThreadStartSchema
+        ? await legacyThreadStartSchemaCli(directory, codexCli)
         : codexCli;
       return runProcess(process.execPath, [bundledCliPath, workflow], {
           ...process.env,
@@ -124,8 +124,8 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
   }
 }
 
-async function closedThreadStartSchemaCli(directory: string, codexCli: string): Promise<string> {
-  const wrapper = path.join(directory, "closed-thread-start-schema-codex.mjs");
+async function legacyThreadStartSchemaCli(directory: string, codexCli: string): Promise<string> {
+  const wrapper = path.join(directory, "legacy-thread-start-schema-codex.mjs");
   await writeFile(
     wrapper,
     `#!/usr/bin/env node\n` +
@@ -139,9 +139,9 @@ async function closedThreadStartSchemaCli(directory: string, codexCli: string): 
       `  if (process.argv.includes("generate-json-schema") && out !== undefined) {\n` +
       `    const file = path.join(out, "v2", "ThreadStartResponse.json");\n` +
       `    const schema = JSON.parse(await readFile(file, "utf8"));\n` +
-      `    delete schema.properties.approvalsReviewer;\n` +
-      `    schema.required = schema.required.filter((field) => field !== "approvalsReviewer");\n` +
-      `    schema.additionalProperties = false;\n` +
+      `    const thread = schema.definitions.Thread;\n` +
+      `    delete thread.properties.projectId;\n` +
+      `    thread.required = thread.required.filter((field) => field !== "projectId");\n` +
       `    await writeFile(file, JSON.stringify(schema));\n` +
       `  }\n` +
       `  process.exit(0);\n` +

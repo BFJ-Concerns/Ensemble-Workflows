@@ -237,9 +237,10 @@ export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
   return payload;
 }
 
-export function codexFixtureSchemaIncludesProperty(schemaPath, property) {
+export function codexFixtureSchemaIncludesDefinitionProperty(schemaPath, definition, property) {
   const schema = schemaFor(schemaPath);
-  return schema.properties !== null && typeof schema.properties === "object" && Object.hasOwn(schema.properties, property);
+  const object = schema.definitions?.[definition];
+  return object?.properties !== null && typeof object?.properties === "object" && Object.hasOwn(object.properties, property);
 }
 
 function schemaFor(schemaPath) {

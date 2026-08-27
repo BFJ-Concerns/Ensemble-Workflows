@@ -319,20 +319,25 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
   readonly name = "opencode" satisfies EngineName;
   readonly concurrency: number;
   /**
-   * opencode has a real subagent/task surface (and a skills route via
-   * plugins), but the harness has not yet measured a config route that
-   * strips either — so both fail loud pre-spawn rather than dispatch an
-   * unrestricted worker under a restriction the author believes is in
-   * force. Wiring the config route flips these entries with evidence.
+   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
+   * `permission.task` and `permission.skill`, but `opencode run` supplies no
+   * per-dispatch config flag. Redirecting XDG_CONFIG_HOME can load denial
+   * rules, but replaces rather than overlays the caller's global config, so
+   * it cannot preserve the provider/model configuration a normal dispatch
+   * requires. Both capabilities therefore fail loud pre-spawn rather than
+   * dispatch an unrestricted worker under a restriction the author believes
+   * is in force. A future CLI config-overlay route re-opens this judgement.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail:
+        "measured 2026-08-27 on opencode 1.18.4: permission.skill exists, but opencode run has no per-dispatch config overlay; XDG_CONFIG_HOME replaces caller configuration"
     },
     agents: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail:
+        "measured 2026-08-27 on opencode 1.18.4: permission.task exists, but opencode run has no per-dispatch config overlay; XDG_CONFIG_HOME replaces caller configuration"
     }
   };
 

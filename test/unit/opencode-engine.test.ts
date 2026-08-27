@@ -11,6 +11,7 @@ import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  CapabilityStripUnsupportedError,
   EmptyAgentOutputError,
   EngineShutdownError,
   FallbackModelUnsupportedError,
@@ -360,6 +361,34 @@ test("opencode rejects fallbackModel before spawning", () => {
     FallbackModelUnsupportedError
   );
   assert.equal(runner.runs.length, 0);
+});
+
+test("opencode refuses each unsupported capability before the runner starts", async () => {
+  // Measured opencode 1.18.4 exposes task/skill permissions but no
+  // per-dispatch configuration overlay. The actual adapter must therefore
+  // reject both names before its runner sees a process, rather than
+  // silently dispatching with the caller's unrestricted configuration.
+  for (const capability of ["skills", "agents"] as const) {
+    const runner = new FakeOpenCodeRunner();
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner })]),
+      defaultMaxAttempts: 1
+    });
+    try {
+      await assert.rejects(
+        () => runtime.agent("must not start", { engine: "opencode", model: "glm-5.2", strip: [capability] }),
+        (error: unknown) => {
+          assert.ok(error instanceof CapabilityStripUnsupportedError);
+          assert.match(error.message, new RegExp(`cannot strip the "${capability}" capability`));
+          assert.match(error.message, /opencode 1\.18\.4/);
+          return true;
+        }
+      );
+      assert.equal(runner.runs.length, 0);
+    } finally {
+      await runtime.close();
+    }
+  }
 });
 
 test("opencode run parses final text, usage, transcript, and effort variant", async () => {

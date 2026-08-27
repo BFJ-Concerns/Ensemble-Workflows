@@ -390,11 +390,10 @@ timer behind its filesystem watch rather than trusting the file absolutely.
   rejects the turn — as a **retryable** operational failure whatever the
   underlying diagnostic, since the app-server itself labelled the error
   transient. The rejection retains the last error notification's rendered
-  diagnostic in the thrown error and failed attempt record. **This bound counts
-  messages, not time:** between one and five retry promises followed by no
-  further notification from a still-running app-server, the programmatic
-  `retryPromiseSilenceTimeoutMs` bound terminalises the turn after 15 minutes
-  by default. A
+  diagnostic in the thrown error and failed attempt record. Between one and
+  five retry promises, a still-running app-server that then sends no further
+  notification is terminalised by the programmatic
+  `retryPromiseSilenceTimeoutMs` bound after 15 minutes by default. A
   `thread/status/changed` notification with `status.type: "systemError"`
   rejects the live turn immediately and records `systemError`.
 - **Budget**: each `agent()` call checks the engine's ceiling once, when it

@@ -27,7 +27,7 @@ test("built consumer terminalises a turn with no output before its ordinary time
   await withFixture(async (fixture) => {
     const result = await fixture.run({
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
-      ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_OUTPUT_AFTER_ARM: "1",
+      ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM: "1",
       // The fixture releases the client-controlled deadline only after it
       // writes armed:first-output:<id>.
     });
@@ -69,12 +69,12 @@ test("built consumer accepts a first delta that arrives late but inside the dead
     const result = await fixture.run({
       // The delta is released by armed:first-output:<id> and completion by
       // the client-written disarmed:first-output:<id>, never elapsed time.
-      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_OUTPUT_DISARM: "1",
+      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/agentMessage/delta",
           params: { itemId: "late-message", delta: "late but healthy" },
-          afterFirstOutputControl: "armed:"
+          afterFirstDeltaControl: "armed:"
         }
       ]])
     });
@@ -90,7 +90,7 @@ test("built consumer treats a correlated non-delta frame as first output", async
   await withFixture(async (fixture) => {
     const result = await fixture.run({
       // The fixture waits on client-written first-output markers.
-      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_OUTPUT_DISARM: "1",
+      ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
           method: "item/completed",
@@ -98,7 +98,7 @@ test("built consumer treats a correlated non-delta frame as first output", async
             item: { id: "completed-message", type: "agentMessage", text: "whole answer" },
             completedAtMs: 0
           },
-          afterFirstOutputControl: "armed:"
+          afterFirstDeltaControl: "armed:"
         }
       ]])
     });
@@ -154,9 +154,9 @@ async function createFixture() {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStartMarker,
-          ENSEMBLE_FAKE_CODEX_FIRST_OUTPUT_CONTROL: firstOutputControl,
+          ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: firstOutputControl,
           ENSEMBLE_FIRST_OUTPUT_DEADLINE_CONTROL: firstOutputControl,
-          ENSEMBLE_FIRST_OUTPUT_DEADLINE_KIND: "first-output",
+          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "first-output",
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,

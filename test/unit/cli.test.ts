@@ -470,6 +470,47 @@ test("ensemble agent preserves successful schema-validated null stdout equivalen
   assert.equal(directStdout.text(), scriptedStdout.text());
 });
 
+test("ensemble agent makes a missing worker result a failed terminal run with a sentinel", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-no-dispatch-"));
+  const runRecordDir = path.join(directory, "records");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  // This runtime returns the value a collapsed direct-agent workflow used to
+  // print as a clean `null`, but supplies no completed-worker evidence. The
+  // launcher must make that absence supervisor-legible rather than treating
+  // it as the valid schema-null result covered above.
+  const runtime = fakeRuntime();
+  runtime.agent = (async () => null) as unknown as EnsembleRuntime["agent"];
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "missing worker result"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => runtime
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '{"partial":true,"reason":"failed","completed":[]}\n');
+  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
+  const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+    schema_version: number;
+    kind: string;
+    outcome: string;
+    exit_code: number;
+    ended_at: string;
+  };
+  assert.deepEqual(sentinel, {
+    schema_version: 1,
+    kind: "completion_sentinel",
+    outcome: "failed",
+    exit_code: 1,
+    ended_at: sentinel.ended_at
+  });
+});
+
 test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
   const schema = {
     type: "object",

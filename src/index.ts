@@ -115,6 +115,10 @@ export type {
   EngineInvocation,
   EngineTurnOptions
 } from "./engines.js";
+export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
+export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+export { summariseUsage } from "./usage-summary.js";
+export type { UsageSummary } from "./usage-summary.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 export type {
   SavedWorkflowEntry,

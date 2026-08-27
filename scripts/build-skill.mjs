@@ -23,6 +23,9 @@ const nodeRange = pkg.engines?.node;
 if (typeof nodeRange !== "string" || nodeRange.trim().length === 0) {
   throw new Error("package.json is missing engines.node; cannot inline the Node floor");
 }
+if (typeof pkg.version !== "string" || pkg.version.trim().length === 0) {
+  throw new Error("package.json is missing version; cannot inline the harness version");
+}
 
 await build({
   entryPoints: [path.join(repoRoot, "src/cli/ensemble.ts")],
@@ -34,6 +37,7 @@ await build({
   define: {
     // JSON.stringify yields a quoted literal, e.g. `">=24.14.0"` — the source
     // text esbuild substitutes for every `__ENSEMBLE_NODE_RANGE__` reference.
-    __ENSEMBLE_NODE_RANGE__: JSON.stringify(nodeRange.trim())
+    __ENSEMBLE_NODE_RANGE__: JSON.stringify(nodeRange.trim()),
+    __ENSEMBLE_VERSION__: JSON.stringify(pkg.version.trim())
   }
 });

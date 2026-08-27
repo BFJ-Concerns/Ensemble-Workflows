@@ -4,6 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { harnessVersion } from "./harness-version.js";
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
@@ -193,7 +194,7 @@ export class EnsembleRuntime {
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
-      clientVersion: options.clientVersion ?? "0.0.0",
+      clientVersion: options.clientVersion ?? harnessVersion(),
       onEvent: (event) => {
         runtime?.handleEngineEvent("codex", event);
       },

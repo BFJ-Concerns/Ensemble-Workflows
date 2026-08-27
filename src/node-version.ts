@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 interface PackageMetadata {
   name?: string;
+  version?: string;
   engines?: { node?: string };
 }
 
@@ -40,7 +41,7 @@ export function requiredNodeRange(fromUrl: string = import.meta.url): string {
   if (typeof __ENSEMBLE_NODE_RANGE__ === "string" && __ENSEMBLE_NODE_RANGE__.trim().length > 0) {
     return __ENSEMBLE_NODE_RANGE__.trim();
   }
-  const metadata = readPackageMetadata(fromUrl);
+  const metadata = readHarnessPackageMetadata(fromUrl);
   const range = metadata.engines?.node;
   if (typeof range !== "string" || range.trim().length === 0) {
     throw new Error("package.json is missing engines.node");
@@ -93,7 +94,13 @@ function parseVersion(version: string): SemanticVersion | null {
   };
 }
 
-function readPackageMetadata(fromUrl: string): PackageMetadata {
+/**
+ * Walk upward from `fromUrl` to the harness's own package.json — source,
+ * `dist/`, and an npm-installed `bin` sit at different depths. Shared by
+ * every build-time-inlined value's unbundled fallback (the Node floor here,
+ * the harness version in `src/harness-version.ts`).
+ */
+export function readHarnessPackageMetadata(fromUrl: string): PackageMetadata {
   let current = path.dirname(fileURLToPath(fromUrl));
   while (true) {
     const candidate = path.join(current, "package.json");

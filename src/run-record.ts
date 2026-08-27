@@ -13,6 +13,7 @@ import type {
   JsonSchema,
   TokenUsageEvent
 } from "./types.js";
+import { harnessVersion } from "./harness-version.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
@@ -774,10 +775,12 @@ async function readPackageInfo(cwd: string): Promise<{ name: string; version: st
     const parsed = JSON.parse(text) as { name?: unknown; version?: unknown };
     return {
       name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
-      version: typeof parsed.version === "string" ? parsed.version : "0.0.0"
+      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
     };
   } catch {
-    return { name: "ensemble-workflows", version: "0.0.0" };
+    // The bundle ships with no package.json to find; its version is the
+    // build-time-inlined constant rather than an off-disk read.
+    return { name: "ensemble-workflows", version: harnessVersion() };
   }
 }
 

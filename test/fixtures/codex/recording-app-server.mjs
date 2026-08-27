@@ -27,6 +27,7 @@ const { validateCodexFixturePayload } = await import("./protocol-schema-validato
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
+const servedModel = process.env.ENSEMBLE_FAKE_CODEX_SERVED_MODEL ?? "gpt-estate-recorder";
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
 const notificationSequences = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES ?? "[]");
@@ -237,7 +238,7 @@ const handleLine = (line) => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         cwd: process.cwd(),
-        model: "gpt-estate-recorder",
+        model: servedModel,
         modelProvider: "openai",
         reasoningEffort: "medium",
         sandbox: { type: "dangerFullAccess" }

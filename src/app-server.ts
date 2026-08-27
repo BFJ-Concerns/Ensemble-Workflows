@@ -307,10 +307,6 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (options.model !== undefined) {
         params.model = options.model;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== undefined) {
-          transcript.resolvedModel = options.model;
-        }
       }
       if (options.effort !== undefined) {
         params.effort = options.effort;

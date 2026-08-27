@@ -15174,10 +15174,6 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (options.model !== void 0) {
         params.model = options.model;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== void 0) {
-          transcript.resolvedModel = options.model;
-        }
       }
       if (options.effort !== void 0) {
         params.effort = options.effort;

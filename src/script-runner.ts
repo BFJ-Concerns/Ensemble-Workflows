@@ -359,11 +359,72 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
     }
   }
 
+  const bodySource = withoutBom.slice(bodyStart);
+  const unsupportedExport = findUnsupportedTopLevelExport(bodySource);
+  if (unsupportedExport !== null) {
+    throw new WorkflowScriptError(
+      `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
+    );
+  }
+
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource: withoutBom.slice(bodyStart)
+    bodySource
   };
+}
+
+/**
+ * Reject exports that the wrapper would embed inside its async body before
+ * importing that wrapper. This is intentionally only a token scan: Acorn is
+ * not the syntax authority, so any tokenisation disagreement leaves the
+ * source for V8 to judge at import time. `export const defaults` stays with
+ * the existing placement diagnostic, which explains why that otherwise
+ * supported declaration must immediately follow `meta`.
+ */
+function findUnsupportedTopLevelExport(source: string): string | null {
+  let tokens: Array<acorn.Token>;
+  try {
+    tokens = [...acorn.tokenizer(source, { ecmaVersion: "latest", sourceType: "module" })];
+  } catch {
+    return null;
+  }
+
+  let nesting = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (nesting === 0 && token.type.label === "export") {
+      const description = describeTopLevelExport(tokens, index, source);
+      if (description !== "export const defaults") {
+        return `\`${description}\``;
+      }
+    }
+
+    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[") {
+      nesting += 1;
+    } else if (token.type.label === "}" || token.type.label === ")" || token.type.label === "]") {
+      nesting -= 1;
+    }
+  }
+  return null;
+}
+
+function describeTopLevelExport(tokens: Array<acorn.Token>, index: number, source: string): string {
+  const next = tokens[index + 1];
+  if (next === undefined) {
+    return "export";
+  }
+  if (next.type.label === "default") {
+    return "export default";
+  }
+  if (next.type.label === "{" || next.type.label === "*") {
+    return source.slice(tokens[index]!.start, next.end);
+  }
+  const name = tokens[index + 2];
+  if (name?.type.label === "name") {
+    return source.slice(tokens[index]!.start, name.end);
+  }
+  return source.slice(tokens[index]!.start, next.end);
 }
 
 /** Evaluate and shape-check a script's `export const defaults` block. */

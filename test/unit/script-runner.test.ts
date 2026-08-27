@@ -765,6 +765,55 @@ test("an unknown free identifier fails at load, before any worker spawns", async
   );
 });
 
+test("an unsupported top-level export fails before any worker spawns", async () => {
+  let agentCalls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    async agent(prompt: string) {
+      agentCalls += 1;
+      return `agent:${prompt}`;
+    }
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "unsupported-default-export.js",
+        runtime: countingRuntime,
+        log: () => {},
+        source: `
+          export const meta = { name: "unsupported-default-export" };
+          await agent("must not start", { engine: "codex" });
+          export default async function () { return "never"; }
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /unsupported top-level `export default`/);
+      assert.match(error.message, /export const meta.*optional.*export const defaults.*executable body/s);
+      assert.doesNotMatch(error.message, /Unexpected token/);
+      return true;
+    }
+  );
+  assert.equal(agentCalls, 0, "the export diagnostic must fire before any worker spawns");
+});
+
+test("non-export top-level syntax remains V8's to execute", async () => {
+  const result = await runWorkflowScript({
+    filename: "v8-top-level-syntax.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "v8-top-level-syntax" };
+      const description = "export default is text, not a declaration";
+      await Promise.resolve();
+      return description;
+    `
+  });
+
+  assert.equal(result.result, "export default is text, not a declaration");
+});
+
 test("a typeof probe for an absent global passes the load-time check", async () => {
   const result = await runWorkflowScript({
     filename: "typeof-probe.js",

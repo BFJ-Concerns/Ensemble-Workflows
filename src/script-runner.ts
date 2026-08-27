@@ -378,8 +378,10 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
  * Reject exports that the wrapper would embed inside its async body before
  * importing that wrapper. This is intentionally only a token scan: Acorn is
  * not the syntax authority, so any tokenisation disagreement leaves the
- * source for V8 to judge at import time. `export const defaults` stays with
- * the existing placement diagnostic, which explains why that otherwise
+ * source for V8 to judge at import time. It recognises export-declaration
+ * forms, rather than every `export` keyword: property access such as
+ * `result.export` remains ordinary V8 syntax. `export const defaults` stays
+ * with the existing placement diagnostic, which explains why that otherwise
  * supported declaration must immediately follow `meta`.
  */
 function findUnsupportedTopLevelExport(source: string): string | null {
@@ -393,20 +395,49 @@ function findUnsupportedTopLevelExport(source: string): string | null {
   let nesting = 0;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
-    if (nesting === 0 && token.type.label === "export") {
+    if (nesting === 0 && isExportDeclarationStart(tokens, index, source)) {
       const description = describeTopLevelExport(tokens, index, source);
       if (description !== "export const defaults") {
         return `\`${description}\``;
       }
     }
 
-    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[") {
+    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[" || token.type.label === "${") {
       nesting += 1;
     } else if (token.type.label === "}" || token.type.label === ")" || token.type.label === "]") {
       nesting -= 1;
     }
   }
   return null;
+}
+
+function isExportDeclarationStart(tokens: Array<acorn.Token>, index: number, source: string): boolean {
+  const token = tokens[index];
+  const next = tokens[index + 1];
+  if (token?.type.label !== "export" || next === undefined) {
+    return false;
+  }
+
+  // Acorn tokenises a property named `export` as the keyword too. The forms
+  // below are the only starts of an ECMAScript export declaration, so `.` and
+  // `?.` property access (and any other ordinary body expression) stays with
+  // V8 rather than receiving an authoring diagnostic from this pre-spawn
+  // check.
+  switch (next.type.label) {
+    case "default":
+    case "{":
+    case "*":
+    case "var":
+    case "let":
+    case "const":
+    case "function":
+    case "class":
+      return true;
+    case "name":
+      return source.slice(next.start, next.end) === "async" && tokens[index + 2]?.type.label === "function";
+    default:
+      return false;
+  }
 }
 
 function describeTopLevelExport(tokens: Array<acorn.Token>, index: number, source: string): string {

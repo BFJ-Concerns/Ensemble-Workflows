@@ -798,20 +798,67 @@ test("an unsupported top-level export fails before any worker spawns", async () 
   assert.equal(agentCalls, 0, "the export diagnostic must fire before any worker spawns");
 });
 
-test("non-export top-level syntax remains V8's to execute", async () => {
+test("a script exporting only meta and defaults still runs", async () => {
+  const result = await runWorkflowScript({
+    filename: "meta-and-defaults-only.js",
+    runtime,
+    log: () => {},
+    source: `
+      export const meta = { name: "meta-and-defaults-only" };
+      export const defaults = { codex: { effort: "low" } };
+    `
+  });
+
+  assert.equal(result.result, undefined);
+  assert.deepEqual(result.meta, { name: "meta-and-defaults-only" });
+});
+
+test("non-export top-level export property syntax remains V8's to execute", async () => {
   const result = await runWorkflowScript({
     filename: "v8-top-level-syntax.js",
     runtime,
     log: () => {},
     source: `
       export const meta = { name: "v8-top-level-syntax" };
-      const description = "export default is text, not a declaration";
-      await Promise.resolve();
-      return description;
+      const parsed = JSON.parse('{"export": "value"}');
+      return parsed?.export;
     `
   });
 
-  assert.equal(result.result, "export default is text, not a declaration");
+  assert.equal(result.result, "value");
+});
+
+test("an unsupported export after a template literal fails before any worker spawns", async () => {
+  let agentCalls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    async agent(prompt: string) {
+      agentCalls += 1;
+      return `agent:${prompt}`;
+    }
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "template-before-export.js",
+        runtime: countingRuntime,
+        log: () => {},
+        source: `
+          export const meta = { name: "template-before-export" };
+          const prompt = \`the answer is \${1 + 1}\`;
+          await agent(prompt, { engine: "codex" });
+          export default async function () { return "never"; }
+        `
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /unsupported top-level `export default`/);
+      assert.doesNotMatch(error.message, /Unexpected token/);
+      return true;
+    }
+  );
+  assert.equal(agentCalls, 0, "the export diagnostic must fire before any worker spawns");
 });
 
 test("a typeof probe for an absent global passes the load-time check", async () => {

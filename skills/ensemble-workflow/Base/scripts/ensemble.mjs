@@ -24852,19 +24852,41 @@ function findUnsupportedTopLevelExport(source) {
   let nesting = 0;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (nesting === 0 && token.type.label === "export") {
+    if (nesting === 0 && isExportDeclarationStart(tokens, index, source)) {
       const description = describeTopLevelExport(tokens, index, source);
       if (description !== "export const defaults") {
         return `\`${description}\``;
       }
     }
-    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[") {
+    if (token.type.label === "{" || token.type.label === "(" || token.type.label === "[" || token.type.label === "${") {
       nesting += 1;
     } else if (token.type.label === "}" || token.type.label === ")" || token.type.label === "]") {
       nesting -= 1;
     }
   }
   return null;
+}
+function isExportDeclarationStart(tokens, index, source) {
+  const token = tokens[index];
+  const next = tokens[index + 1];
+  if (token?.type.label !== "export" || next === void 0) {
+    return false;
+  }
+  switch (next.type.label) {
+    case "default":
+    case "{":
+    case "*":
+    case "var":
+    case "let":
+    case "const":
+    case "function":
+    case "class":
+      return true;
+    case "name":
+      return source.slice(next.start, next.end) === "async" && tokens[index + 2]?.type.label === "function";
+    default:
+      return false;
+  }
 }
 function describeTopLevelExport(tokens, index, source) {
   const next = tokens[index + 1];

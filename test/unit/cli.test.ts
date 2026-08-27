@@ -39,8 +39,99 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
-  return stderr.replace(announcement, "");
+  const withoutSentinel = stderr.replace(announcement, "");
+  const runRecordAnnouncement = /^\[run-record\] .+\n/gm;
+  const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
+  assert.equal(runRecordMatches.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
+  return withoutSentinel.replace(runRecordAnnouncement, "");
 }
+
+function announcedRunRecord(stderr: string): { run_id: string; archive_path: string } {
+  const lines = stderr.split("\n").filter((line) => line.startsWith("[run-record] "));
+  assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
+  return JSON.parse(lines[0]!.slice("[run-record] ".length)) as { run_id: string; archive_path: string };
+}
+
+test("caller identity links each workflow archive to its invoking session", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-caller-identity-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "caller-identity", task: { ledger: "unchanged" } };
+      return await agent("record me", { engine: "codex" });
+    `
+  );
+
+  const cases = [
+    { name: "environment", argv: [script], env: { ENSEMBLE_CALLER_IDENTITY: "session:environment" }, expected: "session:environment" },
+    {
+      name: "flag wins over environment",
+      argv: ["--caller-identity", "session:flag", script],
+      env: { ENSEMBLE_CALLER_IDENTITY: "session:environment" },
+      expected: "session:flag"
+    },
+    { name: "neither", argv: [script], env: {}, expected: null }
+  ];
+
+  try {
+    for (const entry of cases) {
+      const store = path.join(directory, `${entry.name.replaceAll(" ", "-")}-records`);
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli(entry.argv, {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: store,
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ...entry.env },
+        createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+      });
+
+      assert.equal(exitCode, 0, stderr.text());
+      const announced = announcedRunRecord(stderr.text());
+      const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as {
+        run_id: string;
+        caller_identity: string | null;
+        meta: { task: unknown };
+      };
+      assert.equal(manifest.run_id, announced.run_id);
+      assert.equal(manifest.caller_identity, entry.expected);
+      assert.deepEqual(manifest.meta.task, { ledger: "unchanged" });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ensemble agent accepts caller identity and records it separately from its task", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-caller-identity-"));
+  const store = path.join(directory, "records");
+  const stderr = new CaptureStream();
+  try {
+    const exitCode = await runEnsembleCli(
+      ["agent", "--engine=codex", "--task=ledger-task", "--caller-identity=session:agent", "prompt"],
+      {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: store,
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ENSEMBLE_CALLER_IDENTITY: "session:environment" },
+        createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+      }
+    );
+
+    assert.equal(exitCode, 0, stderr.text());
+    const announced = announcedRunRecord(stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as {
+      caller_identity: string | null;
+      meta: { task: unknown };
+    };
+    assert.equal(manifest.caller_identity, "session:agent");
+    assert.equal(manifest.meta.task, "ledger-task");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("the launcher announces the sentinel path before workers spawn and writes it on success", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-"));
@@ -863,10 +954,10 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
@@ -1454,10 +1545,10 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );

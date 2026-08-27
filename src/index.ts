@@ -58,6 +58,7 @@ export {
   AmbientConfigError,
   CONFIG_SCHEMA_VERSION,
   AGENT_CEILING_ENV,
+  CALLER_IDENTITY_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
   resolveAmbientSettings,

@@ -31,6 +31,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
     workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
     args: { item: "one" },
     cliFlags: { jsonArgs: true },
+    callerIdentity: "session:run-record-test",
     concurrency: {
       agentCeiling: { value: null, layer: "default" },
       engines: {
@@ -58,6 +59,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
   assert.equal(manifest.schema_version, 3);
   assert.equal(manifest.kind, "run_manifest");
+  assert.equal(manifest.caller_identity, "session:run-record-test");
   assert.equal(agent.schema_version, 3);
   assert.equal(agent.kind, "agent_record");
   assert.deepEqual(manifest.concurrency, {

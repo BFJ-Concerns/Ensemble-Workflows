@@ -4,7 +4,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveAmbientSettings } from "../../src/ambient-settings.js";
+import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "../../src/ambient-settings.js";
+
+test("caller identity has a named environment route without widening ambient settings", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-caller-identity-env-"));
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: path.join(cwd, "missing"), [CALLER_IDENTITY_ENV]: "session:ambient-test" },
+      cwd
+    });
+    assert.equal(CALLER_IDENTITY_ENV, "ENSEMBLE_CALLER_IDENTITY");
+    assert.deepEqual(settings.agentCeiling, { value: null, layer: "default" });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test("ambient settings resolve every setting independently through all layers", async () => {
   const fixture = await configFixture({

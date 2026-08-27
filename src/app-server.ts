@@ -65,7 +65,7 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
-  firstDeltaDeadline: NodeJS.Timeout | undefined;
+  firstOutputDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
   reject: (reason: Error) => void;
@@ -84,7 +84,7 @@ const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
  * A started turn that remains completely silent costs a worker slot without
  * producing evidence. Healthy long turns disarm this on their first output-bearing frame.
  */
-const DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1_000;
+const DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1_000;
 /**
  * How long a stdout EOF waits for the process's own exit event before
  * terminalising as "stdout closed". Long enough for a reaped death's status
@@ -114,7 +114,7 @@ export interface CodexAppServerTransportOptions {
   workerEnv?: Record<string, string>;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
-  firstDeltaTimeoutMs?: number;
+  firstOutputTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -185,7 +185,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #process: ChildProcessWithoutNullStreams;
   #requestTimeoutMs: number;
   #retryPromiseSilenceTimeoutMs: number;
-  #firstDeltaTimeoutMs: number;
+  #firstOutputTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
@@ -201,7 +201,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs =
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -593,7 +593,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstDeltaDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
         }
       }
@@ -668,7 +668,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // tool work, usage, routing, status, or a terminal item — and proves
       // it is no longer silently stuck before producing anything.
       if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstDeltaDeadline(turn);
+        this.#disarmFirstOutputDeadline(turn);
         this.#noteTurnFirstOutput(turn);
       }
     }
@@ -832,10 +832,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }, this.#retryPromiseSilenceTimeoutMs);
   }
 
-  #disarmFirstDeltaDeadline(turn: TurnState): void {
-    if (turn.firstDeltaDeadline !== undefined) {
-      clearTimeout(turn.firstDeltaDeadline);
-      turn.firstDeltaDeadline = undefined;
+  #disarmFirstOutputDeadline(turn: TurnState): void {
+    if (turn.firstOutputDeadline !== undefined) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = undefined;
     }
   }
 
@@ -859,10 +859,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
-  #armFirstDeltaDeadline(threadId: string, turn: TurnState): void {
-    turn.firstDeltaDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
-    }, this.#firstDeltaTimeoutMs);
+  #armFirstOutputDeadline(threadId: string, turn: TurnState): void {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
   }
 
   /**
@@ -880,7 +880,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmFirstDeltaDeadline(turn);
+    this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== undefined) {
       // #writeLine enters stdin.write synchronously, preserving wire order;
       // neither write completion nor the app-server response may delay the
@@ -900,7 +900,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmFirstDeltaDeadline(turn);
+    this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result: TurnResult = {
@@ -976,7 +976,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
-      firstDeltaDeadline: undefined,
+      firstOutputDeadline: undefined,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -993,7 +993,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
               );
             }, timeoutMs)
     };
-    this.#armFirstDeltaDeadline(threadId, state);
+    this.#armFirstOutputDeadline(threadId, state);
     return state;
   }
 

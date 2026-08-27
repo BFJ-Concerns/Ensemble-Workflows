@@ -40,10 +40,10 @@ const toolActiveOutputSilent = process.env.ENSEMBLE_FAKE_CODEX_TOOL_ACTIVE_OUTPU
 const toolProgressIntervalMs = Number(process.env.ENSEMBLE_FAKE_CODEX_TOOL_PROGRESS_INTERVAL_MS ?? "20");
 const completionDelayMs = Number(process.env.ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS ?? "0");
 const turnStartMarkerPath = process.env.ENSEMBLE_FAKE_CODEX_TURN_START_MARKER;
-const firstDeltaControlPath = process.env.ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL;
-const firstDeltaDeadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "first-delta";
-const releaseFirstDeltaAfterArm = process.env.ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM === "1";
-const completeAfterFirstDeltaDisarm = process.env.ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM === "1";
+const firstOutputControlPath = process.env.ENSEMBLE_FAKE_CODEX_FIRST_OUTPUT_CONTROL;
+const firstOutputDeadlineKind = process.env.ENSEMBLE_FIRST_OUTPUT_DEADLINE_KIND ?? "first-output";
+const releaseFirstOutputAfterArm = process.env.ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_OUTPUT_AFTER_ARM === "1";
+const completeAfterFirstOutputDisarm = process.env.ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_OUTPUT_DISARM === "1";
 const schemaDrift = process.env.ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT;
 const emitDecodeFailure = process.env.ENSEMBLE_FAKE_CODEX_DECODE_FAILURE === "1";
 const turnTimeoutControl = process.env.ENSEMBLE_TURN_TIMEOUT_CONTROL;
@@ -106,14 +106,14 @@ const releaseTurnTimeoutAfterClientProcessesStart = () => {
   };
   waitForClient();
 };
-const waitForFirstDeltaControl = async (marker) => {
-  if (firstDeltaControlPath === undefined) {
-    throw new Error(`first-delta control path is required to wait for ${marker}`);
+const waitForFirstOutputControl = async (marker) => {
+  if (firstOutputControlPath === undefined) {
+    throw new Error(`first-output control path is required to wait for ${marker}`);
   }
   for (let attempt = 0; attempt < 6_000; attempt += 1) {
     let control = "";
     try {
-      control = readFileSync(firstDeltaControlPath, "utf8");
+      control = readFileSync(firstOutputControlPath, "utf8");
     } catch {
       // The preload writes the file when the client arms the deadline.
     }
@@ -124,7 +124,7 @@ const waitForFirstDeltaControl = async (marker) => {
     // client-written marker above is the only condition that releases us.
     await wait(5);
   }
-  throw new Error(`client never wrote first-delta control marker ${marker}`);
+  throw new Error(`client never wrote first-output control marker ${marker}`);
 };
 const notificationParamsForTurn = (notification, threadId, turnId) => {
   const params = {
@@ -149,8 +149,8 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
   const notificationSequence = notificationSequences[turnIndex];
   if (notificationSequence !== undefined) {
     for (const notification of notificationSequence) {
-      if (notification.afterFirstDeltaControl !== undefined) {
-        await waitForFirstDeltaControl(notification.afterFirstDeltaControl);
+      if (notification.afterFirstOutputControl !== undefined) {
+        await waitForFirstOutputControl(notification.afterFirstOutputControl);
       }
       if (notification.afterMs !== undefined) {
         await wait(notification.afterMs);
@@ -163,8 +163,8 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
       });
     }
     if (!stallAfterNotificationSequence) {
-      if (completeAfterFirstDeltaDisarm) {
-        await waitForFirstDeltaControl(`disarmed:${firstDeltaDeadlineKind}:`);
+      if (completeAfterFirstOutputDisarm) {
+        await waitForFirstOutputControl(`disarmed:${firstOutputDeadlineKind}:`);
       }
       if (completionDelayMs > 0) {
         await wait(completionDelayMs);
@@ -272,13 +272,13 @@ const handleLine = (line) => {
     const response = { id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } };
     send(response, "v2/TurnStartResponse.json", response.result);
     if (stallAfterTurnStart) {
-      if (releaseFirstDeltaAfterArm) {
-        void waitForFirstDeltaControl(`armed:${firstDeltaDeadlineKind}:`).then((control) => {
-          const armed = [...control.matchAll(new RegExp(`armed:${firstDeltaDeadlineKind}:(\\d+)`, "g"))].at(-1)?.[1];
+      if (releaseFirstOutputAfterArm) {
+        void waitForFirstOutputControl(`armed:${firstOutputDeadlineKind}:`).then((control) => {
+          const armed = [...control.matchAll(new RegExp(`armed:${firstOutputDeadlineKind}:(\\d+)`, "g"))].at(-1)?.[1];
           if (armed === undefined) {
-            throw new Error("first-delta control marker did not identify an armed deadline");
+            throw new Error("first-output control marker did not identify an armed deadline");
           }
-          appendFileSync(firstDeltaControlPath, `release:${firstDeltaDeadlineKind}:${armed}\n`);
+          appendFileSync(firstOutputControlPath, `release:${firstOutputDeadlineKind}:${armed}\n`);
         });
       }
       releaseTurnTimeoutAfterClientProcessesStart();

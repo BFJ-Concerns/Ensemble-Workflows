@@ -405,7 +405,7 @@ export interface CreateDefaultEngineRegistryOptions {
   openCodeBin?: string;
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
-  firstDeltaTimeoutMs?: number;
+  firstOutputTimeoutMs?: number;
   startupHandshakeTimeoutMs: number;
   clientName: string;
   clientVersion: string;
@@ -430,7 +430,7 @@ export async function createDefaultEngineRegistry(
     ...(options.retryPromiseSilenceTimeoutMs !== undefined
       ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
       : {}),
-    ...(options.firstDeltaTimeoutMs !== undefined ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {}),
+    ...(options.firstOutputTimeoutMs !== undefined ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {}),
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,

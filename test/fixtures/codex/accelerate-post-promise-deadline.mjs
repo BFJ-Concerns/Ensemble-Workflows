@@ -11,11 +11,7 @@ const controlledTimers = new Map();
 
 globalThis.setTimeout = (callback, delay, ...args) => {
   const callbackText = Function.prototype.toString.call(callback);
-  const terminalKind = callbackText.includes("AppServerFirstOutputTimeoutError")
-    ? "first-delta"
-    : callbackText.includes("AppServerRetryPromiseBrokenError")
-      ? "retry-promise"
-      : undefined;
+  const terminalKind = callbackText.includes("AppServerRetryPromiseBrokenError") ? "retry-promise" : undefined;
   if (delay !== 15 * 60 * 1_000 || controlPath === undefined || terminalKind === undefined) {
     return nativeSetTimeout(callback, delay, ...args);
   }

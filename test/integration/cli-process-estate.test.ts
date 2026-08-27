@@ -1335,7 +1335,12 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       agentStatus: "complete"
     },
     {
-      name: "no dispatch",
+      // This is deliberately a policy-rejected pre-dispatch case, rather
+      // than a reproduction of the intermittent incident. Its discriminators
+      // are the fail-closed diagnostic and the absent agent record below;
+      // exit status and stdout only establish the supervisor-facing terminal
+      // surfaces for that known rejection.
+      name: "pre-dispatch strip rejection",
       response: "unused",
       args: ["agent", "--engine=opencode", "--strip=skills", "must not dispatch"],
       exitCode: 1,

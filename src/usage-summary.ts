@@ -1,0 +1,158 @@
+import type { EngineName, TokenUsageEvent } from "./types.js";
+
+/**
+ * The declared summary vocabulary: the one shape every summary usage
+ * figure in the run record uses — the manifest's per-model rollup and the
+ * per-agent totals alike. The classes are disjoint and sum to
+ * `totalTokens` by construction, whatever the engine's native fields mean:
+ *
+ * - `freshInputTokens` — input actually processed uncached.
+ * - `cachedInputTokens` — input served from (or written to) cache. Where
+ *   the engine separates reads from writes, `cacheReadTokens` and
+ *   `cacheCreationTokens` split this figure; absent means "not separable",
+ *   never zero.
+ * - `outputTokens` — generated output, excluding reasoning where the
+ *   engine reports reasoning separately.
+ * - `reasoningOutputTokens` — reasoning output where the engine separates
+ *   it; `null` means the engine does not, and `outputTokens` carries the
+ *   whole generation. `null` is never zero: a zero from a separating
+ *   engine says "no reasoning spend", a `null` says "not knowable".
+ *
+ * The engine-native usage events remain untouched beneath the summaries —
+ * the vocabulary governs the summary, not the evidence. Tokens an engine
+ * reports only as an unclassifiable total (opencode steps carrying `total`
+ * alone) stay in that native evidence: no declared class may absorb them
+ * without lying about what they were.
+ */
+export interface UsageSummary {
+  freshInputTokens: number;
+  cachedInputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  outputTokens: number;
+  reasoningOutputTokens: number | null;
+  totalTokens: number;
+}
+
+/**
+ * The one inclusion rule per engine, in one place — the shared
+ * `TokenUsageBreakdown` deliberately preserves each engine's native field
+ * semantics, so the summary boundary is where those semantics are mapped
+ * onto the declared classes:
+ *
+ * - **codex** reports `inputTokens` *including* the cached share, and
+ *   `outputTokens` *including* the reasoning share — both are subtracted
+ *   out to keep the classes disjoint.
+ * - **claude** reports `inputTokens` *excluding* cache, `cachedInputTokens`
+ *   as reads + creation (with the creation share carried separately), and
+ *   no reasoning split — reasoning is `null` and rides `outputTokens`.
+ * - **opencode** reports input, output, reasoning, and cache all
+ *   disjointly; cache creation is separable only when the stream carried a
+ *   cache object.
+ */
+const ENGINE_INCLUSION_RULES: Record<
+  EngineName,
+  { cachedWithinInput: boolean; reasoningWithinOutput: boolean; reasoningSeparable: boolean }
+> = {
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
+};
+
+/**
+ * Summarise an agent's usage events into the declared vocabulary. Deltas
+ * (`event.last`) are summed, matching the rollup's long-standing
+ * convention. Returns `null` when there are no events at all — the caller
+ * records *why* there is no summary rather than publishing a zero-spend
+ * figure no engine reported.
+ */
+export function summariseUsage(engine: EngineName, events: readonly TokenUsageEvent[]): UsageSummary | null {
+  if (events.length === 0) {
+    return null;
+  }
+  const rules = ENGINE_INCLUSION_RULES[engine];
+  let fresh = 0;
+  let cached = 0;
+  let cacheCreation = 0;
+  let cacheCreationSeparable = true;
+  let output = 0;
+  let reasoning = 0;
+  for (const event of events) {
+    const delta = event.last;
+    cached += delta.cachedInputTokens;
+    if (delta.cacheCreationInputTokens === undefined) {
+      cacheCreationSeparable = false;
+    } else {
+      cacheCreation += delta.cacheCreationInputTokens;
+    }
+    fresh += rules.cachedWithinInput
+      ? Math.max(0, delta.inputTokens - delta.cachedInputTokens)
+      : delta.inputTokens;
+    reasoning += delta.reasoningOutputTokens;
+    output += rules.reasoningWithinOutput
+      ? Math.max(0, delta.outputTokens - delta.reasoningOutputTokens)
+      : delta.outputTokens;
+  }
+  const separableReasoning = rules.reasoningSeparable ? reasoning : null;
+  return {
+    freshInputTokens: fresh,
+    cachedInputTokens: cached,
+    ...(cacheCreationSeparable
+      ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation }
+      : {}),
+    outputTokens: separableReasoning === null ? output + reasoning : output,
+    reasoningOutputTokens: separableReasoning,
+    // The total is the class sum by construction, so the vocabulary's
+    // disjoint-and-summing invariant cannot drift from the fields beside it.
+    totalTokens: fresh + cached + output + reasoning
+  };
+}
+
+/**
+ * Fold one summary into an accumulating one (rollup buckets). The cache
+ * split and the reasoning class survive only while every contributor
+ * carries them — a single not-separable contributor makes the merged
+ * figure not separable, because a partial split presented whole would
+ * claim precision the evidence never had.
+ */
+export function addUsageSummary(target: UsageSummary, delta: UsageSummary): UsageSummary {
+  const splitSurvives =
+    target.cacheReadTokens !== undefined &&
+    target.cacheCreationTokens !== undefined &&
+    delta.cacheReadTokens !== undefined &&
+    delta.cacheCreationTokens !== undefined;
+  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
+  return {
+    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
+    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
+    ...(splitSurvives
+      ? {
+          cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
+          cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
+        }
+      : {}),
+    outputTokens:
+      reasoningSurvives || (target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null)
+        ? target.outputTokens + delta.outputTokens
+        : target.outputTokens +
+          (target.reasoningOutputTokens ?? 0) +
+          delta.outputTokens +
+          (delta.reasoningOutputTokens ?? 0),
+    reasoningOutputTokens: reasoningSurvives
+      ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0)
+      : null,
+    totalTokens: target.totalTokens + delta.totalTokens
+  };
+}
+
+export function zeroUsageSummary(): UsageSummary {
+  return {
+    freshInputTokens: 0,
+    cachedInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+}

@@ -11,14 +11,16 @@ import type {
   EngineTranscriptArtifact,
   JsonObject,
   JsonSchema,
-  TokenUsageBreakdown,
   TokenUsageEvent
 } from "./types.js";
+import { addUsageSummary, summariseUsage } from "./usage-summary.js";
+
 import type { Resolved } from "./ambient-settings.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MANIFEST_PATH = "manifest.json";
 
 type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
@@ -165,7 +167,7 @@ interface GitState {
 }
 
 interface Manifest {
-  schema_version: 2;
+  schema_version: 3;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
@@ -268,11 +270,8 @@ export interface WorkflowInvocationRecord {
 }
 
 interface UsageRollup {
-  tokens: TokenUsageBreakdown & {
-    freshInputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-  };
+  /** Summary usage in the declared vocabulary — see `src/usage-summary.ts`. */
+  tokens: UsageSummary;
   cost: {
     amount: number | null;
     currency: string | null;
@@ -549,6 +548,10 @@ export class RunRecordWriter {
             },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
+      // Summary usage in the declared vocabulary, or the reason there is
+      // none — an agent with no usage data must be legible as "unknown for
+      // this reason", never indistinguishable from zero spend.
+      usage: agentUsage(record),
       queued_ms: record.queuedMs,
       execution_ms: record.executionMs,
       attempts: record.attempts.map((attempt) => ({
@@ -649,23 +652,44 @@ export class RunRecordWriter {
   }
 }
 
+function agentUsage(
+  record: RuntimeAgentRecord
+): { summary: UsageSummary } | { unavailable: "no-attempt-ran" | "engine-reported-no-usage" } {
+  const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
+  const summary = summariseUsage(record.engine, events);
+  if (summary !== null) {
+    return { summary };
+  }
+  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+}
+
 function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<string, UsageRollup>> {
   const rollup: Record<string, Record<string, UsageRollup>> = {};
   const unlikeCurrencies = new Set<UsageRollup["cost"]>();
   for (const record of records) {
     const engine = record.engine;
-    const model = record.model ?? "default";
+    const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
+    const summary = summariseUsage(engine, events);
+    if (summary === null) {
+      // No usage events, nothing to roll up — the agent's own record says
+      // why (its `usage.unavailable` reason); a zero bucket here would read
+      // as zero spend, which is a different claim.
+      continue;
+    }
+    // Spend is keyed under the model that actually served the turns. An
+    // agent whose served model was never learned lands under the literal
+    // "unresolved" rather than borrowing the requested pin — a rollup label
+    // is a claim about what ran, not about what was asked for.
+    const model = record.resolvedModel ?? "unresolved";
     rollup[engine] ??= {};
-    rollup[engine][model] ??= {
-      tokens: zeroUsage(),
-      cost: { amount: null, currency: null, source: "estimated" }
-    };
+    const existing = rollup[engine][model];
+    rollup[engine][model] =
+      existing === undefined
+        ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } }
+        : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
     const bucket = rollup[engine][model];
-    for (const attempt of record.attempts) {
-      for (const event of attempt.tokenUsageEvents) {
-        addUsage(bucket.tokens, event.last, engine);
-        addProviderCost(bucket.cost, event, unlikeCurrencies);
-      }
+    for (const event of events) {
+      addProviderCost(bucket.cost, event, unlikeCurrencies);
     }
   }
   return rollup;
@@ -698,39 +722,6 @@ function addProviderCost(
   if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
-}
-
-function addUsage(target: UsageRollup["tokens"], delta: TokenUsageBreakdown, engine: EngineName): void {
-  target.cachedInputTokens += delta.cachedInputTokens;
-  target.inputTokens += delta.inputTokens;
-  target.outputTokens += delta.outputTokens;
-  target.reasoningOutputTokens += delta.reasoningOutputTokens;
-  target.totalTokens += delta.totalTokens;
-  // Where the engine separates cache creation from cache reads (Claude),
-  // `cacheReadTokens` means input actually served from cache and the
-  // creation share is accounted on its own line. Engines that report one
-  // combined cached figure keep the whole of it under reads, unchanged.
-  const creation = delta.cacheCreationInputTokens ?? 0;
-  target.cacheCreationTokens += creation;
-  target.cacheReadTokens += Math.max(0, delta.cachedInputTokens - creation);
-  // Codex reports cached input as a subset of input; Claude and opencode
-  // report cached input separately. This derived field normalises both shapes
-  // to uncached input without changing either engine's raw counters.
-  target.freshInputTokens +=
-    engine === "codex" ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-}
-
-function zeroUsage(): UsageRollup["tokens"] {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0,
-    freshInputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0
-  };
 }
 
 /**

@@ -47,18 +47,18 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v3-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v2-agent-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
-  assert.equal(manifest.schema_version, 2);
+  assert.equal(manifest.schema_version, 3);
   assert.equal(manifest.kind, "run_manifest");
-  assert.equal(agent.schema_version, 2);
+  assert.equal(agent.schema_version, 3);
   assert.equal(agent.kind, "agent_record");
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: null, layer: "default" },
@@ -238,28 +238,34 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
     cliFlags: { jsonArgs: false }
   });
   await writer.recordAgent(agentRecord(1, "codex", null, 3));
-  await writer.recordAgent(agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002));
+  const openCodeRecord = agentRecord(2, "opencode" as EngineName, "glm-5.2", 7, 0.002);
+  // Spend is keyed under the *served* model, never the requested pin.
+  openCodeRecord.resolvedModel = "zai/glm-5.2";
+  await writer.recordAgent(openCodeRecord);
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     files: Array<{ path: string; size: number; sha256: string }>;
     cost_rollup: Record<
       string,
-      Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; source: string } }>
+      Record<string, { tokens: { totalTokens: number }; cost: { amount: number | null; source: string } }>
     >;
   };
   const transcriptEntry = manifest.files.find((entry) => entry.path.startsWith("agents/000001/") && entry.path.endsWith(".jsonl"));
   assert.ok(transcriptEntry);
   const transcriptPath = path.join(writer.archiveDir, transcriptEntry.path);
   assert.equal(transcriptEntry.sha256, sha256(await readFile(transcriptPath)));
-  assert.equal(manifest.cost_rollup.codex?.default?.tokens.totalTokens, 3);
-  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.tokens.totalTokens, 7);
-  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.amount, 0.002);
-  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"]?.cost.source, "provider-reported");
+  // The codex agent never learned its served model: its spend lands under
+  // the literal "unresolved", not under a requested pin it cannot vouch for.
+  assert.equal(manifest.cost_rollup.codex?.unresolved?.tokens.totalTokens, 3);
+  assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.tokens.totalTokens, 7);
+  assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"], undefined);
+  assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.amount, 0.002);
+  assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.source, "provider-reported");
   assert.equal("total" in manifest.cost_rollup, false);
 });
 
-test("cost roll-up preserves raw usage and adds comparable fresh-input and cache-read fields", async () => {
+test("the roll-up publishes the declared summary vocabulary under each engine's own inclusion rule", async () => {
   const cwd = await gitRepo("ensemble-record-derived-tokens-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
   const writer = await RunRecordWriter.start({
@@ -276,34 +282,32 @@ test("cost roll-up preserves raw usage and adds comparable fresh-input and cache
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
-    cost_rollup: Record<
-      string,
-      Record<string, { tokens: TokenUsageBreakdown & { freshInputTokens: number; cacheReadTokens: number } }>
-    >;
+    cost_rollup: Record<string, Record<string, { tokens: Record<string, unknown> }>>;
   };
-  const codex = manifest.cost_rollup.codex?.default?.tokens;
-  const claude = manifest.cost_rollup.claude?.default?.tokens;
+  const codex = manifest.cost_rollup.codex?.unresolved?.tokens;
+  const claude = manifest.cost_rollup.claude?.unresolved?.tokens;
   assert.ok(codex);
   assert.ok(claude);
+  // Codex reports cached within input and reasoning within output: both are
+  // subtracted out, so the declared classes are disjoint and sum to the
+  // total (12 + 8 + 3 + 2 = 25). The engine-native 20/5/27 figures stay in
+  // the attempt events beneath, untouched.
   assert.deepEqual(codex, {
+    freshInputTokens: 12,
     cachedInputTokens: 8,
-    inputTokens: 20,
-    outputTokens: 5,
+    outputTokens: 3,
     reasoningOutputTokens: 2,
-    totalTokens: 27,
-    freshInputTokens: 12,
-    cacheReadTokens: 8,
-    cacheCreationTokens: 0
+    totalTokens: 25
   });
+  // Claude separates neither reasoning nor (here) the cache split: reasoning
+  // is null — not knowable, never zero — and output carries the whole
+  // generation. 12 + 8 + 5 = 25.
   assert.deepEqual(claude, {
-    cachedInputTokens: 8,
-    inputTokens: 12,
-    outputTokens: 5,
-    reasoningOutputTokens: 0,
-    totalTokens: 25,
     freshInputTokens: 12,
-    cacheReadTokens: 8,
-    cacheCreationTokens: 0
+    cachedInputTokens: 8,
+    outputTokens: 5,
+    reasoningOutputTokens: null,
+    totalTokens: 25
   });
 });
 
@@ -329,17 +333,55 @@ test("cache creation is accounted apart from cache reads when the engine separat
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     cost_rollup: Record<
       string,
-      Record<
-        string,
-        { tokens: TokenUsageBreakdown & { freshInputTokens: number; cacheReadTokens: number; cacheCreationTokens: number } }
-      >
+      Record<string, { tokens: { cachedInputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number } }>
     >;
   };
-  const tokens = manifest.cost_rollup.claude?.default?.tokens;
+  const tokens = manifest.cost_rollup.claude?.unresolved?.tokens;
   assert.ok(tokens);
   assert.equal(tokens.cachedInputTokens, 10);
   assert.equal(tokens.cacheReadTokens, 7);
   assert.equal(tokens.cacheCreationTokens, 3);
+});
+
+test("each agent record carries its usage in the declared vocabulary, or the reason it has none", async () => {
+  const cwd = await gitRepo("ensemble-record-agent-usage-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-agent-usage",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'usage' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 27)));
+  const noUsage = agentRecord(2, "claude", null, 0);
+  noUsage.attempts[0]!.tokenUsageEvents = [];
+  await writer.recordAgent(noUsage);
+  const noAttempt = agentRecord(3, "claude", null, 0);
+  noAttempt.attempts = [];
+  noAttempt.status = "failed";
+  await writer.recordAgent(noAttempt);
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const agentJson = async (id: string) =>
+    JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      usage: { summary?: Record<string, unknown>; unavailable?: string };
+    };
+  assert.deepEqual((await agentJson("000001")).usage, {
+    summary: {
+      freshInputTokens: 12,
+      cachedInputTokens: 8,
+      outputTokens: 3,
+      reasoningOutputTokens: 2,
+      totalTokens: 25
+    }
+  });
+  // No usage data is a stated reason, never a zero-spend figure the engine
+  // did not report.
+  assert.deepEqual((await agentJson("000002")).usage, { unavailable: "engine-reported-no-usage" });
+  assert.deepEqual((await agentJson("000003")).usage, { unavailable: "no-attempt-ran" });
 });
 
 test("standalone git diff write stages beside its destination and succeeds", async () => {
@@ -769,6 +811,7 @@ function agentRecord(
     creationOrder: id,
     concurrencyGroup: engine,
     schema: null,
+    strip: null,
     parseRoute: null,
     decodeFailure: null,
     rawOutput: "ok",

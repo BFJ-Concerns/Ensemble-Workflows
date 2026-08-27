@@ -151,7 +151,22 @@ order — each with its archived source and arguments, their hashes, and a
 parent link — recorded before the child runs. Each args entry names a
 `canonical_archive_path` whose exact canonical JSON text is what
 `args.sha256` covers, so an archive consumer can verify it without the
-writer. The root's `meta.task` remains the single grouping identity. Status
+writer. The root's `meta.task` remains the single grouping identity.
+
+Summary usage in the record (schema version 3) uses one declared vocabulary:
+`freshInputTokens`, `cachedInputTokens` (with `cacheReadTokens` /
+`cacheCreationTokens` splitting it where the engine separates the two),
+`outputTokens`, and `reasoningOutputTokens` — disjoint classes summing to
+`totalTokens`, each engine's native fields mapped under one inclusion rule
+(Codex reports cached within input and reasoning within output; the summary
+subtracts both out). `reasoningOutputTokens: null` means the engine does not
+separate reasoning — not zero. The manifest's `cost_rollup` keys spend per
+engine and per *served* model (the literal `unresolved` when no served model
+was ever learned, never the requested pin), and each agent record carries its
+own `usage` — the summary, or `unavailable` with the reason
+(`no-attempt-ran`, `engine-reported-no-usage`) so an agent with no usage data
+is never indistinguishable from a zero-spend one. The engine-native usage
+events remain per attempt beneath the summaries, untouched. Status
 defaults to the run's `.claude` directory only when that directory already
 exists; an explicit status directory must also
 already exist.

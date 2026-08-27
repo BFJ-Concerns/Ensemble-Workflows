@@ -608,7 +608,8 @@ test("opencode cache writes survive the engine path as a separate archive roll-u
       import { readFile } from "node:fs/promises";
       import path from "node:path";
       const manifest = JSON.parse(await readFile(path.join(process.argv[1], "manifest.json"), "utf8"));
-      const tokens = manifest.cost_rollup.opencode["glm-5.2"].tokens;
+      // Keyed by the served provider model, not the registry key that was requested.
+      const tokens = manifest.cost_rollup.opencode["openrouter/z-ai/glm-5.2"].tokens;
       assert.equal(tokens.cachedInputTokens, 18);
       assert.equal(tokens.cacheReadTokens, 13);
       assert.equal(tokens.cacheCreationTokens, 5);

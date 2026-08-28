@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
+
+import { runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const failedEnvelope = { partial: true, reason: "failed", completed: [] };
@@ -217,20 +218,6 @@ async function runWorkflow(name: string, body: string, cliPath = bundledCliPath)
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-}
-
-function runNode(args: string[], env: NodeJS.ProcessEnv): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
-  });
 }
 
 function escapeRegExp(value: string): string {

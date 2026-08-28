@@ -23,7 +23,7 @@ if (process.argv.includes("generate-json-schema")) {
   process.exit(2);
 }
 
-const { validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
+const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
@@ -159,7 +159,10 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
       }, "ServerNotification.json", undefined, {
-        allowMalformed: notification.allowMalformed
+        // A deliberately malformed partial assistant delta would conceal the
+        // producer contract this fixture is meant to guard. Other established
+        // exceptional frames retain their explicitly recorded regressions.
+        ...(notification.method === "item/agentMessage/delta" ? {} : { allowMalformed: notification.allowMalformed })
       });
     }
     if (!stallAfterNotificationSequence) {
@@ -227,7 +230,9 @@ const handleLine = (line) => {
           id: `thread-${threadCounter}`,
           modelProvider: "openai",
           preview: "",
-          projectId: null,
+          ...(codexFixtureSchemaIncludesDefinitionProperty("v2/ThreadStartResponse.json", "Thread", "projectId")
+            ? { projectId: null }
+            : {}),
           sessionId: `fixture-session-${threadCounter}`,
           source: "appServer",
           status: { type: "idle" },

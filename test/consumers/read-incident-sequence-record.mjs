@@ -1,8 +1,8 @@
 /* global process */
 
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { findOnlyFile, readJson } from "./archive-helpers.mjs";
 
 const [dataHome, identifier] = process.argv.slice(2);
 assert.ok(dataHome, "usage: read-incident-sequence-record.mjs <resolved-data-home> <identifier>");
@@ -31,14 +31,3 @@ process.stdout.write(`${JSON.stringify({
   partial: attempt.raw_output,
   failure: attempt.failure.message
 })}\n`);
-
-async function readJson(file) {
-  return JSON.parse(await readFile(file, "utf8"));
-}
-
-async function findOnlyFile(root, basename) {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0]);
-}

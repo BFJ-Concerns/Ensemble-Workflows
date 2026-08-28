@@ -197,7 +197,9 @@ The full platform is available alongside the hooks below: every Node global
 `await new Promise(r => setTimeout(r, ms))` sleep is ordinary code), the
 filesystem and network, `require(...)` and dynamic `import()` resolving from
 the script's own path, and `import.meta` (its URL is the script's own,
-tagged with a run-unique query). Static `import` syntax does not apply —
+tagged with a query keyed on the body's content — one body, one compiled
+module, however many times a long-lived caller runs it; a changed body is
+a new module, never a stale one). Static `import` syntax does not apply —
 the body is a function body, not module top level. The script is the
 trusted orchestration program of the user who launched it; workers are
 dispatched only through `agent()`, and prompts constrain behaviour, not
@@ -266,7 +268,7 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are judged `absent` on Codex — its app-server tool surface has no skill system and no subagent tool, so the request is satisfied by construction and recorded as such. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file; deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses) | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are judged `absent` on Codex — its app-server tool surface has no skill system and no subagent tool, so the request is satisfied by construction and recorded as such. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file; deny is expected to outrank every allow layer and permission mode | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the

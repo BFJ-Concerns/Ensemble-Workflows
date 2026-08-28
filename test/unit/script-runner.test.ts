@@ -573,15 +573,17 @@ test("require, relative dynamic import, and import.meta resolve from the script'
   assert.equal(value.viaImport, "relative-import");
   assert.equal(value.viaRequire, "relative-require");
   assert.equal(value.viaBuiltin, "y.txt");
-  // The body executes under the script's own URL (tagged per run), so
-  // import.meta and relative specifiers behave as if the module sat at the
-  // script's path — not at a temp file or the harness's own location.
-  assert.ok(value.metaUrl.startsWith(`${pathToFileURL(scriptPath).href}?ensemble-workflow-run=`), value.metaUrl);
+  // The body executes under the script's own URL (tagged with its content
+  // hash), so import.meta and relative specifiers behave as if the module
+  // sat at the script's path — not at a temp file or the harness's own
+  // location.
+  assert.ok(value.metaUrl.startsWith(`${pathToFileURL(scriptPath).href}?ensemble-workflow-body=`), value.metaUrl);
 });
 
-test("each run executes a fresh body, never a stale cached module", async () => {
-  // One filename, two different sources: the run-unique URL tag is what
-  // keeps the ESM module cache from serving the first body to the second run.
+test("a changed body is never served stale, whatever the filename says", async () => {
+  // One filename, two different sources: the content-hash URL tag moves
+  // with the source, so the ESM module cache cannot serve the first body
+  // to the second run — staleness is impossible by construction.
   const filename = "cache-check.js";
   const first = await runWorkflowScript({
     filename,
@@ -597,6 +599,23 @@ test("each run executes a fresh body, never a stale cached module", async () => 
   });
   assert.equal(first.result, "first");
   assert.equal(second.result, "second");
+});
+
+test("repeat invocations of one body reuse one module, with fresh bindings per run", async () => {
+  // The bound: a long-lived library caller running the same workflow many
+  // times retains one compiled module, not one per invocation — observed
+  // through import.meta.url, which is the module's cache identity. Args
+  // still arrive per call, because everything per-run rides the bindings.
+  const filename = "cache-reuse.js";
+  const source = `export const meta = { name: "cache-reuse" };\nreturn { url: import.meta.url, got: args };`;
+  const first = await runWorkflowScript({ filename, runtime, log: () => {}, source, args: ["a"] });
+  const second = await runWorkflowScript({ filename, runtime, log: () => {}, source, args: ["b"] });
+
+  const firstValue = first.result as { url: string; got: unknown };
+  const secondValue = second.result as { url: string; got: unknown };
+  assert.equal(firstValue.url, secondValue.url, "same body, same path: one module identity");
+  assert.deepEqual(firstValue.got, ["a"]);
+  assert.deepEqual(secondValue.got, ["b"]);
 });
 
 test("binds the script's own meta read-only in the body", async () => {

@@ -1,5 +1,5 @@
 import vm from "node:vm";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
@@ -514,12 +514,12 @@ ${workflow.bodySource}
 /**
  * Workflow bodies execute as genuine ES modules served from memory: the
  * wrapped source is registered against the script's own file URL (tagged
- * with a run-unique query so the module cache never returns a stale body),
- * and a `node:module` load hook serves it instead of the on-disk bytes.
- * Executing under the script's own URL is what makes the full-Node contract
- * hold without a temp file: `import.meta.url` names the script's location,
- * and relative and bare dynamic `import()` specifiers resolve exactly as
- * they would for a module at that path.
+ * with a content-hash query, below), and a `node:module` load hook serves
+ * it instead of the on-disk bytes. Executing under the script's own URL is
+ * what makes the full-Node contract hold without a temp file:
+ * `import.meta.url` names the script's location, and relative and bare
+ * dynamic `import()` specifiers resolve exactly as they would for a module
+ * at that path.
  */
 const pendingWorkflowModules = new Map<string, string>();
 let workflowModuleLoaderRegistered = false;
@@ -553,7 +553,20 @@ function ensureWorkflowModuleLoader(): void {
 
 async function importWrappedModule(wrappedSource: string, filename: string): Promise<Record<string, unknown>> {
   ensureWorkflowModuleLoader();
-  const url = `${pathToFileURL(filename).href}?ensemble-workflow-run=${randomUUID()}`;
+  // Content-keyed module identity. The wrapper is a pure function of its
+  // bindings (everything per-run rides the call, nothing lives at module
+  // scope), so the same body at the same path is semantically one module:
+  // keying the URL by the wrapped source's hash lets Node's ESM cache —
+  // which exposes no eviction API — reuse it across invocations, bounding
+  // a long-lived library process's retention by distinct bodies rather
+  // than growing by one module graph per run. Staleness stays impossible
+  // by construction: any change to the source moves the URL. A cached
+  // import never consults the loader again, so the pending-map delete
+  // below cannot race a concurrent import of the same content — by the
+  // time the first import settles, the module (or its deterministic
+  // evaluation error) is already in the cache.
+  const digest = createHash("sha256").update(wrappedSource).digest("hex");
+  const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   pendingWorkflowModules.set(url, wrappedSource);
   try {
     return (await import(url)) as Record<string, unknown>;

@@ -24826,11 +24826,65 @@ function extractWorkflowSource(source) {
       bodyStart += 1;
     }
   }
+  const bodySource = withoutBom.slice(bodyStart);
+  const unsupportedExport = findUnsupportedTopLevelExport(withoutBom);
+  if (unsupportedExport !== null) {
+    throw new WorkflowScriptError(
+      `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
+    );
+  }
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource: withoutBom.slice(bodyStart)
+    bodySource
   };
+}
+function findUnsupportedTopLevelExport(source) {
+  let program;
+  try {
+    program = parse3(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // Workflow bodies intentionally permit top-level return because the
+      // runtime wraps them in an async function before V8 imports them.
+      allowReturnOutsideFunction: true
+    });
+  } catch {
+    return null;
+  }
+  for (const node of program.body) {
+    if (isModuleExport(node) && !isSupportedWorkflowExport(node)) {
+      return `\`${describeTopLevelExport(node, source)}\``;
+    }
+  }
+  return null;
+}
+function isModuleExport(node) {
+  return node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration";
+}
+function isSupportedWorkflowExport(node) {
+  if (node.type !== "ExportNamedDeclaration" || node.declaration?.type !== "VariableDeclaration") {
+    return false;
+  }
+  const [declaration] = node.declaration.declarations ?? [];
+  return node.declaration.kind === "const" && (node.declaration.declarations?.length ?? 0) === 1 && (declaration?.id?.name === "meta" || declaration?.id?.name === "defaults");
+}
+function describeTopLevelExport(node, source) {
+  if (node.type === "ExportDefaultDeclaration") {
+    return "export default";
+  }
+  if (node.type === "ExportAllDeclaration") {
+    return "export *";
+  }
+  const declaration = node.declaration;
+  if (declaration?.type === "VariableDeclaration") {
+    const name = declaration.declarations?.[0]?.id?.name;
+    return name === void 0 ? `export ${declaration.kind ?? ""}`.trim() : `export ${declaration.kind} ${name}`;
+  }
+  if ((declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") && declaration.id?.name !== void 0) {
+    return `export ${declaration.type === "FunctionDeclaration" ? "function" : "class"} ${declaration.id.name}`;
+  }
+  return source.slice(node.start, node.end);
 }
 function readWorkflowDefaults(defaultsSource, filename = "workflow.js", openCodeModelRegistry) {
   if (defaultsSource === null) {

@@ -13,16 +13,19 @@ const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
 
 test("suite-root recovery distinguishes dead parent ownership, hand-off uncertainty, and child process-group liveness", { timeout: 90_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-ownership-stamped-estate-"));
+  const heldChildren: HeldChild[] = [];
   try {
     const deadParentRoot = await createDeadParentPendingRoot(temporaryRoot);
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
     await assertMissing(deadParentRoot, "recovery must reclaim a conclusively dead parent-owned root");
 
-    const handoffRoot = await mkdtemp(path.join(temporaryRoot, "ensemble-test-suite-handoff-pending-parent-unknown-"));
+    const handoff = await createLiveUnstampedHandoffRoot(temporaryRoot);
+    heldChildren.push(handoff.child);
     await runAndRequireClean(temporaryRoot);
-    await access(handoffRoot);
+    await access(handoff.root);
 
     const held = await createStampedHeldRoot(temporaryRoot);
+    heldChildren.push(held.child);
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
     await access(held.root);
 
@@ -33,6 +36,7 @@ test("suite-root recovery distinguishes dead parent ownership, hand-off uncertai
 
     t.diagnostic("real suite-runner recovery reclaimed a dead parent-pending root, retained hand-off uncertainty and a live stamped child group, then reclaimed the stamped root after release");
   } finally {
+    await Promise.all(heldChildren.map(stopHeldChild));
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
@@ -59,6 +63,11 @@ async function runAndRequireClean(temporaryRoot: string): Promise<void> {
 }
 
 async function createDeadParentPendingRoot(temporaryRoot: string): Promise<string> {
+  const parentProcessId = await createDeadProcessId();
+  return mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-pending-parent-${parentProcessId}-`));
+}
+
+async function createDeadProcessId(): Promise<number> {
   const parent = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
   await new Promise<void>((resolve, reject) => {
     parent.once("error", reject);
@@ -66,10 +75,31 @@ async function createDeadParentPendingRoot(temporaryRoot: string): Promise<strin
   });
   assert.ok(parent.pid, "the finished parent must have had a process id");
   assert.throws(() => process.kill(parent.pid!, 0), { code: "ESRCH" });
-  return mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-pending-parent-${parent.pid}-`));
+  return parent.pid;
 }
 
-async function createStampedHeldRoot(temporaryRoot: string): Promise<{ root: string; releasePath: string; exited: Promise<void> }> {
+interface HeldChild {
+  processGroup: number;
+  releasePath: string;
+  exited: Promise<void>;
+}
+
+async function createLiveUnstampedHandoffRoot(temporaryRoot: string): Promise<{ root: string; child: HeldChild }> {
+  const child = await createHeldChild(temporaryRoot);
+  const parentProcessId = await createDeadProcessId();
+  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parentProcessId}-`));
+  return { root, child };
+}
+
+async function createStampedHeldRoot(temporaryRoot: string): Promise<{ root: string; child: HeldChild; releasePath: string; exited: Promise<void> }> {
+  const child = await createHeldChild(temporaryRoot);
+  const parentProcessId = await createDeadProcessId();
+  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parentProcessId}-`));
+  await writeFile(path.join(root, "owner.json"), `${JSON.stringify({ childProcessGroup: child.processGroup })}\n`);
+  return { root, child, releasePath: child.releasePath, exited: child.exited };
+}
+
+async function createHeldChild(temporaryRoot: string): Promise<HeldChild> {
   const controlDirectory = await mkdtemp(path.join(temporaryRoot, "control-"));
   const readyPath = path.join(controlDirectory, "ready");
   const releasePath = path.join(controlDirectory, "release");
@@ -79,17 +109,28 @@ async function createStampedHeldRoot(temporaryRoot: string): Promise<{ root: str
     stdio: "ignore"
   });
   assert.ok(child.pid, "the detached child must have a process-group id");
-  const root = await mkdtemp(path.join(temporaryRoot, "ensemble-test-suite-complete-"));
-  await writeFile(path.join(root, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
   await waitForFile(readyPath);
   return {
-    root,
+    processGroup: child.pid,
     releasePath,
     exited: new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", () => resolve());
     })
   };
+}
+
+async function stopHeldChild(child: HeldChild): Promise<void> {
+  await writeFile(child.releasePath, "release\n").catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  await Promise.race([child.exited, delay(1_000)]);
+  try {
+    process.kill(-child.processGroup, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  await child.exited;
 }
 
 const heldChildProgram = `
@@ -120,4 +161,8 @@ async function waitForFile(file: string): Promise<void> {
     }
   }
   assert.fail(`timed out waiting for ${file}`);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

@@ -213,7 +213,8 @@ class CodexEngineInvocation implements EngineInvocation {
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
     const threadId = await this.#transport.openThread({
-      ...(cwd !== undefined ? { cwd } : {})
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(this.#options.model !== undefined ? { model: this.#options.model } : {})
     });
 
     return this.#transport.runTurn(threadId, prompt, {

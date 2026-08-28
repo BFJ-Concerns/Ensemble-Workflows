@@ -6,36 +6,6 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
-const suiteChildProgram = `
-  import { spawn } from "node:child_process";
-  import { access } from "node:fs/promises";
-  import { setTimeout as delay } from "node:timers/promises";
-
-  const ownerReadyDeadline = Date.now() + 1_000;
-  while (Date.now() < ownerReadyDeadline) {
-    try {
-      await access(process.env.ENSEMBLE_SUITE_OWNER_READY);
-      break;
-    } catch {
-      await delay(10);
-    }
-  }
-
-  try {
-    await access(process.env.ENSEMBLE_SUITE_OWNER_READY);
-  } catch {
-    // If the suite parent died after spawning us but before its ownership
-    // stamp became observable, leave the indeterminate root for recovery but
-    // do not keep a detached wrapper alive forever.
-    process.exitCode = 1;
-    process.exit();
-  }
-
-  const test = spawn(process.execPath, ["--test", process.env.ENSEMBLE_SUITE_TEST_GLOB], { stdio: "inherit" });
-  const [code, signal] = await new Promise((resolve) => test.once("exit", (...result) => resolve(result)));
-  if (signal !== null) process.kill(process.pid, signal);
-  process.exitCode = code ?? 1;
-`;
 const temporaryRoot = tmpdir();
 await recoverFinishedSuites(temporaryRoot);
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
@@ -53,15 +23,12 @@ const suiteDirectory = path.join(temporaryRoot, handoffSuiteName(path.basename(p
 await rename(pendingSuiteDirectory, suiteDirectory);
 const schemaCacheDirectory = path.join(suiteDirectory, "schema-cache");
 const recordStoreDirectory = path.join(suiteDirectory, "run-records");
-const ownerReadyPath = path.join(suiteDirectory, "owner-ready");
-const child = spawn(process.execPath, ["--input-type=module", "--eval", suiteChildProgram], {
+const child = spawn(process.execPath, ["--test", testGlob], {
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,
     TMPDIR: suiteDirectory,
-    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
-    ENSEMBLE_SUITE_OWNER_READY: ownerReadyPath,
-    ENSEMBLE_SUITE_TEST_GLOB: testGlob
+    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory
   },
   stdio: "inherit",
   // A killed suite parent can leave its test process behind. Giving that
@@ -69,29 +36,20 @@ const child = spawn(process.execPath, ["--input-type=module", "--eval", suiteChi
   // cache owner from abandoned state before it removes anything.
   detached: true
 });
-const testPausePath = process.env.ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH;
-if (testPausePath !== undefined) {
-  await writeFile(`${testPausePath}.child-pid`, `${child.pid}\n`);
-  const testPauseDeadline = Date.now() + 20_000;
-  let testPauseReleased = false;
-  while (Date.now() < testPauseDeadline) {
-    try {
-      await readFile(testPausePath);
-      testPauseReleased = true;
-      break;
-    } catch {
-      await delay(10);
-    }
-  }
-  if (!testPauseReleased) throw new Error("timed out waiting for the suite hand-off test pause");
-}
-await writeFile(path.join(suiteDirectory, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
-await writeFile(ownerReadyPath, "ready\n");
+const childExit = new Promise((resolve, reject) => {
+  child.once("error", reject);
+  child.once("exit", (...result) => resolve(result));
+});
+let completeSetup;
+const setupComplete = new Promise((resolve) => {
+  completeSetup = resolve;
+});
 
 let cleaning = false;
 async function finish(code, signal) {
   if (cleaning) return;
   cleaning = true;
+  await setupComplete;
   if (signal !== null && child.exitCode === null && child.signalCode === null) {
     try {
       process.kill(-child.pid, signal);
@@ -100,7 +58,7 @@ async function finish(code, signal) {
     }
   }
   if (child.exitCode === null && child.signalCode === null) {
-    await new Promise((resolve) => child.once("exit", resolve));
+    await childExit.catch(() => undefined);
   }
   await rm(suiteDirectory, { recursive: true, force: true });
   if (signal !== null) {
@@ -109,16 +67,37 @@ async function finish(code, signal) {
   process.exitCode = code ?? 1;
 }
 
-child.once("error", async (error) => {
+childExit.then(([code, signal]) => void finish(code, signal)).catch(async (error) => {
   process.stderr.write(`${error.stack ?? error}\n`);
   await finish(1, null);
 });
-child.once("exit", (code, signal) => void finish(code, signal));
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
     void finish(null, signal);
   });
+}
+
+const testPausePath = process.env.ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH;
+try {
+  if (testPausePath !== undefined) {
+    await writeFile(`${testPausePath}.child-pid`, `${child.pid}\n`);
+    const testPauseDeadline = Date.now() + 20_000;
+    let testPauseReleased = false;
+    while (Date.now() < testPauseDeadline) {
+      try {
+        await readFile(testPausePath);
+        testPauseReleased = true;
+        break;
+      } catch {
+        await delay(10);
+      }
+    }
+    if (!testPauseReleased) throw new Error("timed out waiting for the suite hand-off test pause");
+  }
+  await writeFile(path.join(suiteDirectory, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
+} finally {
+  completeSetup();
 }
 
 async function recoverFinishedSuites(directory) {

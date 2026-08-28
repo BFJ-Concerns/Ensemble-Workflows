@@ -1448,7 +1448,10 @@ test("CLI entrypoint runs when invoked through a symlinked binary", async () => 
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   await symlink(entrypointPath, binPath);
 
-  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8" });
+  const childEnv = { ...process.env };
+  delete childEnv.FORCE_COLOR;
+  delete childEnv.NO_COLOR;
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: childEnv });
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");

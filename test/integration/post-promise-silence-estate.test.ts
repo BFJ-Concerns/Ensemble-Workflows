@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import test from "node:test";
 
 import { executablePath, runNode } from "./estate-process.js";

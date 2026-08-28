@@ -40,7 +40,12 @@ export function runProcess(
   timeout?: number
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"], timeout });
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      env: exactStreamEnvironment(env),
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -50,4 +55,11 @@ export function runProcess(
     child.once("error", reject);
     child.once("exit", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+function exactStreamEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnv = { ...env };
+  delete childEnv.FORCE_COLOR;
+  delete childEnv.NO_COLOR;
+  return childEnv;
 }

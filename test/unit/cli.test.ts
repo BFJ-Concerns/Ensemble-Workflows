@@ -1442,13 +1442,16 @@ test("CLI still prints null for a script with no top-level return", async () => 
   assert.equal(stdout.text(), "null\n");
 });
 
-test("CLI entrypoint runs when invoked through a symlinked binary", async () => {
+test("CLI entrypoint keeps exact usage streams under hostile colour variables", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-bin-"));
   const binPath = path.join(directory, "ensemble");
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   await symlink(entrypointPath, binPath);
 
-  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8" });
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: "3", NO_COLOR: "1" };
+  delete childEnv.FORCE_COLOR;
+  delete childEnv.NO_COLOR;
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: childEnv });
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");

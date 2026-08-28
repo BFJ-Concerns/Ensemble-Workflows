@@ -18,6 +18,26 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
 
+test("estate-spawned Node children preserve exact streams under hostile colour variables", async () => {
+  const result = await runNode(
+    [bundledCliPath],
+    {
+      ...process.env,
+      FORCE_COLOR: "3",
+      NO_COLOR: "1"
+    }
+  );
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+    "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+    "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+    "       ensemble workflows\n");
+});
+
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];

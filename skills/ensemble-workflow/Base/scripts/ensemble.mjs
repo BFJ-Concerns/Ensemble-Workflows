@@ -17862,20 +17862,24 @@ var OpenCodeEngineAdapter = class {
   name = "opencode";
   concurrency;
   /**
-   * opencode has a real subagent/task surface (and a skills route via
-   * plugins), but the harness has not yet measured a config route that
-   * strips either — so both fail loud pre-spawn rather than dispatch an
-   * unrestricted worker under a restriction the author believes is in
-   * force. Wiring the config route flips these entries with evidence.
+   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
+   * `permission.task` and `permission.skill`, and
+   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
+   * measurement is not worker-boundary proof, though: the available live
+   * dispatches timed out before producing output, so this unit has not shown
+   * that either explicit deny stops a worker. Both capabilities therefore
+   * fail loud pre-spawn rather than dispatch a worker under a restriction the
+   * author believes is in force. A successful deny witness re-opens this
+   * judgement.
    */
   capabilities = {
     skills: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
     },
     agents: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
   };
   #scheduler;

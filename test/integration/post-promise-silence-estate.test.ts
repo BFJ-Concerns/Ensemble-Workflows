@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { executablePath, runNode } from "./estate-process.js";
+import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/post-promise-app-server.mjs");
@@ -136,6 +136,34 @@ test("built consumer answers a turn-scoped request and continues after it disarm
   });
 });
 
+test("post-promise fixture validates every emitted frame without an opt-out", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "delta", text: "VALIDATED_POST_PROMISE_DELTA" },
+      { type: "promise", diagnostic: "VALIDATED_POST_PROMISE_PROMISE" },
+      { type: "success", text: "validated-post-promise" }
+    ]], 1);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"validated-post-promise"\n`);
+    const validations = await fixture.validations();
+    const validatedSchemas = new Set(validations.filter((entry) => entry.outcome === "valid").map((entry) => entry.schemaPath));
+    for (const schemaPath of [
+      "v1/InitializeResponse.json",
+      "v2/ThreadStartResponse.json",
+      "v2/TurnStartResponse.json",
+      "ServerNotification.json"
+    ]) {
+      assert.ok(validatedSchemas.has(schemaPath), `missing successful validation for ${schemaPath}`);
+    }
+    assert.ok(validations.length > 0, "the fixture must record every emitted frame validation");
+    assert.ok(
+      validations.every((entry) => entry.outcome === "valid"),
+      `post-promise frames must not rely on opt-outs: ${JSON.stringify(validations)}`
+    );
+  });
+});
+
 function abandonedAttempt(partialText: string): Action[] {
   return [
     { type: "delta", text: partialText },
@@ -166,6 +194,11 @@ interface RecordedMessage {
   result?: { decision?: string; reason?: string };
 }
 
+interface ValidationRecord {
+  schemaPath: string;
+  outcome: "valid" | "allowed-malformed";
+}
+
 async function withFixture(run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>) {
   const fixture = await createFixture();
   try {
@@ -180,11 +213,13 @@ async function createFixture() {
   const binDirectory = path.join(directory, "bin");
   const fakeCodex = path.join(binDirectory, "codex");
   const capturePath = path.join(directory, "codex-input.jsonl");
+  const validationCapturePath = path.join(directory, "validation.jsonl");
   const deadlineControlPath = path.join(directory, "deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
+  await writeFile(validationCapturePath, "");
   await writeFile(deadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
@@ -209,6 +244,7 @@ async function createFixture() {
           ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
+          ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapturePath,
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
@@ -231,14 +267,12 @@ async function createFixture() {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as RecordedMessage),
+    validations: async (): Promise<ValidationRecord[]> =>
+      (await readFile(validationCapturePath, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as ValidationRecord),
     deadlineControl: () => readFile(deadlineControlPath, "utf8"),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
-}
-
-async function findOnlyFile(root: string, basename: string): Promise<string> {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0] ?? "");
 }

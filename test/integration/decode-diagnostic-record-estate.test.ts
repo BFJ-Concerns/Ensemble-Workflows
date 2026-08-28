@@ -21,8 +21,8 @@ test("built bundle archives a decode diagnostic while a clean control remains nu
     assert.equal(clean.stdout, `"worker-ok"\n`);
     assert.equal(decoded.stdout, `"worker-ok"\n`);
 
-    const cleanRead = await runNode([archiveReaderPath, fixture.cleanDataHome, "clean"]);
-    const decodedRead = await runNode([archiveReaderPath, fixture.decodeDataHome, "decode"]);
+    const cleanRead = await runNode([archiveReaderPath, fixture.cleanDataHome, "clean"], process.env, 15_000);
+    const decodedRead = await runNode([archiveReaderPath, fixture.decodeDataHome, "decode"], process.env, 15_000);
     assert.equal(cleanRead.code, 0, cleanRead.stderr);
     assert.equal(decodedRead.code, 0, decodedRead.stderr);
     assert.deepEqual(JSON.parse(cleanRead.stdout), { decodeFailure: null });
@@ -72,7 +72,8 @@ async function createFixture() {
           ENSEMBLE_RUN_RECORD_DIR: path.join(decode ? decodeDataHome : cleanDataHome, "ensemble"),
           ENSEMBLE_STATUS: "0",
           XDG_DATA_HOME: decode ? decodeDataHome : cleanDataHome
-        }
+        },
+        15_000
       ),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };

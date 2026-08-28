@@ -231,7 +231,11 @@ export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
 
   if (!validate(payload)) {
     const detail = ajv.errorsText(validate.errors, { separator: "; " });
-    throw new Error(`Codex fixture payload failed ${schemaPath} validation: ${detail}`);
+    const method = payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      && typeof payload.method === "string"
+      ? ` for ${payload.method}`
+      : "";
+    throw new Error(`Codex fixture payload failed ${schemaPath} validation${method}: ${detail}`);
   }
   recordValidation({ schemaPath, outcome: "valid", ...notificationIdentity(payload) });
   return payload;

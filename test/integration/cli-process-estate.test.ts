@@ -9,6 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
+import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -2105,42 +2106,9 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
 }
 
 async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
-  const reader = [
-    'const { readdirSync, readFileSync } = require("node:fs");',
-    'const { join, basename } = require("node:path");',
-    'const root = process.argv[1];',
-    'const agents = readdirSync(root, { recursive: true })',
-    '  .filter((entry) => basename(entry) === "agent.json")',
-    '  .map((entry) => JSON.parse(readFileSync(join(root, entry), "utf8")));',
-    'process.stdout.write(JSON.stringify(agents));'
-  ].join("\n");
-  const result = await runProcess(process.execPath, ["-e", reader, dataHome], process.env);
+  const result = await runNode([path.resolve("test/consumers/read-archived-agents.mjs"), dataHome]);
   assert.equal(result.code, 0, result.stderr);
   return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
-}
-
-async function executablePath(name: string): Promise<string> {
-  const result = await runProcess("which", [name], process.env);
-  assert.equal(result.code, 0, `required executable ${name} is unavailable: ${result.stderr}`);
-  return result.stdout.trim();
-}
-
-function runProcess(
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
-  });
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
@@ -2154,13 +2122,6 @@ function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
   // runner's own per-run temp store) would silently win over it.
   delete env.ENSEMBLE_RUN_RECORD_DIR;
   return env;
-}
-
-async function findOnlyFile(root: string, basename: string): Promise<string> {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0] ?? "");
 }
 
 async function loadOnlyAgentRecord(recordStore: string): Promise<RecordedAgent> {
@@ -2178,30 +2139,4 @@ async function waitForFile(file: string): Promise<void> {
     }
   }
   throw new Error(`file never appeared: ${file}`);
-}
-
-async function runNode(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  timeoutMs?: number,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
-      cwd: process.cwd(),
-      env,
-      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      resolve({ code, stdout, stderr });
-    });
-  });
 }

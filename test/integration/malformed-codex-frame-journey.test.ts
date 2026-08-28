@@ -44,7 +44,7 @@ test("built CLI exposes rejection of a malformed partial assistant delta from it
 
     assert.notEqual(result.code, 0);
     assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
-    assert.match(result.stderr, /ServerNotification\.json validation/);
+    assert.match(result.stderr, /ServerNotification\.json validation for item\/agentMessage\/delta/);
     assert.match(result.stderr, /must have required property 'itemId'/);
   } finally {
     await rm(directory, { recursive: true, force: true });

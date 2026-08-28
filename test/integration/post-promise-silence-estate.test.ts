@@ -274,7 +274,6 @@ async function createFixture() {
           workflow
         ],
         {
-          ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapturePath,

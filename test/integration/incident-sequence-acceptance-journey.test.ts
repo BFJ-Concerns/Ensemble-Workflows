@@ -50,17 +50,17 @@ test("accepted request, partial output, overload, and termination retain one cau
       }
     ]];
     const environment: NodeJS.ProcessEnv = {
-      ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       ENSEMBLE_CODEX_SCHEMA_CLI: await executablePath("codex"),
       ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
       ENSEMBLE_STATUS: "0",
-      XDG_DATA_HOME: dataHome
+      XDG_DATA_HOME: dataHome,
+      // Isolation here is by data home: the suite runner's own store
+      // redirection (a named pass-through in the hermetic base) would
+      // silently win over it, so remove it explicitly.
+      ENSEMBLE_RUN_RECORD_DIR: undefined
     };
-    // Isolation here is by data home: an inherited store override (the suite
-    // runner's own per-run temp store) would silently win over it.
-    delete environment.ENSEMBLE_RUN_RECORD_DIR;
 
     // The fixture supplies only the on-demand overload. The built bundle,
     // caller-visible process result, dispatch protocol, and archive are real.
@@ -82,7 +82,7 @@ test("accepted request, partial output, overload, and termination retain one cau
     // This consumer deliberately has only the resolved data home and
     // identifier: it rebuilds the causal join from the sealed archive in a
     // separate process.
-    const consumer = await runNode([archiveConsumerPath, dataHome, identifier], { ...process.env });
+    const consumer = await runNode([archiveConsumerPath, dataHome, identifier]);
     assert.equal(consumer.code, 0, consumer.stderr);
     assert.deepEqual(JSON.parse(consumer.stdout), {
       task: identifier,

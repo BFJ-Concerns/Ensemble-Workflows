@@ -210,7 +210,6 @@ async function runWorkflow(name: string, body: string, cliPath = bundledCliPath)
   try {
     await writeFile(script, `export const meta = { name: ${JSON.stringify(name)} };\n${body}\n`);
     return await runNode([cliPath, script], {
-      ...process.env,
       ENSEMBLE_RUN_RECORD: "0",
       ENSEMBLE_STATUS: "0",
       XDG_DATA_HOME: path.join(directory, "data")

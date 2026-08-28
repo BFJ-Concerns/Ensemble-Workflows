@@ -7,6 +7,8 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
+import { hermeticEstateEnvironment } from "./estate-process.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const scopeProperties = ["-p", "TasksMax=60", "-p", "MemoryMax=500M", "-p", "MemorySwapMax=0"];
@@ -274,8 +276,8 @@ return await agent("return one word", { engine: "codex", maxAttempts: 1 });
     directory,
     binDirectory,
     workflow,
+    // Declared overrides only — startBoundedScope composes the hermetic base.
     environment: {
-      ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       XDG_CONFIG_HOME: path.join(directory, "config"),
       XDG_DATA_HOME: path.join(directory, "data"),
@@ -294,7 +296,7 @@ function startBoundedScope(command: string[], env: NodeJS.ProcessEnv): {
   const child = spawn(
     "/usr/bin/systemd-run",
     ["--user", "--scope", "--quiet", `--unit=${unit}`, ...scopeProperties, ...command],
-    { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] }
+    { cwd: process.cwd(), env: hermeticEstateEnvironment(env), stdio: ["ignore", "pipe", "pipe"] }
   );
   let stdout = "";
   let stderr = "";
@@ -442,7 +444,7 @@ function readFileSyncForProcessGroup(): string {
 
 async function runProcess(command: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { env: hermeticEstateEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

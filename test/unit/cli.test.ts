@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
+import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -1590,10 +1591,11 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   await symlink(entrypointPath, binPath);
 
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: "3", NO_COLOR: "1" };
-  delete childEnv.FORCE_COLOR;
-  delete childEnv.NO_COLOR;
-  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: childEnv });
+  // The child environment comes from the shared hermetic constructor, which
+  // strips colour and ambient ENSEMBLE_ variables in a different file from
+  // this exact-stream guard — the hostile-ambient journey in
+  // cli-process-estate.test.ts is what arms the strip.
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: hermeticEstateEnvironment() });
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");

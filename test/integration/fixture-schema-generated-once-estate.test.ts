@@ -6,6 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
+import { executablePath, hermeticEstateEnvironment } from "./estate-process.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const fixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
@@ -23,7 +25,6 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
     await chmod(fakeCodex, 0o755);
     const codexCli = await executablePath("codex");
     const common = {
-      ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       TMPDIR: directory,
       ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: cacheDirectory,
@@ -52,8 +53,13 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
   }
 });
 
-function runCli(workflow: string, env: NodeJS.ProcessEnv): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, [bundledCliPath, workflow], { env, stdio: ["ignore", "pipe", "pipe"] });
+function runCli(workflow: string, envOverrides: NodeJS.ProcessEnv): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
+  // Local spawn (the shared helper does not surface the exit signal this
+  // suite asserts on), but the environment is the shared hermetic one.
+  const child = spawn(process.execPath, [bundledCliPath, workflow], {
+    env: hermeticEstateEnvironment(envOverrides),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");
@@ -76,18 +82,3 @@ async function uncachedSchemaEntries(directory: string): Promise<string[]> {
   );
 }
 
-async function executablePath(name: string): Promise<string> {
-  const child = spawn("which", [name], { stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => (stdout += chunk));
-  child.stderr.on("data", (chunk: string) => (stderr += chunk));
-  const code = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  });
-  assert.equal(code, 0, `required executable ${name} is unavailable: ${stderr}`);
-  return stdout.trim();
-}

@@ -21,8 +21,8 @@ test("built bundle archives a decode diagnostic while a clean control remains nu
     assert.equal(clean.stdout, `"worker-ok"\n`);
     assert.equal(decoded.stdout, `"worker-ok"\n`);
 
-    const cleanRead = await runNode([archiveReaderPath, fixture.cleanDataHome, "clean"], process.env, 15_000);
-    const decodedRead = await runNode([archiveReaderPath, fixture.decodeDataHome, "decode"], process.env, 15_000);
+    const cleanRead = await runNode([archiveReaderPath, fixture.cleanDataHome, "clean"], {}, 15_000);
+    const decodedRead = await runNode([archiveReaderPath, fixture.decodeDataHome, "decode"], {}, 15_000);
     assert.equal(cleanRead.code, 0, cleanRead.stderr);
     assert.equal(decodedRead.code, 0, decodedRead.stderr);
     assert.deepEqual(JSON.parse(cleanRead.stdout), { decodeFailure: null });
@@ -62,7 +62,6 @@ async function createFixture() {
       runNode(
         [bundledCliPath, workflow],
         {
-          ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_CODEX_SCHEMA_CLI: realCodex,
           ENSEMBLE_FAKE_CODEX_DECODE_FAILURE: decode ? "1" : "0",

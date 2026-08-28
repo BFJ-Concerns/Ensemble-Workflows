@@ -27,7 +27,6 @@ test("built CLI exposes rejection of a malformed partial assistant delta from it
     );
 
     const result = await runNode([bundledCliPath, workflow], {
-      ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
       ENSEMBLE_CODEX_SCHEMA_CLI: await executablePath("codex"),
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[

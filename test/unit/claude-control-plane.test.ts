@@ -7,6 +7,7 @@ import test from "node:test";
 import { spawn } from "node:child_process";
 
 import { ClaudeCliControlPlane, WORKER_MARKER_VARIABLE } from "../../src/claude-control-plane.js";
+import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
@@ -353,7 +354,7 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
     // which must re-establish identity by re-scan (a pid can be reused
     // during the grace period) before SIGKILL.
     const straggler = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      env: { ...process.env, [WORKER_MARKER_VARIABLE]: name },
+      env: hermeticEstateEnvironment({ [WORKER_MARKER_VARIABLE]: name }),
       stdio: "ignore"
     });
     const readyPath = path.join(dir, "stubborn-ready");
@@ -364,7 +365,7 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
         `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); require("node:fs").writeFileSync(${JSON.stringify(readyPath)}, "ready");`
       ],
       {
-        env: { ...process.env, [WORKER_MARKER_VARIABLE]: name },
+        env: hermeticEstateEnvironment({ [WORKER_MARKER_VARIABLE]: name }),
         stdio: "ignore"
       }
     );

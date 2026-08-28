@@ -151,7 +151,6 @@ async function createFixture() {
       runNode(
         ["--import", deadlineAcceleratorPath, bundledCliPath, workflow],
         {
-          ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStartMarker,

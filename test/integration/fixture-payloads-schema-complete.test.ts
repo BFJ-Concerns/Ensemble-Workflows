@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { executablePath, runProcess } from "./estate-process.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
@@ -104,7 +106,6 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
         ? await legacyThreadStartSchemaCli(directory, codexCli)
         : codexCli;
       return runProcess(process.execPath, [bundledCliPath, workflow], {
-          ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCli,
           ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapture,
@@ -151,26 +152,4 @@ async function legacyThreadStartSchemaCli(directory: string, codexCli: string): 
   return wrapper;
 }
 
-async function executablePath(name: string): Promise<string> {
-  const result = await runProcess("which", [name], process.env);
-  assert.equal(result.code, 0, `required executable ${name} is unavailable: ${result.stderr}`);
-  return result.stdout.trim();
-}
 
-function runProcess(
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
-  });
-}

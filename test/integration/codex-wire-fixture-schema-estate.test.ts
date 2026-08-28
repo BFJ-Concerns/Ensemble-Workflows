@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { executablePath, hermeticEstateEnvironment } from "./estate-process.js";
+
 import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { AppServerBackpressureError, CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 
@@ -131,8 +133,7 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
   try {
     const codexCli = await executablePath("codex");
     const child = spawn(process.execPath, [fixturePath, "app-server"], {
-      env: {
-        ...process.env,
+      env: hermeticEstateEnvironment({
         ENSEMBLE_CODEX_SCHEMA_CLI: codexCli,
         ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapture,
         ...(notificationSequences === undefined ? {} : {
@@ -140,7 +141,7 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
         }),
         ...(schemaDrift === undefined ? {} : { ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: schemaDrift }),
         ...(oversizedLineBytes === undefined ? {} : { ENSEMBLE_FAKE_CODEX_OVERSIZED_LINE_BYTES: String(oversizedLineBytes) })
-      },
+      }),
       stdio: ["pipe", "pipe", "pipe"]
     });
     child.stdin.end([
@@ -178,18 +179,3 @@ async function runFixture(schemaDrift?: string, notificationSequences?: unknown[
   }
 }
 
-async function executablePath(name: string): Promise<string> {
-  const child = spawn("which", [name], { stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => (stdout += chunk));
-  child.stderr.on("data", (chunk: string) => (stderr += chunk));
-  const code = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  });
-  assert.equal(code, 0, `required executable ${name} is unavailable: ${stderr}`);
-  return stdout.trim();
-}

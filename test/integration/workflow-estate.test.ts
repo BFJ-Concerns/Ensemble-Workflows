@@ -8,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
+import { hermeticEstateEnvironment } from "./estate-process.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -1595,15 +1596,11 @@ async function runScriptWithRuntimeFactory(
   try {
     const exitCode = await runEnsembleCli([...cliArgs, script, ...scriptArgs], {
       cwd: directory,
-      // The integration estate observes CLI defaults.  The caller's settings
-      // still govern the product; this controlled environment merely prevents
-      // a developer's shell from changing the test's asserted baseline.
-      env: {
-        ...process.env,
-        ENSEMBLE_CONCURRENCY_CODEX: undefined,
-        ENSEMBLE_CONCURRENCY_CLAUDE: undefined,
-        XDG_CONFIG_HOME: directory
-      },
+      // The integration estate observes CLI defaults. The caller's settings
+      // still govern the product; the shared hermetic environment (every
+      // ambient ENSEMBLE_ key stripped, not two named ones) prevents a
+      // developer's shell from changing the test's asserted baseline.
+      env: hermeticEstateEnvironment({ XDG_CONFIG_HOME: directory }),
       stdout,
       stderr,
       createRuntime

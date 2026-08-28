@@ -18,24 +18,45 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
 
-test("estate-spawned Node children preserve exact streams under hostile colour variables", async () => {
-  const result = await runNode(
-    [bundledCliPath],
-    {
-      ...process.env,
-      FORCE_COLOR: "3",
-      NO_COLOR: "1"
-    }
-  );
+test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child", async () => {
+  // The self-arming journey for the hermetic spawn environment: hostile
+  // values are exported into THIS process — the ambient position — not
+  // passed as overrides, so the assertion below can only hold if the
+  // shared helper's strip removes them. The ENSEMBLE_ values are chosen
+  // malformed on purpose: inherited by the child, each fails ambient
+  // resolution loudly, replacing the exact usage stream this test pins.
+  const hostile: Record<string, string> = {
+    FORCE_COLOR: "3",
+    NO_COLOR: "1",
+    ENSEMBLE_AGENT_CEILING: "banana",
+    ENSEMBLE_CONCURRENCY_CODEX: "several",
+    ENSEMBLE_RUN_RECORD: "maybe"
+  };
+  const saved = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(hostile)) {
+    saved.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    const result = await runNode([bundledCliPath]);
 
-  assert.equal(result.code, 2, result.stderr);
-  assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
-    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
-    "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
-    "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-    "       ensemble workflows\n");
+    assert.equal(result.code, 2, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
+      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+      "       ensemble workflows\n");
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 });
 
 function withoutSentinelAnnouncement(stderr: string): string {
@@ -79,9 +100,7 @@ test("built CLI salvages a top-level failure with its recorder enabled by defaul
       `
     );
 
-    const env: NodeJS.ProcessEnv = { ...process.env, XDG_DATA_HOME: dataHome };
-    delete env.ENSEMBLE_RUN_RECORD;
-    delete env.ENSEMBLE_RUN_RECORD_DIR;
+    const env: NodeJS.ProcessEnv = { XDG_DATA_HOME: dataHome, ENSEMBLE_RUN_RECORD_DIR: undefined };
 
     const cliPath = path.resolve("dist/src/cli/ensemble.js");
     const result = await runNode([cliPath, script], env);
@@ -205,10 +224,7 @@ test("built CLI rejects a removed agent option with its removal reason", async (
     );
 
     const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script], {
-      ...process.env,
-      ENSEMBLE_RUN_RECORD: "off"
-    });
+    const result = await runNode([cliPath, script], { ENSEMBLE_RUN_RECORD: "off" });
 
     assert.equal(result.code, 1);
     assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
@@ -2261,16 +2277,17 @@ async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Ar
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
+  // Declared overrides only — the hermetic base in runProcess supplies the
+  // rest of the environment with every ambient ENSEMBLE_ key stripped.
+  return {
     ENSEMBLE_RUN_RECORD: "0",
     ENSEMBLE_STATUS: "0",
-    XDG_DATA_HOME: path.join(directory, "data")
+    XDG_DATA_HOME: path.join(directory, "data"),
+    // Isolation here is by data home: the suite runner's own per-run store
+    // redirection (a named pass-through in the hermetic base) would
+    // silently win over it, so remove it explicitly.
+    ENSEMBLE_RUN_RECORD_DIR: undefined
   };
-  // Isolation here is by data home: an inherited store override (the suite
-  // runner's own per-run temp store) would silently win over it.
-  delete env.ENSEMBLE_RUN_RECORD_DIR;
-  return env;
 }
 
 async function loadOnlyAgentRecord(recordStore: string): Promise<RecordedAgent> {

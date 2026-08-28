@@ -13,7 +13,7 @@ const deadlineAcceleratorPath = path.resolve(
 );
 
 interface Action {
-  type: "deadline" | "delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
+  type: "deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
   text?: string;
   diagnostic?: string;
   afterMs?: number;
@@ -147,6 +147,7 @@ test("post-promise fixture validates every emitted frame without an opt-out", { 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, `"validated-post-promise"\n`);
     const validations = await fixture.validations();
+    const emittedNotifications = await fixture.emittedNotifications();
     const validatedSchemas = new Set(validations.filter((entry) => entry.outcome === "valid").map((entry) => entry.schemaPath));
     for (const schemaPath of [
       "v1/InitializeResponse.json",
@@ -161,6 +162,21 @@ test("post-promise fixture validates every emitted frame without an opt-out", { 
       validations.every((entry) => entry.outcome === "valid"),
       `post-promise frames must not rely on opt-outs: ${JSON.stringify(validations)}`
     );
+    assertNotificationValidationCorrespondence(emittedNotifications, validations);
+  });
+});
+
+test("built consumer rejects the post-promise fixture's malformed partial assistant delta", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "malformed-delta", text: "MALFORMED_POST_PROMISE_DELTA" },
+      { type: "success", text: "must-not-arrive" }
+    ]], 1);
+
+    assert.notEqual(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.match(result.stderr, /ServerNotification\.json validation for item\/agentMessage\/delta/);
+    assert.match(result.stderr, /must have required property 'itemId'/);
   });
 });
 
@@ -197,6 +213,11 @@ interface RecordedMessage {
 interface ValidationRecord {
   schemaPath: string;
   outcome: "valid" | "allowed-malformed";
+  method?: string;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  deltaByteLength?: number;
 }
 
 async function withFixture(run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>) {
@@ -214,12 +235,14 @@ async function createFixture() {
   const fakeCodex = path.join(binDirectory, "codex");
   const capturePath = path.join(directory, "codex-input.jsonl");
   const validationCapturePath = path.join(directory, "validation.jsonl");
+  const emittedFrameCapturePath = path.join(directory, "emitted-notifications.jsonl");
   const deadlineControlPath = path.join(directory, "deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
   await writeFile(validationCapturePath, "");
+  await writeFile(emittedFrameCapturePath, "");
   await writeFile(deadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
@@ -245,6 +268,7 @@ async function createFixture() {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_POST_PROMISE_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_VALIDATION_CAPTURE: validationCapturePath,
+          ENSEMBLE_POST_PROMISE_EMITTED_CAPTURE: emittedFrameCapturePath,
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
@@ -272,7 +296,45 @@ async function createFixture() {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as ValidationRecord),
+    emittedNotifications: async (): Promise<string[]> =>
+      (await readFile(emittedFrameCapturePath, "utf8"))
+        .split("\n")
+        .filter(Boolean),
     deadlineControl: () => readFile(deadlineControlPath, "utf8"),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
+}
+
+function assertNotificationValidationCorrespondence(emittedNotifications: string[], validations: ValidationRecord[]): void {
+  const validatedFrames = new Map<string, number>();
+  for (const validation of validations) {
+    if (validation.outcome !== "valid" || validation.method === undefined) continue;
+    const identity = JSON.stringify({
+      method: validation.method,
+      ...(validation.threadId === undefined ? {} : { threadId: validation.threadId }),
+      ...(validation.turnId === undefined ? {} : { turnId: validation.turnId }),
+      ...(validation.itemId === undefined ? {} : { itemId: validation.itemId }),
+      ...(validation.deltaByteLength === undefined ? {} : { deltaByteLength: validation.deltaByteLength })
+    });
+    validatedFrames.set(identity, (validatedFrames.get(identity) ?? 0) + 1);
+  }
+  for (const frame of emittedNotifications) {
+    const identity = notificationValidationIdentity(frame);
+    const remaining = validatedFrames.get(identity) ?? 0;
+    assert.ok(remaining > 0, `emitted notification has no matching validation: ${frame}`);
+    validatedFrames.set(identity, remaining - 1);
+  }
+}
+
+function notificationValidationIdentity(frame: string): string {
+  const message = JSON.parse(frame) as { method: string; params?: Record<string, unknown> };
+  const params = message.params ?? {};
+  const delta = params.delta;
+  return JSON.stringify({
+    method: message.method,
+    ...(typeof params.threadId !== "string" ? {} : { threadId: params.threadId }),
+    ...(typeof params.turnId !== "string" ? {} : { turnId: params.turnId }),
+    ...(typeof params.itemId !== "string" ? {} : { itemId: params.itemId }),
+    ...(typeof delta !== "string" ? {} : { deltaByteLength: Buffer.byteLength(delta) })
+  });
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from "node:buffer";
 import { appendFileSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
@@ -12,6 +13,7 @@ if (process.argv[2] !== "app-server") {
 const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_POST_PROMISE_CAPTURE;
+const emittedFrameCapturePath = process.env.ENSEMBLE_POST_PROMISE_EMITTED_CAPTURE;
 const deadlineControlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
 const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 const scenarios = JSON.parse(process.env.ENSEMBLE_POST_PROMISE_SCENARIOS ?? "[]");
@@ -21,6 +23,29 @@ let requestCounter = 10_000;
 const approvals = new Map();
 
 process.stderr.write("POST_PROMISE_FIXTURE_READY\n");
+
+const writeStdout = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, encoding, callback) => {
+  recordEmittedNotifications(chunk);
+  return writeStdout(chunk, encoding, callback);
+};
+
+function recordEmittedNotifications(chunk) {
+  if (emittedFrameCapturePath === undefined) return;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof message?.method === "string" && typeof message.id !== "number") {
+      appendFileSync(emittedFrameCapturePath, `${JSON.stringify(message)}\n`);
+    }
+  }
+}
 
 const send = (message, schemaPath, payload = message) => {
   validateCodexFixturePayload(schemaPath, payload);
@@ -52,6 +77,11 @@ async function playScenario(threadId, turnId, scenario) {
       send({
         method: "item/agentMessage/delta",
         params: { threadId, turnId, itemId: "partial-message", delta: action.text }
+      }, "ServerNotification.json");
+    } else if (action.type === "malformed-delta") {
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId, turnId, delta: action.text }
       }, "ServerNotification.json");
     } else if (action.type === "promise") {
       send({

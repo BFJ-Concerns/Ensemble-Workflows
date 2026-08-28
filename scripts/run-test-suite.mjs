@@ -5,6 +5,24 @@ import path from "node:path";
 import process from "node:process";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
+const suiteChildProgram = `
+  import { spawn } from "node:child_process";
+  import { access } from "node:fs/promises";
+
+  while (true) {
+    try {
+      await access(process.env.ENSEMBLE_SUITE_OWNER_READY);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  const test = spawn(process.execPath, ["--test", process.env.ENSEMBLE_SUITE_TEST_GLOB], { stdio: "inherit" });
+  const [code, signal] = await new Promise((resolve) => test.once("exit", (...result) => resolve(result)));
+  if (signal !== null) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+`;
 const temporaryRoot = tmpdir();
 await recoverFinishedSuites(temporaryRoot);
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
@@ -22,12 +40,15 @@ const suiteDirectory = path.join(temporaryRoot, handoffSuiteName(path.basename(p
 await rename(pendingSuiteDirectory, suiteDirectory);
 const schemaCacheDirectory = path.join(suiteDirectory, "schema-cache");
 const recordStoreDirectory = path.join(suiteDirectory, "run-records");
-const child = spawn(process.execPath, ["--test", testGlob], {
+const ownerReadyPath = path.join(suiteDirectory, "owner-ready");
+const child = spawn(process.execPath, ["--input-type=module", "--eval", suiteChildProgram], {
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,
     TMPDIR: suiteDirectory,
-    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory
+    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
+    ENSEMBLE_SUITE_OWNER_READY: ownerReadyPath,
+    ENSEMBLE_SUITE_TEST_GLOB: testGlob
   },
   stdio: "inherit",
   // A killed suite parent can leave its test process behind. Giving that
@@ -36,6 +57,7 @@ const child = spawn(process.execPath, ["--test", testGlob], {
   detached: true
 });
 await writeFile(path.join(suiteDirectory, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
+await writeFile(ownerReadyPath, "ready\n");
 
 let cleaning = false;
 async function finish(code, signal) {
@@ -91,17 +113,17 @@ async function recoverFinishedSuites(directory) {
           }
           return;
         }
-        if (isHandoffSuite(entry.name)) {
-          // The detached child may exist without its durable process-group
-          // stamp. This is deliberately unrecoverable until a later owner
-          // cleans it, rather than risking removal of a live suite.
-          return;
-        }
         const ownerPath = path.join(suiteDirectory, "owner.json");
         let owner;
         try {
           owner = JSON.parse(await readFile(ownerPath, "utf8"));
         } catch {
+          if (isHandoffSuite(entry.name)) {
+            // The detached child may exist without its durable process-group
+            // stamp. This is deliberately unrecoverable until a later owner
+            // cleans it, rather than risking removal of a live suite.
+            return;
+          }
           // A root without our complete ownership record might be a suite in
           // the small creation window. Leave it for its owner or a later pass.
           return;

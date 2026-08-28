@@ -521,7 +521,7 @@ ${workflow.bodySource}
  * dynamic `import()` specifiers resolve exactly as they would for a module
  * at that path.
  */
-const pendingWorkflowModules = new Map<string, string>();
+const registeredWorkflowModules = new Map<string, string>();
 let workflowModuleLoaderRegistered = false;
 
 function ensureWorkflowModuleLoader(): void {
@@ -535,13 +535,13 @@ function ensureWorkflowModuleLoader(): void {
     // source directly; the CLI's synthetic direct-agent workflow has no
     // file at all).
     resolve(specifier, context, nextResolve) {
-      if (pendingWorkflowModules.has(specifier)) {
+      if (registeredWorkflowModules.has(specifier)) {
         return { url: specifier, format: "module", shortCircuit: true };
       }
       return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
-      const source = pendingWorkflowModules.get(url);
+      const source = registeredWorkflowModules.get(url);
       if (source !== undefined) {
         return { format: "module", source, shortCircuit: true };
       }
@@ -560,19 +560,20 @@ async function importWrappedModule(wrappedSource: string, filename: string): Pro
   // which exposes no eviction API — reuse it across invocations, bounding
   // a long-lived library process's retention by distinct bodies rather
   // than growing by one module graph per run. Staleness stays impossible
-  // by construction: any change to the source moves the URL. A cached
-  // import never consults the loader again, so the pending-map delete
-  // below cannot race a concurrent import of the same content — by the
-  // time the first import settles, the module (or its deterministic
-  // evaluation error) is already in the cache.
+  // by construction: any change to the source moves the URL.
+  //
+  // The registration is retained, not deleted after the import: dynamic
+  // import *resolution* is asynchronous, so a delete on one call's
+  // settlement could race a concurrent same-content call between its
+  // registration and its resolution — and for a source with no on-disk
+  // file (a library caller passing source directly; the CLI's synthetic
+  // direct-agent workflow) a resolve-hook miss is fatal, because default
+  // resolution stats the file URL. Retention costs one source string per
+  // distinct body, the same bound the module cache itself already holds.
   const digest = createHash("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
-  pendingWorkflowModules.set(url, wrappedSource);
-  try {
-    return (await import(url)) as Record<string, unknown>;
-  } finally {
-    pendingWorkflowModules.delete(url);
-  }
+  registeredWorkflowModules.set(url, wrappedSource);
+  return (await import(url)) as Record<string, unknown>;
 }
 
 /**

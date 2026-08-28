@@ -449,8 +449,9 @@ export class RunRecordWriter {
     await writer.#writeManifest();
     // A new writer starting in the namespace is the reap trigger: siblings
     // whose owner is provably gone become terminal now, so the store never
-    // needs an age heuristic to tell abandoned from live. Best-effort — the
-    // sweep must never fail or delay the run it rides on.
+    // needs an age heuristic to tell abandoned from live. The sweep can
+    // never fail this run (every failure path inside it is swallowed); it
+    // is awaited, costing one or two manifest reads per sibling.
     await reapAbandonedRuns({
       namespaceDir: path.dirname(archiveDir),
       skipRunUuid: options.runUuid,
@@ -812,15 +813,22 @@ export interface ReapAbandonedRunsOptions {
  * observed. Judgement is evidence, never age: a recorded owner is dead when
  * its pid has left the process table or the pid's start ticks no longer
  * match (pid reuse); an owner on another host, or one recorded without
- * proc evidence, is never judged. A manifest with no owner block at all
- * predates owner recording — no still-running writer can have written it —
- * and is reaped under its own recorded reason; in the one racy corner (an
- * old-version writer still alive mid-upgrade) the mis-judgement self-heals,
- * because a live writer's next flush rewrites the whole manifest from
- * memory. Agent records are never touched: the manifest is the decidable
+ * proc evidence, is never judged. The rewrite is made against a fresh
+ * re-read taken after the judgement (see the loop): for an owner-bearing
+ * manifest the owner's death precedes the judgement, so the fresh read
+ * observes every write the dead process made — a landed finish() shows
+ * terminal and is skipped — which closes the read-judge-write race for
+ * every evidence-bearing manifest. A manifest with no owner block at all
+ * predates owner recording and is reaped under its own recorded reason;
+ * there no ordering argument exists, so a residual fresh-read-to-rename
+ * window remains — confined to a pre-owner writer still running
+ * mid-upgrade, and accepted as transition-era cost rather than claimed
+ * away. Agent records are never touched: the manifest is the decidable
  * surface, and everything already written is evidence to preserve.
- * Best-effort throughout — a sweep failure must never fail the run that
- * triggered it. Returns the run uuids it flipped.
+ * Never-fail throughout — a sweep failure must never fail the run that
+ * triggered it (it is awaited, so its cost is one or two manifest reads
+ * per sibling, bounded by the namespace's own run count). Returns the run
+ * uuids it flipped.
  */
 export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Promise<string[]> {
   const procDir = options.procDir ?? "/proc";
@@ -839,7 +847,6 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
         status?: unknown;
         owner?: unknown;
-        abandonment?: AbandonmentRecord;
       };
       if (manifest.status !== "in-progress") {
         continue;
@@ -848,13 +855,29 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       if (reason === null) {
         continue;
       }
-      manifest.status = "abandoned";
-      manifest.abandonment = {
+      // Judge first, then rewrite a FRESH read — never the snapshot the
+      // judgement was made from, which may predate the owner's own final
+      // flush. For an owner-bearing manifest this ordering closes the race
+      // outright: the owner was observed dead before this read, so every
+      // write that process ever made is visible here, and a finish() that
+      // landed shows terminal below and is skipped. For a no-owner
+      // manifest no such ordering exists — a residual window between this
+      // read and the rename remains, confined to a pre-owner-recording
+      // writer still running mid-upgrade, accepted as transition-era cost.
+      const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        status?: unknown;
+        abandonment?: AbandonmentRecord;
+      };
+      if (fresh.status !== "in-progress") {
+        continue;
+      }
+      fresh.status = "abandoned";
+      fresh.abandonment = {
         observed_at: new Date().toISOString(),
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
-      await writeStandaloneText(manifestPath, `${canonicalJson(manifest)}\n`);
+      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.

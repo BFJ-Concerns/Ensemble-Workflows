@@ -267,13 +267,15 @@ records under a reaped run are preserved untouched.
 
 Every JSON artefact carries:
 
-- `schema_version`: currently `2`. Version 2 adds worktree provenance and
-  cross-engine token derivations while retaining every version 1 field.
+- `schema_version`: currently `3`. Version 3 rewrites usage rollups in the
+  declared summary vocabulary keyed per served model; `strip` and `owner`
+  arrived later as additive version-3 fields. Version 2 added worktree
+  provenance and cross-engine token derivations over version 1.
 - `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
-- `schema_version`: `2`.
+- `schema_version`: `3`.
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
@@ -297,8 +299,9 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
-- `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Models
-  omitted by a worker are grouped as `"default"`. Cost entries carry
+- `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
+  keys under each attempt's *served* model — the literal `"unresolved"` when
+  no served model was ever learned, never the requested pin. Cost entries carry
   `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
   runtime only has token data, amount/currency are `null` and source is
   `estimated`. Each `tokens` object preserves the engine-reported
@@ -317,7 +320,7 @@ The manifest is `manifest.json`. Its top-level fields are:
 
 Agent records live at `agents/<zero-padded-id>/agent.json`:
 
-- `schema_version`: `2`.
+- `schema_version`: `3`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
 - `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).

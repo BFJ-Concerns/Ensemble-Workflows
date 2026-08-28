@@ -23,9 +23,10 @@ const runtime: WorkflowRuntime = {
     remaining: () => Number.POSITIVE_INFINITY
   },
   worktrees: [],
-  async agent(prompt: string) {
-    return `agent:${prompt}`;
-  },
+  // Schema-less fakes narrow to one signature, so they conform by cast —
+  // the same idiom as the recording fakes below; hooks.test.ts carries the
+  // fully-conforming overloaded fake where the surface itself is under test.
+  agent: (async (prompt: string) => `agent:${prompt}`) as unknown as WorkflowRuntime["agent"],
   notePhase: () => {}
 };
 
@@ -128,11 +129,11 @@ test("a composed child's invocation is surfaced before the child runs, with sour
     filename: path.join(directory, "parent.js"),
     runtime: {
       ...runtime,
-      agent: (prompt: string) => {
+      agent: ((prompt: string) => {
         order.push(`agent:${prompt}`);
         return Promise.resolve(`agent:${prompt}`);
-      }
-    } as typeof runtime,
+      }) as unknown as WorkflowRuntime["agent"]
+    },
     log: () => {},
     onWorkflowInvocation: (invocation) => {
       order.push("invocation-recorded");
@@ -207,13 +208,13 @@ test("child workflows share the parent budget ledger", async () => {
   const spendingRuntime: WorkflowRuntime = {
     ...runtime,
     budget,
-    async agent(_prompt: string, options: { engine?: EngineName }) {
+    agent: (async (_prompt: string, options: { engine?: EngineName }) => {
       const engine = options.engine;
       assert.equal(engine, "codex");
       budget.assertCanStart(engine);
       budget.record(engine, tokenUsageEvent(5));
       return "spent";
-    }
+    }) as unknown as WorkflowRuntime["agent"]
   };
 
   const result = await runWorkflowScript({
@@ -739,10 +740,10 @@ test("an unknown free identifier fails at load, before any worker spawns", async
   let agentCalls = 0;
   const countingRuntime: WorkflowRuntime = {
     ...runtime,
-    async agent(prompt: string) {
+    agent: (async (prompt: string) => {
       agentCalls += 1;
       return `agent:${prompt}`;
-    }
+    }) as unknown as WorkflowRuntime["agent"]
   };
 
   // The unknown name sits *after* an agent call, which is exactly the
@@ -788,10 +789,10 @@ test("an unsupported top-level export fails before any worker spawns", async () 
   let agentCalls = 0;
   const countingRuntime: WorkflowRuntime = {
     ...runtime,
-    async agent(prompt: string) {
+    agent: (async (prompt: string) => {
       agentCalls += 1;
       return `agent:${prompt}`;
-    }
+    }) as unknown as WorkflowRuntime["agent"]
   };
 
   await assert.rejects(
@@ -866,10 +867,10 @@ test("an unsupported export after a template literal fails before any worker spa
   let agentCalls = 0;
   const countingRuntime: WorkflowRuntime = {
     ...runtime,
-    async agent(prompt: string) {
+    agent: (async (prompt: string) => {
       agentCalls += 1;
       return `agent:${prompt}`;
-    }
+    }) as unknown as WorkflowRuntime["agent"]
   };
 
   await assert.rejects(

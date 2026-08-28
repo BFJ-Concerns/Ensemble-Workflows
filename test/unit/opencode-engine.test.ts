@@ -336,7 +336,7 @@ test("opencode requires a registered curated model before spawning", () => {
     (error: unknown) => {
       assert.ok(error instanceof OpenCodeModelRequiredError);
       assert.match(error.message, /"glm-5\.2"/);
-      assert.match(error.message, /"qwen-3-6-27b-standard"/);
+      assert.match(error.message, /"qwen-3-8-27b"/);
       return true;
     }
   );
@@ -1056,7 +1056,7 @@ test("opencode durable agent record stores authored and resolved models", async 
 
   await runtime.agent("return JSON", {
     engine: "opencode",
-    model: "qwen-3-6-27b-standard",
+    model: "qwen-3-8-27b",
     schema: {
       type: "object",
       required: ["status"],
@@ -1071,8 +1071,8 @@ test("opencode durable agent record stores authored and resolved models", async 
     model: unknown;
     resolved_model: unknown;
   };
-  assert.equal(agent.model, "qwen-3-6-27b-standard");
-  assert.equal(agent.resolved_model, "local/Qwen3.6-27B-Standard");
+  assert.equal(agent.model, "qwen-3-8-27b");
+  assert.equal(agent.resolved_model, "local/Qwen3.8-27B");
 });
 
 test("opencode reaches the shared schema validation and budget path", async () => {

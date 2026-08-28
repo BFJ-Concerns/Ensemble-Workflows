@@ -17,6 +17,15 @@ export interface OpenCodeModelRegistry {
   names(): string[];
 }
 
+// Every self-hosted (`local`) entry must name a model the self-hosted
+// router actually serves: `providerModel` is `local/` plus a
+// verbatim id from the router's `GET /v1/models` (source of truth: the
+// router's own configuration). The router swaps models
+// in and out over time, so re-survey before editing. Curate the standard
+// serving entries only — the router also exposes per-experiment variants
+// (`-Parallel8`, `-1GPU*`, quant-suffixed `*-GGUF` duplicates) that are not
+// stable routes. `capabilities.vision` mirrors whether the served entry's
+// modalities include image input.
 const MODELS: readonly OpenCodeModelRegistryEntry[] = [
   {
     key: "glm-5.2",
@@ -32,35 +41,22 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     }
   },
   {
-    key: "gemma-4-31b-qat-standard",
-    providerModel: "local/Gemma-4-31B-QAT-Standard",
-    displayName: "Gemma 4 31B QAT Standard",
+    key: "qwen-3-8-27b",
+    providerModel: "local/Qwen3.8-27B",
+    displayName: "Qwen 3.8 27B",
     provider: "local",
-    family: "gemma",
+    family: "qwen",
     capabilities: {
-      vision: true
+      vision: false
     },
     billing: {
       mode: "self-hosted"
     }
   },
   {
-    key: "gemma-4-31b-qat-heretic",
-    providerModel: "local/Gemma-4-31B-QAT-Heretic",
-    displayName: "Gemma 4 31B QAT Heretic",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-standard",
-    providerModel: "local/Qwen3.6-27B-Standard",
-    displayName: "Qwen 3.6 27B Standard",
+    key: "qwen-3-8-27b-heretic-ara",
+    providerModel: "local/Qwen3.8-27B-heretic-ara",
+    displayName: "Qwen 3.8 27B heretic-ara",
     provider: "local",
     family: "qwen",
     capabilities: {
@@ -71,11 +67,11 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     }
   },
   {
-    key: "qwen-3-6-27b-heretic-neo-code",
-    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
-    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    key: "muse-glimmer-30b",
+    providerModel: "local/Muse-Glimmer-30B",
+    displayName: "Muse Glimmer 30B",
     provider: "local",
-    family: "qwen",
+    family: "muse-glimmer",
     capabilities: {
       vision: true
     },

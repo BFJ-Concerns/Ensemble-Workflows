@@ -11,6 +11,9 @@ const appServerFixturePath = path.resolve("test/fixtures/codex/post-promise-app-
 const deadlineAcceleratorPath = path.resolve(
   "test/fixtures/codex/accelerate-post-promise-deadline.mjs"
 );
+const firstOutputDeadlineAcceleratorPath = path.resolve(
+  "test/fixtures/codex/accelerate-first-output-deadline.mjs"
+);
 
 interface Action {
   type: "deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
@@ -190,11 +193,11 @@ function abandonedAttempt(partialText: string): Action[] {
 }
 
 function assertFirstOutputDeadlineDisarmed(control: string): void {
-  const armed = [...control.matchAll(/armed:first-delta:(\d+)/g)].at(-1)?.[1];
+  const armed = [...control.matchAll(/armed:first-output:(\d+)/g)].at(-1)?.[1];
   assert.notEqual(armed, undefined, "the client must control its first-output deadline");
   assert.match(
     control,
-    new RegExp(`disarmed:first-delta:${armed}`),
+    new RegExp(`disarmed:first-output:${armed}`),
     "the first output must disarm its client-controlled deadline"
   );
 }
@@ -237,6 +240,7 @@ async function createFixture() {
   const validationCapturePath = path.join(directory, "validation.jsonl");
   const emittedFrameCapturePath = path.join(directory, "emitted-notifications.jsonl");
   const deadlineControlPath = path.join(directory, "deadline-control");
+  const firstOutputDeadlineControlPath = path.join(directory, "first-output-deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
@@ -244,6 +248,7 @@ async function createFixture() {
   await writeFile(validationCapturePath, "");
   await writeFile(emittedFrameCapturePath, "");
   await writeFile(deadlineControlPath, "");
+  await writeFile(firstOutputDeadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
 
@@ -262,7 +267,12 @@ async function createFixture() {
         `
       );
       return runNode(
-        ["--import", deadlineAcceleratorPath, bundledCliPath, workflow],
+        [
+          "--import", deadlineAcceleratorPath,
+          "--import", firstOutputDeadlineAcceleratorPath,
+          bundledCliPath,
+          workflow
+        ],
         {
           ...process.env,
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -271,6 +281,7 @@ async function createFixture() {
           ENSEMBLE_POST_PROMISE_EMITTED_CAPTURE: emittedFrameCapturePath,
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
+          ENSEMBLE_FIRST_OUTPUT_DEADLINE_CONTROL: firstOutputDeadlineControlPath,
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
@@ -300,7 +311,7 @@ async function createFixture() {
       (await readFile(emittedFrameCapturePath, "utf8"))
         .split("\n")
         .filter(Boolean),
-    deadlineControl: () => readFile(deadlineControlPath, "utf8"),
+    deadlineControl: () => readFile(firstOutputDeadlineControlPath, "utf8"),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
 }

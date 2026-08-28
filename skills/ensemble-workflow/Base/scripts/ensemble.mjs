@@ -15027,7 +15027,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_FIRST_DELTA_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
@@ -15075,7 +15075,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #process;
   #requestTimeoutMs;
   #retryPromiseSilenceTimeoutMs;
-  #firstDeltaTimeoutMs;
+  #firstOutputTimeoutMs;
   #startupHandshakeTimeoutMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
@@ -15089,7 +15089,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.cwd = options.cwd;
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstDeltaTimeoutMs = options.firstDeltaTimeoutMs ?? DEFAULT_FIRST_DELTA_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
@@ -15410,7 +15410,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== void 0) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstDeltaDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
         }
       }
@@ -15465,7 +15465,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
       if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstDeltaDeadline(turn);
+        this.#disarmFirstOutputDeadline(turn);
         this.#noteTurnFirstOutput(turn);
       }
     }
@@ -15607,10 +15607,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       );
     }, this.#retryPromiseSilenceTimeoutMs);
   }
-  #disarmFirstDeltaDeadline(turn) {
-    if (turn.firstDeltaDeadline !== void 0) {
-      clearTimeout(turn.firstDeltaDeadline);
-      turn.firstDeltaDeadline = void 0;
+  #disarmFirstOutputDeadline(turn) {
+    if (turn.firstOutputDeadline !== void 0) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = void 0;
     }
   }
   /**
@@ -15631,10 +15631,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     } catch {
     }
   }
-  #armFirstDeltaDeadline(threadId, turn) {
-    turn.firstDeltaDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstDeltaTimeoutMs));
-    }, this.#firstDeltaTimeoutMs);
+  #armFirstOutputDeadline(threadId, turn) {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
   }
   /**
    * The single terminal path for a failing turn. Every way a turn can end
@@ -15649,7 +15649,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmFirstDeltaDeadline(turn);
+    this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== void 0) {
       void this.#sendUnacknowledgedRequest("turn/interrupt", {
         threadId,
@@ -15663,7 +15663,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmFirstDeltaDeadline(turn);
+    this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
     const result = {
@@ -15726,7 +15726,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
-      firstDeltaDeadline: void 0,
+      firstOutputDeadline: void 0,
       promise,
       resolve: resolveTurn,
       reject: rejectTurn,
@@ -15740,7 +15740,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         );
       }, timeoutMs)
     };
-    this.#armFirstDeltaDeadline(threadId, state);
+    this.#armFirstOutputDeadline(threadId, state);
     return state;
   }
   #sendApprovalDenial(id) {
@@ -17942,7 +17942,7 @@ async function createDefaultEngineRegistry(options) {
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
-    ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
+    ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
     clientVersion: options.clientVersion,
@@ -18058,7 +18058,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       codexBin: options.codexBin ?? "codex",
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
-      ...options.firstDeltaTimeoutMs !== void 0 ? { firstDeltaTimeoutMs: options.firstDeltaTimeoutMs } : {},
+      ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",

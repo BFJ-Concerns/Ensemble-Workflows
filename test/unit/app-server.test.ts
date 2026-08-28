@@ -446,7 +446,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
   const codexBin = await fakeCodexFailingTurnServer("no-first-delta");
   const runtime = await createRuntime({
     codexBin,
-    firstDeltaTimeoutMs: 250,
+    firstOutputTimeoutMs: 250,
     requestTimeoutMs: 2_000
   });
   const records: RuntimeAgentRecord[] = [];
@@ -479,7 +479,7 @@ test("a delayed first delta inside the deadline completes after the deadline wou
   const codexBin = await fakeCodexFailingTurnServer("delayed-first-delta");
   const transport = await CodexAppServerTransport.start({
     ...defaultTransportOptions(codexBin),
-    firstDeltaTimeoutMs: 250
+    firstOutputTimeoutMs: 250
   });
   try {
     const threadId = await transport.openThread({});
@@ -1256,7 +1256,7 @@ test("the first output-bearing frame fires the supervisor-facing liveness callba
   const codexBin = await fakeCodexFailingTurnServer("delayed-first-delta");
   const transport = await CodexAppServerTransport.start({
     ...defaultTransportOptions(codexBin),
-    firstDeltaTimeoutMs: 250
+    firstOutputTimeoutMs: 250
   });
   try {
     const threadId = await transport.openThread({});

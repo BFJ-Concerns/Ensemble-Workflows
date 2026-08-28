@@ -9,7 +9,7 @@ import { findOnlyFile, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
-const deadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-post-promise-deadline.mjs");
+const deadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-first-output-deadline.mjs");
 const schemaCodexPath = spawnSync("which", ["codex"], { encoding: "utf8" }).stdout.trim();
 
 interface ProcessResult {
@@ -30,7 +30,7 @@ test("built consumer terminalises a turn with no output before its ordinary time
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
       ENSEMBLE_FAKE_CODEX_RELEASE_FIRST_DELTA_AFTER_ARM: "1",
       // The fixture releases the client-controlled deadline only after it
-      // writes armed:first-delta:<id>.
+      // writes armed:first-output:<id>.
     });
 
     assert.equal(result.code, 1, result.stderr);
@@ -42,11 +42,34 @@ test("built consumer terminalises a turn with no output before its ordinary time
   });
 });
 
+test("the first-output accelerator leaves post-promise silence at its own deadline", async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run({
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
+        { method: "item/agentMessage/delta", params: { itemId: "first-message", delta: "output" } },
+        { method: "error", params: { willRetry: true, error: { message: "retry later" } } },
+        { method: "thread/status/changed", params: { status: { type: "systemError" } } }
+      ]])
+    });
+
+    assert.equal(result.code, 1, result.stderr);
+    const control = await fixture.firstOutputControl();
+    assert.match(control, /armed:first-output:1/);
+    assert.match(control, /disarmed:first-output:1/);
+    assert.doesNotMatch(control, /armed:first-output:2/);
+    assert.match(
+      control,
+      /observed:retry-promise:900000/,
+      "accelerating first output must not shorten post-promise silence"
+    );
+  });
+});
+
 test("built consumer accepts a first delta that arrives late but inside the deadline", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      // The delta is released by armed:first-delta:<id> and completion by
-      // the client-written disarmed:first-delta:<id>, never elapsed time.
+      // The delta is released by armed:first-output:<id> and completion by
+      // the client-written disarmed:first-output:<id>, never elapsed time.
       ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
@@ -67,7 +90,7 @@ test("built consumer accepts a first delta that arrives late but inside the dead
 test("built consumer treats a correlated non-delta frame as first output", async () => {
   await withFixture(async (fixture) => {
     const result = await fixture.run({
-      // The fixture waits on client-written first-delta markers.
+      // The fixture waits on client-written first-output markers.
       ENSEMBLE_FAKE_CODEX_COMPLETE_AFTER_FIRST_DELTA_DISARM: "1",
       ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[
         {
@@ -105,10 +128,10 @@ async function createFixture() {
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   const turnStartMarker = path.join(directory, "turn-started-at");
-  const firstDeltaControl = path.join(directory, "first-delta-control");
+  const firstOutputControl = path.join(directory, "first-output-control");
   await mkdir(binDirectory);
   await writeFile(capturePath, "");
-  await writeFile(firstDeltaControl, "");
+  await writeFile(firstOutputControl, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
   await writeFile(
@@ -132,9 +155,9 @@ async function createFixture() {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           ENSEMBLE_FAKE_CODEX_CAPTURE: capturePath,
           ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStartMarker,
-          ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: firstDeltaControl,
-          ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: firstDeltaControl,
-          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "first-delta",
+          ENSEMBLE_FAKE_CODEX_FIRST_DELTA_CONTROL: firstOutputControl,
+          ENSEMBLE_FIRST_OUTPUT_DEADLINE_CONTROL: firstOutputControl,
+          ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "first-output",
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
@@ -150,6 +173,7 @@ async function createFixture() {
       assert.equal(agent.attempts.length, 1);
       return agent.attempts[0] as RecordedAttempt;
     },
+    firstOutputControl: () => readFile(firstOutputControl, "utf8"),
     turnStartedAt: async (): Promise<number> => Number(await readFile(turnStartMarker, "utf8")),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };

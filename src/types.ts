@@ -72,7 +72,7 @@ export interface RuntimeOptions {
    * `requestTimeoutMs` — deliberately not a CLI flag or ambient setting.
    * Defaults to 15 minutes.
    */
-  firstDeltaTimeoutMs?: number;
+  firstOutputTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   /**
    * Machine-declared per-engine worker environment (the config file's

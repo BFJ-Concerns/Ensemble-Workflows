@@ -53,6 +53,26 @@ export interface IdentifiedAgentResult {
   output: unknown;
 }
 
+/**
+ * The canonical `agent()` call signature — the one overload set every
+ * dispatch surface presents: the runtime method, the package-level
+ * wrapper, and the typed hooks surface. Declared once so the surfaces
+ * cannot drift; each conforms to this interface rather than restating
+ * its own copy.
+ *
+ * Signature order is resolution order: `identity: true` wins over
+ * `schema` (an identified schema call resolves the envelope), and the
+ * final general signature admits the dynamically-composed options an
+ * author builds at runtime — typed as the honest union, narrowed by
+ * nothing, resolved by the runtime's own validation.
+ */
+export interface AgentCallSignature {
+  (prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
+  (prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
+  (prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+  (prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
+}
+
 export interface RuntimeOptions {
   cwd?: string;
   codexBin?: string;

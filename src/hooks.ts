@@ -1,8 +1,14 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { PreSpawnAuthorError, agentIdentityOf } from "./errors.js";
 
-import type { AgentOptions, Budget, EngineName } from "./types.js";
-import type { EnsembleRuntime } from "./runtime.js";
+import type {
+  AgentCallSignature,
+  AgentOptions,
+  Budget,
+  EngineName,
+  IdentifiedAgentResult,
+  JsonSchema
+} from "./types.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
@@ -15,7 +21,11 @@ export interface WorkflowRuntime {
    * it validates against the module default, as before.
    */
   readonly openCodeModelRegistry?: OpenCodeModelRegistry | undefined;
-  agent: (...args: Parameters<EnsembleRuntime["agent"]>) => ReturnType<EnsembleRuntime["agent"]>;
+  // The canonical overload set, not a Parameters/ReturnType projection of
+  // the runtime method: TypeScript resolves those utility types to the
+  // *last* overload alone, which is exactly the collapse that hid the
+  // schema and identity signatures from hooks consumers.
+  agent: AgentCallSignature;
   notePhase: (title: string) => void;
 }
 
@@ -56,12 +66,22 @@ export function createWorkflowHooks(options: {
   const writeLog = (message: string): void => {
     options.log(message);
   };
-  const runtimeAgent = options.runtime.agent.bind(options.runtime) as WorkflowRuntime["agent"];
   const defaults = options.defaults ?? {};
 
+  // The defaults-merging wrapper restates the canonical signatures so each
+  // call site narrows exactly as a direct runtime call would; the merged
+  // options flow through the runtime's general signature, so no cast is
+  // needed anywhere in the plumbing.
+  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string>;
+  function agentWithDefaults(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
+  function agentWithDefaults(prompt: string, agentOptions?: Partial<AgentOptions>): Promise<string | unknown | null> {
+    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
+  }
+
   return {
-    agent: ((prompt: string, agentOptions?: Partial<AgentOptions>) =>
-      runtimeAgent(prompt, mergeAgentDefaults(defaults, agentOptions) as never)) as WorkflowRuntime["agent"],
+    agent: agentWithDefaults,
     workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),

@@ -5,6 +5,8 @@ import { RemovedAgentOptionError, attachAgentIdentity } from "../../src/errors.j
 import { parallel, pipeline } from "../../src/hooks.js";
 import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
+import type { AgentCallSignature, AgentOptions, IdentifiedAgentResult, JsonSchema } from "../../src/types.js";
+
 test("parallel returns null for throwing thunks and logs the failure", async () => {
   const logs: string[] = [];
 
@@ -153,7 +155,7 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
     runtime: {
       budget,
       worktrees: [],
-      agent: (async () => "unused") as never,
+      agent: (async () => "unused") as unknown as AgentCallSignature,
       notePhase: () => {}
     },
     args: [],
@@ -203,4 +205,63 @@ test("pipeline resolves an identified failed item to its envelope", async () => 
   );
 
   assert.deepEqual(results, [{ label: "leg", phase: null, output: null }]);
+});
+
+test("the hooks agent surface presents the canonical overload set", async () => {
+  const { createWorkflowHooks } = await import("../../src/hooks.js");
+  const { TokenBudget } = await import("../../src/budget.js");
+
+  const calls: Array<Partial<AgentOptions>> = [];
+  // A conforming fake: the same overload restatement the hook wrapper
+  // uses, so the test exercises the surface a script consumer sees.
+  function fakeAgent(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
+  function fakeAgent(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
+  function fakeAgent(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string>;
+  function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
+  async function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
+    calls.push(agentOptions);
+    if (agentOptions.identity === true) {
+      return { label: agentOptions.label ?? null, phase: agentOptions.phase ?? null, output: "identified" };
+    }
+    if (agentOptions.schema !== undefined) {
+      return { structured: true };
+    }
+    return "plain";
+  }
+
+  const hooks = createWorkflowHooks({
+    runtime: {
+      budget: new TokenBudget({}),
+      worktrees: [],
+      agent: fakeAgent,
+      notePhase: () => {}
+    },
+    args: [],
+    log: () => {},
+    workflow: async () => null,
+    defaults: { codex: { model: "default-model" } }
+  });
+
+  // The annotations are the assertion: each call narrows through the typed
+  // surface exactly as a direct runtime call would. On the pre-fix tree the
+  // hook type collapsed to the last overload alone, so the schema call
+  // below did not compile and the identity call typed as Promise<string>.
+  const plain: Promise<string> = hooks.agent("p", { engine: "codex" });
+  const structured: Promise<unknown | null> = hooks.agent("p", { engine: "codex", schema: { type: "object" } });
+  const identified: Promise<IdentifiedAgentResult> = hooks.agent("p", { engine: "codex", identity: true });
+
+  assert.equal(await plain, "plain");
+  assert.deepEqual(await structured, { structured: true });
+  assert.deepEqual(await identified, { label: null, phase: null, output: "identified" });
+  // Defaults still merge beneath the typed surface.
+  assert.equal(calls[0]?.model, "default-model");
+});
+
+test("the package-level agent wrapper conforms to the canonical signature", async () => {
+  // Compile-time conformance: the wrapper restates the overloads (an arrow
+  // cannot implement a multi-signature interface), and this assignment is
+  // what keeps the restatement from drifting.
+  const { agent: packageAgent } = await import("../../src/index.js");
+  const conforms: AgentCallSignature = packageAgent;
+  assert.equal(typeof conforms, "function");
 });

@@ -268,9 +268,14 @@ export class EnsembleRuntime {
     this.handleEngineEvent("codex", event);
   }
 
+  // The declared set is the canonical AgentCallSignature (src/types.ts):
+  // every dispatch surface presents these same signatures, and the general
+  // final one is public on purpose — dynamically-composed options resolve
+  // to the honest union instead of needing a cast at the caller.
   async agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
   async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+  async agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
   async agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");

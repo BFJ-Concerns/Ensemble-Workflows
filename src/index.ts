@@ -1,20 +1,22 @@
 import { createRuntime as createRuntimeInstance } from "./runtime.js";
 
 import type { AgentOptions, IdentifiedAgentResult as IdentifiedAgentResultType, JsonSchema, RuntimeOptions } from "./types.js";
-export type { IdentifiedAgentResult } from "./types.js";
+export type { AgentCallSignature, IdentifiedAgentResult } from "./types.js";
 import type { EnsembleRuntime } from "./runtime.js";
 
 let defaultRuntime: Promise<EnsembleRuntime> | null = null;
 
+// The canonical AgentCallSignature (src/types.ts), restated as function
+// overloads because an arrow cannot implement a multi-signature interface;
+// conformance is compile-checked where the hooks typing tests assign this
+// wrapper to the interface.
 export async function agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResultType>;
 export async function agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
 export async function agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+export async function agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 export async function agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
   const runtime = await getDefaultRuntime();
-  if (options.schema !== undefined) {
-    return runtime.agent(prompt, { ...options, schema: options.schema } as AgentOptions & { schema: JsonSchema });
-  }
-  return runtime.agent(prompt, options as AgentOptions & { schema?: undefined });
+  return runtime.agent(prompt, options);
 }
 
 export async function createRuntime(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {

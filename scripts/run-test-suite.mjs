@@ -3,19 +3,32 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
 const suiteChildProgram = `
   import { spawn } from "node:child_process";
   import { access } from "node:fs/promises";
+  import { setTimeout as delay } from "node:timers/promises";
 
-  while (true) {
+  const ownerReadyDeadline = Date.now() + 1_000;
+  while (Date.now() < ownerReadyDeadline) {
     try {
       await access(process.env.ENSEMBLE_SUITE_OWNER_READY);
       break;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await delay(10);
     }
+  }
+
+  try {
+    await access(process.env.ENSEMBLE_SUITE_OWNER_READY);
+  } catch {
+    // If the suite parent died after spawning us but before its ownership
+    // stamp became observable, leave the indeterminate root for recovery but
+    // do not keep a detached wrapper alive forever.
+    process.exitCode = 1;
+    process.exit();
   }
 
   const test = spawn(process.execPath, ["--test", process.env.ENSEMBLE_SUITE_TEST_GLOB], { stdio: "inherit" });
@@ -56,6 +69,22 @@ const child = spawn(process.execPath, ["--input-type=module", "--eval", suiteChi
   // cache owner from abandoned state before it removes anything.
   detached: true
 });
+const testPausePath = process.env.ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH;
+if (testPausePath !== undefined) {
+  await writeFile(`${testPausePath}.child-pid`, `${child.pid}\n`);
+  const testPauseDeadline = Date.now() + 20_000;
+  let testPauseReleased = false;
+  while (Date.now() < testPauseDeadline) {
+    try {
+      await readFile(testPausePath);
+      testPauseReleased = true;
+      break;
+    } catch {
+      await delay(10);
+    }
+  }
+  if (!testPauseReleased) throw new Error("timed out waiting for the suite hand-off test pause");
+}
 await writeFile(path.join(suiteDirectory, "owner.json"), `${JSON.stringify({ childProcessGroup: child.pid })}\n`);
 await writeFile(ownerReadyPath, "ready\n");
 

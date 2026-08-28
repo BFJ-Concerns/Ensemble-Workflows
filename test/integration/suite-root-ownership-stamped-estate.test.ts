@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,7 +34,9 @@ test("suite-root recovery distinguishes dead parent ownership, hand-off uncertai
     await runAndRequireClean(temporaryRoot);
     await assertMissing(held.root, "recovery must reclaim a stamped root once its child process group is dead");
 
-    t.diagnostic("real suite-runner recovery reclaimed a dead parent-pending root, retained hand-off uncertainty and a live stamped child group, then reclaimed the stamped root after release");
+    await requireOrphanedWrapperToStop(temporaryRoot);
+
+    t.diagnostic("real suite-runner recovery reclaimed a dead parent-pending root, retained hand-off uncertainty and a live stamped child group, then reclaimed the stamped root after release; a real wrapper orphaned before owner-ready exited within its bound");
   } finally {
     await Promise.all(heldChildren.map(stopHeldChild));
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -131,6 +133,101 @@ async function stopHeldChild(child: HeldChild): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
   await child.exited;
+}
+
+async function requireOrphanedWrapperToStop(temporaryRoot: string): Promise<void> {
+  const interrupted = await interruptRunnerBeforeOwnerReady(temporaryRoot);
+  try {
+    assert.equal(interrupted.ownerReady, false, "the parent must die before publishing owner-ready");
+    await waitForProcessExit(interrupted.wrapperProcessId, 2_500);
+  } finally {
+    await stopProcessGroup(interrupted.wrapperProcessId);
+    await rm(interrupted.root, { recursive: true, force: true });
+  }
+}
+
+async function interruptRunnerBeforeOwnerReady(temporaryRoot: string): Promise<{
+  root: string;
+  ownerReadyPath: string;
+  ownerReady: boolean;
+  wrapperProcessId: number;
+}> {
+  const testPausePath = path.join(temporaryRoot, "pause-after-child-spawn");
+  const childProcessIdPath = `${testPausePath}.child-pid`;
+  const runner = spawn(process.execPath, [runnerPath, unitTestPath], {
+    env: hermeticEstateEnvironment({
+      TMPDIR: temporaryRoot,
+      NODE_TEST_CONTEXT: undefined,
+      ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH: testPausePath
+    }),
+    stdio: "ignore"
+  });
+  assert.ok(runner.pid, "the real suite runner must have a process id");
+  const root = await waitForHandoffRoot(temporaryRoot, runner.pid);
+  const ownerReadyPath = path.join(root, "owner-ready");
+  const wrapperProcessId = Number((await readFileAfterWait(childProcessIdPath)).trim());
+  assert.ok(Number.isInteger(wrapperProcessId) && wrapperProcessId > 0, "the real suite wrapper must publish its process-group id before the test pause");
+  runner.kill("SIGKILL");
+  await new Promise<void>((resolve, reject) => {
+    runner.once("error", reject);
+    runner.once("exit", () => resolve());
+  });
+  const ownerReady = await fileExists(ownerReadyPath);
+  return { root, ownerReadyPath, ownerReady, wrapperProcessId };
+}
+
+async function waitForHandoffRoot(temporaryRoot: string, parentProcessId: number): Promise<string> {
+  const prefix = `ensemble-test-suite-handoff-pending-parent-${parentProcessId}-`;
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const entries = await readdir(temporaryRoot, { withFileTypes: true });
+    const root = entries.find((entry) => entry.isDirectory() && entry.name.startsWith(prefix));
+    if (root !== undefined) return path.join(temporaryRoot, root.name);
+    await delay(10);
+  }
+  assert.fail(`timed out waiting for a hand-off root owned by ${parentProcessId}`);
+}
+
+async function readFileAfterWait(target: string): Promise<string> {
+  await waitForFile(target);
+  return readFile(target, "utf8");
+}
+
+async function waitForProcessExit(processId: number, timeout: number): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (!processExists(processId)) return;
+    await delay(20);
+  }
+  assert.fail(`orphaned suite wrapper ${processId} outlived its 1 s owner-ready bound`);
+}
+
+async function stopProcessGroup(processGroup: number): Promise<void> {
+  try {
+    process.kill(-processGroup, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function processExists(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
 }
 
 const heldChildProgram = `

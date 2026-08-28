@@ -9,7 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
-import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
+import { executablePath, findOnlyFile, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";

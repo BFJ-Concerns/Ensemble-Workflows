@@ -225,9 +225,7 @@ export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
 
   let validate = validators.get(schemaPath);
   if (validate === undefined) {
-    const schema = JSON.parse(readFileSync(path.join(schemaDirectory, schemaPath), "utf8"));
-    closeDeclaredObjects(schema);
-    validate = ajv.compile(schema);
+    validate = ajv.compile(schemaFor(schemaPath));
     validators.set(schemaPath, validate);
   }
 
@@ -237,6 +235,18 @@ export function validateCodexFixturePayload(schemaPath, payload, options = {}) {
   }
   recordValidation({ schemaPath, outcome: "valid", ...notificationIdentity(payload) });
   return payload;
+}
+
+export function codexFixtureSchemaIncludesDefinitionProperty(schemaPath, definition, property) {
+  const schema = schemaFor(schemaPath);
+  const object = schema.definitions?.[definition];
+  return object?.properties !== null && typeof object?.properties === "object" && Object.hasOwn(object.properties, property);
+}
+
+function schemaFor(schemaPath) {
+  const schema = JSON.parse(readFileSync(path.join(schemaDirectory, schemaPath), "utf8"));
+  closeDeclaredObjects(schema);
+  return schema;
 }
 
 function notificationIdentity(payload) {

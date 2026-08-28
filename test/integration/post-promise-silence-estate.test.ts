@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { executablePath, runNode } from "./estate-process.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/post-promise-app-server.mjs");
 const deadlineAcceleratorPath = path.resolve(
@@ -188,6 +190,8 @@ async function createFixture() {
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
 
+  const schemaCodexPath = await executablePath("codex");
+
   return {
     run: async (scenarios: Action[][], maxAttempts = 2): Promise<ProcessResult> => {
       await writeFile(
@@ -209,6 +213,7 @@ async function createFixture() {
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
+          ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
           ENSEMBLE_STATUS: "0",
@@ -237,16 +242,4 @@ async function findOnlyFile(root: string, basename: string): Promise<string> {
   const matches = entries.filter((entry) => path.basename(entry) === basename);
   assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
   return path.join(root, matches[0] ?? "");
-}
-
-async function runNode(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd: process.cwd(), env, timeout: timeoutMs });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
-  });
 }

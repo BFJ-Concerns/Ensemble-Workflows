@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { hermeticEstateEnvironment } from "./estate-process.js";
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const archiveVerifierPath = path.resolve("test/consumers/verify-args.mjs");
 const execFileAsync = promisify(execFile);
@@ -34,12 +36,11 @@ test("built bundle archives independently verifiable root and child canonical ar
       [bundledCliPath, "--json-args", JSON.stringify({ root: { value: 3 }, labels: ["gamma"] }), root],
       {
         cwd: directory,
-        env: {
-          ...process.env,
+        env: hermeticEstateEnvironment({
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_RUN_RECORD_DIR: recordStore,
           ENSEMBLE_STATUS: "0"
-        }
+        })
       }
     );
     assert.deepEqual(JSON.parse(run.stdout), { childArgs: { child: { value: 7 }, labels: ["alpha", "beta"] } });

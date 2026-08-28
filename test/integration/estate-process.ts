@@ -21,21 +21,35 @@ export interface ProcessResult {
 const SUITE_ISOLATION_KEYS = ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY"];
 
 /**
- * The child environment every estate spawn runs under: the inherited
- * environment with every harness-owned ambient key stripped — the whole
- * `ENSEMBLE_` prefix (bar the suite-isolation keys above), plus the colour
- * variables that break exact-stream assertions — and the caller's declared
- * overrides spread on top, so declared wins and everything undeclared
- * still inherits. An override explicitly set to `undefined` removes the
- * key from the child entirely. This closes the ambient-environment class
- * by construction: a machine exporting `ENSEMBLE_*` or `FORCE_COLOR`
- * cannot steer a spawned CLI or consumer, and a test that needs a harness
- * setting declares it. The hostile-ambient journey in
- * cli-process-estate.test.ts is the guard that arms this strip; it lives
- * in a different file on purpose, so the pair cannot be deleted together
- * without reddening.
+ * The child environment every gate-run estate spawn runs under: the
+ * inherited environment with every harness-owned ambient key stripped —
+ * the whole `ENSEMBLE_` prefix (bar the suite-isolation keys above), plus
+ * the colour variables — and the caller's declared overrides spread on
+ * top, so declared wins and everything undeclared still inherits. An
+ * override explicitly set to `undefined` removes the key from the child
+ * entirely. A machine exporting `ENSEMBLE_*` cannot steer a spawned CLI
+ * or consumer, and a test that needs a harness setting declares it.
+ *
+ * What holds the boundary, stated honestly: the overrides-only signature
+ * is the default path (a full environment is never needed to get a
+ * working child), the identity guard below catches `process.env` handed
+ * through directly, and the hostile-ambient journey in
+ * cli-process-estate.test.ts arms the `ENSEMBLE_` half of the strip — its
+ * exported values are malformed, so a leak fails the pinned stream
+ * loudly. A deliberate `{...process.env}` spread into overrides remains
+ * expressible (`ProcessEnv` cannot forbid it); the journey is what makes
+ * that mistake visible for the keys that matter. The colour clauses are
+ * stream hygiene inherited from the previous helper — nothing in the
+ * product colourises today, so no journey can arm them; they exist so a
+ * future colourising dependency cannot redden exact-stream tests on a
+ * machine exporting `FORCE_COLOR`.
  */
 export function hermeticEstateEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  if (overrides === process.env) {
+    throw new Error(
+      "hermeticEstateEnvironment takes declared overrides only; passing process.env wholesale would reintroduce every ambient key the base strips"
+    );
+  }
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     const ambient =

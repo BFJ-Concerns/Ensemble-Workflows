@@ -6,6 +6,8 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { hermeticEstateEnvironment } from "./estate-process.js";
+
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const thisTestPath = path.resolve("dist/test/integration/temp-state-contained-estate.test.js");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
@@ -61,12 +63,10 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
 }
 
 function runSuite(temporaryRoot: string, testPath: string, additions: NodeJS.ProcessEnv = {}): SuiteProcess {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...additions, TMPDIR: temporaryRoot };
-  // Node marks a test worker in its inherited environment. A nested
-  // invocation is a new independent suite, not another worker of this one.
-  delete env.NODE_TEST_CONTEXT;
   const child = spawn(process.execPath, [runnerPath, testPath], {
-    env,
+    // Node marks a test worker in its inherited environment. A nested
+    // invocation is a new independent suite, not another worker of this one.
+    env: hermeticEstateEnvironment({ ...additions, TMPDIR: temporaryRoot, NODE_TEST_CONTEXT: undefined }),
     stdio: ["ignore", "pipe", "pipe"]
   });
   let output = "";

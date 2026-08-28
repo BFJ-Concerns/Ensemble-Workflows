@@ -18,6 +18,7 @@
     "kind",
     "meta",
     "namespace",
+    "owner",
     "result",
     "run_id",
     "run_uuid",

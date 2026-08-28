@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -24,7 +24,13 @@ const execFileAsync = promisify(execFile);
 const SCHEMA_VERSION = 3;
 const MANIFEST_PATH = "manifest.json";
 
-type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted";
+/**
+ * `abandoned` is reaper-written only (see `reapAbandonedRuns`): the terminal
+ * status for a durable in-progress run whose owning process is provably
+ * gone. A launcher that can still write chooses one of the other terminal
+ * statuses itself.
+ */
+type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
 type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
 type AccountingSource = "provider-reported" | "estimated";
 type ParseRoute = "direct" | "object-fallback" | "array-fallback";
@@ -50,6 +56,8 @@ export interface RunRecordStartOptions {
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
+  /** Proc filesystem root for owner liveness evidence; injectable for tests. */
+  procDir?: string;
 }
 
 export interface EffectiveConcurrencyRecord {
@@ -145,7 +153,8 @@ export interface RuntimeAgentRecord {
 }
 
 export interface RunRecordFinishOptions {
-  status: Exclude<RunStatus, "in-progress">;
+  /** The launcher's own terminal statuses; `abandoned` belongs to the reaper alone. */
+  status: Exclude<RunStatus, "in-progress" | "abandoned">;
   exitCode: number;
   result: unknown;
   endedAt?: string;
@@ -171,6 +180,29 @@ interface GitState {
   diffPath: string | null;
 }
 
+/**
+ * Liveness evidence for the process that owns this manifest, written once at
+ * start — the one write that makes a durable `in-progress` run decidable
+ * after its writer dies without a heartbeat stream. A consumer (or the
+ * reaper) checks the recorded pid against the live process table, with the
+ * process start ticks discriminating pid reuse. `start_ticks` is
+ * `/proc`-derived and null where no readable proc filesystem exists; a
+ * null-ticks owner is never reaped — evidence that was never recorded
+ * cannot be judged, so the conservative reading is "possibly live".
+ */
+interface RunOwnerRecord {
+  pid: number;
+  start_ticks: string | null;
+  host: string;
+}
+
+/** Written by the reaper beside the flipped status: what it observed, when, and as whom. */
+interface AbandonmentRecord {
+  observed_at: string;
+  reason: "owner-process-gone" | "manifest-predates-owner-recording";
+  observed_by: { pid: number; run_uuid: string };
+}
+
 interface Manifest {
   schema_version: 3;
   kind: "run_manifest";
@@ -180,6 +212,8 @@ interface Manifest {
   caller_identity: string | null;
   namespace: NamespaceRecord;
   status: RunStatus;
+  owner: RunOwnerRecord;
+  abandonment?: AbandonmentRecord;
   started_at: string;
   ended_at: string | null;
   workflow: {
@@ -334,6 +368,11 @@ export class RunRecordWriter {
       caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
+      owner: {
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(options.procDir ?? "/proc", process.pid),
+        host: os.hostname()
+      },
       started_at: options.startedAt ?? new Date().toISOString(),
       ended_at: null,
       workflow: {
@@ -408,6 +447,16 @@ export class RunRecordWriter {
       await writer.#trackFile(gitStart.diffPath);
     }
     await writer.#writeManifest();
+    // A new writer starting in the namespace is the reap trigger: siblings
+    // whose owner is provably gone become terminal now, so the store never
+    // needs an age heuristic to tell abandoned from live. Best-effort — the
+    // sweep must never fail or delay the run it rides on.
+    await reapAbandonedRuns({
+      namespaceDir: path.dirname(archiveDir),
+      skipRunUuid: options.runUuid,
+      procDir: options.procDir ?? "/proc",
+      observer: { pid: process.pid, runUuid: options.runUuid }
+    });
     return writer;
   }
 
@@ -743,6 +792,124 @@ function addProviderCost(
  */
 export async function resolveRunDirectory(storeDir: string, cwd: string, runUuid: string): Promise<string> {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+
+export interface ReapAbandonedRunsOptions {
+  /** The namespace directory whose run directories are swept. */
+  namespaceDir: string;
+  /** The sweeping run's own directory name, never judged. */
+  skipRunUuid?: string;
+  procDir?: string;
+  /** Judged-same-host boundary; defaults to this machine's hostname. */
+  host?: string;
+  /** Recorded in each flipped manifest as the observation's provenance. */
+  observer: { pid: number; runUuid: string };
+}
+
+/**
+ * Rewrites every `in-progress` sibling manifest whose owning process is
+ * provably gone to the terminal `abandoned` status, recording what was
+ * observed. Judgement is evidence, never age: a recorded owner is dead when
+ * its pid has left the process table or the pid's start ticks no longer
+ * match (pid reuse); an owner on another host, or one recorded without
+ * proc evidence, is never judged. A manifest with no owner block at all
+ * predates owner recording — no still-running writer can have written it —
+ * and is reaped under its own recorded reason; in the one racy corner (an
+ * old-version writer still alive mid-upgrade) the mis-judgement self-heals,
+ * because a live writer's next flush rewrites the whole manifest from
+ * memory. Agent records are never touched: the manifest is the decidable
+ * surface, and everything already written is evidence to preserve.
+ * Best-effort throughout — a sweep failure must never fail the run that
+ * triggered it. Returns the run uuids it flipped.
+ */
+export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Promise<string[]> {
+  const procDir = options.procDir ?? "/proc";
+  const host = options.host ?? os.hostname();
+  const reaped: string[] = [];
+  const entries = await readdir(options.namespaceDir, { withFileTypes: true }).catch(() => null);
+  if (entries === null) {
+    return reaped;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
+      continue;
+    }
+    try {
+      const manifestPath = path.join(options.namespaceDir, entry.name, MANIFEST_PATH);
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        status?: unknown;
+        owner?: unknown;
+        abandonment?: AbandonmentRecord;
+      };
+      if (manifest.status !== "in-progress") {
+        continue;
+      }
+      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
+      if (reason === null) {
+        continue;
+      }
+      manifest.status = "abandoned";
+      manifest.abandonment = {
+        observed_at: new Date().toISOString(),
+        reason,
+        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
+      };
+      await writeStandaloneText(manifestPath, `${canonicalJson(manifest)}\n`);
+      reaped.push(entry.name);
+    } catch {
+      // One unreadable or unwritable sibling must not end the sweep.
+    }
+  }
+  return reaped;
+}
+
+async function judgeOwnerGone(
+  owner: unknown,
+  procDir: string,
+  host: string
+): Promise<AbandonmentRecord["reason"] | null> {
+  if (owner === undefined || owner === null) {
+    return "manifest-predates-owner-recording";
+  }
+  if (typeof owner !== "object") {
+    return null;
+  }
+  const record = owner as Partial<RunOwnerRecord>;
+  if (typeof record.pid !== "number" || record.host !== host) {
+    return null;
+  }
+  if (typeof record.start_ticks !== "string") {
+    // Recorded without proc evidence (a platform with no readable proc
+    // filesystem): liveness is unjudgeable, so the run stays as written.
+    return null;
+  }
+  const liveTicks = await readProcessStartTicks(procDir, record.pid);
+  if (liveTicks === record.start_ticks) {
+    return null;
+  }
+  // The judging side needs a readable proc filesystem too: distinguish
+  // "the pid is gone" from "proc itself is unreadable here" by probing the
+  // proc root before treating an absent stat as evidence of death.
+  if (liveTicks === null && (await readProcessStartTicks(procDir, process.pid)) === null) {
+    return null;
+  }
+  return "owner-process-gone";
+}
+
+/**
+ * The process's start time in clock ticks since boot — field 22 of
+ * `/proc/<pid>/stat`, parsed after the parenthesised comm field (which may
+ * itself contain spaces and parentheses, hence the last-close-paren split).
+ * Null where the stat file cannot be read: pid gone, or no proc filesystem.
+ */
+async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
+  try {
+    const statLine = await readFile(path.join(procDir, String(pid), "stat"), "utf8");
+    const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
+    return afterComm.split(" ")[19] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {

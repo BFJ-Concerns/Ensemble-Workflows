@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
-import { RunRecordWriter } from "../../src/run-record.js";
+import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -946,6 +946,130 @@ function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: nu
       ...(currency === undefined ? {} : { currency })
     }
   };
+}
+
+test("the reaper flips provably-dead in-progress runs and leaves every judged-live one", async () => {
+  const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-ns-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-proc-"));
+  try {
+    // The judging side proves its own proc evidence readable before treating
+    // an absent stat as death, so the fake proc carries this process too.
+    // The fake comm contains a space to exercise the last-close-paren parse.
+    await writeProcStat(proc, process.pid, "1111");
+    await writeProcStat(proc, 54321, "2222");
+
+    const host = hostname();
+    await writeRunManifest(namespaceDir, "dead-run", {
+      status: "in-progress",
+      owner: { pid: 999999, start_ticks: "3333", host }
+    });
+    await writeRunManifest(namespaceDir, "reused-pid-run", {
+      status: "in-progress",
+      owner: { pid: 54321, start_ticks: "9999", host }
+    });
+    await writeRunManifest(namespaceDir, "live-run", {
+      status: "in-progress",
+      owner: { pid: 54321, start_ticks: "2222", host }
+    });
+    await writeRunManifest(namespaceDir, "foreign-host-run", {
+      status: "in-progress",
+      owner: { pid: 999998, start_ticks: "4", host: "elsewhere.invalid" }
+    });
+    await writeRunManifest(namespaceDir, "no-evidence-run", {
+      status: "in-progress",
+      owner: { pid: 999997, start_ticks: null, host }
+    });
+    await writeRunManifest(namespaceDir, "legacy-run", { status: "in-progress", run_uuid: "legacy" });
+    await writeRunManifest(namespaceDir, "finished-run", {
+      status: "complete",
+      owner: { pid: 999999, start_ticks: "3333", host }
+    });
+
+    const reaped = await reapAbandonedRuns({
+      namespaceDir,
+      procDir: proc,
+      observer: { pid: process.pid, runUuid: "sweeper-run" }
+    });
+
+    assert.deepEqual([...reaped].sort(), ["dead-run", "legacy-run", "reused-pid-run"]);
+    const dead = await readRunManifest(namespaceDir, "dead-run");
+    assert.equal(dead.status, "abandoned");
+    const deadAbandonment = dead.abandonment as { reason: string; observed_by: { run_uuid: string } };
+    assert.equal(deadAbandonment.reason, "owner-process-gone");
+    assert.equal(deadAbandonment.observed_by.run_uuid, "sweeper-run");
+    const legacy = await readRunManifest(namespaceDir, "legacy-run");
+    assert.equal(legacy.status, "abandoned");
+    assert.equal((legacy.abandonment as { reason: string }).reason, "manifest-predates-owner-recording");
+    assert.equal(legacy.run_uuid, "legacy", "a reaped manifest keeps every field it already had");
+    // The discriminating boundary: dead and live siblings no longer read
+    // identically — and nothing judged possibly-live is touched.
+    for (const untouched of ["live-run", "foreign-host-run", "no-evidence-run"]) {
+      assert.equal((await readRunManifest(namespaceDir, untouched)).status, "in-progress", untouched);
+    }
+    assert.equal((await readRunManifest(namespaceDir, "finished-run")).status, "complete");
+  } finally {
+    await rm(namespaceDir, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+  }
+});
+
+test("a new writer records its own liveness evidence and reaps its dead siblings at start", async () => {
+  const cwd = await gitRepo("ensemble-reap-start-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-reap-store-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-start-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    const siblingDir = await resolveRunDirectory(store, cwd, "dead-sibling");
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(
+      path.join(siblingDir, "manifest.json"),
+      `${JSON.stringify({ status: "in-progress", owner: { pid: 999999, start_ticks: "3", host: hostname() } })}\n`
+    );
+
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd,
+      runUuid: "run-reap",
+      workflowPath: path.join(cwd, "workflow.js"),
+      workflowSource: "export const meta = { name: 'reap' };\nreturn true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false },
+      procDir: proc
+    });
+
+    const sibling = JSON.parse(await readFile(path.join(siblingDir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    assert.equal(sibling.status, "abandoned");
+    const own = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
+    const owner = own.owner as { pid: number; start_ticks: string | null; host: string };
+    assert.equal(owner.pid, process.pid);
+    assert.equal(owner.start_ticks, "1111");
+    assert.equal(owner.host, hostname());
+    assert.equal(own.status, "in-progress");
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+  } finally {
+    await rm(store, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
+  const dir = path.join(procDir, String(pid));
+  await mkdir(dir, { recursive: true });
+  // Fields 3–21 precede starttime (field 22); the comm field carries a
+  // space so the parser's last-close-paren split is what the fixture tests.
+  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
+  await writeFile(path.join(dir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
+}
+
+async function writeRunManifest(namespaceDir: string, runName: string, manifest: unknown): Promise<void> {
+  const dir = path.join(namespaceDir, runName);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+}
+
+async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(path.join(namespaceDir, runName, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
 
 async function gitRepo(prefix: string): Promise<string> {

@@ -250,6 +250,19 @@ atomic temp-then-rename writes, and the final manifest records `complete`,
 `failed`, `timed-out`, or `interrupted`. A stopped run therefore leaves a usable
 partial archive.
 
+A run that dies with its launcher — a kill the process cannot handle — never
+writes its own terminal status, so the manifest records liveness evidence
+instead of relying on age: an `owner` block (`pid`, `/proc` start ticks, and
+hostname) written once at start. The next writer starting in the same
+namespace reaps siblings whose recorded owner is provably gone — pid absent
+from the process table, or start ticks that no longer match (pid reuse) —
+rewriting `status` to the terminal `"abandoned"` with an `abandonment` block
+naming what was observed, when, and by which run. Judgement is same-host and
+evidence-only: an owner on another machine, or one recorded without a
+readable proc filesystem, is left as written, and a consumer can apply the
+same check itself from the `owner` block without waiting for a reap. Agent
+records under a reaped run are preserved untouched.
+
 ### Run record schema
 
 Every JSON artefact carries:
@@ -265,8 +278,13 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
 - `namespace`: namespace strategy, id, hash, and local material.
-- `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`, or
-  `"interrupted"`.
+- `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
+  `"interrupted"`, or `"abandoned"` (reaper-written only, see above).
+- `owner`: the writing process's liveness evidence — `pid`, `start_ticks`
+  (`null` where no readable proc filesystem exists), and `host`.
+- `abandonment`: present only on reaped manifests — `observed_at`, `reason`
+  (`"owner-process-gone"`, or `"manifest-predates-owner-recording"` for
+  archives written before owner evidence existed), and `observed_by`.
 - `started_at` / `ended_at`: ISO timestamps; `ended_at` is `null` until final.
 - `workflow`: original path, archived `workflow.js`, and SHA-256.
 - `args`: the descriptive `args.json` envelope, the separately archived

@@ -13586,7 +13586,7 @@ import path4 from "node:path";
 
 // src/run-record.ts
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path3 from "node:path";
 import { execFile } from "node:child_process";
@@ -13788,6 +13788,11 @@ var RunRecordWriter = class _RunRecordWriter {
       caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
+      owner: {
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(options.procDir ?? "/proc", process.pid),
+        host: os.hostname()
+      },
       started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
       ended_at: null,
       workflow: {
@@ -13861,6 +13866,12 @@ var RunRecordWriter = class _RunRecordWriter {
       await writer.#trackFile(gitStart.diffPath);
     }
     await writer.#writeManifest();
+    await reapAbandonedRuns({
+      namespaceDir: path3.dirname(archiveDir),
+      skipRunUuid: options.runUuid,
+      procDir: options.procDir ?? "/proc",
+      observer: { pid: process.pid, runUuid: options.runUuid }
+    });
     return writer;
   }
   async noteMeta(meta) {
@@ -14133,6 +14144,78 @@ function addProviderCost(target, event, unlikeCurrencies) {
 }
 async function resolveRunDirectory(storeDir, cwd, runUuid) {
   return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+async function reapAbandonedRuns(options) {
+  const procDir = options.procDir ?? "/proc";
+  const host = options.host ?? os.hostname();
+  const reaped = [];
+  const entries = await readdir(options.namespaceDir, { withFileTypes: true }).catch(() => null);
+  if (entries === null) {
+    return reaped;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
+      continue;
+    }
+    try {
+      const manifestPath = path3.join(options.namespaceDir, entry.name, MANIFEST_PATH);
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      if (manifest.status !== "in-progress") {
+        continue;
+      }
+      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
+      if (reason === null) {
+        continue;
+      }
+      const fresh = JSON.parse(await readFile(manifestPath, "utf8"));
+      if (fresh.status !== "in-progress") {
+        continue;
+      }
+      fresh.status = "abandoned";
+      fresh.abandonment = {
+        observed_at: (/* @__PURE__ */ new Date()).toISOString(),
+        reason,
+        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
+      };
+      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
+`);
+      reaped.push(entry.name);
+    } catch {
+    }
+  }
+  return reaped;
+}
+async function judgeOwnerGone(owner, procDir, host) {
+  if (owner === void 0 || owner === null) {
+    return "manifest-predates-owner-recording";
+  }
+  if (typeof owner !== "object") {
+    return null;
+  }
+  const record = owner;
+  if (typeof record.pid !== "number" || record.host !== host) {
+    return null;
+  }
+  if (typeof record.start_ticks !== "string") {
+    return null;
+  }
+  const liveTicks = await readProcessStartTicks(procDir, record.pid);
+  if (liveTicks === record.start_ticks) {
+    return null;
+  }
+  if (liveTicks === null && await readProcessStartTicks(procDir, process.pid) === null) {
+    return null;
+  }
+  return "owner-process-gone";
+}
+async function readProcessStartTicks(procDir, pid) {
+  try {
+    const statLine = await readFile(path3.join(procDir, String(pid), "stat"), "utf8");
+    const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
+    return afterComm.split(" ")[19] ?? null;
+  } catch {
+    return null;
+  }
 }
 function runDirectoryFor(storeDir, namespace, runUuid) {
   return path3.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
@@ -15882,7 +15965,7 @@ function itemTypeFromItem(item) {
 
 // src/claude-control-plane.ts
 import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
-import { access, mkdtemp, readFile as readFile2, readdir, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import { access, mkdtemp, readFile as readFile2, readdir as readdir2, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir2, tmpdir } from "node:os";
 import path7 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -16011,7 +16094,7 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir2(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
@@ -16106,7 +16189,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir(this.#procDir);
+      entries = await readdir2(this.#procDir);
     } catch {
       return [];
     }
@@ -17809,8 +17892,8 @@ var ClaudeEngineAdapter = class {
    * deny rules ride the per-dispatch settings file the control plane
    * already writes (the one surface measured to reach the daemon-served
    * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
    */
   capabilities = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
@@ -18693,10 +18776,12 @@ function createWorkflowHooks(options) {
   const writeLog = (message) => {
     options.log(message);
   };
-  const runtimeAgent = options.runtime.agent.bind(options.runtime);
   const defaults = options.defaults ?? {};
+  function agentWithDefaults(prompt, agentOptions) {
+    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
+  }
   return {
-    agent: ((prompt, agentOptions) => runtimeAgent(prompt, mergeAgentDefaults(defaults, agentOptions))),
+    agent: agentWithDefaults,
     workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog),
     pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
@@ -18787,7 +18872,7 @@ function formatError(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path9 from "node:path";
@@ -24485,7 +24570,7 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access as access2, readdir as readdir2, readFile as readFile4 } from "node:fs/promises";
+import { access as access2, readdir as readdir3, readFile as readFile4 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
 import path8 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -24563,7 +24648,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir2(dir, { withFileTypes: true });
+    directoryEntries = await readdir3(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -24935,7 +25020,7 @@ const { ${HOOK_BINDING_NAMES.join(", ")} } = __ensembleHooks;
 ${workflow.bodySource}
 };`;
 }
-var pendingWorkflowModules = /* @__PURE__ */ new Map();
+var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
 function ensureWorkflowModuleLoader() {
   if (workflowModuleLoaderRegistered) {
@@ -24948,13 +25033,13 @@ function ensureWorkflowModuleLoader() {
     // source directly; the CLI's synthetic direct-agent workflow has no
     // file at all).
     resolve(specifier, context, nextResolve) {
-      if (pendingWorkflowModules.has(specifier)) {
+      if (registeredWorkflowModules.has(specifier)) {
         return { url: specifier, format: "module", shortCircuit: true };
       }
       return nextResolve(specifier, context);
     },
     load(url, context, nextLoad) {
-      const source = pendingWorkflowModules.get(url);
+      const source = registeredWorkflowModules.get(url);
       if (source !== void 0) {
         return { format: "module", source, shortCircuit: true };
       }
@@ -24965,13 +25050,10 @@ function ensureWorkflowModuleLoader() {
 }
 async function importWrappedModule(wrappedSource, filename) {
   ensureWorkflowModuleLoader();
-  const url = `${pathToFileURL(filename).href}?ensemble-workflow-run=${randomUUID5()}`;
-  pendingWorkflowModules.set(url, wrappedSource);
-  try {
-    return await import(url);
-  } finally {
-    pendingWorkflowModules.delete(url);
-  }
+  const digest = createHash2("sha256").update(wrappedSource).digest("hex");
+  const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
+  registeredWorkflowModules.set(url, wrappedSource);
+  return await import(url);
 }
 async function importWorkflowBody(workflow, filename) {
   let namespace;
@@ -25217,13 +25299,13 @@ function skipBlockComment(source, start) {
 }
 
 // src/status-file.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
-import { link, readFile as readFile6, readdir as readdir3, rename as rename3, unlink, writeFile as writeFile4 } from "node:fs/promises";
+import { randomUUID as randomUUID5 } from "node:crypto";
+import { link, readFile as readFile6, readdir as readdir4, rename as rename3, unlink, writeFile as writeFile4 } from "node:fs/promises";
 import path10 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
 var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile6, readdir: readdir3, rename: rename3, unlink, writeFile: writeFile4 };
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile6, readdir: readdir4, rename: rename3, unlink, writeFile: writeFile4 };
 var StatusFileWriter = class {
   #progress;
   #dir;
@@ -25293,7 +25375,7 @@ var StatusFileWriter = class {
   }
   async #removeSnapshot() {
     const target = path10.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
+    const claim = `${target}.${process.pid}.${randomUUID5()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
     } catch (error) {
@@ -25422,9 +25504,6 @@ async function runEnsembleCli(argv, options = {}) {
   } catch (error) {
     stderr.write(`${formatError3(error)}
 `);
-    if (!(error instanceof AmbientConfigError)) {
-      stderr.write(usage());
-    }
     return 2;
   }
   if (invocation.kind === "workflow" && invocation.scriptArg === void 0) {
@@ -25752,20 +25831,26 @@ async function parseInvocation(argv, cwd, stdin) {
 }
 async function parseWorkflowInvocation(argv, cwd) {
   const split = splitTuningFlags(argv);
-  const parsed = parseArgs({
-    args: split.tuningArgs,
-    options: {
-      "json-args": { type: "string" },
-      budget: { type: "string", multiple: true },
-      "agent-ceiling": { type: "string" },
-      concurrency: { type: "string", multiple: true },
-      timeout: { type: "string" },
-      strip: { type: "string", multiple: true },
-      "caller-identity": { type: "string" }
-    },
-    strict: true,
-    allowPositionals: false
-  });
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: split.tuningArgs,
+      options: {
+        "json-args": { type: "string" },
+        budget: { type: "string", multiple: true },
+        "agent-ceiling": { type: "string" },
+        concurrency: { type: "string", multiple: true },
+        timeout: { type: "string" },
+        strip: { type: "string", multiple: true },
+        "caller-identity": { type: "string" }
+      },
+      strict: true,
+      allowPositionals: false
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(message);
+  }
   const jsonArgs = parsed.values["json-args"];
   const positionalArgs = split.scriptArg === void 0 ? [] : split.scriptArgs;
   const args = jsonArgs === void 0 ? positionalArgs : await parseJsonArgs(jsonArgs, cwd);

@@ -932,10 +932,10 @@ test("times out runaway async scripts", async () => {
 test("does not impose a default timeout when no timeout is configured", async () => {
   const delayedRuntime: WorkflowRuntime = {
     ...runtime,
-    async agent(prompt: string) {
+    agent: (async (prompt: string) => {
       await new Promise((resolve) => setTimeout(resolve, 50));
       return `agent:${prompt}`;
-    }
+    }) as unknown as WorkflowRuntime["agent"]
   };
 
   const result = await runWorkflowScript({

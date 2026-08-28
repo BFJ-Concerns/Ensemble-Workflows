@@ -1,9 +1,10 @@
 /* global process */
 
-import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import assert from "node:assert/strict";
+import { findOnlyFile, readJson } from "./archive-helpers.mjs";
 
 const [dataHome] = process.argv.slice(2);
 assert.ok(dataHome, "usage: read-run-record.mjs <resolved-data-home>");
@@ -53,14 +54,3 @@ process.stdout.write(`${JSON.stringify({
     attemptStatus: agent.attempts[0].status
   }
 })}\n`);
-
-async function readJson(file) {
-  return JSON.parse(await readFile(file, "utf8"));
-}
-
-async function findOnlyFile(root, basename) {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0]);
-}

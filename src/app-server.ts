@@ -244,7 +244,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      ephemeral: true
+      ephemeral: true,
+      ...(options.model !== undefined ? { model: options.model } : {})
     };
     const result = await this.#request("thread/start", requestParams);
 
@@ -307,10 +308,6 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (options.model !== undefined) {
         params.model = options.model;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== undefined) {
-          transcript.resolvedModel = options.model;
-        }
       }
       if (options.effort !== undefined) {
         params.effort = options.effort;

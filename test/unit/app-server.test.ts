@@ -818,6 +818,50 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
   }
 });
 
+test("Codex app-server keeps the server-reported model when a turn requests a different pin", async () => {
+  const codexBin = await fakeCodexTurnServer({ servedModel: "gpt-served" });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+
+  try {
+    const threadId = await transport.openThread({ model: "gpt-requested" });
+    const result = await transport.runTurn(threadId, "hello?", { model: "gpt-requested" });
+
+    assert.equal(result.resolvedModel, "gpt-served");
+    const threadStart = JSON.parse((result.transcripts?.[0]?.content ?? "{}").split("\n")[0] ?? "{}").params;
+    assert.equal(threadStart?.model, "gpt-requested");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server does not infer a served model when the server omits it", async () => {
+  const codexBin = await fakeCodexTurnServer({ servedModel: null });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "hello?", { model: "gpt-requested" });
+
+    assert.equal(result.resolvedModel, undefined);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("Codex app-server preserves Unicode line and paragraph separators in prompts", async () => {
   const codexBin = await fakeCodexTurnServer({ returnPromptBase64: true });
   const transport = await CodexAppServerTransport.start({
@@ -876,7 +920,7 @@ test("Codex app-server sends full access explicitly on the thread and every turn
 
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
-  options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string } = {}
+  options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string; servedModel?: string | null } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
@@ -894,6 +938,7 @@ let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
+const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
 }
@@ -915,7 +960,7 @@ reader.on("line", (line) => {
       id: message.id,
       result: {
         thread: { id: "thread-" + threadCounter },
-        model: "gpt-test-default",
+        ...(servedModel === null ? {} : { model: servedModel }),
         reasoningEffort: "medium"
       }
     });

@@ -13022,6 +13022,7 @@ var CONFIG_SCHEMA_VERSION = 1;
 var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 var AmbientConfigError = class extends Error {
   constructor(message) {
     super(message);
@@ -13784,6 +13785,7 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "run_manifest",
       run_id: runId,
       run_uuid: options.runUuid,
+      caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
       started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
@@ -15122,7 +15124,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      ephemeral: true
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {}
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -15174,10 +15177,6 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (options.model !== void 0) {
         params.model = options.model;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== void 0) {
-          transcript.resolvedModel = options.model;
-        }
       }
       if (options.effort !== void 0) {
         params.effort = options.effort;
@@ -17790,7 +17789,8 @@ var CodexEngineInvocation = class {
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
     const threadId = await this.#transport.openThread({
-      ...cwd !== void 0 ? { cwd } : {}
+      ...cwd !== void 0 ? { cwd } : {},
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -17860,20 +17860,24 @@ var OpenCodeEngineAdapter = class {
   name = "opencode";
   concurrency;
   /**
-   * opencode has a real subagent/task surface (and a skills route via
-   * plugins), but the harness has not yet measured a config route that
-   * strips either — so both fail loud pre-spawn rather than dispatch an
-   * unrestricted worker under a restriction the author believes is in
-   * force. Wiring the config route flips these entries with evidence.
+   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
+   * `permission.task` and `permission.skill`, and
+   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
+   * measurement is not worker-boundary proof, though: the available live
+   * dispatches timed out before producing output, so this unit has not shown
+   * that either explicit deny stops a worker. Both capabilities therefore
+   * fail loud pre-spawn rather than dispatch a worker under a restriction the
+   * author believes is in force. A successful deny witness re-opens this
+   * judgement.
    */
   capabilities = {
     skills: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
     },
     agents: {
       route: "unsupported",
-      detail: "the harness does not yet deliver tool stripping through opencode's config surface"
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
   };
   #scheduler;
@@ -24826,11 +24830,65 @@ function extractWorkflowSource(source) {
       bodyStart += 1;
     }
   }
+  const bodySource = withoutBom.slice(bodyStart);
+  const unsupportedExport = findUnsupportedTopLevelExport(withoutBom);
+  if (unsupportedExport !== null) {
+    throw new WorkflowScriptError(
+      `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
+    );
+  }
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource: withoutBom.slice(bodyStart)
+    bodySource
   };
+}
+function findUnsupportedTopLevelExport(source) {
+  let program;
+  try {
+    program = parse3(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // Workflow bodies intentionally permit top-level return because the
+      // runtime wraps them in an async function before V8 imports them.
+      allowReturnOutsideFunction: true
+    });
+  } catch {
+    return null;
+  }
+  for (const node of program.body) {
+    if (isModuleExport(node) && !isSupportedWorkflowExport(node)) {
+      return `\`${describeTopLevelExport(node, source)}\``;
+    }
+  }
+  return null;
+}
+function isModuleExport(node) {
+  return node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration";
+}
+function isSupportedWorkflowExport(node) {
+  if (node.type !== "ExportNamedDeclaration" || node.declaration?.type !== "VariableDeclaration") {
+    return false;
+  }
+  const [declaration] = node.declaration.declarations ?? [];
+  return node.declaration.kind === "const" && (node.declaration.declarations?.length ?? 0) === 1 && (declaration?.id?.name === "meta" || declaration?.id?.name === "defaults");
+}
+function describeTopLevelExport(node, source) {
+  if (node.type === "ExportDefaultDeclaration") {
+    return "export default";
+  }
+  if (node.type === "ExportAllDeclaration") {
+    return "export *";
+  }
+  const declaration = node.declaration;
+  if (declaration?.type === "VariableDeclaration") {
+    const name = declaration.declarations?.[0]?.id?.name;
+    return name === void 0 ? `export ${declaration.kind ?? ""}`.trim() : `export ${declaration.kind} ${name}`;
+  }
+  if ((declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") && declaration.id?.name !== void 0) {
+    return `export ${declaration.type === "FunctionDeclaration" ? "function" : "class"} ${declaration.id.name}`;
+  }
+  return source.slice(node.start, node.end);
 }
 function readWorkflowDefaults(defaultsSource, filename = "workflow.js", openCodeModelRegistry) {
   if (defaultsSource === null) {
@@ -25396,6 +25454,7 @@ async function runEnsembleCli(argv, options = {}) {
     progress = runtime.progress;
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
+    const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
     const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
@@ -25416,9 +25475,11 @@ async function runEnsembleCli(argv, options = {}) {
         workflowSource: prepared.source,
         args: prepared.recordArgs,
         cliFlags: cliFlags(invocation),
+        ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress)
       });
       runtime.setRunRecorder?.(runRecordWriter);
+      announceRunRecord(runRecordWriter, stderr);
     }
     const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
@@ -25699,7 +25760,8 @@ async function parseWorkflowInvocation(argv, cwd) {
       "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" },
-      strip: { type: "string", multiple: true }
+      strip: { type: "string", multiple: true },
+      "caller-identity": { type: "string" }
     },
     strict: true,
     allowPositionals: false
@@ -25712,6 +25774,7 @@ async function parseWorkflowInvocation(argv, cwd) {
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -25721,7 +25784,8 @@ async function parseWorkflowInvocation(argv, cwd) {
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
-    ...strip !== void 0 ? { strip } : {}
+    ...strip !== void 0 ? { strip } : {},
+    ...callerIdentity !== void 0 ? { callerIdentity } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
@@ -25746,7 +25810,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
         concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" }
+        timeout: { type: "string" },
+        "caller-identity": { type: "string" }
       },
       strict: true,
       allowPositionals: true
@@ -25775,6 +25840,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -25797,7 +25863,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
-    ...timeoutMs !== void 0 ? { timeoutMs } : {}
+    ...timeoutMs !== void 0 ? { timeoutMs } : {},
+    ...callerIdentity !== void 0 ? { callerIdentity } : {}
   };
 }
 async function readPrompt(stdin) {
@@ -25871,10 +25938,10 @@ function splitTuningFlags(argv) {
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -25977,12 +26044,35 @@ function parseMaxAttempts(value) {
   }
   return maxAttempts;
 }
+function parseCallerIdentity(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value.trim().length === 0) {
+    throw new CliUsageError("--caller-identity must be a non-empty string");
+  }
+  return value;
+}
+function resolveCallerIdentity(flag, env) {
+  if (flag !== void 0) {
+    return flag;
+  }
+  const inherited = env[CALLER_IDENTITY_ENV];
+  return inherited !== void 0 && inherited.trim().length > 0 ? inherited : void 0;
+}
+function announceRunRecord(writer, stderr) {
+  try {
+    stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}
+`);
+  } catch {
+  }
+}
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

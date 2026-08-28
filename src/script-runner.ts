@@ -359,11 +359,100 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
     }
   }
 
+  const bodySource = withoutBom.slice(bodyStart);
+  const unsupportedExport = findUnsupportedTopLevelExport(withoutBom);
+  if (unsupportedExport !== null) {
+    throw new WorkflowScriptError(
+      `Workflow script has unsupported top-level ${unsupportedExport}; expected \`export const meta = { ... }\` at the start, with optional \`export const defaults = { ... }\` immediately after it, followed by the executable body`
+    );
+  }
+
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource: withoutBom.slice(bodyStart)
+    bodySource
   };
+}
+
+/**
+ * Reject actual module export declarations that the wrapper would embed
+ * inside its async body before importing that wrapper. Acorn is not the
+ * syntax authority, so a parsing disagreement leaves the source for V8 to
+ * judge at import time. Looking at Program-body AST nodes, rather than
+ * keyword tokens, keeps property access such as `result.export` as ordinary
+ * V8 syntax regardless of the tokens that follow it. `export const defaults`
+ * stays with the existing placement diagnostic, which explains why that
+ * otherwise supported declaration must immediately follow `meta`.
+ */
+function findUnsupportedTopLevelExport(source: string): string | null {
+  let program: WorkflowProgram;
+  try {
+    program = acorn.parse(source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      // Workflow bodies intentionally permit top-level return because the
+      // runtime wraps them in an async function before V8 imports them.
+      allowReturnOutsideFunction: true
+    }) as WorkflowProgram;
+  } catch {
+    return null;
+  }
+
+  for (const node of program.body) {
+    if (isModuleExport(node) && !isSupportedWorkflowExport(node)) {
+      return `\`${describeTopLevelExport(node, source)}\``;
+    }
+  }
+  return null;
+}
+
+interface WorkflowProgram extends acorn.Node {
+  body: WorkflowProgramNode[];
+}
+
+interface WorkflowProgramNode extends acorn.Node {
+  declaration?: {
+    type?: string;
+    kind?: string;
+    id?: { name?: string };
+    declarations?: Array<{ id?: { name?: string } }>;
+  };
+}
+
+function isModuleExport(node: WorkflowProgramNode): boolean {
+  return (
+    node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration" || node.type === "ExportAllDeclaration"
+  );
+}
+
+function isSupportedWorkflowExport(node: WorkflowProgramNode): boolean {
+  if (node.type !== "ExportNamedDeclaration" || node.declaration?.type !== "VariableDeclaration") {
+    return false;
+  }
+  const [declaration] = node.declaration.declarations ?? [];
+  return (
+    node.declaration.kind === "const" &&
+    (node.declaration.declarations?.length ?? 0) === 1 &&
+    (declaration?.id?.name === "meta" || declaration?.id?.name === "defaults")
+  );
+}
+
+function describeTopLevelExport(node: WorkflowProgramNode, source: string): string {
+  if (node.type === "ExportDefaultDeclaration") {
+    return "export default";
+  }
+  if (node.type === "ExportAllDeclaration") {
+    return "export *";
+  }
+  const declaration = node.declaration;
+  if (declaration?.type === "VariableDeclaration") {
+    const name = declaration.declarations?.[0]?.id?.name;
+    return name === undefined ? `export ${declaration.kind ?? ""}`.trim() : `export ${declaration.kind} ${name}`;
+  }
+  if ((declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") && declaration.id?.name !== undefined) {
+    return `export ${declaration.type === "FunctionDeclaration" ? "function" : "class"} ${declaration.id.name}`;
+  }
+  return source.slice(node.start, node.end);
 }
 
 /** Evaluate and shape-check a script's `export const defaults` block. */

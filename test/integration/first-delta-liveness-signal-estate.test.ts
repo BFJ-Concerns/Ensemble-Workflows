@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
+
+import { findOnlyFile, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
@@ -14,7 +16,6 @@ interface ProcessResult {
   code: number | null;
   stdout: string;
   stderr: string;
-  finishedAt: number;
 }
 
 interface RecordedAttempt {
@@ -176,23 +177,4 @@ async function createFixture() {
     turnStartedAt: async (): Promise<number> => Number(await readFile(turnStartMarker, "utf8")),
     cleanup: () => rm(directory, { recursive: true, force: true })
   };
-}
-
-async function findOnlyFile(root: string, basename: string): Promise<string> {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0] ?? "");
-}
-
-async function runNode(args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<ProcessResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, { cwd: process.cwd(), env, timeout: timeoutMs });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr, finishedAt: Date.now() }));
-  });
 }

@@ -47,6 +47,8 @@ export interface RunRecordStartOptions {
   args: unknown;
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
+  /** Opaque identity supplied by the process that invoked this run, if any. */
+  callerIdentity?: string;
   startedAt?: string;
 }
 
@@ -174,6 +176,8 @@ interface Manifest {
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
+  /** The launching session's supplied identity; null means it was not supplied. */
+  caller_identity: string | null;
   namespace: NamespaceRecord;
   status: RunStatus;
   started_at: string;
@@ -327,6 +331,7 @@ export class RunRecordWriter {
       kind: "run_manifest",
       run_id: runId,
       run_uuid: options.runUuid,
+      caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
       started_at: options.startedAt ?? new Date().toISOString(),

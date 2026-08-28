@@ -14,6 +14,12 @@ export const CONFIG_SCHEMA_VERSION = 1;
 export const AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 export const RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 export const RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+/**
+ * The invoking session's opaque identity. This is deliberately not an ambient
+ * setting: it belongs to the run record only, rather than the closed set of
+ * runtime settings resolved by `resolveAmbientSettings`.
+ */
+export const CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 
 export type SettingLayer = "flag" | "env" | "config-file" | "default";
 

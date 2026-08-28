@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { Buffer } from "node:buffer";
 import { appendFileSync, readFileSync } from "node:fs";
 import process from "node:process";
 import { createInterface } from "node:readline";
@@ -9,7 +10,10 @@ if (process.argv[2] !== "app-server") {
   process.exit(2);
 }
 
+const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
+
 const capturePath = process.env.ENSEMBLE_POST_PROMISE_CAPTURE;
+const emittedFrameCapturePath = process.env.ENSEMBLE_POST_PROMISE_EMITTED_CAPTURE;
 const deadlineControlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
 const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 const scenarios = JSON.parse(process.env.ENSEMBLE_POST_PROMISE_SCENARIOS ?? "[]");
@@ -20,7 +24,33 @@ const approvals = new Map();
 
 process.stderr.write("POST_PROMISE_FIXTURE_READY\n");
 
-const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+const writeStdout = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, encoding, callback) => {
+  recordEmittedNotifications(chunk);
+  return writeStdout(chunk, encoding, callback);
+};
+
+function recordEmittedNotifications(chunk) {
+  if (emittedFrameCapturePath === undefined) return;
+  const text = Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk);
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof message?.method === "string" && typeof message.id !== "number") {
+      appendFileSync(emittedFrameCapturePath, `${JSON.stringify(message)}\n`);
+    }
+  }
+}
+
+const send = (message, schemaPath, payload = message) => {
+  validateCodexFixturePayload(schemaPath, payload);
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+};
 async function releaseDeadline(requireDisarm) {
   if (deadlineControlPath === undefined) {
     throw new Error("post-promise deadline control path is required");
@@ -47,7 +77,12 @@ async function playScenario(threadId, turnId, scenario) {
       send({
         method: "item/agentMessage/delta",
         params: { threadId, turnId, itemId: "partial-message", delta: action.text }
-      });
+      }, "ServerNotification.json");
+    } else if (action.type === "malformed-delta") {
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId, turnId, delta: action.text }
+      }, "ServerNotification.json");
     } else if (action.type === "promise") {
       send({
         method: "error",
@@ -61,12 +96,12 @@ async function playScenario(threadId, turnId, scenario) {
             codexErrorInfo: "serverOverloaded"
           }
         }
-      });
+      }, "ServerNotification.json");
     } else if (action.type === "mcp-progress") {
       send({
         method: "item/mcpToolCall/progress",
         params: { threadId, turnId, itemId: "tool-1", message: "tool still alive" }
-      });
+      }, "ServerNotification.json");
     } else if (action.type === "approval") {
       requestCounter += 1;
       const approval = Promise.withResolvers();
@@ -74,16 +109,19 @@ async function playScenario(threadId, turnId, scenario) {
       send({
         id: requestCounter,
         method: "item/commandExecution/requestApproval",
-        params: { threadId, turnId, itemId: "command-1", command: "true" }
-      });
+        params: { threadId, turnId, itemId: "command-1", command: "true", startedAtMs: Date.now() }
+      }, "ServerRequest.json");
       await approval.promise;
     } else if (action.type === "success") {
       const item = { id: `answer-${turnId}`, type: "agentMessage", text: action.text };
-      send({ method: "item/completed", params: { threadId, turnId, item } });
+      send({
+        method: "item/completed",
+        params: { threadId, turnId, item, completedAtMs: Date.now() }
+      }, "ServerNotification.json");
       send({
         method: "turn/completed",
         params: { threadId, turn: { id: turnId, items: [item], status: "completed" } }
-      });
+      }, "ServerNotification.json");
     } else if (action.type === "silence") {
       return;
     }
@@ -102,28 +140,64 @@ reader.on("line", (line) => {
     return;
   }
   if (message.method === "initialize") {
-    send({ id: message.id, result: {} });
-  } else if (message.method === "thread/start") {
-    threadCounter += 1;
     send({
       id: message.id,
       result: {
-        thread: { id: `thread-${threadCounter}` },
-        model: "gpt-post-promise-fixture",
-        reasoningEffort: "medium"
+        codexHome: process.cwd(),
+        platformFamily: "unix",
+        platformOs: "linux",
+        userAgent: "ensemble-post-promise-fixture"
       }
+    }, "v1/InitializeResponse.json", {
+      codexHome: process.cwd(),
+      platformFamily: "unix",
+      platformOs: "linux",
+      userAgent: "ensemble-post-promise-fixture"
     });
+  } else if (message.method === "thread/start") {
+    threadCounter += 1;
+    const result = {
+      thread: {
+        cliVersion: "ensemble-post-promise-fixture",
+        createdAt: Math.floor(Date.now() / 1_000),
+        cwd: process.cwd(),
+        ephemeral: true,
+        id: `thread-${threadCounter}`,
+        modelProvider: "openai",
+        preview: "",
+        ...(codexFixtureSchemaIncludesDefinitionProperty("v2/ThreadStartResponse.json", "Thread", "projectId")
+          ? { projectId: null }
+          : {}),
+        sessionId: `fixture-session-${threadCounter}`,
+        source: "appServer",
+        status: { type: "idle" },
+        turns: [],
+        updatedAt: Math.floor(Date.now() / 1_000)
+      },
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      cwd: process.cwd(),
+      model: "gpt-post-promise-fixture",
+      modelProvider: "openai",
+      reasoningEffort: "medium",
+      sandbox: { type: "dangerFullAccess" }
+    };
+    send({
+      id: message.id,
+      result
+    }, "v2/ThreadStartResponse.json", result);
   } else if (message.method === "turn/start") {
     turnCounter += 1;
     const threadId = message.params.threadId;
     const turnId = `turn-${turnCounter}`;
-    send({ id: message.id, result: { turn: { id: turnId, items: [], status: "inProgress" } } });
+    const result = { turn: { id: turnId, items: [], status: "inProgress" } };
+    send({ id: message.id, result }, "v2/TurnStartResponse.json", result);
     send({
       method: "turn/started",
       params: { threadId, turn: { id: turnId, items: [], status: "inProgress" } }
-    });
+    }, "ServerNotification.json");
     void playScenario(threadId, turnId, scenarios[turnCounter - 1]);
   } else if (message.method === "turn/interrupt") {
-    send({ id: message.id, result: {} });
+    send({ id: message.id, result: {} }, "JSONRPCResponse.json");
   }
 });

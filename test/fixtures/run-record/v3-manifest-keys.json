@@ -6,6 +6,7 @@
   ],
   "manifest": [
     "args",
+    "caller_identity",
     "cli_flags",
     "concurrency",
     "cost_rollup",

@@ -23,10 +23,12 @@ if (process.argv.includes("generate-json-schema")) {
   process.exit(2);
 }
 
-const { validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
+const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayload } = await import("./protocol-schema-validator.mjs");
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
+const servedModel = process.env.ENSEMBLE_FAKE_CODEX_SERVED_MODEL ?? "gpt-estate-recorder";
+const requiredThreadModel = process.env.ENSEMBLE_FAKE_CODEX_REQUIRE_THREAD_MODEL;
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
 const notificationSequences = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES ?? "[]");
@@ -159,7 +161,10 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
         method: notification.method,
         params: notificationParamsForTurn(notification, threadId, turnId)
       }, "ServerNotification.json", undefined, {
-        allowMalformed: notification.allowMalformed
+        // A deliberately malformed partial assistant delta would conceal the
+        // producer contract this fixture is meant to guard. Other established
+        // exceptional frames retain their explicitly recorded regressions.
+        ...(notification.method === "item/agentMessage/delta" ? {} : { allowMalformed: notification.allowMalformed })
       });
     }
     if (!stallAfterNotificationSequence) {
@@ -215,6 +220,9 @@ const handleLine = (line) => {
     return;
   }
   if (message.method === "thread/start") {
+    if (requiredThreadModel !== undefined && message.params.model !== requiredThreadModel) {
+      throw new Error(`thread/start model was ${JSON.stringify(message.params.model)}, expected ${JSON.stringify(requiredThreadModel)}`);
+    }
     threadCounter += 1;
     const response = {
       id: message.id,
@@ -227,7 +235,9 @@ const handleLine = (line) => {
           id: `thread-${threadCounter}`,
           modelProvider: "openai",
           preview: "",
-          projectId: null,
+          ...(codexFixtureSchemaIncludesDefinitionProperty("v2/ThreadStartResponse.json", "Thread", "projectId")
+            ? { projectId: null }
+            : {}),
           sessionId: `fixture-session-${threadCounter}`,
           source: "appServer",
           status: { type: "idle" },
@@ -237,7 +247,7 @@ const handleLine = (line) => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         cwd: process.cwd(),
-        model: "gpt-estate-recorder",
+        model: servedModel,
         modelProvider: "openai",
         reasoningEffort: "medium",
         sandbox: { type: "dangerFullAccess" }

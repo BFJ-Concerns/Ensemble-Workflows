@@ -39,8 +39,99 @@ function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one completion-sentinel announcement, got:\n${stderr}`);
-  return stderr.replace(announcement, "");
+  const withoutSentinel = stderr.replace(announcement, "");
+  const runRecordAnnouncement = /^\[run-record-archive\] .+\n/gm;
+  const runRecordMatches = withoutSentinel.match(runRecordAnnouncement) ?? [];
+  assert.equal(runRecordMatches.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
+  return withoutSentinel.replace(runRecordAnnouncement, "");
 }
+
+function announcedRunRecord(stderr: string): { run_id: string; archive_path: string } {
+  const lines = stderr.split("\n").filter((line) => line.startsWith("[run-record-archive] "));
+  assert.equal(lines.length, 1, `expected exactly one run-record announcement, got:\n${stderr}`);
+  return JSON.parse(lines[0]!.slice("[run-record-archive] ".length)) as { run_id: string; archive_path: string };
+}
+
+test("caller identity links each workflow archive to its invoking session", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-caller-identity-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "caller-identity", task: { ledger: "unchanged" } };
+      return await agent("record me", { engine: "codex" });
+    `
+  );
+
+  const cases = [
+    { name: "environment", argv: [script], env: { ENSEMBLE_CALLER_IDENTITY: "session:environment" }, expected: "session:environment" },
+    {
+      name: "flag wins over environment",
+      argv: ["--caller-identity", "session:flag", script],
+      env: { ENSEMBLE_CALLER_IDENTITY: "session:environment" },
+      expected: "session:flag"
+    },
+    { name: "neither", argv: [script], env: {}, expected: null }
+  ];
+
+  try {
+    for (const entry of cases) {
+      const store = path.join(directory, `${entry.name.replaceAll(" ", "-")}-records`);
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli(entry.argv, {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: store,
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ...entry.env },
+        createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+      });
+
+      assert.equal(exitCode, 0, stderr.text());
+      const announced = announcedRunRecord(stderr.text());
+      const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as {
+        run_id: string;
+        caller_identity: string | null;
+        meta: { task: unknown };
+      };
+      assert.equal(manifest.run_id, announced.run_id);
+      assert.equal(manifest.caller_identity, entry.expected);
+      assert.deepEqual(manifest.meta.task, { ledger: "unchanged" });
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ensemble agent accepts caller identity and records it separately from its task", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-caller-identity-"));
+  const store = path.join(directory, "records");
+  const stderr = new CaptureStream();
+  try {
+    const exitCode = await runEnsembleCli(
+      ["agent", "--engine=codex", "--task=ledger-task", "--caller-identity=session:agent", "prompt"],
+      {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: store,
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ENSEMBLE_CALLER_IDENTITY: "session:environment" },
+        createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "done"), 1, options)
+      }
+    );
+
+    assert.equal(exitCode, 0, stderr.text());
+    const announced = announcedRunRecord(stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as {
+      caller_identity: string | null;
+      meta: { task: unknown };
+    };
+    assert.equal(manifest.caller_identity, "session:agent");
+    assert.equal(manifest.meta.task, "ledger-task");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("the launcher announces the sentinel path before workers spawn and writes it on success", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-"));
@@ -470,6 +561,47 @@ test("ensemble agent preserves successful schema-validated null stdout equivalen
   assert.equal(directStdout.text(), scriptedStdout.text());
 });
 
+test("ensemble agent makes a missing worker result a failed terminal run with a sentinel", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-no-dispatch-"));
+  const runRecordDir = path.join(directory, "records");
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  // This runtime returns the value a collapsed direct-agent workflow used to
+  // print as a clean `null`, but supplies no completed-worker evidence. The
+  // launcher must make that absence supervisor-legible rather than treating
+  // it as the valid schema-null result covered above.
+  const runtime = fakeRuntime();
+  runtime.agent = (async () => null) as unknown as EnsembleRuntime["agent"];
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "missing worker result"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => runtime
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(stdout.text(), '{"partial":true,"reason":"failed","completed":[]}\n');
+  assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
+  const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+    schema_version: number;
+    kind: string;
+    outcome: string;
+    exit_code: number;
+    ended_at: string;
+  };
+  assert.deepEqual(sentinel, {
+    schema_version: 1,
+    kind: "completion_sentinel",
+    outcome: "failed",
+    exit_code: 1,
+    ended_at: sentinel.ended_at
+  });
+});
+
 test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
   const schema = {
     type: "object",
@@ -863,13 +995,29 @@ test("CLI reports usage errors without a stack trace", async () => {
   assert.equal(
     stderr.text(),
     "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );
+});
+
+test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
+  for (const argv of [
+    ["--caller-identity", "   ", "workflow.js"],
+    ["agent", "--engine=codex", "--caller-identity", "\t", "prompt"]
+  ]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(argv, { stdout, stderr });
+
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.match(stderr.text(), /--caller-identity must be a non-empty string/);
+    assert.doesNotMatch(stderr.text(), /\n\s+at /, "usage errors print without a stack trace");
+  }
 });
 
 test("CLI wires per-engine budget ceilings into the workflow runtime", async () => {
@@ -1442,22 +1590,25 @@ test("CLI still prints null for a script with no top-level return", async () => 
   assert.equal(stdout.text(), "null\n");
 });
 
-test("CLI entrypoint runs when invoked through a symlinked binary", async () => {
+test("CLI entrypoint keeps exact usage streams under hostile colour variables", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-bin-"));
   const binPath = path.join(directory, "ensemble");
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   await symlink(entrypointPath, binPath);
 
-  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8" });
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: "3", NO_COLOR: "1" };
+  delete childEnv.FORCE_COLOR;
+  delete childEnv.NO_COLOR;
+  const result = spawnSync(process.execPath, [binPath], { encoding: "utf8", env: childEnv });
 
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n"
   );

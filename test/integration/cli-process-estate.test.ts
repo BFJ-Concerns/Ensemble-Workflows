@@ -9,6 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
+import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -16,6 +17,26 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
+
+test("estate-spawned Node children preserve exact streams under hostile colour variables", async () => {
+  const result = await runNode(
+    [bundledCliPath],
+    {
+      ...process.env,
+      FORCE_COLOR: "3",
+      NO_COLOR: "1"
+    }
+  );
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]\n" +
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+    "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]\n" +
+    "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+    "       ensemble workflows\n");
+});
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
@@ -1308,6 +1329,108 @@ test("ensemble agent reports retry exhaustion as a failed partial run through th
   }
 });
 
+test("ensemble agent gives a supervisor terminal evidence in foreground and redirected-background runs", async () => {
+  const schema = {
+    type: "object",
+    required: ["finding"],
+    additionalProperties: false,
+    properties: { finding: { type: "string" } }
+  };
+  const cases: Array<{
+    name: string;
+    response: string;
+    args: string[];
+    exitCode: number;
+    stdout: string;
+    outcome: "complete" | "failed";
+    error?: RegExp;
+    agentStatus: "complete" | "failed" | null;
+  }> = [
+    {
+      name: "schema-valid null success",
+      response: "null",
+      args: ["agent", "--engine=codex", `--schema=${JSON.stringify({ type: "null" })}`, "return no finding"],
+      exitCode: 0,
+      stdout: "null\n",
+      outcome: "complete",
+      agentStatus: "complete"
+    },
+    {
+      // This is deliberately a policy-rejected pre-dispatch case, rather
+      // than a reproduction of the intermittent incident. Its discriminators
+      // are the fail-closed diagnostic and the absent agent record below;
+      // exit status and stdout only establish the supervisor-facing terminal
+      // surfaces for that known rejection.
+      name: "pre-dispatch strip rejection",
+      response: "unused",
+      args: ["agent", "--engine=opencode", "--strip=skills", "must not dispatch"],
+      exitCode: 1,
+      stdout: '{"partial":true,"reason":"failed","completed":[]}\n',
+      outcome: "failed",
+      error: /The worker was not dispatched/,
+      agentStatus: null
+    },
+    {
+      name: "worker failure",
+      response: "not JSON",
+      args: ["agent", "--engine=codex", `--schema=${JSON.stringify(schema)}`, "return a finding"],
+      exitCode: 1,
+      stdout: '{"partial":true,"reason":"failed","completed":[]}\n',
+      outcome: "failed",
+      error: /Agent exhausted its attempts without producing a result/,
+      agentStatus: "failed"
+    }
+  ];
+
+  for (const shape of ["foreground", "redirected-background"] as const) {
+    for (const terminal of cases) {
+      const fixture = await createProcessFixture(
+        `single-agent-supervisor-${shape}-${terminal.name.replaceAll(" ", "-")}`,
+        terminal.response
+      );
+      try {
+        const result =
+          shape === "foreground"
+            ? await fixture.runArgsWithEnv(terminal.args, { ENSEMBLE_RUN_RECORD: "1" })
+            : await fixture.runRedirectedBackgroundArgs(terminal.args, { ENSEMBLE_RUN_RECORD: "1" });
+
+        assert.equal(result.code, terminal.exitCode, `${shape} ${terminal.name}: ${result.stderr}`);
+        assert.equal(result.stdout, terminal.stdout, `${shape} ${terminal.name}: ${result.stderr}`);
+        if (terminal.error !== undefined) {
+          assert.match(result.stderr, terminal.error, `${shape} ${terminal.name}`);
+        }
+        const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+        assert.ok(announced, `${shape} ${terminal.name}: sentinel path must be announced\n${result.stderr}`);
+        const runDirectory = path.dirname(announced[1]!);
+        const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+          outcome: string;
+          exit_code: number;
+        };
+        assert.equal(sentinel.outcome, terminal.outcome, `${shape} ${terminal.name}`);
+        assert.equal(sentinel.exit_code, terminal.exitCode, `${shape} ${terminal.name}`);
+
+        const resultRecord = JSON.parse(await readFile(path.join(runDirectory, "result.json"), "utf8")) as {
+          status: string;
+          exit_code: number;
+          value: unknown;
+        };
+        assert.equal(resultRecord.status, terminal.outcome, `${shape} ${terminal.name}`);
+        assert.equal(resultRecord.exit_code, terminal.exitCode, `${shape} ${terminal.name}`);
+        assert.deepEqual(resultRecord.value, JSON.parse(terminal.stdout), `${shape} ${terminal.name}`);
+
+        const agentPaths = (await readdir(runDirectory, { recursive: true })).filter((entry) => path.basename(entry) === "agent.json");
+        assert.equal(agentPaths.length, terminal.agentStatus === null ? 0 : 1, `${shape} ${terminal.name}`);
+        if (terminal.agentStatus !== null) {
+          const agent = JSON.parse(await readFile(path.join(runDirectory, agentPaths[0]!), "utf8")) as { status: string };
+          assert.equal(agent.status, terminal.agentStatus, `${shape} ${terminal.name}`);
+        }
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  }
+});
+
 test("built CLI retries a scoped overload and archives the provider diagnostic", async () => {
   const fixture = await createProcessFixture("scoped-overload-retry", "recovered");
   const recordStore = path.join(path.dirname(fixture.script), "records");
@@ -2037,6 +2160,10 @@ interface ProcessFixture {
     overrides: NodeJS.ProcessEnv,
     timeoutMs?: number,
   ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+  runRedirectedBackgroundArgs: (
+    args: string[],
+    overrides: NodeJS.ProcessEnv,
+  ) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runNodeArgsWithEnv: (
     args: string[],
     overrides: NodeJS.ProcessEnv,
@@ -2087,6 +2214,29 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>
       runNode([bundledCliPath, ...args], { ...env, ...overrides }, timeoutMs),
+    runRedirectedBackgroundArgs: async (args, overrides) => {
+      const stdoutPath = path.join(directory, "redirected-stdout.txt");
+      const stderrPath = path.join(directory, "redirected-stderr.txt");
+      const result = await runProcess(
+        "bash",
+        [
+          "-c",
+          'node_path=$1; cli_path=$2; stdout_path=$3; stderr_path=$4; shift 4; "$node_path" "$cli_path" "$@" >"$stdout_path" 2>"$stderr_path" & child=$!; wait "$child"',
+          "ensemble-redirected-background",
+          process.execPath,
+          bundledCliPath,
+          stdoutPath,
+          stderrPath,
+          ...args
+        ],
+        { ...env, ...overrides }
+      );
+      return {
+        code: result.code,
+        stdout: await readFile(stdoutPath, "utf8"),
+        stderr: await readFile(stderrPath, "utf8")
+      };
+    },
     runNodeArgsWithEnv: (args, overrides, timeoutMs) =>
       runNode(args, { ...env, ...overrides }, timeoutMs),
     runWithEnv: (overrides) => runNode([bundledCliPath, script], { ...env, ...overrides }),
@@ -2105,42 +2255,9 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
 }
 
 async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
-  const reader = [
-    'const { readdirSync, readFileSync } = require("node:fs");',
-    'const { join, basename } = require("node:path");',
-    'const root = process.argv[1];',
-    'const agents = readdirSync(root, { recursive: true })',
-    '  .filter((entry) => basename(entry) === "agent.json")',
-    '  .map((entry) => JSON.parse(readFileSync(join(root, entry), "utf8")));',
-    'process.stdout.write(JSON.stringify(agents));'
-  ].join("\n");
-  const result = await runProcess(process.execPath, ["-e", reader, dataHome], process.env);
+  const result = await runNode([path.resolve("test/consumers/read-archived-agents.mjs"), dataHome]);
   assert.equal(result.code, 0, result.stderr);
   return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
-}
-
-async function executablePath(name: string): Promise<string> {
-  const result = await runProcess("which", [name], process.env);
-  assert.equal(result.code, 0, `required executable ${name} is unavailable: ${result.stderr}`);
-  return result.stdout.trim();
-}
-
-function runProcess(
-  command: string,
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => (stdout += chunk));
-    child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
-  });
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
@@ -2154,13 +2271,6 @@ function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {
   // runner's own per-run temp store) would silently win over it.
   delete env.ENSEMBLE_RUN_RECORD_DIR;
   return env;
-}
-
-async function findOnlyFile(root: string, basename: string): Promise<string> {
-  const entries = await readdir(root, { recursive: true });
-  const matches = entries.filter((entry) => path.basename(entry) === basename);
-  assert.equal(matches.length, 1, `expected one ${basename}, found ${matches.length}`);
-  return path.join(root, matches[0] ?? "");
 }
 
 async function loadOnlyAgentRecord(recordStore: string): Promise<RecordedAgent> {
@@ -2178,30 +2288,4 @@ async function waitForFile(file: string): Promise<void> {
     }
   }
   throw new Error(`file never appeared: ${file}`);
-}
-
-async function runNode(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-  timeoutMs?: number,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
-      cwd: process.cwd(),
-      env,
-      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      resolve({ code, stdout, stderr });
-    });
-  });
 }

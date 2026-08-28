@@ -170,6 +170,8 @@ export interface TurnStartOptions {
 
 export interface ThreadStartOptions {
   cwd?: string;
+  /** Requested model for the ephemeral thread whose response reports its resolved identity. */
+  model?: string;
 }
 
 export interface RuntimeTransport {

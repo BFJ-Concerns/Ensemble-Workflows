@@ -14423,35 +14423,22 @@ var MODELS = [
     }
   },
   {
-    key: "gemma-4-31b-qat-standard",
-    providerModel: "local/Gemma-4-31B-QAT-Standard",
-    displayName: "Gemma 4 31B QAT Standard",
+    key: "qwen-3-8-27b",
+    providerModel: "local/Qwen3.8-27B",
+    displayName: "Qwen 3.8 27B",
     provider: "local",
-    family: "gemma",
+    family: "qwen",
     capabilities: {
-      vision: true
+      vision: false
     },
     billing: {
       mode: "self-hosted"
     }
   },
   {
-    key: "gemma-4-31b-qat-heretic",
-    providerModel: "local/Gemma-4-31B-QAT-Heretic",
-    displayName: "Gemma 4 31B QAT Heretic",
-    provider: "local",
-    family: "gemma",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    }
-  },
-  {
-    key: "qwen-3-6-27b-standard",
-    providerModel: "local/Qwen3.6-27B-Standard",
-    displayName: "Qwen 3.6 27B Standard",
+    key: "qwen-3-8-27b-heretic-ara",
+    providerModel: "local/Qwen3.8-27B-heretic-ara",
+    displayName: "Qwen 3.8 27B heretic-ara",
     provider: "local",
     family: "qwen",
     capabilities: {
@@ -14462,11 +14449,11 @@ var MODELS = [
     }
   },
   {
-    key: "qwen-3-6-27b-heretic-neo-code",
-    providerModel: "local/Qwen3.6-27B-Heretic-NEO-CODE",
-    displayName: "Qwen 3.6 27B Heretic NEO-CODE",
+    key: "muse-glimmer-30b",
+    providerModel: "local/Muse-Glimmer-30B",
+    displayName: "Muse Glimmer 30B",
     provider: "local",
-    family: "qwen",
+    family: "muse-glimmer",
     capabilities: {
       vision: true
     },
@@ -17892,8 +17879,8 @@ var ClaudeEngineAdapter = class {
    * deny rules ride the per-dispatch settings file the control plane
    * already writes (the one surface measured to reach the daemon-served
    * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — a live test
-   * asserts that at the worker itself.
+   * mode, `--dangerously-skip-permissions` included — the live tests
+   * assert that at the worker itself.
    */
   capabilities = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },

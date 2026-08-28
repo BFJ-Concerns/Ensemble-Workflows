@@ -6,10 +6,9 @@ import { defaultOpenCodeModelRegistry } from "../../src/opencode-model-registry.
 test("registry resolves entries by curated key", () => {
   const expected = [
     ["glm-5.2", "openrouter/z-ai/glm-5.2", "glm", false, "pay-as-you-go"],
-    ["gemma-4-31b-qat-standard", "local/Gemma-4-31B-QAT-Standard", "gemma", true, "self-hosted"],
-    ["gemma-4-31b-qat-heretic", "local/Gemma-4-31B-QAT-Heretic", "gemma", true, "self-hosted"],
-    ["qwen-3-6-27b-standard", "local/Qwen3.6-27B-Standard", "qwen", true, "self-hosted"],
-    ["qwen-3-6-27b-heretic-neo-code", "local/Qwen3.6-27B-Heretic-NEO-CODE", "qwen", true, "self-hosted"]
+    ["qwen-3-8-27b", "local/Qwen3.8-27B", "qwen", false, "self-hosted"],
+    ["qwen-3-8-27b-heretic-ara", "local/Qwen3.8-27B-heretic-ara", "qwen", true, "self-hosted"],
+    ["muse-glimmer-30b", "local/Muse-Glimmer-30B", "muse-glimmer", true, "self-hosted"]
   ] as const;
 
   for (const [key, providerModel, family, vision, billingMode] of expected) {
@@ -32,9 +31,8 @@ test("registry resolves entries by provider model id", () => {
 test("registry names list only curated keys", () => {
   assert.deepEqual(defaultOpenCodeModelRegistry.names(), [
     "glm-5.2",
-    "gemma-4-31b-qat-standard",
-    "gemma-4-31b-qat-heretic",
-    "qwen-3-6-27b-standard",
-    "qwen-3-6-27b-heretic-neo-code"
+    "qwen-3-8-27b",
+    "qwen-3-8-27b-heretic-ara",
+    "muse-glimmer-30b"
   ]);
 });

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { AmbientConfigError, CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
@@ -80,10 +80,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       }
     });
   } catch (error) {
+    // Usage policy, spanning every invocation kind: a rejected named option
+    // is its own one-line diagnostic — appending the usage dump would bury
+    // the line the author must act on. The usage text belongs to exactly
+    // one failure: an invocation that named no work at all (below).
     stderr.write(`${formatError(error)}\n`);
-    if (!(error instanceof AmbientConfigError)) {
-      stderr.write(usage());
-    }
     return 2;
   }
 
@@ -530,20 +531,28 @@ async function parseInvocation(argv: string[], cwd: string, stdin: Readable): Pr
 
 async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv);
-  const parsed = parseArgs({
-    args: split.tuningArgs,
-    options: {
-      "json-args": { type: "string" },
-      budget: { type: "string", multiple: true },
-      "agent-ceiling": { type: "string" },
-      concurrency: { type: "string", multiple: true },
-      timeout: { type: "string" },
-      strip: { type: "string", multiple: true },
-      "caller-identity": { type: "string" }
-    },
-    strict: true,
-    allowPositionals: false
-  });
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: split.tuningArgs,
+      options: {
+        "json-args": { type: "string" },
+        budget: { type: "string", multiple: true },
+        "agent-ceiling": { type: "string" },
+        concurrency: { type: "string", multiple: true },
+        timeout: { type: "string" },
+        strip: { type: "string", multiple: true },
+        "caller-identity": { type: "string" }
+      },
+      strict: true,
+      allowPositionals: false
+    });
+  } catch (error) {
+    // Same rendering contract as the agent path: a parseArgs rejection is
+    // an author-facing usage error — one clean line, never a stack.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliUsageError(message);
+  }
 
   const jsonArgs = parsed.values["json-args"];
   const positionalArgs = split.scriptArg === undefined ? [] : split.scriptArgs;

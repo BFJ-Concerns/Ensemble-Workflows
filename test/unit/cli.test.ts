@@ -883,7 +883,7 @@ test("ensemble agent reports option mistakes as stack-free usage errors", async 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
   assert.match(stderr.text(), /Unknown option '--unknown'/);
-  assert.match(stderr.text(), /ensemble agent --engine/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
   assert.doesNotMatch(stderr.text(), /\n\s+at /);
 });
 
@@ -980,11 +980,11 @@ test("CLI reports an unreadable --json-args @file as a usage error", async () =>
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
   assert.match(stderr.text(), /--json-args could not read .*missing\.json/);
-  assert.match(stderr.text(), /Usage: ensemble/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
   assert.doesNotMatch(stderr.text(), /\n\s+at /);
 });
 
-test("CLI reports usage errors without a stack trace", async () => {
+test("CLI reports a rejected option as exactly one line, exit 2", async () => {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
 
@@ -992,16 +992,10 @@ test("CLI reports usage errors without a stack trace", async () => {
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.equal(
-    stderr.text(),
-    "Unknown option before script path: --unknown\n" +
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
-      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
-      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-      "       ensemble workflows\n"
-  );
+  // The whole rejection surface: the named diagnostic alone. Usage belongs
+  // to the invocation that named no work at all (the bin entrypoint test),
+  // never to an option mistake, where it buries the actionable line.
+  assert.equal(stderr.text(), "Unknown option before script path: --unknown\n");
 });
 
 test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
@@ -1370,7 +1364,7 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.match(stderr.text(), /Workflow interrupted by SIGINT/);
 });
 
-test("CLI rejects a non-numeric --timeout with the usage line and exit code 2", async () => {
+test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-bad-"));
   const script = path.join(directory, "workflow.js");
   await writeFile(script, `export const meta = { name: "cli-timeout-bad" }; return "ok";`);
@@ -1388,7 +1382,7 @@ test("CLI rejects a non-numeric --timeout with the usage line and exit code 2", 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
   assert.match(stderr.text(), /--timeout value must be a positive integer of milliseconds/);
-  assert.match(stderr.text(), /Usage: ensemble/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
 });
 
 test("CLI returns non-zero and writes errors to stderr when the script throws", async () => {

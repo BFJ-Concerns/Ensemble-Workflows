@@ -13022,6 +13022,7 @@ var CONFIG_SCHEMA_VERSION = 1;
 var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
+var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 var AmbientConfigError = class extends Error {
   constructor(message) {
     super(message);
@@ -13784,6 +13785,7 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "run_manifest",
       run_id: runId,
       run_uuid: options.runUuid,
+      caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
       started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
@@ -25450,6 +25452,7 @@ async function runEnsembleCli(argv, options = {}) {
     progress = runtime.progress;
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
+    const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
     const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
@@ -25470,9 +25473,11 @@ async function runEnsembleCli(argv, options = {}) {
         workflowSource: prepared.source,
         args: prepared.recordArgs,
         cliFlags: cliFlags(invocation),
+        ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress)
       });
       runtime.setRunRecorder?.(runRecordWriter);
+      announceRunRecord(runRecordWriter, stderr);
     }
     const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
@@ -25753,7 +25758,8 @@ async function parseWorkflowInvocation(argv, cwd) {
       "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" },
-      strip: { type: "string", multiple: true }
+      strip: { type: "string", multiple: true },
+      "caller-identity": { type: "string" }
     },
     strict: true,
     allowPositionals: false
@@ -25766,6 +25772,7 @@ async function parseWorkflowInvocation(argv, cwd) {
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -25775,7 +25782,8 @@ async function parseWorkflowInvocation(argv, cwd) {
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
-    ...strip !== void 0 ? { strip } : {}
+    ...strip !== void 0 ? { strip } : {},
+    ...callerIdentity !== void 0 ? { callerIdentity } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
@@ -25800,7 +25808,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
         concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" }
+        timeout: { type: "string" },
+        "caller-identity": { type: "string" }
       },
       strict: true,
       allowPositionals: true
@@ -25829,6 +25838,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -25851,7 +25861,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     ...budgetCeilings !== void 0 ? { budgetCeilings } : {},
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
-    ...timeoutMs !== void 0 ? { timeoutMs } : {}
+    ...timeoutMs !== void 0 ? { timeoutMs } : {},
+    ...callerIdentity !== void 0 ? { callerIdentity } : {}
   };
 }
 async function readPrompt(stdin) {
@@ -25925,10 +25936,10 @@ function splitTuningFlags(argv) {
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -26031,12 +26042,35 @@ function parseMaxAttempts(value) {
   }
   return maxAttempts;
 }
+function parseCallerIdentity(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value.trim().length === 0) {
+    throw new CliUsageError("--caller-identity must be a non-empty string");
+  }
+  return value;
+}
+function resolveCallerIdentity(flag, env) {
+  if (flag !== void 0) {
+    return flag;
+  }
+  const inherited = env[CALLER_IDENTITY_ENV];
+  return inherited !== void 0 && inherited.trim().length > 0 ? inherited : void 0;
+}
+function announceRunRecord(writer, stderr) {
+  try {
+    stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}
+`);
+  } catch {
+  }
+}
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

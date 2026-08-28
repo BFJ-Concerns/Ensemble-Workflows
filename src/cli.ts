@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { AmbientConfigError, resolveAmbientSettings } from "./ambient-settings.js";
+import { AmbientConfigError, CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
@@ -123,6 +123,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
     const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     const runtimeRunId = progress?.runId ?? "unknown-run";
+    const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
 
     // Announce the sentinel path before any worker spawns. The store
     // directory resolves independently of the ambient record on/off switch:
@@ -153,9 +154,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workflowSource: prepared.source,
         args: prepared.recordArgs,
         cliFlags: cliFlags(invocation),
+        ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
+      announceRunRecord(runRecordWriter, stderr);
     }
 
     const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
@@ -346,6 +349,8 @@ interface InvocationTuning {
   timeoutMs?: number;
   /** Run-wide capability strip, united with each call's own list. */
   strip?: StrippableCapability[];
+  /** Optional opaque identity of the process or session that invoked this run. */
+  callerIdentity?: string;
 }
 
 interface ParsedWorkflowInvocation extends InvocationTuning {
@@ -533,7 +538,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
       "agent-ceiling": { type: "string" },
       concurrency: { type: "string", multiple: true },
       timeout: { type: "string" },
-      strip: { type: "string", multiple: true }
+      strip: { type: "string", multiple: true },
+      "caller-identity": { type: "string" }
     },
     strict: true,
     allowPositionals: false
@@ -547,6 +553,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
   const concurrencyCaps = parseEngineMap(parsed.values.concurrency, parseConcurrencyCap, "--concurrency");
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
 
   return {
     kind: "workflow",
@@ -557,7 +564,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
     ...(agentCeiling !== undefined ? { agentCeiling } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(strip !== undefined ? { strip } : {})
+    ...(strip !== undefined ? { strip } : {}),
+    ...(callerIdentity !== undefined ? { callerIdentity } : {})
   };
 }
 
@@ -583,7 +591,8 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
         budget: { type: "string", multiple: true },
         "agent-ceiling": { type: "string" },
         concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" }
+        timeout: { type: "string" },
+        "caller-identity": { type: "string" }
       },
       strict: true,
       allowPositionals: true
@@ -617,6 +626,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const strip = parseStripList(parsed.values.strip);
+  const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -642,7 +652,8 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     ...(budgetCeilings !== undefined ? { budgetCeilings } : {}),
     ...(agentCeiling !== undefined ? { agentCeiling } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
-    ...(timeoutMs !== undefined ? { timeoutMs } : {})
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(callerIdentity !== undefined ? { callerIdentity } : {})
   };
 }
 
@@ -735,7 +746,8 @@ function isKnownOption(value: string): boolean {
     value === "--agent-ceiling" ||
     value === "--concurrency" ||
     value === "--timeout" ||
-    value === "--strip"
+    value === "--strip" ||
+    value === "--caller-identity"
   );
 }
 
@@ -746,7 +758,8 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--agent-ceiling=") ||
     value.startsWith("--concurrency=") ||
     value.startsWith("--timeout=") ||
-    value.startsWith("--strip=")
+    value.startsWith("--strip=") ||
+    value.startsWith("--caller-identity=")
   );
 }
 
@@ -872,12 +885,39 @@ function parseMaxAttempts(value: string | undefined): number | undefined {
   return maxAttempts;
 }
 
+function parseCallerIdentity(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value.trim().length === 0) {
+    throw new CliUsageError("--caller-identity must be a non-empty string");
+  }
+  return value;
+}
+
+function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+  if (flag !== undefined) {
+    return flag;
+  }
+  const inherited = env[CALLER_IDENTITY_ENV];
+  return inherited !== undefined && inherited.trim().length > 0 ? inherited : undefined;
+}
+
+function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
+  try {
+    stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}\n`);
+  } catch {
+    // The archive already exists. A broken supervision stream must not turn a
+    // durable-record success into a failed run.
+  }
+}
+
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     ""

@@ -19,7 +19,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] \
   [--fallback-model <model>] [--label <label>] [--phase <phase>] [--cwd <path>] \
   [--isolation worktree] [--identity] [--schema '<json>'|@file] \
-  [--max-attempts N] [--strip capability] [--task <identity>] \
+  [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
@@ -38,6 +38,9 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
   `timeoutMs` inside the script. At most 2147483647 (the 32-bit timer bound);
   a larger value is a usage error.
+- `--caller-identity <identity>` records the opaque identity of the invoking
+  session. It applies to both workflow and direct-agent runs and outranks
+  `ENSEMBLE_CALLER_IDENTITY` when both are supplied.
 - `agent` runs one worker without a script. Supply its prompt as the final
   argument, or omit the argument and pipe the prompt on stdin. `--schema`
   accepts inline JSON or `@file` and prints the same validated value that
@@ -139,6 +142,10 @@ Environment variables are `ENSEMBLE_AGENT_CEILING`,
 `ENSEMBLE_CONCURRENCY_CODEX`, `ENSEMBLE_CONCURRENCY_CLAUDE`,
 `ENSEMBLE_CONCURRENCY_OPENCODE`, `ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, and `ENSEMBLE_STATUS_DIR`.
+`ENSEMBLE_CALLER_IDENTITY` is separate from those runtime settings: when
+present, it records the invoking session's opaque identity in the manifest;
+an explicit `--caller-identity` wins. With neither, `caller_identity` is
+`null`, and this does not change the manifest's `meta.task` grouping key.
 `ENSEMBLE_AGENT_CEILING=null` explicitly restores an unbounded run over a
 machine-file value. Other values that are not positive integers, including `0`,
 fail loudly.
@@ -248,7 +255,7 @@ unknown values throw before any worker spawns.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are judged `absent` on Codex — its app-server tool surface has no skill system and no subagent tool, so the request is satisfied by construction and recorded as such. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file; deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses) | both **throw before the worker spawns**: no measured config route strips them yet, and a restriction asked for but not enforced must never dispatch silently |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are judged `absent` on Codex — its app-server tool surface has no skill system and no subagent tool, so the request is satisfied by construction and recorded as such. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file; deny is expected to outrank every allow layer and permission mode | both **throw before the worker spawns**: no measured config route strips them yet, and a restriction asked for but not enforced must never dispatch silently |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -339,6 +346,11 @@ recording is disabled: the sentinel is supervision surface, not archive, so
 the run directory is created for it alone. An uncatchable kill of the
 launcher leaves no sentinel — a supervisor should keep a scheduled fallback
 timer behind its filesystem watch rather than trusting the file absolutely.
+
+**Archive announcement.** When durable recording is enabled, startup also
+prints one `[run-record-archive] ` line followed by JSON with `run_id` and
+`archive_path`. A tracker can parse that one line to resolve the archive the
+same process has just created; an announcement failure does not fail the run.
 
 ## Return contract and failure modes
 

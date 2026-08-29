@@ -17,6 +17,9 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
+// This only catches a wedged fixture process. It is not a product deadline and
+// must leave room for the gate's many process estates to contend for the host.
+const estateProcessHangGuardMs = 30_000;
 
 test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child", async () => {
   // The self-arming journey for the hermetic spawn environment: hostile
@@ -526,7 +529,7 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
         ENSEMBLE_RUN_RECORD: "1",
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${delayedAgentWritePreloadPath}`.trim()
       },
-      5_000
+      estateProcessHangGuardMs
     );
 
     assert.equal(result.code, 1, result.stderr);
@@ -1946,7 +1949,7 @@ test("built CLI lets the app-server complete a turn when its notification says i
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -2007,7 +2010,7 @@ test("built CLI rejects a broken app-server retry promise with its last diagnost
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 1, `guard did not reject before the test kill switch\n${result.stderr}`);
@@ -2072,7 +2075,7 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
       {
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([progressSequence])
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -2121,7 +2124,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);

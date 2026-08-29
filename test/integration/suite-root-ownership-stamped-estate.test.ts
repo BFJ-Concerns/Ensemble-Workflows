@@ -57,7 +57,7 @@ function startSuite(temporaryRoot: string, environment: NodeJS.ProcessEnv = {}) 
     child,
     completed: new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code) => resolve({ code, output }));
+      child.once("close", (code) => resolve({ code, output }));
     })
   };
 }

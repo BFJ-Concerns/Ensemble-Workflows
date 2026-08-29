@@ -11,6 +11,9 @@ const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensem
 const appServerFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const deadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-first-output-deadline.mjs");
 const schemaCodexPath = spawnSync("which", ["codex"], { encoding: "utf8" }).stdout.trim();
+// This only catches a wedged fixture process. The assertions below are driven
+// by protocol markers, so ordinary gate contention must not become a deadline.
+const estateProcessHangGuardMs = 30_000;
 
 interface ProcessResult {
   code: number | null;
@@ -140,8 +143,7 @@ async function createFixture() {
       export const meta = { name: "first-delta-liveness-signal" };
       return await agent("exercise first-output liveness", {
         engine: "codex",
-        maxAttempts: 1,
-        timeoutMs: 5_000 // Harness hang guard, not an assertion deadline.
+        maxAttempts: 1
       });
     `
   );
@@ -164,7 +166,7 @@ async function createFixture() {
           XDG_DATA_HOME: path.join(directory, "data"),
           ...overrides
         },
-        6_000 // Harness hang guard, not an assertion deadline.
+        estateProcessHangGuardMs
       ),
     onlyAttempt: async (): Promise<RecordedAttempt> => {
       const recordPath = await findOnlyFile(recordStore, "agent.json");

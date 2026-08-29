@@ -142,17 +142,33 @@ export class CodexEngineAdapter implements EngineAdapter {
   readonly name = "codex" satisfies EngineName;
   readonly concurrency: number;
   /**
-   * Both named minimum capabilities are judged `absent` on Codex: the
-   * app-server tool surface (shell, apply_patch, web search, view image,
-   * MCP) has no skill system and no subagent tool, so there is nothing to
-   * strip and the request is satisfied by construction. The judgement is
-   * dated (2026-08-27, Codex CLI 0.5x app-server): a Codex release that
-   * grows either capability re-opens it — the recorded `absent` route in
-   * the archive is what makes that auditable.
+   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
+   * model provider:
+   *
+   * - `agents` strips through the per-thread `thread/start` config overlay:
+   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
+   *   tool namespace from the tool schema Codex sends the model, per
+   *   thread, without leaking between sibling threads on one app-server
+   *   process. The key is `--strict-config`-validated but undocumented,
+   *   and its failure mode on a Codex rename would be silent — a live test
+   *   against a real worker is what re-checks this judgement per release.
+   * - `skills` cannot be stripped mechanically: there is no skills tool in
+   *   the app-server surface — skills arrive as prompt text plus
+   *   filesystem paths, and the per-thread lever that removes a skill
+   *   from the listing leaves its files shell-readable. A strip request
+   *   therefore fails loud rather than claiming a satisfaction the engine
+   *   cannot deliver.
    */
   readonly capabilities: EngineCapabilityTable = {
-    skills: { route: "absent", detail: "the Codex app-server tool surface has no skill system" },
-    agents: { route: "absent", detail: "the Codex app-server tool surface has no subagent tool" }
+    skills: {
+      route: "unsupported",
+      detail:
+        "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+    },
+    agents: {
+      route: "config",
+      detail: "thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+    }
   };
 
   #transport: RuntimeTransport;
@@ -212,9 +228,16 @@ class CodexEngineInvocation implements EngineInvocation {
     cwd: string | undefined,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
+    // The overlay is sent only when this dispatch strips: an unstripped
+    // worker's thread/start stays byte-identical, keeping whatever default
+    // tool surface the machine's own config.toml gives it (stripping is opt-in
+    // in both directions — a strip removes nothing unasked, and its
+    // absence grants nothing the machine had turned off).
+    const strippedAgents = this.#options.strip?.includes("agents") === true;
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
-      ...(this.#options.model !== undefined ? { model: this.#options.model } : {})
+      ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
+      ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
     });
 
     return this.#transport.runTurn(threadId, prompt, {

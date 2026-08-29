@@ -192,6 +192,18 @@ export interface ThreadStartOptions {
   cwd?: string;
   /** Requested model for the ephemeral thread whose response reports its resolved identity. */
   model?: string;
+  /**
+   * Per-thread configuration overlay, sent as `thread/start`'s `config`
+   * field. The app server applies it over the machine's own `config.toml`
+   * for this one thread — sibling threads on the same process are
+   * unaffected, and the overlay wins over process-level config in both
+   * directions. The Codex capability-stripping route rides this
+   * (`{ agents: { enabled: false } }` removes the collaboration tool
+   * namespace from what Codex sends the model); it is sent only when a
+   * dispatch asks for it, so an unstripped worker's thread/start stays
+   * byte-identical and keeps the machine's own default tool surface.
+   */
+  threadConfig?: Record<string, unknown>;
 }
 
 export interface RuntimeTransport {

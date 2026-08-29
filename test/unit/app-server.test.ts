@@ -918,6 +918,36 @@ test("Codex app-server sends full access explicitly on the thread and every turn
   }
 });
 
+test("Codex app-server sends a thread config overlay only when one is given", async () => {
+  // The capability-stripping route: thread/start's `config` field is a
+  // per-thread overlay of the machine's config.toml. The full-params
+  // assertion above pins the unstripped shape carrying no `config` key.
+  const codexBin = await fakeCodexTurnServer();
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+  try {
+    const threadId = await transport.openThread({ threadConfig: { agents: { enabled: false } } });
+    const result = await transport.runTurn(threadId, "hello?", {});
+    const transcript = result.transcripts?.[0]?.content;
+    assert.ok(transcript);
+    const events = transcript
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
+    const threadStart = events.find((event) => event.method === "thread/start");
+
+    assert.deepEqual(threadStart?.params?.config, { agents: { enabled: false } });
+  } finally {
+    await transport.close();
+  }
+});
+
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
   options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string; servedModel?: string | null } = {}

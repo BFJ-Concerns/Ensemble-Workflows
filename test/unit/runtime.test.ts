@@ -1715,9 +1715,10 @@ test("run-wide and per-call strips unite; a call cannot lift the run-wide one", 
 });
 
 test("an absent capability is satisfied by construction and recorded as absent", async () => {
-  // Codex's shape: the capability does not exist on the tool surface, so the
+  // The capability does not exist on the engine's tool surface, so the
   // request is vacuously met — the worker dispatches, and the archive shows
-  // the absent route rather than a silent skip.
+  // the absent route rather than a silent skip. (Injected table: no shipped
+  // adapter currently declares an absent route.)
   const records: RuntimeAgentRecord[] = [];
   const engine: EngineAdapter = {
     name: "codex",
@@ -1747,6 +1748,59 @@ test("an absent capability is satisfied by construction and recorded as absent",
     requested: ["skills"],
     enforcement: { skills: { route: "absent", detail: "no skill system" } }
   });
+  await runtime.close();
+});
+
+test("a codex agents strip rides the thread config overlay; an unstripped call sends none", async () => {
+  // The Codex enforcement route end-to-end through the real adapter: the
+  // strip becomes thread/start's per-thread config overlay, and a dispatch
+  // that asked for nothing carries no overlay at all — the machine's own
+  // default tool surface is neither restricted nor re-enabled unasked.
+  const transport = new FakeTransport([turn("restricted"), turn("unrestricted")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await runtime.agent("restricted work", { engine: "codex", strip: ["agents"] });
+  await runtime.agent("unrestricted work", { engine: "codex" });
+
+  assert.deepEqual(transport.openedThreads[0]?.threadConfig, { agents: { enabled: false } });
+  assert.ok(!("threadConfig" in (transport.openedThreads[1] ?? {})));
+  assert.deepEqual(records[0]?.strip, {
+    requested: ["agents"],
+    enforcement: {
+      agents: {
+        route: "config",
+        detail: "thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+      }
+    }
+  });
+  await runtime.close();
+});
+
+test("a codex skills strip fails loud before any thread opens", async () => {
+  // No mechanical route exists (skills reach a Codex worker as prompt text
+  // plus shell-readable files), so the request must fail pre-spawn rather
+  // than dispatch a worker the author believes restricted.
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  await assert.rejects(
+    () => runtime.agent("never starts", { engine: "codex", strip: ["skills"] }),
+    CapabilityStripUnsupportedError
+  );
+  assert.deepEqual(transport.openedThreads, []);
   await runtime.close();
 });
 

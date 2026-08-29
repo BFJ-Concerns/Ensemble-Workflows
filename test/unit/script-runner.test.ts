@@ -1606,3 +1606,22 @@ test("an error whose stack carries no workflow frame is left entirely alone", as
   presentAuthorFrames(error);
   assert.equal(error.stack, before);
 });
+
+test("a script path containing parentheses still gets its frames rewritten", async () => {
+  // pathToFileURL leaves parentheses unencoded, so the citation scan must
+  // not regex-shape the URL — it matches registered URLs themselves.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-(parens)-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = ['export const meta = { name: "parens" };', 'throw new Error("paren boom");', ""].join("\n");
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      assert.ok(stack.includes(`${scriptPath}:2:7`), stack);
+      assert.ok(!stack.includes("ensemble-workflow-body"), stack);
+      return true;
+    }
+  );
+});

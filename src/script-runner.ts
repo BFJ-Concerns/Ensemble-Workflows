@@ -551,6 +551,17 @@ interface WorkflowModuleOrigin {
   bodyLine: number;
   bodyColumn: number;
 }
+/**
+ * The module URL is content-keyed on the wrapped body alone
+ * (`content-keyed-workflow-modules` — the key covers the served source
+ * bytes only), so two scripts at one path with identical bodies but
+ * different-length preambles share a URL while their body positions
+ * differ. Registration is last-write-wins: the latest import's origin is
+ * the one whose error is settling in the common sequential case. The
+ * residual — two such runs *concurrent* in one process, where the other
+ * run's frames could map to a plausible wrong line — is accepted and
+ * disclosed rather than traded for a keying change or a poisoned entry.
+ */
 const workflowModuleOrigins = new Map<string, WorkflowModuleOrigin>();
 
 function positionAt(source: string, offset: number): { line: number; column: number } {
@@ -878,22 +889,61 @@ interface WrappedFrameCitation {
   column: number;
 }
 
+/**
+ * Find a registered wrapped-module citation by scanning for the registered
+ * URLs themselves rather than regex-shaping a URL: `pathToFileURL` leaves
+ * characters like parentheses unencoded, so no character-class pattern can
+ * safely delimit an arbitrary author path — the registry is the authority
+ * on what a wrapped URL looks like.
+ */
 function wrappedFrameCitation(frameLine: string): WrappedFrameCitation | null {
-  const match = /(file:\/\/[^()\s]*\?ensemble-workflow-body=[0-9a-f]+):(\d+):(\d+)/.exec(frameLine);
-  if (match === null) {
-    return null;
+  for (const url of workflowModuleOrigins.keys()) {
+    const index = frameLine.indexOf(url);
+    if (index < 0) {
+      continue;
+    }
+    const position = /^:(\d+):(\d+)/.exec(frameLine.slice(index + url.length));
+    if (position === null) {
+      continue;
+    }
+    return {
+      matched: frameLine.slice(index, index + url.length + position[0].length),
+      url,
+      line: Number(position[1]),
+      column: Number(position[2])
+    };
   }
-  return { matched: match[0], url: match[1] as string, line: Number(match[2]), column: Number(match[3]) };
+  return null;
+}
+
+/**
+ * The location a frame actually cites: the last parenthesised group when
+ * one exists, the token after `at `/`at async ` otherwise. Classifying the
+ * citation — not the whole line — keeps a frame *name* that happens to
+ * contain `node:` or a runtime path from being cut.
+ */
+function citedLocationOf(frameLine: string): string | null {
+  const open = frameLine.lastIndexOf("(");
+  if (open >= 0) {
+    const close = frameLine.indexOf(")", open);
+    return close > open ? frameLine.slice(open + 1, close) : null;
+  }
+  const bare = /^\s+at\s+(?:async\s+)?(\S+)/.exec(frameLine);
+  return bare === null ? null : (bare[1] as string);
 }
 
 function citesRuntimeModule(frameLine: string): boolean {
-  if (/(?:\(|\s)node:[^)\s]+/.test(frameLine)) {
+  const cited = citedLocationOf(frameLine);
+  if (cited === null) {
+    return false;
+  }
+  if (cited.startsWith("node:")) {
     return true;
   }
-  if (frameLine.includes(runtimeModuleRootHref)) {
+  if (cited.startsWith(runtimeModuleRootHref)) {
     return true;
   }
-  return runtimeModuleRootPath !== null && frameLine.includes(runtimeModuleRootPath);
+  return runtimeModuleRootPath !== null && cited.startsWith(runtimeModuleRootPath);
 }
 
 /**

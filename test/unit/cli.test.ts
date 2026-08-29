@@ -2193,12 +2193,11 @@ test("a missing workflow script path is one clean pre-spawn line naming the path
   });
 
   assert.equal(exitCode, 1);
-  const text = stderr.text();
-  assert.ok(
-    text.includes(`WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path`),
-    text
+  // Exactly one clean line: the read fails before the sentinel announce or
+  // any worker machinery, so nothing else may reach stderr — an inclusion
+  // check would let a builder extend this surface with noisy output unseen.
+  assert.equal(
+    stderr.text(),
+    `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
   );
-  // The author's error, not the runtime's: no errno stack reaches stderr.
-  assert.ok(!text.includes("ENOENT"), text);
-  assert.ok(!/^\s+at\s/m.test(text), text);
 });

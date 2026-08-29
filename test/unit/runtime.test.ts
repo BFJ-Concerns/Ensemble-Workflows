@@ -1779,7 +1779,8 @@ test("a codex agents strip rides the thread config overlay; an unstripped call s
     enforcement: {
       agents: {
         route: "config",
-        detail: "thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+        detail:
+          "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
       }
     }
   });

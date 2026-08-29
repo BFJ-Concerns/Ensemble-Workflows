@@ -167,7 +167,8 @@ export class CodexEngineAdapter implements EngineAdapter {
     },
     agents: {
       route: "config",
-      detail: "thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+      detail:
+        "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
     }
   };
 

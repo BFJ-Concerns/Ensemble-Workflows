@@ -37,7 +37,13 @@ export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter, OpenCodeEngineAdapter } from "./engines.js";
 export { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
-export { runWorkflowScript, extractWorkflowSource, WorkflowScriptError, WorkflowTimeoutError } from "./script-runner.js";
+export {
+  runWorkflowScript,
+  extractWorkflowSource,
+  readWorkflowScript,
+  WorkflowScriptError,
+  WorkflowTimeoutError
+} from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
 export { RunRecordWriter, resolveRunDirectory } from "./run-record.js";
@@ -50,6 +56,7 @@ export {
 export type { CompletionSentinelOptions, SentinelOutcome } from "./completion-sentinel.js";
 export {
   PreSpawnAuthorError,
+  WorkflowScriptReadError,
   attachPartialWorkerText,
   partialWorkerTextOf,
   attachWorkerExitStatus,

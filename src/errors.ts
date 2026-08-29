@@ -23,6 +23,15 @@ export class PreSpawnAuthorError extends EnsembleError {}
 export class AgentOptionRejectedError extends PreSpawnAuthorError {}
 
 /**
+ * A workflow script path that cannot be read — missing, a directory, or
+ * unreadable. Pre-spawn by construction: the script's source is the first
+ * thing a run needs, so nothing has been dispatched when the read fails,
+ * and the author's fix is the path itself — the message names it and what
+ * the filesystem said, never a raw errno stack.
+ */
+export class WorkflowScriptReadError extends PreSpawnAuthorError {}
+
+/**
  * Terminalisation invariant: whatever ends a turn, the text the worker had
  * produced travels with the failure instead of dying with the turn state.
  * The carrier is a plain property so any error class can carry it without

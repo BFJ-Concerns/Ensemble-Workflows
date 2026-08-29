@@ -8,7 +8,7 @@ import { CompletionSentinel } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { PreSpawnAuthorError } from "./errors.js";
 import { createRuntime } from "./index.js";
-import { readWorkflowMeta, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
+import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
@@ -397,7 +397,7 @@ async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<Pr
   const workflowPath = path.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
-    source: await readFile(workflowPath, "utf8"),
+    source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };

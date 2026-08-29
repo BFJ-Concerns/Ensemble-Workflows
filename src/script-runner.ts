@@ -3,13 +3,13 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
 import { validateEngineDefaults } from "./engine-option-validation.js";
-import { EnsembleError, PreSpawnAuthorError } from "./errors.js";
+import { EnsembleError, PreSpawnAuthorError, WorkflowScriptReadError } from "./errors.js";
 
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { createWorkflowHooks } from "./hooks.js";
@@ -171,6 +171,10 @@ interface ExtractedWorkflow {
   /** Source of the optional `export const defaults = { … }` block, or null. */
   defaultsSource: string | null;
   bodySource: string;
+  /** The script's whole source (BOM stripped) — the text author positions resolve against. */
+  source: string;
+  /** Character offset of `bodySource`'s first character within `source`. */
+  bodyOffset: number;
 }
 
 /**
@@ -228,7 +232,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
               ...(options.env !== undefined ? { env: options.env } : {}),
               readMeta: readWorkflowMeta
             });
-            const source = await readFile(scriptPath, "utf8");
+            const source = await readWorkflowScript(scriptPath);
             // Provenance before execution, matching the dispatch-time agent
             // write: a child that dies mid-run still leaves evidence it was
             // invoked, with what source and which arguments.
@@ -288,6 +292,12 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
+    if (workflowDepth === 0) {
+      // The top level is where every wrapped module in the run — the root's
+      // and any composed child's — is already registered, so one pass
+      // rewrites the whole propagated stack for the operator.
+      presentAuthorFrames(settlement.error);
+    }
     throw settlement.error;
   }
   // Settlement-time check, on the value the body actually produced: the
@@ -370,7 +380,9 @@ export function extractWorkflowSource(source: string): ExtractedWorkflow {
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource
+    bodySource,
+    source: withoutBom,
+    bodyOffset: bodyStart
   };
 }
 
@@ -524,6 +536,57 @@ ${workflow.bodySource}
 const registeredWorkflowModules = new Map<string, string>();
 let workflowModuleLoaderRegistered = false;
 
+/**
+ * Where each registered wrapped module's author content came from, keyed by
+ * the module's full tagged URL: the author's own path, and the 1-based
+ * line/column of the body's first character in the author's file. This is
+ * what lets an error position inside the wrapped module be reported
+ * against the author's source — an openable path, the author's own line
+ * numbers. Retained alongside `registeredWorkflowModules` under the same
+ * bound (one entry per distinct body).
+ */
+interface WorkflowModuleOrigin {
+  authorPath: string;
+  source: string;
+  bodyLine: number;
+  bodyColumn: number;
+}
+const workflowModuleOrigins = new Map<string, WorkflowModuleOrigin>();
+
+function positionAt(source: string, offset: number): { line: number; column: number } {
+  let line = 1;
+  let lineStart = 0;
+  const end = Math.min(offset, source.length);
+  for (let index = 0; index < end; index += 1) {
+    if (source[index] === "\n") {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { line, column: end - lineStart + 1 };
+}
+
+/**
+ * Map a 1-based position inside the wrapped module onto the author's file.
+ * The wrapper contributes exactly two lines ahead of the body, so wrapped
+ * line 3 is the body's first (possibly partial) line and later lines map
+ * one-to-one. Positions inside the wrapper itself (lines 1–2) are the
+ * harness's, not the author's — `null`.
+ */
+function authorPositionOf(
+  origin: WorkflowModuleOrigin,
+  wrappedLine: number,
+  wrappedColumn: number
+): { line: number; column: number } | null {
+  if (wrappedLine < 3) {
+    return null;
+  }
+  if (wrappedLine === 3) {
+    return { line: origin.bodyLine, column: origin.bodyColumn + (wrappedColumn - 1) };
+  }
+  return { line: origin.bodyLine + (wrappedLine - 3), column: wrappedColumn };
+}
+
 function ensureWorkflowModuleLoader(): void {
   if (workflowModuleLoaderRegistered) {
     return;
@@ -551,7 +614,11 @@ function ensureWorkflowModuleLoader(): void {
   workflowModuleLoaderRegistered = true;
 }
 
-async function importWrappedModule(wrappedSource: string, filename: string): Promise<Record<string, unknown>> {
+async function importWrappedModule(
+  wrappedSource: string,
+  filename: string,
+  workflow: ExtractedWorkflow
+): Promise<Record<string, unknown>> {
   ensureWorkflowModuleLoader();
   // Content-keyed module identity. The wrapper is a pure function of its
   // bindings (everything per-run rides the call, nothing lives at module
@@ -573,6 +640,13 @@ async function importWrappedModule(wrappedSource: string, filename: string): Pro
   const digest = createHash("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  workflowModuleOrigins.set(url, {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  });
   return (await import(url)) as Record<string, unknown>;
 }
 
@@ -586,7 +660,7 @@ async function importWrappedModule(wrappedSource: string, filename: string): Pro
 async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string): Promise<WorkflowBodyFunction> {
   let namespace: Record<string, unknown>;
   try {
-    namespace = await importWrappedModule(buildWrappedSource(workflow), filename);
+    namespace = await importWrappedModule(buildWrappedSource(workflow), filename, workflow);
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error;
@@ -597,11 +671,15 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
       "      "
     );
     if (bodyWithoutDefaultsExport === workflow.bodySource) {
-      throw error;
+      throw workflowSyntaxError(error, workflow, filename);
     }
 
     try {
-      await importWrappedModule(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), filename);
+      await importWrappedModule(
+        buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }),
+        filename,
+        workflow
+      );
     } catch {
       throw new WorkflowScriptError(
         `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
@@ -619,6 +697,203 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
     throw new WorkflowScriptError("Workflow script did not produce a runnable body");
   }
   return run as WorkflowBodyFunction;
+}
+
+/**
+ * Render a body syntax error against the author's own file: path, line,
+ * column, the offending source line, and a caret. V8 stays the syntax
+ * authority — the rejection already happened; this only translates where.
+ * Position comes from V8's own stack header when it carries one, from an
+ * acorn parse of the same wrapped source otherwise, and is dropped (path
+ * and message alone) when neither yields it — a render must never fail
+ * harder than the error it renders.
+ */
+function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, filename: string): WorkflowScriptError {
+  const wrappedSource = buildWrappedSource(workflow);
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  const origin: WorkflowModuleOrigin = {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+
+  const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
+  const authorPosition =
+    wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  if (authorPosition === null) {
+    return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
+  }
+
+  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  return new WorkflowScriptError(
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}\n` +
+      `  ${sourceLine}\n  ${caret}`,
+    { cause: error }
+  );
+}
+
+/**
+ * A module syntax error's stack opens with the failing URL and line, the
+ * offending source line, and a caret line — the caret's offset within the
+ * verbatim source line is the column. Absent or differently shaped
+ * (custom stacks, future V8), `null`.
+ */
+function v8SyntaxErrorPosition(error: SyntaxError): { line: number; column: number } | null {
+  const stack = typeof error.stack === "string" ? error.stack : "";
+  const lines = stack.split("\n");
+  const headerMatch = /\?ensemble-workflow-body=[0-9a-f]+:(\d+)$/.exec(lines[0] ?? "");
+  if (headerMatch === null) {
+    return null;
+  }
+  const line = Number(headerMatch[1]);
+  const caretIndex = (lines[2] ?? "").indexOf("^");
+  if (!Number.isInteger(line) || line < 1 || caretIndex < 0) {
+    return null;
+  }
+  return { line, column: caretIndex + 1 };
+}
+
+function acornSyntaxErrorPosition(wrappedSource: string): { line: number; column: number } | null {
+  try {
+    acorn.parse(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+    return null;
+  } catch (error) {
+    const location = (error as { loc?: { line?: unknown; column?: unknown } }).loc;
+    if (typeof location?.line === "number" && typeof location.column === "number") {
+      // Acorn columns are 0-based.
+      return { line: location.line, column: location.column + 1 };
+    }
+    return null;
+  }
+}
+
+/**
+ * Read a workflow script's source, or fail as the pre-spawn author error
+ * it is: the path named, the filesystem's reason stated, no errno stack.
+ */
+export async function readWorkflowScript(scriptPath: string): Promise<string> {
+  try {
+    return await readFile(scriptPath, "utf8");
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    const reason =
+      code === "ENOENT"
+        ? "no file exists at this path"
+        : code === "EISDIR"
+          ? "the path is a directory, not a script file"
+          : code === "EACCES"
+            ? "the file is not readable"
+            : error instanceof Error
+              ? error.message
+              : String(error);
+    throw new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
+  }
+}
+
+/**
+ * The directory the harness's own modules load from: in the shipped bundle
+ * a single file beside nothing else, under `dist/src/` in development.
+ * Frames citing modules under it are the runtime's, not the author's.
+ */
+const runtimeModuleRootHref = new URL(".", import.meta.url).href;
+const runtimeModuleRootPath = runtimeModuleRootHref.startsWith("file:") ? fileURLToPath(runtimeModuleRootHref) : null;
+
+/**
+ * Rewrite a settling author error's stack for the operator: wrapped-module
+ * frames get the author's own openable path and line numbers, the
+ * harness's and Node's own frames are cut, and *everything else is kept
+ * verbatim* — helper modules, composed parents, anonymous frames, frame
+ * names of any shape. The discipline is subtractive on purpose: a render
+ * that enumerates the author shapes it keeps loses the shape nobody
+ * enumerated, so nothing here parses frame names, and any line this
+ * function cannot positively classify survives untouched. The message is
+ * never scanned — frames are only ever read from beyond the
+ * `String(error)` prefix, so a message that embeds a stack passes through
+ * byte-identical. Errors whose stacks carry no registered wrapped-module
+ * frame (operational failures constructed inside the runtime) are left
+ * entirely alone; presenting those is not this seam's job.
+ */
+export function presentAuthorFrames(error: unknown): void {
+  if (!(error instanceof Error)) {
+    return;
+  }
+  let stack: unknown;
+  let header: string;
+  try {
+    stack = error.stack;
+    header = String(error);
+  } catch {
+    // A throwing stack or name getter renders as-is; a presenter must
+    // never replace the author's error with its own.
+    return;
+  }
+  if (typeof stack !== "string" || !stack.startsWith(header)) {
+    return;
+  }
+  const frameLines = stack.slice(header.length).split("\n");
+  if (!frameLines.some((line) => wrappedFrameCitation(line) !== null)) {
+    return;
+  }
+  const kept: string[] = [];
+  for (const line of frameLines) {
+    if (!/^\s+at\s/.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    const citation = wrappedFrameCitation(line);
+    if (citation !== null) {
+      const origin = workflowModuleOrigins.get(citation.url);
+      if (origin === undefined) {
+        kept.push(line);
+        continue;
+      }
+      const authorPosition = authorPositionOf(origin, citation.line, citation.column);
+      if (authorPosition === null) {
+        // Inside the harness's two wrapper lines: a runtime frame.
+        continue;
+      }
+      kept.push(
+        line.replace(citation.matched, `${origin.authorPath}:${authorPosition.line}:${authorPosition.column}`)
+      );
+      continue;
+    }
+    if (citesRuntimeModule(line)) {
+      continue;
+    }
+    kept.push(line);
+  }
+  try {
+    error.stack = header + kept.join("\n");
+  } catch {
+    // A frozen error keeps its raw stack; losing the cleanup beats losing the error.
+  }
+}
+
+interface WrappedFrameCitation {
+  matched: string;
+  url: string;
+  line: number;
+  column: number;
+}
+
+function wrappedFrameCitation(frameLine: string): WrappedFrameCitation | null {
+  const match = /(file:\/\/[^()\s]*\?ensemble-workflow-body=[0-9a-f]+):(\d+):(\d+)/.exec(frameLine);
+  if (match === null) {
+    return null;
+  }
+  return { matched: match[0], url: match[1] as string, line: Number(match[2]), column: Number(match[3]) };
+}
+
+function citesRuntimeModule(frameLine: string): boolean {
+  if (/(?:\(|\s)node:[^)\s]+/.test(frameLine)) {
+    return true;
+  }
+  if (frameLine.includes(runtimeModuleRootHref)) {
+    return true;
+  }
+  return runtimeModuleRootPath !== null && frameLine.includes(runtimeModuleRootPath);
 }
 
 /**

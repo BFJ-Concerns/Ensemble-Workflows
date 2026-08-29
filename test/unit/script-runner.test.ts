@@ -1394,3 +1394,215 @@ test("a script with a defaults block still exposes its meta to registry readers"
   `);
   assert.deepEqual(meta, { name: "with-defaults", description: "d" });
 });
+
+// ---------------------------------------------------------------------------
+// Pre-spawn author-error surfaces: what an author meets before any worker
+// spawns names what is wrong, where, in which file — and never a runtime
+// stack. The render discipline is subtractive (cut only what is provably the
+// harness's or Node's; keep every author shape verbatim), so these tests pin
+// author-content *survival* as much as runtime-frame removal.
+
+test("an unreadable script path is a named pre-spawn author error, not an errno stack", async () => {
+  const { readWorkflowScript } = await import("../../src/script-runner.js");
+  const { WorkflowScriptReadError } = await import("../../src/errors.js");
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-script-read-"));
+
+  const missing = path.join(directory, "nowhere.js");
+  await assert.rejects(readWorkflowScript(missing), (error: unknown) => {
+    assert.ok(error instanceof WorkflowScriptReadError);
+    assert.equal(error.message, `Could not read workflow script ${missing}: no file exists at this path`);
+    return true;
+  });
+
+  await assert.rejects(readWorkflowScript(directory), (error: unknown) => {
+    assert.ok(error instanceof WorkflowScriptReadError);
+    assert.equal(error.message, `Could not read workflow script ${directory}: the path is a directory, not a script file`);
+    return true;
+  });
+});
+
+test("a syntax error names the author's file, line, and column, with the offending line", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-position-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = ['export const meta = { name: "syntax" };', "const broken = ;", "return 1;", ""].join("\n");
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, new RegExp(`^Syntax error in ${scriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:2:16: `));
+      assert.ok(error.message.includes("\n  const broken = ;\n"));
+      assert.match(error.message, /\n {2} {15}\^$/);
+      return true;
+    }
+  );
+});
+
+test("a thrown error's reported position is the author's own line on an openable path, runtime frames cut", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-position-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = ['export const meta = { name: "thrower" };', "const pad = 1;", 'throw new Error("boom");', ""].join(
+    "\n"
+  );
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "boom");
+      const stack = error.stack ?? "";
+      assert.ok(stack.includes(`${scriptPath}:3:7`), stack);
+      assert.ok(!stack.includes("ensemble-workflow-body"), stack);
+      assert.ok(!stack.includes("node:internal"), stack);
+      assert.ok(!stack.includes(`${path.sep}dist${path.sep}src${path.sep}`), stack);
+      return true;
+    }
+  );
+});
+
+test("a multi-line message survives the render whole", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-multiline-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = [
+    'export const meta = { name: "multiline" };',
+    'throw new Error("line one\\nline two: details");',
+    ""
+  ].join("\n");
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      assert.ok(stack.startsWith("Error: line one\nline two: details\n"), stack);
+      assert.ok(stack.includes(`${scriptPath}:2:7`), stack);
+      return true;
+    }
+  );
+});
+
+test("an author frame in a helper module survives verbatim beside the rewritten workflow frame", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-helper-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  await writeFile(
+    path.join(directory, "helper.mjs"),
+    ["export function boom() {", '  throw new Error("helper boom");', "}", ""].join("\n")
+  );
+  const source = [
+    'export const meta = { name: "uses-helper" };',
+    'const { boom } = await import("./helper.mjs");',
+    "boom();",
+    ""
+  ].join("\n");
+  await writeFile(scriptPath, source);
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      // The throw site inside the author's own helper: already openable,
+      // already correct — kept untouched.
+      assert.match(stack, /at boom \(file:\/\/.*helper\.mjs:2:9\)/, stack);
+      // The workflow's own frame: rewritten onto the author's path.
+      assert.ok(stack.includes(`${scriptPath}:3:1`), stack);
+      assert.ok(!stack.includes("ensemble-workflow-body"), stack);
+      return true;
+    }
+  );
+});
+
+test("a composed child's throw keeps the child's site and the parent's composing frame", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-composed-"));
+  const parentPath = path.join(directory, "parent.js");
+  const childPath = path.join(directory, "child.js");
+  await writeFile(
+    childPath,
+    ['export const meta = { name: "child", description: "throws" };', 'throw new Error("child boom");', ""].join("\n")
+  );
+  const parentSource = [
+    'export const meta = { name: "parent", description: "composes" };',
+    'return await workflow({ scriptPath: "./child.js" });',
+    ""
+  ].join("\n");
+  await writeFile(parentPath, parentSource);
+
+  await assert.rejects(
+    runWorkflowScript({ filename: parentPath, runtime, log: () => {}, source: parentSource }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      assert.ok(stack.includes(`${childPath}:2:7`), stack);
+      // Which parent line composed the failing child stays recoverable.
+      assert.ok(stack.includes(`${parentPath}:2:`), stack);
+      assert.ok(!stack.includes("ensemble-workflow-body"), stack);
+      return true;
+    }
+  );
+});
+
+test("a message that embeds a stack passes through byte-identical and is never re-read as frames", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-embedded-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = [
+    'export const meta = { name: "embed" };',
+    'const inner = new Error("inner");',
+    'throw new Error("wrapped:\\n" + inner.stack);',
+    ""
+  ].join("\n");
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      const header = String(error);
+      // The message — the inner stack the author chose to embed, runtime
+      // frames and wrapped URLs included — is untouched.
+      assert.ok(stack.startsWith(`${header}\n`), stack);
+      assert.ok(error.message.includes("Error: inner\n"), error.message);
+      // The outer error's own frame block is rendered: author position
+      // present, no wrapped-module URL among the frames.
+      const frameBlock = stack.slice(header.length);
+      assert.ok(frameBlock.includes(`${scriptPath}:3:`), stack);
+      assert.ok(!frameBlock.includes("ensemble-workflow-body"), stack);
+      return true;
+    }
+  );
+});
+
+test("anonymous frames and frame names containing spaces survive the render", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-frame-shapes-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = [
+    'export const meta = { name: "frame-shapes" };',
+    'class Jobs { static ["do work"]() { throw new Error("spaced boom"); } }',
+    "await (async () => {",
+    '  Jobs["do work"]();',
+    "})();",
+    ""
+  ].join("\n");
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const stack = error.stack ?? "";
+      // The spaced method name is not parsed, so it cannot be lost.
+      assert.match(stack, /at Function\.do work \(/, stack);
+      assert.ok(stack.includes(`${scriptPath}:2:`), stack);
+      // The anonymous arrow's frame keeps its (bare) citation, rewritten.
+      assert.ok(stack.includes(`${scriptPath}:4:`), stack);
+      assert.ok(!stack.includes("ensemble-workflow-body"), stack);
+      return true;
+    }
+  );
+});
+
+test("an error whose stack carries no workflow frame is left entirely alone", async () => {
+  const { presentAuthorFrames } = await import("../../src/script-runner.js");
+  const error = new Error("operational failure from inside the runtime");
+  const before = error.stack;
+  presentAuthorFrames(error);
+  assert.equal(error.stack, before);
+});

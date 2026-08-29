@@ -2178,3 +2178,27 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
   assert.equal(pinnedExit, 0);
   assert.doesNotMatch(withoutSentinelAnnouncement(pinnedStderr.text()), /resolved ambient default/);
 });
+
+test("a missing workflow script path is one clean pre-spawn line naming the path", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-missing-script-"));
+  const missing = path.join(directory, "nowhere.js");
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([missing], {
+    cwd: directory,
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 1);
+  const text = stderr.text();
+  assert.ok(
+    text.includes(`WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path`),
+    text
+  );
+  // The author's error, not the runtime's: no errno stack reaches stderr.
+  assert.ok(!text.includes("ENOENT"), text);
+  assert.ok(!/^\s+at\s/m.test(text), text);
+});

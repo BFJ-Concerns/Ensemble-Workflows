@@ -152,7 +152,7 @@ async function requirePausedLiveRunnerToExecuteTests(temporaryRoot: string): Pro
     await writeFile(testPausePath, "release\n");
     const result = await run.completed;
     assert.equal(result.code, 0, result.output);
-    assert.match(result.output, /(?:^|\n)ℹ tests [1-9]\d*(?:\n|$)/, `a successful suite must report executing at least one test:\n${result.output}`);
+    assert.match(result.output, /(?:^|\n)# tests [1-9]\d*(?:\n|$)/, `a successful suite must report executing at least one test:\n${result.output}`);
   } finally {
     await writeFile(testPausePath, "release\n").catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;

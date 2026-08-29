@@ -12994,7 +12994,7 @@ var require_acorn_globals = __commonJS({
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
 import path12 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
+import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile7 } from "node:fs/promises";
@@ -13325,6 +13325,8 @@ var EnsembleError = class extends Error {
 var PreSpawnAuthorError = class extends EnsembleError {
 };
 var AgentOptionRejectedError = class extends PreSpawnAuthorError {
+};
+var WorkflowScriptReadError = class extends PreSpawnAuthorError {
 };
 function attachPartialWorkerText(error, text) {
   const carrier = error;
@@ -15195,7 +15197,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: true,
-      ...options.model !== void 0 ? { model: options.model } : {}
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...options.threadConfig !== void 0 ? { config: options.threadConfig } : {}
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -17809,17 +17812,32 @@ var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
   /**
-   * Both named minimum capabilities are judged `absent` on Codex: the
-   * app-server tool surface (shell, apply_patch, web search, view image,
-   * MCP) has no skill system and no subagent tool, so there is nothing to
-   * strip and the request is satisfied by construction. The judgement is
-   * dated (2026-08-27, Codex CLI 0.5x app-server): a Codex release that
-   * grows either capability re-opens it — the recorded `absent` route in
-   * the archive is what makes that auditable.
+   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
+   * model provider:
+   *
+   * - `agents` strips through the per-thread `thread/start` config overlay:
+   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
+   *   tool namespace from the tool schema Codex sends the model, per
+   *   thread, without leaking between sibling threads on one app-server
+   *   process. The key is `--strict-config`-validated but undocumented,
+   *   and its failure mode on a Codex rename would be silent — a live test
+   *   against a real worker is what re-checks this judgement per release.
+   * - `skills` cannot be stripped mechanically: there is no skills tool in
+   *   the app-server surface — skills arrive as prompt text plus
+   *   filesystem paths, and the per-thread lever that removes a skill
+   *   from the listing leaves its files shell-readable. A strip request
+   *   therefore fails loud rather than claiming a satisfaction the engine
+   *   cannot deliver.
    */
   capabilities = {
-    skills: { route: "absent", detail: "the Codex app-server tool surface has no skill system" },
-    agents: { route: "absent", detail: "the Codex app-server tool surface has no subagent tool" }
+    skills: {
+      route: "unsupported",
+      detail: "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+    },
+    agents: {
+      route: "config",
+      detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+    }
   };
   #transport;
   #scheduler;
@@ -17858,9 +17876,11 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
+    const strippedAgents = this.#options.strip?.includes("agents") === true;
     const threadId = await this.#transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {}
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -18863,7 +18883,7 @@ import { createHash as createHash2 } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path9 from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
 var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
@@ -24806,7 +24826,7 @@ async function runWorkflowScript(options) {
         ...options.env !== void 0 ? { env: options.env } : {},
         readMeta: readWorkflowMeta
       });
-      const source = await readFile5(scriptPath, "utf8");
+      const source = await readWorkflowScript(scriptPath);
       await options.onWorkflowInvocation?.({ scriptPath, source, args: args ?? [] });
       const child = await runWorkflowScript({
         source,
@@ -24856,6 +24876,9 @@ async function runWorkflowScript(options) {
   await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
   if (settlement.status === "rejected") {
+    if (workflowDepth === 0) {
+      presentAuthorFrames(settlement.error);
+    }
     throw settlement.error;
   }
   const result = normaliseResultValue(settlement.value);
@@ -24912,7 +24935,9 @@ function extractWorkflowSource(source) {
   return {
     metaSource: withoutBom.slice(expressionStart, expressionEnd + 1),
     defaultsSource,
-    bodySource
+    bodySource,
+    source: withoutBom,
+    bodyOffset: bodyStart
   };
 }
 function findUnsupportedTopLevelExport(source) {
@@ -25009,6 +25034,28 @@ ${workflow.bodySource}
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
+var workflowModuleOrigins = /* @__PURE__ */ new Map();
+function positionAt(source, offset2) {
+  let line = 1;
+  let lineStart = 0;
+  const end = Math.min(offset2, source.length);
+  for (let index = 0; index < end; index += 1) {
+    if (source[index] === "\n") {
+      line += 1;
+      lineStart = index + 1;
+    }
+  }
+  return { line, column: end - lineStart + 1 };
+}
+function authorPositionOf(origin, wrappedLine, wrappedColumn) {
+  if (wrappedLine < 3) {
+    return null;
+  }
+  if (wrappedLine === 3) {
+    return { line: origin.bodyLine, column: origin.bodyColumn + (wrappedColumn - 1) };
+  }
+  return { line: origin.bodyLine + (wrappedLine - 3), column: wrappedColumn };
+}
 function ensureWorkflowModuleLoader() {
   if (workflowModuleLoaderRegistered) {
     return;
@@ -25035,17 +25082,24 @@ function ensureWorkflowModuleLoader() {
   });
   workflowModuleLoaderRegistered = true;
 }
-async function importWrappedModule(wrappedSource, filename) {
+async function importWrappedModule(wrappedSource, filename, workflow) {
   ensureWorkflowModuleLoader();
   const digest = createHash2("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  workflowModuleOrigins.set(url, {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  });
   return await import(url);
 }
 async function importWorkflowBody(workflow, filename) {
   let namespace;
   try {
-    namespace = await importWrappedModule(buildWrappedSource(workflow), filename);
+    namespace = await importWrappedModule(buildWrappedSource(workflow), filename, workflow);
   } catch (error) {
     if (!(error instanceof SyntaxError)) {
       throw error;
@@ -25055,10 +25109,14 @@ async function importWorkflowBody(workflow, filename) {
       "      "
     );
     if (bodyWithoutDefaultsExport === workflow.bodySource) {
-      throw error;
+      throw workflowSyntaxError(error, workflow, filename);
     }
     try {
-      await importWrappedModule(buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }), filename);
+      await importWrappedModule(
+        buildWrappedSource({ ...workflow, bodySource: bodyWithoutDefaultsExport }),
+        filename,
+        workflow
+      );
     } catch {
       throw new WorkflowScriptError(
         `Workflow body contains \`export const defaults\`, but its placement could not be checked because the body has another syntax error: ${error.message}`,
@@ -25075,6 +25133,158 @@ async function importWorkflowBody(workflow, filename) {
     throw new WorkflowScriptError("Workflow script did not produce a runnable body");
   }
   return run;
+}
+function workflowSyntaxError(error, workflow, filename) {
+  const wrappedSource = buildWrappedSource(workflow);
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  const origin = {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+  const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
+  const authorPosition = wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  if (authorPosition === null) {
+    return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
+  }
+  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  return new WorkflowScriptError(
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}
+  ${sourceLine}
+  ${caret}`,
+    { cause: error }
+  );
+}
+function v8SyntaxErrorPosition(error) {
+  const stack = typeof error.stack === "string" ? error.stack : "";
+  const lines = stack.split("\n");
+  const headerMatch = /\?ensemble-workflow-body=[0-9a-f]+:(\d+)$/.exec(lines[0] ?? "");
+  if (headerMatch === null) {
+    return null;
+  }
+  const line = Number(headerMatch[1]);
+  const caretIndex = (lines[2] ?? "").indexOf("^");
+  if (!Number.isInteger(line) || line < 1 || caretIndex < 0) {
+    return null;
+  }
+  return { line, column: caretIndex + 1 };
+}
+function acornSyntaxErrorPosition(wrappedSource) {
+  try {
+    parse3(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+    return null;
+  } catch (error) {
+    const location = error.loc;
+    if (typeof location?.line === "number" && typeof location.column === "number") {
+      return { line: location.line, column: location.column + 1 };
+    }
+    return null;
+  }
+}
+async function readWorkflowScript(scriptPath) {
+  try {
+    return await readFile5(scriptPath, "utf8");
+  } catch (error) {
+    const code = error.code;
+    const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
+    throw new WorkflowScriptReadError(`Could not read workflow script ${scriptPath}: ${reason}`, { cause: error });
+  }
+}
+var runtimeModuleRootHref = new URL(".", import.meta.url).href;
+var runtimeModuleRootPath = runtimeModuleRootHref.startsWith("file:") ? fileURLToPath3(runtimeModuleRootHref) : null;
+function presentAuthorFrames(error) {
+  if (!(error instanceof Error)) {
+    return;
+  }
+  let stack;
+  let header;
+  try {
+    stack = error.stack;
+    header = String(error);
+  } catch {
+    return;
+  }
+  if (typeof stack !== "string" || !stack.startsWith(header)) {
+    return;
+  }
+  const frameLines = stack.slice(header.length).split("\n");
+  if (!frameLines.some((line) => wrappedFrameCitation(line) !== null)) {
+    return;
+  }
+  const kept = [];
+  for (const line of frameLines) {
+    if (!/^\s+at\s/.test(line)) {
+      kept.push(line);
+      continue;
+    }
+    const citation = wrappedFrameCitation(line);
+    if (citation !== null) {
+      const origin = workflowModuleOrigins.get(citation.url);
+      if (origin === void 0) {
+        kept.push(line);
+        continue;
+      }
+      const authorPosition = authorPositionOf(origin, citation.line, citation.column);
+      if (authorPosition === null) {
+        continue;
+      }
+      kept.push(
+        line.replace(citation.matched, `${origin.authorPath}:${authorPosition.line}:${authorPosition.column}`)
+      );
+      continue;
+    }
+    if (citesRuntimeModule(line)) {
+      continue;
+    }
+    kept.push(line);
+  }
+  try {
+    error.stack = header + kept.join("\n");
+  } catch {
+  }
+}
+function wrappedFrameCitation(frameLine) {
+  for (const url of workflowModuleOrigins.keys()) {
+    const index = frameLine.indexOf(url);
+    if (index < 0) {
+      continue;
+    }
+    const position = /^:(\d+):(\d+)/.exec(frameLine.slice(index + url.length));
+    if (position === null) {
+      continue;
+    }
+    return {
+      matched: frameLine.slice(index, index + url.length + position[0].length),
+      url,
+      line: Number(position[1]),
+      column: Number(position[2])
+    };
+  }
+  return null;
+}
+function citedLocationOf(frameLine) {
+  const open = frameLine.lastIndexOf("(");
+  if (open >= 0) {
+    const close = frameLine.indexOf(")", open);
+    return close > open ? frameLine.slice(open + 1, close) : null;
+  }
+  const bare = /^\s+at\s+(?:async\s+)?(\S+)/.exec(frameLine);
+  return bare === null ? null : bare[1];
+}
+function citesRuntimeModule(frameLine) {
+  const cited = citedLocationOf(frameLine);
+  if (cited === null) {
+    return false;
+  }
+  if (cited.startsWith("node:")) {
+    return true;
+  }
+  if (cited.startsWith(runtimeModuleRootHref)) {
+    return true;
+  }
+  return runtimeModuleRootPath !== null && cited.startsWith(runtimeModuleRootPath);
 }
 function cloneDeclaredMeta(meta) {
   try {
@@ -25710,7 +25920,7 @@ async function prepareRun(invocation, cwd) {
   const workflowPath = path11.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
-    source: await readFile7(workflowPath, "utf8"),
+    source: await readWorkflowScript(workflowPath),
     runnerArgs: invocation.args,
     recordArgs: invocation.args
   };
@@ -26176,7 +26386,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath3(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path12.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {

@@ -1589,7 +1589,7 @@ test("anonymous frames and frame names containing spaces survive the render", as
       assert.ok(error instanceof Error);
       const stack = error.stack ?? "";
       // The spaced method name is not parsed, so it cannot be lost.
-      assert.match(stack, /at Function\.do work \(/, stack);
+      assert.match(stack, /at do work \(/, stack);
       assert.ok(stack.includes(`${scriptPath}:2:`), stack);
       // The anonymous arrow's frame keeps its (bare) citation, rewritten.
       assert.ok(stack.includes(`${scriptPath}:4:`), stack);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,7 +11,7 @@ import { hermeticEstateEnvironment } from "./estate-process.js";
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
 
-test("suite-root recovery distinguishes dead parent ownership, hand-off uncertainty, and child process-group liveness", { timeout: 90_000 }, async (t) => {
+test("suite-root recovery bounds unstamped hand-off retention and preserves stamped child process-group liveness", { timeout: 90_000 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-ownership-stamped-estate-"));
   const heldChildren: HeldChild[] = [];
   try {
@@ -19,10 +19,14 @@ test("suite-root recovery distinguishes dead parent ownership, hand-off uncertai
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
     await assertMissing(deadParentRoot, "recovery must reclaim a conclusively dead parent-owned root");
 
-    const handoff = await createLiveUnstampedHandoffRoot(temporaryRoot);
-    heldChildren.push(handoff.child);
+    const staleHandoffRoot = await createUnstampedHandoffRoot(temporaryRoot);
+    await agePastUnstampedHandoffRetention(staleHandoffRoot);
     await runAndRequireClean(temporaryRoot);
-    await access(handoff.root);
+    await assertMissing(staleHandoffRoot, "recovery must reclaim a stale unstamped hand-off root");
+
+    const freshHandoffRoot = await createUnstampedHandoffRoot(temporaryRoot);
+    await runAndRequireClean(temporaryRoot);
+    await access(freshHandoffRoot);
 
     const held = await createStampedHeldRoot(temporaryRoot);
     heldChildren.push(held.child);
@@ -36,7 +40,7 @@ test("suite-root recovery distinguishes dead parent ownership, hand-off uncertai
 
     await requirePausedLiveRunnerToExecuteTests(temporaryRoot);
 
-    t.diagnostic("real suite-runner recovery reclaimed a dead parent-pending root, retained hand-off uncertainty and a live stamped child group, then reclaimed the stamped root after release; a live parent paused after child spawn still ran tests and reported a non-zero test count");
+    t.diagnostic("real suite-runner recovery reclaimed dead parent-owned and stale unstamped hand-off roots, retained a fresh unstamped root and a live stamped child group, then reclaimed the stamped root after release; a live parent paused after child spawn still ran tests and reported a non-zero test count");
   } finally {
     await Promise.all(heldChildren.map(stopHeldChild));
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -93,11 +97,14 @@ interface HeldChild {
   exited: Promise<void>;
 }
 
-async function createLiveUnstampedHandoffRoot(temporaryRoot: string): Promise<{ root: string; child: HeldChild }> {
-  const child = await createHeldChild(temporaryRoot);
+async function createUnstampedHandoffRoot(temporaryRoot: string): Promise<string> {
   const parentProcessId = await createDeadProcessId();
-  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parentProcessId}-`));
-  return { root, child };
+  return mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parentProcessId}-`));
+}
+
+async function agePastUnstampedHandoffRetention(root: string): Promise<void> {
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1_000);
+  await utimes(root, threeHoursAgo, threeHoursAgo);
 }
 
 async function createStampedHeldRoot(temporaryRoot: string): Promise<{ root: string; child: HeldChild; releasePath: string; exited: Promise<void> }> {

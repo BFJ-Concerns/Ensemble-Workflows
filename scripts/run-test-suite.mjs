@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +7,10 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
 const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+// A suite should complete in minutes, not hours. Keep an unstamped hand-off
+// root for two hours so a recovery never races its owner, while ensuring a
+// wrapper killed between hand-off and stamping cannot leak the directory forever.
+const unstampedHandoffRetentionMilliseconds = 2 * 60 * 60 * 1_000;
 const temporaryRoot = tmpdir();
 await recoverFinishedSuites(temporaryRoot);
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
@@ -147,8 +151,11 @@ async function recoverFinishedSuites(directory) {
         } catch {
           if (isHandoffSuite(entry.name)) {
             // The detached child may exist without its durable process-group
-            // stamp. This is deliberately unrecoverable until a later owner
-            // cleans it, rather than risking removal of a live suite.
+            // stamp. Retain a plausibly live hand-off, but bound the leak from
+            // a wrapper that died before it could write the ownership record.
+            if (await directoryAgeMilliseconds(suiteDirectory) > unstampedHandoffRetentionMilliseconds) {
+              await rm(suiteDirectory, { recursive: true, force: true });
+            }
             return;
           }
           // A root without our complete ownership record might be a suite in
@@ -165,6 +172,11 @@ async function recoverFinishedSuites(directory) {
         await rm(suiteDirectory, { recursive: true, force: true });
       })
   );
+}
+
+async function directoryAgeMilliseconds(directory) {
+  const { mtimeMs } = await stat(directory);
+  return Date.now() - mtimeMs;
 }
 
 function pendingSuitePrefix(parentProcess) {

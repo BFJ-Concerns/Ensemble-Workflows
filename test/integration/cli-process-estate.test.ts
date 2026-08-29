@@ -9,7 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
-import { executablePath, findOnlyFile, runNode, runProcess } from "./estate-process.js";
+import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -17,6 +17,9 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
+// This only catches a wedged fixture process. It is not a product deadline and
+// must leave room for the gate's many process estates to contend for the host.
+const estateProcessHangGuardMs = 30_000;
 
 test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child", async () => {
   // The self-arming journey for the hermetic spawn environment: hostile
@@ -526,7 +529,7 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
         ENSEMBLE_RUN_RECORD: "1",
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${delayedAgentWritePreloadPath}`.trim()
       },
-      5_000
+      estateProcessHangGuardMs
     );
 
     assert.equal(result.code, 1, result.stderr);
@@ -931,7 +934,8 @@ test("built CLI propagates malformed schemas from both combinators before openin
 test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
   const target = path.join(directory, STATUS_FILENAME);
-  const deadOwner = spawn(process.execPath, ["-e", ""]);
+  const decoyProgram = "setInterval(() => {}, 1_000)";
+  const deadOwner = spawn(process.execPath, ["-e", ""], { env: hermeticEstateEnvironment() });
   const deadPid = deadOwner.pid;
   assert.ok(deadPid !== undefined);
   await new Promise<void>((resolve, reject) => {
@@ -939,7 +943,7 @@ test("status artefact sweep removes dead owners without touching a live run or l
     deadOwner.once("exit", () => resolve());
   });
 
-  const liveOwner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"]);
+  const liveOwner = spawn(process.execPath, ["-e", decoyProgram], { env: hermeticEstateEnvironment() });
   const livePid = liveOwner.pid;
   assert.ok(livePid !== undefined);
   await new Promise<void>((resolve, reject) => {
@@ -1945,7 +1949,7 @@ test("built CLI lets the app-server complete a turn when its notification says i
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -2006,7 +2010,7 @@ test("built CLI rejects a broken app-server retry promise with its last diagnost
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 1, `guard did not reject before the test kill switch\n${result.stderr}`);
@@ -2071,7 +2075,7 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
       {
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([progressSequence])
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 0, result.stderr);
@@ -2120,7 +2124,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       },
-      3_000,
+      estateProcessHangGuardMs,
     );
 
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);

@@ -6,6 +6,7 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
+const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 const temporaryRoot = tmpdir();
 await recoverFinishedSuites(temporaryRoot);
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
@@ -23,22 +24,33 @@ const suiteDirectory = path.join(temporaryRoot, handoffSuiteName(path.basename(p
 await rename(pendingSuiteDirectory, suiteDirectory);
 const schemaCacheDirectory = path.join(suiteDirectory, "schema-cache");
 const recordStoreDirectory = path.join(suiteDirectory, "run-records");
-const child = spawn(process.execPath, ["--test", testGlob], {
+const child = spawn(process.execPath, ["--test", "--test-reporter=tap", testGlob], {
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,
     TMPDIR: suiteDirectory,
     ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory
   },
-  stdio: "inherit",
+  stdio: ["inherit", "pipe", "pipe"],
   // A killed suite parent can leave its test process behind. Giving that
   // process group a durable identity lets a later suite distinguish a live
   // cache owner from abandoned state before it removes anything.
   detached: true
 });
+let childOutput = "";
+child.stdout.setEncoding("utf8");
+child.stderr.setEncoding("utf8");
+child.stdout.on("data", (chunk) => {
+  childOutput += chunk;
+  process.stdout.write(chunk);
+});
+child.stderr.on("data", (chunk) => {
+  childOutput += chunk;
+  process.stderr.write(chunk);
+});
 const childExit = new Promise((resolve, reject) => {
   child.once("error", reject);
-  child.once("exit", (...result) => resolve(result));
+  child.once("close", (...result) => resolve(result));
 });
 let completeSetup;
 const setupComplete = new Promise((resolve) => {
@@ -67,7 +79,14 @@ async function finish(code, signal) {
   process.exitCode = code ?? 1;
 }
 
-childExit.then(([code, signal]) => void finish(code, signal)).catch(async (error) => {
+childExit.then(([code, signal]) => {
+  const tapOutput = childOutput.replace(ansiSgrSequence, "");
+  if (code === 0 && /(?:^|\n)# tests 0(?:\n|$)/.test(tapOutput)) {
+    process.stderr.write("Test suite matched no tests\n");
+    return finish(1, signal);
+  }
+  return finish(code, signal);
+}).catch(async (error) => {
   process.stderr.write(`${error.stack ?? error}\n`);
   await finish(1, null);
 });

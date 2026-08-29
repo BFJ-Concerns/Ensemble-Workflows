@@ -38,11 +38,9 @@ const SUITE_ISOLATION_KEYS = ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_CODEX_SCHEMA_
  * exported values are malformed, so a leak fails the pinned stream
  * loudly. A deliberate `{...process.env}` spread into overrides remains
  * expressible (`ProcessEnv` cannot forbid it); the journey is what makes
- * that mistake visible for the keys that matter. The colour clauses are
- * stream hygiene inherited from the previous helper — nothing in the
- * product colourises today, so no journey can arm them; they exist so a
- * future colourising dependency cannot redden exact-stream tests on a
- * machine exporting `FORCE_COLOR`.
+ * that mistake visible for the keys that matter. The colour clauses keep
+ * ordinary estate streams stable; a journey that needs to exercise colour
+ * handling declares `FORCE_COLOR` explicitly.
  */
 export function hermeticEstateEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   if (overrides === process.env) {
@@ -119,6 +117,6 @@ export function runProcess(
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
     child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, stdout, stderr }));
+    child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }

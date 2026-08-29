@@ -57,7 +57,7 @@ function startSuite(temporaryRoot: string, environment: NodeJS.ProcessEnv = {}) 
     child,
     completed: new Promise<{ code: number | null; output: string }>((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code) => resolve({ code, output }));
+      child.once("close", (code) => resolve({ code, output }));
     })
   };
 }
@@ -152,7 +152,7 @@ async function requirePausedLiveRunnerToExecuteTests(temporaryRoot: string): Pro
     await writeFile(testPausePath, "release\n");
     const result = await run.completed;
     assert.equal(result.code, 0, result.output);
-    assert.match(result.output, /(?:^|\n)ℹ tests [1-9]\d*(?:\n|$)/, `a successful suite must report executing at least one test:\n${result.output}`);
+    assert.match(result.output, /(?:^|\n)# tests [1-9]\d*(?:\n|$)/, `a successful suite must report executing at least one test:\n${result.output}`);
   } finally {
     await writeFile(testPausePath, "release\n").catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;

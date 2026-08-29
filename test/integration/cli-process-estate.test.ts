@@ -9,7 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
-import { executablePath, findOnlyFile, runNode, runProcess } from "./estate-process.js";
+import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -931,7 +931,8 @@ test("built CLI propagates malformed schemas from both combinators before openin
 test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
   const target = path.join(directory, STATUS_FILENAME);
-  const deadOwner = spawn(process.execPath, ["-e", ""]);
+  const decoyProgram = "setInterval(() => {}, 1_000)";
+  const deadOwner = spawn(process.execPath, ["-e", ""], { env: hermeticEstateEnvironment() });
   const deadPid = deadOwner.pid;
   assert.ok(deadPid !== undefined);
   await new Promise<void>((resolve, reject) => {
@@ -939,7 +940,7 @@ test("status artefact sweep removes dead owners without touching a live run or l
     deadOwner.once("exit", () => resolve());
   });
 
-  const liveOwner = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"]);
+  const liveOwner = spawn(process.execPath, ["-e", decoyProgram], { env: hermeticEstateEnvironment() });
   const livePid = liveOwner.pid;
   assert.ok(livePid !== undefined);
   await new Promise<void>((resolve, reject) => {

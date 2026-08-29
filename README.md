@@ -304,17 +304,19 @@ The manifest is `manifest.json`. Its top-level fields are:
   no served model was ever learned, never the requested pin. Cost entries carry
   `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
   runtime only has token data, amount/currency are `null` and source is
-  `estimated`. Each `tokens` object preserves the engine-reported
-  `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`,
-  and `totalTokens`, then adds two derived fields with one cross-engine meaning:
-  `freshInputTokens` is uncached input and `cacheReadTokens` is input served
-  from cache. Codex reports cached input as a subset of `inputTokens`, so its
-  fresh input is `inputTokens - cachedInputTokens`; Claude and opencode report
-  cached input separately, so their `inputTokens` is already fresh input.
-  Claude's `outputTokens` includes thinking, which its transcript does not split
-  out; Codex reports reasoning separately in `reasoningOutputTokens`. These
-  differences remain visible in the raw fields, and figures are never summed
-  across engines.
+  `estimated`. Each `tokens` object uses one declared vocabulary:
+  `freshInputTokens` (uncached input), `cachedInputTokens` (with optional
+  `cacheReadTokens` / `cacheCreationTokens` split where the engine separates
+  reads from writes), `outputTokens` (excluding reasoning where separable),
+  `reasoningOutputTokens` (`null` when the engine does not separate reasoning,
+  never zero — `null` means "not knowable", zero means "no reasoning spend"),
+  and `unclassifiedTokens` (spend the engine's total covers but no declared
+  class does) — disjoint classes summing to `totalTokens` by construction. Each
+  engine's native fields are mapped under one inclusion rule: Codex reports
+  cached within input and reasoning within output, so both are subtracted out;
+  Claude and opencode report them separately, with Claude's reasoning not
+  separable (`null`). The engine-native usage events remain per attempt beneath
+  the summaries, untouched. Figures are never summed across engines.
 - `files`: integrity table for archived artefacts, each with `path`, `size`, and
   `sha256`. `manifest.json` is excluded to avoid self-hashing recursion.
 

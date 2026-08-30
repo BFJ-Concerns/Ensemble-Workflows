@@ -22,6 +22,16 @@ export class PreSpawnAuthorError extends EnsembleError {}
 /** A workflow-authored agent option that the runtime cannot honour. */
 export class AgentOptionRejectedError extends PreSpawnAuthorError {}
 
+/** An agent prompt that cannot be meaningfully sent to a worker. */
+export class AgentPromptRejectedError extends PreSpawnAuthorError {}
+
+/**
+ * A per-call working directory that cannot be used for worker placement.
+ * This is pre-spawn: accepting it would let the engine substitute an
+ * unspecified directory while the run record claims the requested one.
+ */
+export class AgentCwdRejectedError extends PreSpawnAuthorError {}
+
 /**
  * A workflow script path that cannot be read — missing, a directory, or
  * unreadable. Pre-spawn by construction: the script's source is the first

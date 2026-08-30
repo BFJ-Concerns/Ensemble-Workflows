@@ -101,6 +101,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // The launcher owns the sentinel: written on every terminal transition this
   // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
+  let interrupt: ReturnType<typeof watchWorkflowInterrupts> | null = null;
   const reportSentinelError = (error: unknown): void => {
     stderr.write(`[sentinel] ${formatError(error)}\n`);
   };
@@ -143,6 +144,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         reportSentinelError
       );
       if (sentinelPath !== null) {
+        // Once this path is published, the launcher promises to honour it on
+        // every signal it can handle. Arm before the synchronous stderr write
+        // so no announced-path startup window remains.
+        interrupt = watchWorkflowInterrupts();
+        void interrupt.promise.catch(() => undefined);
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends\n`);
       }
     }
@@ -243,7 +249,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
       }
     };
-    const interrupt = watchWorkflowInterrupts();
+    interrupt ??= watchWorkflowInterrupts();
+    void interrupt.promise.catch(() => undefined);
     try {
       const { result } = await Promise.race([
         runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
@@ -283,6 +290,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 1;
   } finally {
     try {
+      interrupt?.dispose();
       // Tear workers down while the archive is still open so their terminal
       // status can replace the dispatch-time snapshot before the run is sealed.
       progress?.finish();

@@ -206,12 +206,31 @@ test("onChange fires on transitions and stops after unsubscribe", () => {
   });
 
   progress.setPhase("x");
-  progress.markChanged();
+  progress.noteEngineSpend("codex");
   assert.equal(changes, 2);
 
   off();
   progress.setPhase("y");
   assert.equal(changes, 2);
+});
+
+test("new engine spend republishes the live snapshot once while an agent is running", () => {
+  const clock = 1_000;
+  const budget = new StubBudget();
+  const progress = progressAt(() => clock, budget);
+  const agent = progress.queueAgent({ engine: "codex", label: "spend", phase: null });
+  progress.startAgent(agent);
+  const observed: number[] = [];
+  progress.onChange(() => {
+    observed.push(progress.snapshot().engines.codex?.spent ?? -1);
+  });
+
+  budget.spentByEngine.codex = 41;
+  progress.noteEngineSpend("codex");
+  progress.noteEngineSpend("codex");
+
+  assert.deepEqual(observed, [41]);
+  assert.equal(progress.snapshot().agents[0]?.state, "running");
 });
 
 test("the live agent list is bounded and lists running agents before queued ones", () => {

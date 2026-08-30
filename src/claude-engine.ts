@@ -24,7 +24,7 @@ import type {
   EngineTurnOptions
 } from "./engines.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { RuntimeEvent, TurnResult } from "./types.js";
+import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
@@ -112,6 +112,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #options: EngineTurnOptions;
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #reportedUsage: TokenUsageBreakdown | null = null;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -157,6 +158,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
+    this.#reportedUsage = null;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
@@ -317,6 +319,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
         // Evidence means output *the worker produced this turn*: only an
         // assistant entry beyond the high-water mark counts. The transcript's
         // first entry is routinely the persisted user prompt (and a steer
@@ -410,7 +413,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
     const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
+    const usage = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
@@ -478,31 +483,44 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    */
-  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult["tokenUsageEvents"][number] | null {
-    if (this.#onEvent === undefined) {
-      return null;
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
     }
-    const breakdown = usageSince(entries, fromIndex);
-    if (breakdown.totalTokens === 0) {
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+
+  #usageEvent(
+    handle: ClaudeSessionHandle,
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown
+  ): TokenUsageEvent | null {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
     const event = {
       threadId: handle.sessionId,
       turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last: breakdown, total: breakdown }
+        tokenUsage: { last, total }
       }
     };
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
 
@@ -612,6 +630,28 @@ function hasAssistantEntrySince(entries: TranscriptEntry[], fromIndex: number): 
     }
   }
   return false;
+}
+
+function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBreakdown | null): TokenUsageBreakdown {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens =
+    total.cacheCreationInputTokens === undefined
+      ? undefined
+      : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
 }
 
 function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {

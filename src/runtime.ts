@@ -244,7 +244,7 @@ export class EnsembleRuntime {
       if (usageEvent !== null) {
         this.budget.record(engine, usageEvent);
         // Refresh the live view so its spend figures track each turn's usage.
-        this.progress.markChanged();
+        this.progress.noteEngineSpend(engine);
       }
     }
 

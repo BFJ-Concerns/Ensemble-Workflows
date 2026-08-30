@@ -38,6 +38,8 @@ export interface OpenCodeRunOptions {
   signal?: AbortSignal;
   /** Called once, on the run's first stdout chunk — the earliest observable sign of worker output. */
   onFirstData?: () => void;
+  /** Receives each stdout chunk so live accounting can advance before exit. */
+  onData?: (chunk: string) => void;
 }
 
 export interface OpenCodeRunResult {
@@ -136,7 +138,8 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       options.timeoutMs,
       this.#killGraceMs,
       options.signal,
-      options.onFirstData
+      options.onFirstData,
+      options.onData
     );
   }
 
@@ -162,6 +165,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   #options: EngineTurnOptions;
   #runner: OpenCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #reportedUsage: TokenUsageBreakdown | null = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closePromise: Promise<void> | null = null;
@@ -192,6 +196,24 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   }
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+    this.#reportedUsage = null;
+    let streamBuffer = "";
+    const streamEvents: unknown[] = [];
+    let streamSessionId: string | null = null;
+    const onData = (chunk: string): void => {
+      streamBuffer += chunk;
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const parsed = parseRunEvents(line);
+        streamEvents.push(...parsed.events);
+        streamSessionId ??= parsed.sessionId;
+      }
+      const usage = usageFromStream(streamEvents);
+      if (usage.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+      }
+    };
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
@@ -199,6 +221,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
+      onData,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -270,14 +293,17 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
             cost: exportData.info?.cost ?? null
           };
     // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it reintroduces a fixed defect (spend that
-    // never reaches the ledger), behind a narrower gate. The identifiers
+    // spend — suppressing it repeats the defect of spend that never reaches
+    // the ledger, behind a narrower gate. The identifiers
     // exist only to attribute the event, so a missing id gets a synthetic,
     // clearly-labelled one rather than costing the accounting.
     const usageEvent =
       usage.breakdown === null
         ? null
-        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.breakdown, usage.cost);
+    if (usage.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+    }
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -290,7 +316,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 
     if (run.exitCode !== 0) {
       // An operational failure consumes a bounded retry attempt, the
-      // contract the usage brief documents for every engine — so it returns
+      // contract documented for every engine — so it returns
       // as a failed result the shared loop governs (imitating the Claude
       // engine's failedTurnResult), not a thrown error that would propagate
       // on the attempt it occurs. For a subprocess engine a retry means a
@@ -359,8 +385,30 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     return `opencode-no-session-${randomUUID()}`;
   }
 
-  #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
-    if (breakdown.totalTokens === 0) {
+  #reportUsage(sessionId: string, total: TokenUsageBreakdown, cost: unknown): void {
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
+    }
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(sessionId, last, total, cost);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+
+  #usageEvent(
+    sessionId: string,
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown,
+    cost: unknown
+  ): TokenUsageEvent | null {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -368,22 +416,17 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     const event = {
       threadId: sessionId,
       turnId,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: sessionId,
         turnId,
         model: this.#modelKey,
         providerModel: this.#providerModel,
-        tokenUsage: { last: breakdown, total: breakdown },
+        tokenUsage: { last, total },
         cost
       }
     };
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
 
@@ -418,7 +461,8 @@ function runProcess(
   timeoutMs: number | undefined,
   killGraceMs = 5_000,
   abortSignal?: AbortSignal,
-  onFirstData?: () => void
+  onFirstData?: () => void,
+  onData?: (chunk: string) => void
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -463,6 +507,11 @@ function runProcess(
         } catch {
           // Swallowed deliberately.
         }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
+        // Live accounting is observability; it must never affect the worker.
       }
       stdout.push(chunk);
     });
@@ -696,6 +745,28 @@ function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
       inputTokens !== null ||
       outputTokens !== null ||
       reasoningOutputTokens !== null
+  };
+}
+
+function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBreakdown | null): TokenUsageBreakdown {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens =
+    total.cacheCreationInputTokens === undefined
+      ? undefined
+      : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
   };
 }
 

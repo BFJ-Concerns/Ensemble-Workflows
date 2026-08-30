@@ -14904,6 +14904,7 @@ var RunProgress = class {
   #nextAgentId = 0;
   #live = /* @__PURE__ */ new Map();
   #engines = /* @__PURE__ */ new Map();
+  #reportedSpend = /* @__PURE__ */ new Map();
   #listeners = /* @__PURE__ */ new Set();
   constructor(options) {
     this.runId = options.runId;
@@ -15011,10 +15012,19 @@ var RunProgress = class {
     this.#touch();
   }
   /**
-   * Refreshes the change stamp without a state transition — used when token
-   * usage lands, so the snapshot's spend figures stay current and subscribers
-   * re-serialise.
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
    */
+  noteEngineSpend(engine) {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+  /** Refreshes the live snapshot without changing its modelled state. */
   markChanged() {
     this.#touch();
   }
@@ -16457,6 +16467,7 @@ var ClaudeEngineInvocation = class {
   #options;
   #controlPlane;
   #onEvent;
+  #reportedUsage = null;
   #pollIntervalMs;
   #receiptTimeoutMs;
   #firstLifeTimeoutMs;
@@ -16494,6 +16505,7 @@ var ClaudeEngineInvocation = class {
   }
   async #runAttempt(context) {
     this.#assertOpen();
+    this.#reportedUsage = null;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
@@ -16619,6 +16631,7 @@ var ClaudeEngineInvocation = class {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
@@ -16689,7 +16702,9 @@ var ClaudeEngineInvocation = class {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
     const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
+    const usage2 = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
       ...resolvedModel !== null ? { resolvedModel } : {},
@@ -16752,31 +16767,39 @@ var ClaudeEngineInvocation = class {
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    */
-  #feedBudget(handle, entries, fromIndex) {
-    if (this.#onEvent === void 0) {
-      return null;
+  #reportUsage(handle, entries, fromIndex) {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
     }
-    const breakdown = usageSince(entries, fromIndex);
-    if (breakdown.totalTokens === 0) {
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(handle, last, total) {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
     const event = {
       threadId: handle.sessionId,
       turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last: breakdown, total: breakdown }
+        tokenUsage: { last, total }
       }
     };
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
   async #teardown() {
@@ -16869,6 +16892,24 @@ function hasAssistantEntrySince(entries, fromIndex) {
   }
   return false;
 }
+function subtractUsage(total, previous) {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
+}
 function delay2(ms, signal, abortError) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -16923,7 +16964,8 @@ var OpenCodeCliRunner = class {
       options.timeoutMs,
       this.#killGraceMs,
       options.signal,
-      options.onFirstData
+      options.onFirstData,
+      options.onData
     );
   }
   async exportSession(sessionId, cwd, signal) {
@@ -16947,6 +16989,7 @@ var OpenCodeEngineInvocation = class {
   #options;
   #runner;
   #onEvent;
+  #reportedUsage = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closePromise = null;
@@ -16972,6 +17015,24 @@ var OpenCodeEngineInvocation = class {
     });
   }
   async #runAttempt(context) {
+    this.#reportedUsage = null;
+    let streamBuffer = "";
+    const streamEvents = [];
+    let streamSessionId = null;
+    const onData = (chunk) => {
+      streamBuffer += chunk;
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const parsed = parseRunEvents(line);
+        streamEvents.push(...parsed.events);
+        streamSessionId ??= parsed.sessionId;
+      }
+      const usage3 = usageFromStream(streamEvents);
+      if (usage3.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      }
+    };
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
@@ -16979,6 +17040,7 @@ var OpenCodeEngineInvocation = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
       ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
+      onData,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -17039,7 +17101,10 @@ var OpenCodeEngineInvocation = class {
       breakdown: usageFromExport(exportData),
       cost: exportData.info?.cost ?? null
     };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -17106,8 +17171,24 @@ var OpenCodeEngineInvocation = class {
   #syntheticSessionId() {
     return `opencode-no-session-${randomUUID3()}`;
   }
-  #usageEvent(sessionId, breakdown, cost) {
-    if (breakdown.totalTokens === 0) {
+  #reportUsage(sessionId, total, cost) {
+    const last = subtractUsage2(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
+    }
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(sessionId, last, total, cost);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(sessionId, last, total, cost) {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -17115,22 +17196,17 @@ var OpenCodeEngineInvocation = class {
     const event = {
       threadId: sessionId,
       turnId,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: sessionId,
         turnId,
         model: this.#modelKey,
         providerModel: this.#providerModel,
-        tokenUsage: { last: breakdown, total: breakdown },
+        tokenUsage: { last, total },
         cost
       }
     };
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
   #buildPrompt(previousFailure) {
@@ -17154,7 +17230,7 @@ var OpenCodeEngineInvocation = class {
 function rejectUnsupportedOpenCodeOptions(options) {
   assertFallbackModelSupported("opencode", options.fallbackModel);
 }
-function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData) {
+function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData, onData) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const child = spawn3(command, args, {
@@ -17191,6 +17267,10 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
           onFirstData?.();
         } catch {
         }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
       }
       stdout.push(chunk);
     });
@@ -17387,6 +17467,24 @@ function openCodeTokenSnapshot(tokens) {
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
     reportedTotal,
     hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
+  };
+}
+function subtractUsage2(total, previous) {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
   };
 }
 function aggregateOpenCodeUsage(tokenSnapshots) {
@@ -18193,7 +18291,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const usageEvent = tokenUsageEventFromParams(event.params);
       if (usageEvent !== null) {
         this.budget.record(engine, usageEvent);
-        this.progress.markChanged();
+        this.progress.noteEngineSpend(engine);
       }
     }
     if (event.method === "transport/decodeFailed") {
@@ -25713,6 +25811,7 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   const sentinel = new CompletionSentinel();
+  let interrupt = null;
   const reportSentinelError = (error) => {
     stderr.write(`[sentinel] ${formatError3(error)}
 `);
@@ -25738,6 +25837,8 @@ async function runEnsembleCli(argv, options = {}) {
         reportSentinelError
       );
       if (sentinelPath !== null) {
+        interrupt = watchWorkflowInterrupts();
+        void interrupt.promise.catch(() => void 0);
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends
 `);
       }
@@ -25840,7 +25941,8 @@ async function runEnsembleCli(argv, options = {}) {
         }
       }
     };
-    const interrupt = watchWorkflowInterrupts();
+    interrupt ??= watchWorkflowInterrupts();
+    void interrupt.promise.catch(() => void 0);
     try {
       const { result } = await Promise.race([
         runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
@@ -25870,6 +25972,7 @@ async function runEnsembleCli(argv, options = {}) {
     return 1;
   } finally {
     try {
+      interrupt?.dispose();
       progress?.finish();
       if (statusWriter !== null) {
         await statusWriter.close();

@@ -64,6 +64,40 @@ test("an exhausted direct agent surfaces each worker diagnosis beside its harnes
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
+test("an oversized worker diagnosis is bounded with the full evidence behind the record pointer", () => {
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const atLimit = "a".repeat(400);
+  const oversized = `${"b".repeat(400)}TAIL-BEYOND-THE-BOUND`;
+  const record = {
+    id: 7,
+    attempts: [
+      {
+        attempt: 1,
+        failure: { kind: "invalid-json", message: "agent output did not contain parseable JSON" },
+        rawOutput: oversized
+      },
+      {
+        attempt: 2,
+        failure: { kind: "invalid-json", message: "agent output did not contain parseable JSON" },
+        rawOutput: atLimit
+      }
+    ]
+  } as unknown as RuntimeAgentRecord;
+
+  const rendered = presentTerminalError(failed, { archiveDir: "/data/runs/x", lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  // Beyond the bound the slice keeps exactly the limit then marks the cut;
+  // the tail never reaches stderr.
+  assert.ok(lines[1]?.endsWith(`worker diagnosis: ${"b".repeat(400)}…`), lines[1]);
+  assert.equal(rendered.includes("TAIL-BEYOND-THE-BOUND"), false);
+  // At the bound nothing is cut and no marker is invented.
+  assert.ok(lines[2]?.endsWith(`worker diagnosis: ${atLimit}`), lines[2]);
+  // The complete evidence stays reachable through the archived record alone.
+  assert.match(lines[3] ?? "", /agents\/000007\/agent\.json$/);
+});
+
 test("an oversized prompt renders as the named platform limit, not raw spawn E2BIG frames", () => {
   const spawnError = Object.assign(new Error("spawn E2BIG"), { code: "E2BIG" });
   const wrapped = new Error("dispatch failed", { cause: spawnError });

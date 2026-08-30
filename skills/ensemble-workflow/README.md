@@ -270,7 +270,7 @@ Each JSON artefact carries `schema_version` (currently `3`) and `kind`
 Top-level fields: `run_id`, `run_uuid`, `caller_identity` (opaque invoker
 identity or `null`), `namespace` (strategy, id, hash,
 material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
-`"interrupted"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
+`"interrupted"`, `"incomplete"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
 `abandonment` (present on reaped manifests only), `started_at`/`ended_at` (ISO;
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
@@ -278,8 +278,12 @@ and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
 `git` (start/end HEAD, dirty flag, diff path), `environment` (OS arch/platform/
 release, Node version, tool versions for claude/codex/git/opencode), `harness`
 (package name, version, git commit), `result` (archive path, exit code),
+`error` (`{ kind, message }` or `null` — what ended the run; see the
+[root README](../../README.md#run-record-schema) for the full description),
 `cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
-path, size, SHA-256 for each archived artefact; the manifest itself is excluded).
+path, size, SHA-256 for each archived artefact; the manifest itself is excluded),
+`integrity` (`manifest_sha256` self-digest, `files_lost` entries; see the
+[root README](../../README.md#run-record-schema) for canonical semantics).
 
 ### Agent record (`agents/<id>/agent.json`)
 
@@ -682,9 +686,10 @@ rejection itself is unchanged, invoking no engine.
   current Codex protocol supplies no diagnostic field on that notification,
   so Ensemble reports that absence rather than inventing request detail;
   retryability remains reserved for explicit transport-level signals.
-- **Budget**: each `agent()` call checks the engine's ceiling once, when it
-  starts (leaves the concurrency queue); once spend reaches the ceiling, a
-  call that has not yet started throws a budget-exhausted error. A call that
+- **Budget**: each `agent()` call checks the engine's ceiling once, at
+  dispatch — synchronously at the `agent()` call site, before the worker
+  enters the concurrency queue. Once spend reaches the ceiling, a
+  call that has not yet dispatched throws a budget-exhausted error. A call that
   starts under the ceiling runs its full retry bound even if spend crosses
   the ceiling mid-call, so a worker's own failure is never rewritten as
   budget exhaustion by concurrent spend; turns already started can

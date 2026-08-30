@@ -48,7 +48,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -707,7 +707,18 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     const last = subtractUsage(total, this.#reportedUsage);
     const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
     if (grown === 0) {
+      // A pure composition shift inside the cached total (reads becoming
+      // writes after a context rebuild) grows nothing the budget charges.
+      // Advance the mark anyway, or the shifted creation share would ride
+      // the next genuine delta as spend the run never made.
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
       return;
+    }
+    if (last.cacheCreationInputTokens !== undefined && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      // The creation figure is a split of the combined cached delta; a share
+      // beyond the whole is composition shift, not spend — clamping keeps
+      // read + creation reconcilable against the reported cached total.
+      last.cacheCreationInputTokens = last.cachedInputTokens;
     }
     last.totalTokens = grown;
     this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);

@@ -16051,7 +16051,11 @@ var ClaudeEngineInvocation = class {
     const last = subtractUsage(total, this.#reportedUsage);
     const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
     if (grown === 0) {
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
       return;
+    }
+    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      last.cacheCreationInputTokens = last.cachedInputTokens;
     }
     last.totalTokens = grown;
     this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);

@@ -151,18 +151,22 @@ class FakeControlPlane implements ClaudeControlPlane {
   }
 }
 
-function assistantLine(assistant: ScriptedTurn["assistant"] & object): string {
+function assistantLine(assistant: ScriptedTurn["assistant"] & object & { creation?: number }): string {
   const content =
     assistant.text !== undefined
       ? [{ type: "text", text: assistant.text }]
       : [{ type: "thinking", thinking: "…" }];
-  const hasUsage = assistant.output !== undefined || assistant.input !== undefined || assistant.cached !== undefined;
+  const hasUsage =
+    assistant.output !== undefined ||
+    assistant.input !== undefined ||
+    assistant.cached !== undefined ||
+    assistant.creation !== undefined;
   const usage = hasUsage
     ? {
         input_tokens: assistant.input ?? 0,
         output_tokens: assistant.output ?? 0,
         cache_read_input_tokens: assistant.cached ?? 0,
-        cache_creation_input_tokens: 0
+        cache_creation_input_tokens: assistant.creation ?? 0
       }
     : undefined;
   return JSON.stringify({
@@ -1196,23 +1200,44 @@ class CompactingControlPlane implements ClaudeControlPlane {
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
-    await writeFile(this.#path, `${assistantLine({ text: "thinking", stop: "tool_use", input: 100, output: 10 })}\n`);
+    // The recovery journey carries a cache component so compaction and
+    // rebuild exercise every side of the per-component high-water mark.
+    await writeFile(
+      this.#path,
+      `${assistantLine({ text: "thinking", stop: "tool_use", input: 100, output: 10, ...(this.#recoveredSnapshot ? { cached: 50 } : {}) })}\n`
+    );
     return { id: "compacting-1", sessionId: "compacting", name: options.name, cwd: options.cwd };
   }
 
   async poll(): Promise<ClaudeSessionStatus> {
     this.pollCount += 1;
     if (this.pollCount === 2) {
-      // Compacted: the input snapshot falls from 100 to 40, and 7 further
-      // output tokens are generated in the same step.
-      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 40, output: 7 })}\n`);
+      // Compacted: the input snapshot falls from 100 to 40 (and any cache
+      // reads vanish with the discarded context), while 7 further output
+      // tokens are generated in the same step. Completion is detected from
+      // the transcript, so the recovery journey keeps this step mid-turn to
+      // survive to its later entries.
+      await appendFile(
+        this.#path,
+        this.#recoveredSnapshot
+          ? `${assistantLine({ text: "compacted, continuing", stop: "tool_use", input: 40, output: 7 })}\n`
+          : `${assistantLine({ text: '{"ok":true}', input: 40, output: 7 })}\n`
+      );
     }
     if (this.#recoveredSnapshot && this.pollCount === 3) {
       // The context is rebuilt after compaction: the input snapshot returns
-      // to its pre-compaction size with no new output generated.
-      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 100, output: 0 })}\n`);
+      // to its pre-compaction size and the cached share reappears as cache
+      // *creation* instead of reads — a composition shift with no growth.
+      // Still mid-turn, so the turn survives to generate real output after
+      // the shift.
+      await appendFile(this.#path, `${assistantLine({ text: "rebuilt the context, resuming", stop: "tool_use", input: 100, output: 0, creation: 50 })}\n`);
     }
-    const settled = this.pollCount >= (this.#recoveredSnapshot ? 3 : 2);
+    if (this.#recoveredSnapshot && this.pollCount === 4) {
+      // Genuine new output after the shift: only this step's 3 tokens are
+      // spend; the shifted creation share must not ride along.
+      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 100, output: 3, creation: 50 })}\n`);
+    }
+    const settled = this.pollCount >= (this.#recoveredSnapshot ? 4 : 2);
     return { status: settled ? "idle" : "busy", state: "working", present: this.#present };
   }
 
@@ -1261,21 +1286,39 @@ test("output generated after a compacted input snapshot is still reported", asyn
   }
 });
 
-test("an input snapshot recovering after compaction re-charges nothing", async () => {
+test("snapshots recovering after compaction re-charge no input or cache component", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-compaction-recovery-"));
   try {
     const controlPlane = new CompactingControlPlane(dir, { recoveredSnapshot: true });
     const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
     try {
       assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
-      // The subtraction base is a per-component high-water mark, so input
-      // held at 100 through the compacted step and the snapshot's return to
-      // 100 grows no component — nothing is reported. A base saved from the
-      // shrunken snapshot would re-charge 60 input tokens here.
-      assert.equal(runtime.budget.spent("claude"), 117);
+      // 100 input + 50 cached + 10 output, then 7 and 3 output tokens of
+      // genuine growth. The subtraction base is a per-component high-water
+      // mark: input held at 100 and cached at 50 through the compacted
+      // step, so the rebuilt context re-charges neither — a base saved
+      // from the shrunken snapshot would re-charge 60 input and 50 cached
+      // tokens here.
       const deltas = runtime.budget.events.map((entry) => entry.event.last);
-      assert.equal(deltas.length, 2);
-      assert.equal(deltas.at(-1)?.outputTokens, 7);
+      assert.equal(runtime.budget.spent("claude"), 170);
+      assert.equal(deltas.length, 3);
+      // The rebuild's composition shift (reads becoming creation) is not
+      // growth: it emits no event of its own and must not ride the next
+      // genuine delta.
+      const third = deltas.at(-1);
+      assert.equal(third?.outputTokens, 3);
+      assert.equal(third?.inputTokens, 0);
+      assert.equal(third?.cachedInputTokens, 0);
+      // The creation split travels only on the raw payload (the budget
+      // vocabulary drops it), so coherence — creation share never beyond
+      // the combined cached delta — is asserted there.
+      for (const entry of runtime.budget.events) {
+        const rawLast = (
+          entry.event.raw as { tokenUsage?: { last?: { cachedInputTokens?: number; cacheCreationInputTokens?: number } } }
+        ).tokenUsage?.last;
+        assert.ok(rawLast !== undefined);
+        assert.ok((rawLast.cacheCreationInputTokens ?? 0) <= (rawLast.cachedInputTokens ?? 0));
+      }
     } finally {
       await runtime.close();
     }

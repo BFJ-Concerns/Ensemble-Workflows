@@ -5,7 +5,12 @@ import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import { EngineShutdownError, InvalidAgentOptionValueError, OpenCodeModelRequiredError } from "./errors.js";
+import {
+  CapabilityStripUnsupportedError,
+  EngineShutdownError,
+  InvalidAgentOptionValueError,
+  OpenCodeModelRequiredError
+} from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -166,12 +171,38 @@ export interface CodexEngineAdapterOptions {
   concurrency: number;
 }
 
-function codexThreadConfig(strip: readonly StrippableCapability[] | undefined): Record<string, unknown> | undefined {
+async function codexThreadConfig(
+  strip: readonly StrippableCapability[] | undefined,
+  transport: RuntimeTransport,
+  cwd: string | undefined
+): Promise<Record<string, unknown> | undefined> {
   const strippedAgents = strip?.includes("agents") === true;
-  if (!strippedAgents) {
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
     return undefined;
   }
-  return { agents: { enabled: false } };
+  return {
+    ...(strippedAgents ? { agents: { enabled: false } } : {}),
+    ...(strippedSkills
+      ? {
+          skills: {
+            bundled: { enabled: false },
+            config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
+          }
+        }
+      : {})
+  };
+}
+
+async function discoveredCodexSkillNames(transport: RuntimeTransport, cwd: string | undefined): Promise<readonly string[]> {
+  if (transport.listSkills === undefined) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's stabilised skill discovery result"
+    );
+  }
+  return transport.listSkills(cwd);
 }
 
 export class CodexEngineAdapter implements EngineAdapter {
@@ -188,19 +219,17 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — the
    *   live proof is what re-arms this judgement per release.
-   * - `skills` cannot be stripped completely, measured 2026-08-30 on
-   *   codex-cli 0.151.0: a plugin-qualified `skills.config` name is denied
-   *   when supplied explicitly, but `skills/list` has no plugin-discovery
-   *   parameter and omits a plugin skill present on the worker's surface.
-   *   Without a complete source for the per-name denies, a strip request
-   *   fails loud before dispatch rather than opening a partially stripped
-   *   worker.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: repeated fresh `skills/list` calls
+   *   stabilise on filesystem and plugin-scope names after the cold-process
+   *   loader race; bundled skills are disabled and every stabilised name gets
+   *   an exact `skills.config` deny.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
-      route: "unsupported",
+      route: "config",
       detail:
-        "measured 2026-08-30 on codex-cli 0.151.0: plugin-qualified skills.config denies work, but skills/list cannot establish the complete plugin skill set"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name from stabilised app-server discovery, including plugin scope"
     },
     agents: {
       route: "config",
@@ -300,7 +329,7 @@ class CodexWorkerSession implements EngineWorkerSession {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = codexThreadConfig(this.#options.strip);
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
         const threadId = await this.#transport.openThread({
           ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
           ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -356,7 +385,7 @@ class CodexEngineInvocation implements EngineInvocation {
     // tool surface the machine's own config.toml gives it (stripping is opt-in
     // in both directions — a strip removes nothing unasked, and its
     // absence grants nothing the machine had turned off).
-    const threadConfig = codexThreadConfig(this.#options.strip);
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),

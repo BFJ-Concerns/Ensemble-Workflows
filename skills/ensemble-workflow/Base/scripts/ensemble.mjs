@@ -24391,6 +24391,8 @@ var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -24403,6 +24405,10 @@ var LazyCodexAppServerTransport = class {
   async openThread(options) {
     const transport = await this.#transport();
     return transport.openThread(options);
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
   }
   async runTurn(threadId, prompt, options) {
     const transport = await this.#transport();
@@ -24521,6 +24527,56 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+  async listSkills(cwd = this.cwd) {
+    let previousNames;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      previousNames = names;
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, SKILL_DISCOVERY_STABILITY_INTERVAL_MS));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery did not stabilise after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
   }
   async runTurn(threadId, prompt, options) {
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
@@ -25224,6 +25280,9 @@ function parseRpcMessage(line) {
 }
 function asJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 function asRpcError(value) {
   const object = asJsonObject(value);
@@ -26233,12 +26292,31 @@ var EngineRegistry = class {
     await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 };
-function codexThreadConfig(strip) {
+async function codexThreadConfig(strip, transport, cwd) {
   const strippedAgents = strip?.includes("agents") === true;
-  if (!strippedAgents) {
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
     return void 0;
   }
-  return { agents: { enabled: false } };
+  return {
+    ...strippedAgents ? { agents: { enabled: false } } : {},
+    ...strippedSkills ? {
+      skills: {
+        bundled: { enabled: false },
+        config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
+      }
+    } : {}
+  };
+}
+async function discoveredCodexSkillNames(transport, cwd) {
+  if (transport.listSkills === void 0) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's stabilised skill discovery result"
+    );
+  }
+  return transport.listSkills(cwd);
 }
 var CodexEngineAdapter = class {
   name = "codex";
@@ -26254,18 +26332,16 @@ var CodexEngineAdapter = class {
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — the
    *   live proof is what re-arms this judgement per release.
-   * - `skills` cannot be stripped completely, measured 2026-08-30 on
-   *   codex-cli 0.151.0: a plugin-qualified `skills.config` name is denied
-   *   when supplied explicitly, but `skills/list` has no plugin-discovery
-   *   parameter and omits a plugin skill present on the worker's surface.
-   *   Without a complete source for the per-name denies, a strip request
-   *   fails loud before dispatch rather than opening a partially stripped
-   *   worker.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: repeated fresh `skills/list` calls
+   *   stabilise on filesystem and plugin-scope names after the cold-process
+   *   loader race; bundled skills are disabled and every stabilised name gets
+   *   an exact `skills.config` deny.
    */
   capabilities = {
     skills: {
-      route: "unsupported",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: plugin-qualified skills.config denies work, but skills/list cannot establish the complete plugin skill set"
+      route: "config",
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name from stabilised app-server discovery, including plugin scope"
     },
     agents: {
       route: "config",
@@ -26336,7 +26412,7 @@ var CodexWorkerSession = class {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = codexThreadConfig(this.#options.strip);
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
         const threadId = await this.#transport.openThread({
           ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
           ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -26368,7 +26444,7 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const threadConfig = codexThreadConfig(this.#options.strip);
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
     const threadId = await this.#transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},

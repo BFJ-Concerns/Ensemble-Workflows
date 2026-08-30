@@ -12,6 +12,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
+  AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   AppServerSystemError,
@@ -144,6 +145,54 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
           code: null,
           message: "Codex app-server reported terminal systemError without a diagnostic",
           payload: '{"threadId":"thread-1","status":{"type":"systemError"}}'
+        });
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by Codex's schema diagnostic keeps its classified cause", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: "invalid_json_schema",
+          message: "invalid_json_schema: Invalid schema for response_format",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
+        });
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by another diagnostic keeps that diagnostic attached", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerRequestError);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: null,
+          message: "upstream fell over",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"upstream fell over"}}'
         });
         return true;
       }
@@ -1045,6 +1094,8 @@ async function fakeCodexFailingTurnServer(
   mode:
     | "error-notification"
     | "system-error"
+    | "system-error-then-schema-error"
+    | "system-error-then-error"
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
@@ -1156,6 +1207,12 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "system-error-then-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+    } else if (mode === "system-error-then-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all", () => process.exit(7));
     } else if (mode === "terminated-garbage-line") {

@@ -367,7 +367,7 @@ class CodexEngineInvocation implements EngineInvocation {
 }
 
 export interface ClaudeEngineAdapterOptions {
-  /** Defaults to 8 — the allowance/daemon is a scarcer resource than Codex's app-server. */
+  /** Defaults to the fixed per-engine cap (12; see concurrency-defaults). */
   concurrency?: number;
   /** Base working directory workers are dispatched from. Defaults to `process.cwd()`. */
   cwd?: string;

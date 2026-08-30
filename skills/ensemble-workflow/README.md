@@ -405,9 +405,13 @@ engine is held at its one-shot surface).
   carries the gap itself. Advisory only: a send to a stale session still
   executes; the script decides whether to pay the re-read or dispatch a
   fresh worker re-briefed from the original materials.
-  `stalenessMark: false` disables the mark for that session. The thresholds
-  are library-level runtime options (`claudeSessionStaleAfterMs`,
-  `codexSessionStaleAfterMs`), not CLI flags or ambient settings.
+  `stalenessMark: false` disables the mark for that session, and
+  `handle.staleAfterMs` reads the resolved threshold. The thresholds are
+  library-level runtime options (`claudeSessionStaleAfterMs`,
+  `codexSessionStaleAfterMs`), not CLI flags or ambient settings; on
+  Claude, a machine-declared cache TTL that overrides the injected 1-hour
+  value also moves the cliff, so the mark and the cache expire on one
+  clock.
 - **Lifetime:** `handle.close()` stops the worker early; every held session
   is closed when the run ends by any path — a run never leaves a held
   worker live. Continuation lives within one live run only: a later run
@@ -436,9 +440,12 @@ pipelines used to hand-roll per script.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
-  A stale nonce, an unlisted verdict, or a malformed file is rejected (the
-  bad file is consumed, an event says so, the hold keeps waiting) — an
-  invalid answer never reaches the script as a decision.
+  Prefer an atomic write (write a temp file beside it, then rename): the
+  runtime polls, and though an unparseable read is given a poll's grace
+  before it is judged, a rename is what removes the mid-write window
+  entirely. A stale nonce, an unlisted verdict, or a malformed file is
+  rejected (the bad file is consumed, an event says so, the hold keeps
+  waiting) — an invalid answer never reaches the script as a decision.
 - **Enumerating:** `ensemble holds` lists every open hold on the machine —
   id, liveness of the raising process, verdicts, decision path, content —
   and `ensemble holds --json` emits the full records; open holds also

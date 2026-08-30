@@ -57,8 +57,11 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   const argListLimit = findErrorCode(error, "E2BIG");
   if (argListLimit) {
+    // The only universally honest remedy is a shorter prompt: which
+    // engines take the prompt through argv (and so hit this limit) is
+    // dispatch machinery the operator cannot re-route per call.
     return [
-      "Prompt exceeds the platform's argument-size limit (E2BIG) — shorten the prompt, or pass it on stdin/from a file"
+      "Prompt exceeds the platform's argument-size limit (E2BIG) — shorten the prompt (this engine passes it as a process argument)"
     ];
   }
   if (error instanceof Error && error.name === "AppServerExitedError") {

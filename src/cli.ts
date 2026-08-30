@@ -137,7 +137,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       stderr.write("Usage: ensemble holds [--json]\n");
       return 2;
     }
-    const holds = await enumerateHolds(defaultHoldsDirectory(env));
+    let holds;
+    try {
+      holds = await enumerateHolds(defaultHoldsDirectory(env));
+    } catch (error) {
+      // An unreadable holds directory is not an empty one: say so, exit 1.
+      stderr.write(
+        `cannot enumerate holds under ${defaultHoldsDirectory(env)}: ${error instanceof Error ? error.message : String(error)}\n`
+      );
+      return 1;
+    }
     if (json) {
       stdout.write(`${JSON.stringify(holds.map((hold) => ({ ...hold.record, live: hold.live })))}\n`);
       return 0;

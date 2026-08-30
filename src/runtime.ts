@@ -33,6 +33,8 @@ import {
   UnknownEngineError,
   workerExitStatusOf
 } from "./errors.js";
+import { CLAUDE_CACHE_TTL_VARIABLE } from "./claude-control-plane.js";
+import { claudeCacheTtlToMs } from "./claude-engine.js";
 import { HoldManager, defaultHoldsDirectory } from "./holds.js";
 import { RunProgress } from "./progress.js";
 
@@ -130,6 +132,8 @@ interface WorkerSessionState {
   turnCount: number;
   lastTurnEndedAt: number | null;
   inFlight: boolean;
+  /** The unsettled send, so close() can await it before finalising the placement. */
+  pendingTurn: Promise<unknown> | null;
   closed: boolean;
 }
 
@@ -177,6 +181,16 @@ export class WorkerSession {
   get idleMs(): number | null {
     const last = this.#state.lastTurnEndedAt;
     return last === null ? null : Math.max(0, this.#now() - last);
+  }
+
+  /**
+   * The idle gap at which this session reads stale: the resolved runtime
+   * option, or — on Claude — the machine-declared cache TTL when one
+   * overrides the injected default, so the mark and the cache expire on
+   * one clock.
+   */
+  get staleAfterMs(): number {
+    return this.#state.stalenessThresholdMs;
   }
 
   /**
@@ -280,8 +294,8 @@ export class EnsembleRuntime {
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the injected cache TTL's
-    // cliff, Codex's the measured 60-minute coin-flip point —
-    // numerically equal, semantically distinct knobs.
+    // cliff, Codex's the measured 60-minute coin-flip point — numerically
+    // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
@@ -361,9 +375,15 @@ export class EnsembleRuntime {
       ...(options.holdsDir !== undefined ? { holdsDir: options.holdsDir } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
+      // The staleness cliff tracks the *effective* TTL: an explicit option
+      // wins, else a machine-declared TTL for the Claude workers (which
+      // outranks the injected 1h in the settings file) sets the cliff, else
+      // the injected default's hour — never two silently different clocks.
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
-        : {}),
+        : declaredClaudeTtlMs(options.workerEnvironment) !== null
+          ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) as number }
+          : {}),
       ...(options.codexSessionStaleAfterMs !== undefined
         ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs }
         : {})
@@ -597,12 +617,22 @@ export class EnsembleRuntime {
       turnCount: 0,
       lastTurnEndedAt: null,
       inFlight: false,
+      pendingTurn: null,
       closed: false
     };
     const session = new WorkerSession({
       state,
       now: this.#now,
-      sendTurn: (prompt, turn) => this.#runSessionTurn(state, prompt, turn),
+      sendTurn: (prompt, turn) => {
+        const pending = this.#runSessionTurn(state, prompt, turn);
+        state.pendingTurn = pending;
+        void pending.catch(() => undefined).finally(() => {
+          if (state.pendingTurn === pending) {
+            state.pendingTurn = null;
+          }
+        });
+        return pending;
+      },
       close: () => this.#closeWorkerSession(state)
     });
     this.#workerSessions.add(session);
@@ -719,6 +749,17 @@ export class EnsembleRuntime {
       ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       ...(options.isolation !== undefined ? { isolation: options.isolation } : {})
     });
+    if (state.closed || this.#closed) {
+      // close() ran while placement was opening: it saw nothing to
+      // finalise, so the placement just created is this path's to close —
+      // and no engine session may be created for a session already closed
+      // (an explicit close must never spawn the worker it promised to
+      // stop).
+      const placement = state.placement;
+      state.placement = null;
+      await this.#placement.close(placement).catch(() => undefined);
+      throw new SessionClosedError();
+    }
     agentRecord.resolvedCwd = state.placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     const createSession = state.engine.createSession;
@@ -767,11 +808,18 @@ export class EnsembleRuntime {
     }
     state.closed = true;
     try {
+      // First, so an in-flight Claude turn is aborted rather than awaited
+      // to natural completion; a server-held Codex turn ends only with its
+      // transport, which the runtime's own close tears down concurrently.
       await state.engineSession?.close();
     } catch {
       // Session teardown is best-effort: a stop failure must not mask the
       // work the session already returned.
     }
+    // The in-flight turn settles before the placement is finalised:
+    // change-detecting a worktree a worker is still writing to would
+    // misreport it.
+    await state.pendingTurn?.catch(() => undefined);
     const placement = state.placement;
     state.placement = null;
     if (placement !== null) {
@@ -957,11 +1005,12 @@ export class EnsembleRuntime {
   async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
-    // Held workers close before the engines: every run end — clean return,
-    // failure, timeout, interrupt — must leave no held session live,
-    // and the engines' own teardown below is the backstop, not the plan.
-    await Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
-    this.#workerSessions.clear();
+    // Held workers start closing now, but the wait for them overlaps the
+    // engines' teardown below: a session with a server-held turn in flight
+    // settles only when its transport dies, so awaiting sessions strictly
+    // first would deadlock the interrupt path. Every run end still leaves
+    // no held session live — the wait completes before close returns.
+    const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     // Open holds are abandoned with the run: the waits reject, and each
     // wait's own cleanup removes its published hold file.
     this.#holdManager?.close();
@@ -980,6 +1029,8 @@ export class EnsembleRuntime {
         })
     );
     await this.#engines.close();
+    await sessionCloses;
+    this.#workerSessions.clear();
   }
 
   /**
@@ -1441,6 +1492,12 @@ export class EnsembleRuntime {
 
 export async function createRuntime(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
   return EnsembleRuntime.create(options);
+}
+
+/** The machine-declared Claude cache TTL in ms, when one is declared and parseable. */
+function declaredClaudeTtlMs(workerEnvironment: RuntimeOptions["workerEnvironment"]): number | null {
+  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
+  return declared === undefined ? null : claudeCacheTtlToMs(declared);
 }
 
 export function defaultConcurrency(): number {

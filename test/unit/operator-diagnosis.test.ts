@@ -59,7 +59,7 @@ test("an oversized prompt renders as the named platform limit, not raw spawn E2B
   const line = presentTerminalError(wrapped, noContext);
   assert.ok(line !== null);
   assert.match(line, /argument-size limit \(E2BIG\)/);
-  assert.match(line, /shorten the prompt/);
+  assert.match(line, /shorten the prompt \(this engine passes it as a process argument\)/);
 });
 
 test("a dead app-server discriminates how it died from the evidence the error carries", () => {

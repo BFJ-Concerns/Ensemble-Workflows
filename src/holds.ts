@@ -177,8 +177,14 @@ export class HoldManager {
     decisionPath: string,
     deadline: number | null
   ): Promise<HoldDecision> {
+    // A decider writing with a plain (non-atomic) write can be caught
+    // mid-write by this poller. An unparseable read is therefore given one
+    // poll's grace before it is judged malformed: only the *same*
+    // unparseable bytes seen twice are consumed and rejected — a file
+    // still growing reads differently next poll and is left alone.
+    const grace = { lastUnparseable: null as string | null };
     for (;;) {
-      const decision = await this.#readDecision(record, decisionPath);
+      const decision = await this.#readDecision(record, decisionPath, grace);
       if (decision !== null) {
         this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
         return decision;
@@ -192,22 +198,29 @@ export class HoldManager {
   }
 
   /**
-   * One decision-file reading. A malformed file, a stale nonce, or a
-   * verdict outside the accepted set is *rejected*: the bad file is
-   * removed, an event says so, and the hold keeps waiting — an invalid
-   * answer must never reach the script as a decision.
+   * One decision-file reading. A stale nonce or a verdict outside the
+   * accepted set is *rejected*: the bad file is removed, an event says so,
+   * and the hold keeps waiting — an invalid answer must never reach the
+   * script as a decision. An unparseable file is rejected only once the
+   * same bytes have survived a full poll (see the grace note above).
    */
-  async #readDecision(record: HoldFileRecord, decisionPath: string): Promise<HoldDecision | null> {
+  async #readDecision(
+    record: HoldFileRecord,
+    decisionPath: string,
+    grace: { lastUnparseable: string | null }
+  ): Promise<HoldDecision | null> {
     let raw: string;
     try {
       raw = await readFile(decisionPath, "utf8");
     } catch {
+      grace.lastUnparseable = null;
       return null;
     }
     let rejection: string | null = null;
     let decision: HoldDecision | null = null;
     try {
       const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown };
+      grace.lastUnparseable = null;
       if (parsed.nonce !== record.nonce) {
         rejection = "stale-nonce";
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
@@ -216,12 +229,22 @@ export class HoldManager {
         decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
       }
     } catch {
+      if (grace.lastUnparseable !== raw) {
+        // First sighting (or still changing): possibly a write in flight —
+        // leave the file for the next poll rather than destroying a
+        // decider's answer mid-write.
+        grace.lastUnparseable = raw;
+        return null;
+      }
+      grace.lastUnparseable = null;
       rejection = "malformed";
     }
-    // Consumed either way: a rejected file left in place would be re-read
-    // for ever, and removing it lets a corrected answer land at the same
-    // path.
-    await rm(decisionPath, { force: true }).catch(() => undefined);
+    if (decision !== null || rejection !== null) {
+      // Consumed on any judgement: a rejected file left in place would be
+      // re-read for ever, and removing it lets a corrected answer land at
+      // the same path.
+      await rm(decisionPath, { force: true }).catch(() => undefined);
+    }
     if (rejection !== null) {
       this.#emit("hold/answerRejected", { holdId: record.hold_id, reason: rejection });
       return null;
@@ -262,8 +285,15 @@ export async function enumerateHolds(dir: string): Promise<EnumeratedHold[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      // No directory yet means no hold has ever been raised here: honestly
+      // empty. Any other failure must NOT read as "no open holds" — an
+      // unreadable inbox claiming emptiness would hide holds that may
+      // exist — so it propagates for the caller to report.
+      return [];
+    }
+    throw error;
   }
   const holds: EnumeratedHold[] = [];
   for (const entry of entries.sort()) {

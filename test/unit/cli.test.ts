@@ -1822,6 +1822,42 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   );
 });
 
+test("the CLI attributes effective budget and timeout to the layers that actually decided them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-effective-"));
+  const runRecordDir = path.join(directory, "records");
+  const engine = new FixedResponseEngine("codex", "done");
+  const stderr = new CaptureStream();
+
+  // One flag supplied, one left to its default: the manifest must tell
+  // them apart from the producer's own resolution, not from test-supplied
+  // attributions.
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--budget", "codex=50000", "--timeout", "90000", "work"],
+    {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr,
+      runRecordDir,
+      createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+    }
+  );
+  assert.equal(exitCode, 0, stderr.text());
+
+  const manifests = [];
+  for await (const manifest of glob(path.join(runRecordDir, "runs/**/manifest.json"))) {
+    manifests.push(manifest);
+  }
+  assert.equal(manifests.length, 1);
+  const manifest = JSON.parse(await readFile(manifests[0]!, "utf8")) as {
+    budget_ceilings: Record<string, { value: number | null; layer: string }>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(manifest.budget_ceilings.codex, { value: 50_000, layer: "flag" });
+  assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
+  assert.deepEqual(manifest.budget_ceilings.opencode, { value: null, layer: "default" });
+  assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
+});
+
 test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
   for (const flag of ["--help", "-h"]) {
     const stdout = new CaptureStream();

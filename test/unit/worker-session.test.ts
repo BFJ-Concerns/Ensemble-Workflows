@@ -319,6 +319,28 @@ test("the staleness mark trips at the threshold, stays off when disabled, and ne
   await runtime.close();
 });
 
+test("a machine-declared Claude cache TTL sets the staleness cliff, so mark and cache share one clock", async () => {
+  // create() wires the declared worker environment through to the session
+  // threshold; construction is lazy, so no engine process ever starts.
+  const declared = await EnsembleRuntime.create({
+    workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } }
+  });
+  assert.equal(declared.createWorkerSession({ engine: "claude" }).staleAfterMs, 300_000);
+  await declared.close();
+
+  const undeclared = await EnsembleRuntime.create({});
+  assert.equal(undeclared.createWorkerSession({ engine: "claude" }).staleAfterMs, 3_600_000);
+  await undeclared.close();
+
+  // The explicit library option still outranks the declaration.
+  const explicit = await EnsembleRuntime.create({
+    workerEnvironment: { claude: { CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL: "5m" } },
+    claudeSessionStaleAfterMs: 1_000
+  });
+  assert.equal(explicit.createWorkerSession({ engine: "claude" }).staleAfterMs, 1_000);
+  await explicit.close();
+});
+
 // ---------------------------------------------------------------------------
 // Claude side: the follow-up turn rides the valve into the *same* session.
 // The scripted control plane reproduces the live daemon's settle quirk; a

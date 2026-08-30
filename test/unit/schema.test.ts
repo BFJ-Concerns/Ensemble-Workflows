@@ -22,19 +22,21 @@ const nestedSchema = {
 };
 
 test("the standard draft 2020-12 declaration is accepted and enforced under its own dialect", () => {
+  // The discriminating shape: under 2020-12, `items: false` constrains only
+  // positions beyond `prefixItems`, so ["a", 1] validates; a draft-07
+  // reading (where prefixItems is an unknown keyword and `items: false`
+  // forbids every element) would reject it — passing this pair proves the
+  // schema ran under its own dialect, not by coincidence.
   const schema = {
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    type: "object",
-    required: ["ok"],
-    additionalProperties: false,
-    properties: { ok: { type: "boolean" } },
-    // 2020-12 vocabulary a draft-07 compiler does not implement: the array
-    // form of items was replaced by prefixItems in this dialect.
-    prefixItems: [{ type: "string" }]
+    type: "array",
+    prefixItems: [{ type: "string" }, { type: "number" }],
+    items: false
   };
   assert.doesNotThrow(() => assertCompilableSchema(schema));
-  assert.equal(validateJsonSchema({ ok: true }, schema).ok, true);
-  assert.equal(validateJsonSchema({ ok: "not-a-boolean" }, schema).ok, false);
+  assert.equal(validateJsonSchema(["a", 1], schema).ok, true);
+  assert.equal(validateJsonSchema(["a", 1, "extra"], schema).ok, false);
+  assert.equal(validateJsonSchema(["a", "not-a-number"], schema).ok, false);
 });
 
 test("an explicit draft-07 declaration keeps the default dialect", () => {

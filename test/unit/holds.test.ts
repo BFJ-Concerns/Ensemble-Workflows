@@ -100,6 +100,28 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
   });
 });
 
+test("a decision file caught mid-write is not consumed: the completed write still answers", async () => {
+  await withHoldsDir(async (dir) => {
+    const events: RuntimeEvent[] = [];
+    const holds = manager(dir, events);
+    const decision = holds.raise({ content: "slow writer", verdicts: ["ok"] });
+    const record = await publishedHold(dir);
+
+    // A non-atomic writer's partial bytes land first; the poller must give
+    // them grace rather than classify-and-destroy, so the finished write
+    // that follows still reaches the script.
+    await writeFile(record.decision_path, '{"nonce":"');
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "ok" }));
+
+    assert.deepEqual(await decision, { verdict: "ok", note: null });
+    // The partial bytes were never judged malformed: no rejection event.
+    assert.deepEqual(
+      events.filter((event) => event.method === "hold/answerRejected"),
+      []
+    );
+  });
+});
+
 test("an unanswered hold with a timeout rejects with HoldTimeoutError and leaves the listing", async () => {
   await withHoldsDir(async (dir) => {
     const events: RuntimeEvent[] = [];

@@ -20,6 +20,7 @@ import {
   OpenCodeModelRequiredError
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
+import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
@@ -365,8 +366,8 @@ test("opencode rejects an effort outside the registry entry's declared variants 
   const adapter = new OpenCodeEngineAdapter({ runner });
 
   // Every curated entry currently declares no served variants, so any
-  // effort request is out of domain — the pre-fix tree forwarded it to the
-  // provider silently and the worker ran at exit 0.
+  // effort request is out of domain and must be rejected, not forwarded
+  // silently to a provider that would run the worker at exit 0.
   assert.throws(
     () => adapter.createInvocation("variant", { model: "glm-5.2", effort: "definitely-invalid" }),
     (error: unknown) => {
@@ -405,6 +406,17 @@ test("opencode rejects an effort outside the registry entry's declared variants 
     }
   );
   assert.equal(runner.runs.length, 0);
+});
+
+test("a statically declared opencode effort outside the model's variants fails before the body runs", () => {
+  // Judged only when the declaration names the model whose registry
+  // entry owns the domain; an effort defaulted without a model waits for
+  // the call that names one.
+  assert.throws(
+    () => validateEngineDefaults("opencode", { model: "glm-5.2", effort: "definitely-invalid" }),
+    InvalidAgentOptionValueError
+  );
+  assert.doesNotThrow(() => validateEngineDefaults("opencode", { effort: "unjudgeable-without-a-model" }));
 });
 
 test("opencode rejects fallbackModel before spawning", () => {

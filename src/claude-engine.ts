@@ -103,6 +103,26 @@ export interface ClaudeEngineInvocationOptions {
 export const CLAUDE_MULTITURN_CACHE_TTL = "1h";
 
 /**
+ * Parse a Claude Code cache-TTL settings value ("30s", "5m", "1h", or bare
+ * seconds) to milliseconds; null for anything unrecognised. Used to keep
+ * the staleness cliff on the *effective* TTL when a machine-declared
+ * worker-environment value overrides the injected default — two settings
+ * that would otherwise silently desynchronise.
+ */
+export function claudeCacheTtlToMs(value: string): number | null {
+  const match = /^(\d+)([smh]?)$/.exec(value.trim());
+  if (match === null) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return null;
+  }
+  const unit = match[2];
+  return amount * (unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : 1_000);
+}
+
+/**
  * The effort levels the Claude engine accepts (honoured or loudly
  * rejected). This is the engine adapter speaking for its own CLI's domain
  * — measured against Claude Code 2.1.x, which silently accepts an unknown

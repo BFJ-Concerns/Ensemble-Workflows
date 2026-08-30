@@ -287,23 +287,51 @@ export class StatusFileWriter {
 
     // A snapshot a killed run left behind: the new writer starting in the
     // namespace is the cleanup trigger (the same discipline as the archive
-    // reaper), and the judgement is the owner evidence, never age. A
-    // snapshot that is not provably orphaned is left for its own writer.
+    // reaper), and the judgement is the owner evidence, never age. The
+    // exact inode is claimed by rename *before* judging — a read-judge-
+    // unlink-by-name sequence would let a concurrent publication replace
+    // the dead snapshot between the read and the unlink and be destroyed
+    // in its place (the same race close()'s removal already guards).
+    const target = path.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
     try {
-      const target = path.join(this.#dir, STATUS_FILENAME);
-      const current = JSON.parse(await this.#fileOperations.readFile(target, "utf8")) as {
+      await this.#fileOperations.rename(target, claim);
+    } catch {
+      // Absent, or contended: nothing to judge.
+      return;
+    }
+    let ownerGone = false;
+    try {
+      const current = JSON.parse(await this.#fileOperations.readFile(claim, "utf8")) as {
         owner?: SnapshotOwnerEvidence;
       };
-      if (await snapshotOwnerGone(current.owner, this.#procDir)) {
-        await this.#fileOperations.unlink(target);
-      }
+      ownerGone = await snapshotOwnerGone(current.owner, this.#procDir);
+    } catch {
+      // Unparseable is not evidence of an orphan; restore below — a
+      // foreign file is not this writer's to destroy on a parse error.
+    }
+    if (ownerGone) {
+      await this.#fileOperations.unlink(claim).catch(() => undefined);
+      return;
+    }
+    try {
+      // Not provably orphaned: put it back. link() is the atomic
+      // no-clobber restore; EEXIST means a newer publication already owns
+      // the public name and the claimed copy is redundant.
+      await this.#fileOperations.link(claim, target);
+      await this.#fileOperations.unlink(claim);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") {
+      if (isNodeError(error) && error.code === "EEXIST") {
+        await this.#fileOperations.unlink(claim).catch(() => undefined);
         return;
       }
-      // Unparseable is not evidence of an orphan; the atomic-write
-      // discipline means a live writer never publishes half a file, but a
-      // foreign file is not this writer's to destroy on a parse error.
+      try {
+        await this.#fileOperations.rename(claim, target);
+      } catch (renameError) {
+        // Both restore routes failed: leave the claim for a later sweep —
+        // that beats deleting the only copy.
+        this.#reportError(renameError);
+      }
     }
   }
 

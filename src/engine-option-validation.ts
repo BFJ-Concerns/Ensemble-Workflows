@@ -6,6 +6,7 @@ import {
   UnrecognisedAgentOptionError
 } from "./errors.js";
 import { assertValidStripOption } from "./capability-stripping.js";
+import { assertClaudeEffortSupported } from "./claude-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -144,8 +145,25 @@ export function validateEngineDefaults(
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
   assertFallbackModelSupported(engine, defaults.fallbackModel);
+  if (engine === "claude") {
+    // A bad static declaration fails before the body runs, not at the
+    // first paid Claude dispatch — the same domain the adapter enforces.
+    assertClaudeEffortSupported(defaults.effort);
+  }
   if (engine === "opencode" && defaults.model !== undefined) {
-    requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+    const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
+    // The registry owns the variant domain; a declared effort is judged
+    // here only when the declared model names the entry to judge against —
+    // an effort defaulted without a model waits for the call that names one.
+    if (defaults.effort !== undefined && !model.variants.includes(defaults.effort)) {
+      throw new InvalidAgentOptionValueError(
+        "effort",
+        defaults.effort,
+        model.variants.length > 0
+          ? `one of ${model.variants.join(" | ")} (the variants the registry declares for ${model.key})`
+          : `absent — the registry entry for ${model.key} declares no served variants`
+      );
+    }
   }
 }
 

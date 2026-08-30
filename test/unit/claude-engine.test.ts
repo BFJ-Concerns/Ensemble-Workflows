@@ -5,6 +5,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
+import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueError, partialWorkerTextOf } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
@@ -230,6 +232,24 @@ async function withControlPlane(
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("a statically declared out-of-domain Claude effort fails before the body runs", () => {
+  // The defaults validator judges the same domain the adapter does —
+  // a bad static declaration must not first fail at the first paid
+  // dispatch, potentially after phases on other engines.
+  assert.throws(() => validateEngineDefaults("claude", { effort: "extreme" }), InvalidAgentOptionValueError);
+  assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "medium" }));
+  assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
+});
+
+test("claudeCacheTtlToMs parses the settings value formats and refuses the rest", () => {
+  assert.equal(claudeCacheTtlToMs("1h"), 3_600_000);
+  assert.equal(claudeCacheTtlToMs("5m"), 300_000);
+  assert.equal(claudeCacheTtlToMs("30s"), 30_000);
+  assert.equal(claudeCacheTtlToMs("90"), 90_000);
+  assert.equal(claudeCacheTtlToMs("soon"), null);
+  assert.equal(claudeCacheTtlToMs("0m"), null);
+});
 
 test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
   await withControlPlane([{ assistant: { text: "ran at medium" } }], async (controlPlane) => {

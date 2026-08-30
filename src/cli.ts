@@ -206,8 +206,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // resolved here — the one site that sees the terminal error — and carried
   // onto every durable surface (manifest, result envelope, sentinel).
   let terminalError: { kind: string; message: string } | null = null;
-  // The launcher owns the sentinel: written on every terminal transition this
-  // process can handle, even when recording is off.
+  // Capture the supervisor-facing tally before shutdown terminalises the
+  // in-flight records. The sentinel answers what was unsettled when the run
+  // ended, not what the cleanup path subsequently classified as failed.
+  let terminalWorkers: SentinelWorkerOutcomes | null = null;
+  // The launcher owns the sentinel: written on every
+  // terminal transition this process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
   let interrupt: ReturnType<typeof watchWorkflowInterrupts> | null = null;
   const reportSentinelError = (error: unknown): void => {
@@ -419,6 +423,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       interrupt?.dispose();
       // Tear workers down while the archive is still open so their terminal
       // status can replace the dispatch-time snapshot before the run is sealed.
+      terminalWorkers = workerOutcomes(progress);
       progress?.finish();
       if (statusWriter !== null) {
         await statusWriter.close();
@@ -442,7 +447,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // failure outcome.
       const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
+        workers: terminalWorkers ?? workerOutcomes(progress),
         error: terminalError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so

@@ -300,16 +300,20 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       }
       return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
     } catch (error) {
-      if (error instanceof Error) {
-        await this.#attachLatestWorkerText(error, fromIndex);
+      // One best-effort read of what the engine already holds, before any
+      // teardown, serving every evidence the failed turn can still carry:
+      // partial worker text, the served model, the spend the transcript has
+      // already proved, and the transcript itself.
+      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
         // result while retaining the shared loop's bounded retry governance.
-        // A served model the transcript already named is evidence too: a
-        // result-less failure must not un-learn it (failures carry their
-        // evidence), so it is read before the session is torn down.
-        const resolvedModel = await this.#tryResolveModel(fromIndex);
+        // A served model the transcript already named is evidence too, and so
+        // is the usage it recorded: a result-less failure must not un-learn
+        // spend the run has already paid for (failures carry their evidence).
         if (!this.#multiTurn) {
           // One-shot only: a held session survives its turn's operational
           // failure — tearing it down would leave the retry with no handle
@@ -317,7 +321,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           // failure. Session teardown belongs to close().
           await this.#teardown();
         }
-        return failedTurnResult(error, resolvedModel);
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
       throw error;
     }
@@ -629,23 +633,40 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
-  /** The served model the current turn's transcript names, or null when unreadable. */
-  async #tryResolveModel(fromIndex: number): Promise<string | null> {
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex: number): Promise<FailureEvidence | null> {
     const handle = this.#handle;
     if (handle === null) {
       return null;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    return transcript === null ? null : resolvedModelSince(transcript.entries, fromIndex);
+    if (transcript === null) {
+      return null;
+    }
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex)
+    };
   }
 
-  async #attachLatestWorkerText(error: Error, fromIndex: number): Promise<void> {
-    const handle = this.#handle;
-    if (handle === null) {
-      return;
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence: FailureEvidence | null): TokenUsageEvent | null {
+    if (evidence === null) {
+      return null;
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+
+  #attachWorkerText(error: Error, evidence: FailureEvidence, fromIndex: number): void {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
       // Claude Code composed the last reply itself, so the text on the
       // transcript is its diagnostic and not the worker's. It reaches the
       // record as the failure's message; carrying it here as well would put
@@ -662,14 +683,25 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * Feed best-effort transcript-derived usage through the same event shape Codex
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
+   *
+   * The derived total is not monotonic: the input side is a snapshot of the
+   * running context, and compaction shrinks it, so a step that generated new
+   * output can still carry a *smaller* total than the step before. Growth is
+   * therefore judged per component, and the reported delta's own total is the
+   * sum of the components that grew — reporting nothing whenever the total
+   * fell would drop that output for good, since the high-water mark would not
+   * advance either and no later report would ever re-carry it. The high-water
+   * mark advances per component for the same reason.
    */
   #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
-    if (last.totalTokens === 0) {
+    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
+    if (grown === 0) {
       return;
     }
-    this.#reportedUsage = total;
+    last.totalTokens = grown;
+    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
@@ -785,8 +817,20 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 }
 
-function failedTurnResult(error: ClaudeWorkerError, resolvedModel: string | null = null): EngineAttemptResult {
+/**
+ * A failed turn carries the evidence the engine already held when it died:
+ * the served model, the spend the transcript proves, and the transcript
+ * itself. All of it rides fields `TurnResult` already has — a failure that
+ * published nothing would make the durable record contradict the live run,
+ * which is the one place a budget or audit consumer reads.
+ */
+function failedTurnResult(
+  error: ClaudeWorkerError,
+  evidence: FailureEvidence | null,
+  usageEvent: TokenUsageEvent | null
+): EngineAttemptResult {
   const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
   return {
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
@@ -795,7 +839,55 @@ function failedTurnResult(error: ClaudeWorkerError, resolvedModel: string | null
     durationMs: null,
     firstDeltaMs: null,
     items: {},
-    tokenUsageEvents: []
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    ...(evidence === null
+      ? {}
+      : {
+          transcripts: [
+            {
+              filename: "transcript.claude.jsonl",
+              format: "jsonl" as const,
+              source: "claude-session-jsonl",
+              sessionId: evidence.handle.sessionId,
+              content: evidence.transcript.text
+            }
+          ]
+        })
+  };
+}
+
+/** What one best-effort pre-teardown transcript read yields a dying turn. */
+interface FailureEvidence {
+  handle: ClaudeSessionHandle;
+  transcript: TranscriptFile;
+  resolvedModel: string | null;
+  usage: TokenUsageBreakdown;
+}
+
+/**
+ * The per-component maximum of two derived totals — the subtraction base for
+ * the next delta. Taking the maximum rather than the newer snapshot keeps a
+ * shrunken input side from re-charging context the run has already paid for.
+ */
+function highWaterUsage(previous: TokenUsageBreakdown | null, total: TokenUsageBreakdown): TokenUsageBreakdown {
+  if (previous === null) {
+    return total;
+  }
+  const cacheCreationInputTokens =
+    total.cacheCreationInputTokens === undefined && previous.cacheCreationInputTokens === undefined
+      ? undefined
+      : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
+  const reasoningOutputTokens =
+    total.reasoningOutputTokens === undefined && previous.reasoningOutputTokens === undefined
+      ? undefined
+      : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
+  return {
+    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
+    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
   };
 }
 

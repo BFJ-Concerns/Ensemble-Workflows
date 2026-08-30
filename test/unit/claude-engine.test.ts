@@ -9,8 +9,10 @@ import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueError, partialWorkerTextOf } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { usageSince } from "../../src/claude-transcript.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
+import type { TranscriptEntry } from "../../src/claude-transcript.js";
 import type {
   ClaudeControlPlane,
   ClaudeDispatchOptions,
@@ -1104,3 +1106,152 @@ test("a Claude attempt whose engine reports no duration still measures itself", 
     }
   );
 });
+
+test("a failed Claude turn publishes the spend its transcript already proved", async () => {
+  await withControlPlane(
+    [{ outcome: "blocked", assistant: { text: "made a start", stop: "tool_use", input: 120, output: 30, cached: 9 } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 0 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        const attempt = records.at(-1)?.attempts[0];
+        assert.equal(attempt?.failure?.kind, "claude-blocked");
+        // The archived transcript is the reconciliation source: the failed
+        // attempt's usage must be exactly what that transcript's own usage
+        // entries prove, not zero and not an inference.
+        const archived = attempt?.transcripts[0];
+        assert.ok(archived !== undefined, "the failed attempt kept its transcript");
+        const proved = usageSince(parseTranscript(archived.content));
+        assert.equal(proved.totalTokens, 159);
+        assert.deepEqual(attempt?.tokenUsageEvents.at(-1)?.total, proved);
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a client diagnostic in place of a model reply still keeps the transcript as attempt evidence", async () => {
+  await withControlPlane(
+    [
+      {
+        assistant: {
+          text: "API Error: 400 unknown provider for model definitely-not-a-model",
+          stop: "stop_sequence",
+          model: "<synthetic>",
+          input: 11,
+          output: 4
+        }
+      }
+    ],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        assert.equal(await runtime.agent("decide", { engine: "claude", model: "definitely-not-a-model", schema: okSchema }), null);
+        const attempt = records.at(-1)?.attempts[0];
+        assert.equal(attempt?.failure?.kind, "claude-worker-diagnostic");
+        // The turn really happened and left a transcript; dropping it would
+        // make the archive report that the engine produced none.
+        assert.equal(attempt?.transcripts.length, 1);
+        assert.match(attempt?.transcripts[0]?.content ?? "", /unknown provider/);
+        // The diagnostic stays a failure and the placeholder stays no model:
+        // retaining the evidence reclassifies nothing.
+        assert.equal(records.at(-1)?.resolvedModel, null);
+        assert.equal(attempt?.rawOutput, "");
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+/**
+ * A turn whose second step reports a *smaller* input snapshot than its first —
+ * what compaction does to a running context — while genuinely generating more
+ * output.
+ */
+class CompactingControlPlane implements ClaudeControlPlane {
+  pollCount = 0;
+  #path: string;
+  #present = false;
+
+  constructor(dir: string) {
+    this.#path = path.join(dir, "compacting.jsonl");
+  }
+
+  async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    this.#present = true;
+    await writeFile(this.#path, `${assistantLine({ text: "thinking", stop: "tool_use", input: 100, output: 10 })}\n`);
+    return { id: "compacting-1", sessionId: "compacting", name: options.name, cwd: options.cwd };
+  }
+
+  async poll(): Promise<ClaudeSessionStatus> {
+    this.pollCount += 1;
+    if (this.pollCount === 2) {
+      // Compacted: the input snapshot falls from 100 to 40, and 7 further
+      // output tokens are generated in the same step.
+      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 40, output: 7 })}\n`);
+    }
+    return { status: this.pollCount >= 2 ? "idle" : "busy", state: "working", present: this.#present };
+  }
+
+  async transcriptPath(): Promise<string | null> {
+    return this.#present ? this.#path : null;
+  }
+
+  async steer(): Promise<boolean> {
+    return false;
+  }
+
+  async stop(): Promise<void> {
+    this.#present = false;
+  }
+
+  async tmuxAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+test("output generated after a compacted input snapshot is still reported", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-compaction-"));
+  try {
+    const controlPlane = new CompactingControlPlane(dir);
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+      // First step: 100 input + 10 output. Second step: the input snapshot
+      // fell to 40, so the derived total fell too — but 7 output tokens were
+      // genuinely produced, and a report suppressed on the fallen total
+      // would drop them for good (the high-water mark never advances to
+      // re-carry them later).
+      const deltas = runtime.budget.events.map((entry) => entry.event.last);
+      assert.equal(runtime.budget.spent("claude"), 117);
+      const second = deltas.at(-1);
+      assert.equal(second?.outputTokens, 7);
+      // The input side clamps rather than charging the run for a context it
+      // has already paid for.
+      assert.equal(second?.inputTokens, 0);
+      assert.equal(second?.totalTokens, 7);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** The archived transcript's own entries, as a cold consumer would parse them. */
+function parseTranscript(content: string): TranscriptEntry[] {
+  return content
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as TranscriptEntry);
+}

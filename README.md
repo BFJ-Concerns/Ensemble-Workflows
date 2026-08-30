@@ -364,6 +364,9 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
+- `error`: the `{ kind, message }` of whatever ended the run — a script fault,
+  an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
+  run ended cleanly. Present on both the manifest and `result.json`.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *served* model — the literal `"unresolved"` when
   no served model was ever learned, never the requested pin. Cost entries carry

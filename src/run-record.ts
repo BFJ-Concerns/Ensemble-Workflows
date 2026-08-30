@@ -1180,16 +1180,15 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
-      // The reaper changes the manifest itself, so preserve the archive's
+      // The reaper changes an attested manifest itself, so renew its
       // self-attestation just as the writer does: null its field, hash the
       // canonical form, then let the standalone helper atomically replace it.
-      // A malformed pre-attestation manifest is not safely repairable here;
-      // the surrounding catch preserves the reaper's never-fail boundary.
-      if (fresh.integrity === undefined || typeof fresh.integrity.manifest_sha256 !== "string") {
-        continue;
+      // Pre-attestation manifests have no self-digest to renew, but remain
+      // eligible for the established reap route.
+      if (fresh.integrity !== undefined && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
       }
-      fresh.integrity.manifest_sha256 = null;
-      fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
       reaped.push(entry.name);
     } catch {

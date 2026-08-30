@@ -1235,7 +1235,7 @@ test("the reaper flips provably-dead in-progress runs and leaves every judged-li
       status: "in-progress",
       owner: { pid: 999997, start_ticks: null, host }
     });
-    await writeAttestedRunManifest(namespaceDir, "legacy-run", { status: "in-progress", run_uuid: "legacy" });
+    await writeRunManifest(namespaceDir, "legacy-run", { status: "in-progress", run_uuid: "legacy" });
     await writeAttestedRunManifest(namespaceDir, "finished-run", {
       status: "complete",
       owner: { pid: 999999, start_ticks: "3333", host }

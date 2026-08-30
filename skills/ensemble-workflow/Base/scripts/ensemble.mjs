@@ -13405,6 +13405,8 @@ var AppServerOverloadedError = class extends AppServerRequestError {
 };
 var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
 };
+var AppServerSystemError = class extends AppServerRequestError {
+};
 var AppServerFirstOutputTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
@@ -15590,11 +15592,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = { code: "systemError", message: "systemError", data: params };
+        const diagnostic = errorPayloadFromNotification(params);
         void this.#rejectTurn(
           threadId,
           turn,
-          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
+          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -18706,7 +18708,7 @@ async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
 function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError || error instanceof AppServerSystemError;
 }
 function requireTransport(transport) {
   if (transport === void 0) {
@@ -18790,8 +18792,8 @@ function createWorkflowHooks(options) {
   return {
     agent: agentWithDefaults,
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
+    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
+    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -18809,7 +18811,7 @@ function createWorkflowHooks(options) {
     args: Array.isArray(options.args) ? [...options.args] : options.args
   };
 }
-async function parallel(thunks, log) {
+async function parallel(thunks, log, presentError) {
   return Promise.all(
     thunks.map(async (thunk, index) => {
       try {
@@ -18818,6 +18820,7 @@ async function parallel(thunks, log) {
         if (error instanceof PreSpawnAuthorError) {
           throw error;
         }
+        presentError?.(error);
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         const identity = agentIdentityOf(error);
         if (identity !== null) {
@@ -18828,7 +18831,7 @@ async function parallel(thunks, log) {
     })
   );
 }
-async function pipeline(items, stages, log) {
+async function pipeline(items, stages, log, presentError) {
   return Promise.all(
     items.map(async (item, index) => {
       let previous = item;
@@ -18843,6 +18846,7 @@ async function pipeline(items, stages, log) {
           if (error instanceof PreSpawnAuthorError) {
             throw error;
           }
+          presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           const identity = agentIdentityOf(error);
           if (identity !== null) {
@@ -24818,6 +24822,7 @@ async function runWorkflowScript(options) {
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    presentError: presentAuthorFrames,
     ...defaults !== void 0 ? { defaults } : {},
     workflow: workflowDepth === 0 ? async (nameOrRef, args) => {
       assertJsonSerialisable(args ?? [], "workflow() arguments", "args");

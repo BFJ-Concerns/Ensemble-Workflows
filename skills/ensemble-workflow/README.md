@@ -411,7 +411,10 @@ same process has just created; an announcement failure does not fail the run.
   notification is terminalised by the programmatic
   `retryPromiseSilenceTimeoutMs` bound after 15 minutes by default. A
   `thread/status/changed` notification with `status.type: "systemError"`
-  rejects the live turn immediately and records `systemError`.
+  rejects the live turn with the notification's own rendered request
+  diagnostic and retries within the attempt bound: recorded service-window
+  evidence classifies this terminal app-server status as transport-level
+  transience.
 - **Budget**: each `agent()` call checks the engine's ceiling once, when it
   starts (leaves the concurrency queue); once spend reaches the ceiling, a
   call that has not yet started throws a budget-exhausted error. A call that

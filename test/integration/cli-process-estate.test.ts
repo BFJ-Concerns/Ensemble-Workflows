@@ -848,6 +848,33 @@ test("built CLI still collapses ordinary parallel and pipeline errors to null", 
   }
 });
 
+test("built CLI logs a parallel thunk error at the author's exact source position", async () => {
+  const fixture = await createProcessFixture("parallel-author-frame");
+
+  try {
+    await writeFile(
+      fixture.script,
+      [
+        'export const meta = { name: "parallel-author-frame" };',
+        "",
+        "await parallel([",
+        '  () => { throw new Error("PARALLEL_AUTHOR_FRAME"); }',
+        "]);",
+        "return null;",
+        ""
+      ].join("\n")
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stderr.includes(`${fixture.script}:4:`), result.stderr);
+    assert.doesNotMatch(result.stderr, /ensemble-workflow-body/, result.stderr);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI propagates a computed removed option from pipeline", async () => {
   const fixture = await createProcessFixture("pipeline-option-rejection", "sandbox");
 
@@ -861,7 +888,7 @@ test("built CLI propagates a computed removed option from pipeline", async () =>
         };
         const optionName = await agent("return sandbox", {
           engine: "codex",
-          maxAttempts: 1
+          maxAttempts: 2
         });
         return await pipeline(["item"], async () => {
           const options = { engine: "codex", maxAttempts: 1 };
@@ -2095,8 +2122,17 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
   const systemErrorSequence = [
     {
       method: "thread/status/changed",
+      // The pinned protocol schema has no request-error member on this
+      // terminal status yet; the recording fixture therefore marks this
+      // captured inbound frame as the deliberate schema exception.
+      allowMalformed: "captured systemError request diagnostic",
       params: {
-        status: { type: "systemError" }
+        status: { type: "systemError" },
+        error: {
+          message: "MODEL_RESOLUTION_DIAGNOSTIC_61",
+          codexErrorInfo: "serviceUnavailable",
+          additionalDetails: "the requested model could not be resolved"
+        }
       }
     }
   ];
@@ -2111,7 +2147,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
         };
         return await agent("must not wait on a dead thread", {
           engine: "codex",
-          maxAttempts: 1
+          maxAttempts: 2
         });
       `
     );
@@ -2119,7 +2155,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
     const result = await fixture.runArgsWithEnv(
       [fixture.script],
       {
-        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([systemErrorSequence]),
+        ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([systemErrorSequence, systemErrorSequence]),
         ENSEMBLE_FAKE_CODEX_STALL_AFTER_NOTIFICATION_SEQUENCE: "1",
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
@@ -2128,19 +2164,21 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
     );
 
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /AppServerRequestError/);
-    assert.match(result.stderr, /systemError/);
+    assert.match(result.stderr, /AppServerSystemError/);
+    assert.match(result.stderr, /MODEL_RESOLUTION_DIAGNOSTIC_61/);
     const messages = await fixture.messages();
-    assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
+    assert.equal(messages.filter((message) => message.method === "turn/start").length, 2);
     assert.deepEqual(
       messages.find((message) => message.method === "turn/interrupt")?.params,
       { threadId: "thread-1", turnId: "turn-1" }
     );
 
     const agent = await loadOnlyAgentRecord(recordStore);
-    assert.equal(agent.attempts.length, 1);
-    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
-    assert.match(agent.attempts[0]?.failure?.message ?? "", /systemError/);
+    assert.equal(agent.attempts.length, 2);
+    for (const attempt of agent.attempts) {
+      assert.equal(attempt.failure?.kind, "AppServerSystemError");
+      assert.match(attempt.failure?.message ?? "", /MODEL_RESOLUTION_DIAGNOSTIC_61/);
+    }
   } finally {
     await fixture.cleanup();
   }

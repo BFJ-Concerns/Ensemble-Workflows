@@ -13,6 +13,7 @@ import {
   AppServerExitedError,
   AppServerOverloadedError,
   AppServerRetryPromiseBrokenError,
+  AppServerSystemError,
   EmptyAgentOutputError,
   EngineShutdownError,
   MissingEngineError,
@@ -912,7 +913,8 @@ function isRetryableError(error: unknown): boolean {
   return (
     error instanceof AppServerBackpressureError ||
     error instanceof AppServerOverloadedError ||
-    error instanceof AppServerRetryPromiseBrokenError
+    error instanceof AppServerRetryPromiseBrokenError ||
+    error instanceof AppServerSystemError
   );
 }
 

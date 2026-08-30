@@ -8,6 +8,7 @@ import {
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
+  AppServerSystemError,
   AppServerStartupTimeoutError,
   attachAppServerDiagnostic,
   attachPartialWorkerText,
@@ -726,11 +727,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = { code: "systemError", message: "systemError", data: params };
+        // The status only says that the thread died; its inbound error carries
+        // the actionable service diagnostic. Preserve that existing payload
+        // shape, including its bounded renderer and exact-code treatment.
+        const diagnostic = errorPayloadFromNotification(params);
         void this.#rejectTurn(
           threadId,
           turn,
-          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
+          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;

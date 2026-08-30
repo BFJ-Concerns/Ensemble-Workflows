@@ -7,12 +7,20 @@ import {
   ClaudePollTimeoutError,
   ClaudeTranscriptError,
   ClaudeValveError,
+  ClaudeWorkerDiagnosticError,
   ClaudeWorkerError,
   EngineShutdownError,
   attachPartialWorkerText,
   partialWorkerTextOf
 } from "./errors.js";
-import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
+import {
+  endsInSyntheticReply,
+  finalAssistantText,
+  readTranscriptFile,
+  resolvedModelSince,
+  turnComplete,
+  usageSince
+} from "./claude-transcript.js";
 import { subtractUsage } from "./usage-summary.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
@@ -413,6 +421,16 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      // Claude Code answered in place of a model (an unknown model id, a
+      // rejected request): the transcript satisfies `turnComplete`, but the
+      // text is the client's diagnostic. Collecting it would archive the
+      // error string as the worker's output under a placeholder model —
+      // this is a failed turn, and the diagnostic is its cause.
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const usage = usageSince(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
@@ -473,7 +491,14 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       return;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
+    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+      // Claude Code composed the last reply itself, so the text on the
+      // transcript is its diagnostic and not the worker's. It reaches the
+      // record as the failure's message; carrying it here as well would put
+      // an error string in the slot a consumer reads as model output.
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
     if (text !== null) {
       attachPartialWorkerText(error, text);
     }
@@ -620,6 +645,9 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   }
   if (error instanceof ClaudeCollectionError) {
     return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-dispatch-error", message: error.message };
 }

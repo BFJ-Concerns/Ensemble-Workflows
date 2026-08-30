@@ -19,6 +19,7 @@ import {
   MissingEngineError,
   appServerDiagnosticOf,
   attachAgentIdentity,
+  describeError,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -60,7 +61,7 @@ import type {
   EngineTurnOptions
 } from "./engines.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord } from "./run-record.js";
+import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord, TerminalErrorRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
@@ -401,7 +402,7 @@ export class EnsembleRuntime {
       // counted as queued for ever.
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+        this.#settleTerminalStatus(agentRecord, error);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -430,7 +431,11 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
-      agentRecord.status = outcome === "done" ? "complete" : this.#terminalAgentStatus(null, agentRecord);
+      if (outcome === "done") {
+        agentRecord.status = "complete";
+      } else {
+        this.#settleTerminalStatus(agentRecord, null);
+      }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
       // Retain successful outputs so a timeout can surface completed work.
@@ -452,7 +457,7 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
-      agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+      this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
@@ -521,14 +526,51 @@ export class EnsembleRuntime {
     await this.#engines.close();
   }
 
-  #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {
+  /**
+   * The run's own settlement, seen from inside a worker's turn, or null when
+   * the engine failed on its own account. A run interrupt or whole-run
+   * timeout reaches an in-flight turn as whatever its transport noticed
+   * first — a closed app-server, an aborted poll — so that symptom names the
+   * run's exit rather than the turn's cause. Agent and attempt both read
+   * their cause from here, so a record cannot disagree with its own attempts.
+   */
+  #runSettlementCause(error: unknown): TerminalErrorRecord | null {
     if (error instanceof EngineShutdownError || (error instanceof AppServerExitedError && this.#closed)) {
-      return this.#shutdownAgentStatus;
+      return {
+        kind: `run-${this.#shutdownAgentStatus}`,
+        message: `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+      };
     }
-    if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
-      return "timed-out";
+    return null;
+  }
+
+  /**
+   * Settles a record's terminal status *and* the cause that produced it, so
+   * the two can never disagree.
+   */
+  #settleTerminalStatus(record: RuntimeAgentRecord, error: unknown): void {
+    const settlement = this.#runSettlementCause(error);
+    if (settlement !== null) {
+      record.status = this.#shutdownAgentStatus;
+      record.terminationCause = settlement;
+      return;
     }
-    return "failed";
+    if (error instanceof TurnTimeoutError) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: "turn-timeout", message: error.message };
+      return;
+    }
+    const lastFailure = record.attempts.at(-1)?.failure;
+    if (lastFailure?.kind.endsWith("-timeout") === true) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
+      return;
+    }
+    record.status = "failed";
+    // The attempts array already names an engine failure; a cause here
+    // would only restate it, and inventing one where no attempt ran would
+    // claim knowledge the runtime does not have.
+    record.terminationCause = null;
   }
 
   async #runAgent(
@@ -681,21 +723,29 @@ export class EnsembleRuntime {
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
-        const failure = failureFromError(error);
+        const observed = failureFromError(error);
         // Terminalisation invariant: a failed turn's attempt record carries
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
+        //
+        // A run that ends under an in-flight turn tears the transport down
+        // itself, so the symptom the turn observed ("app-server closed")
+        // describes the run's exit and not the attempt's cause. The cause
+        // the runtime knows is named as the failure, and the observation is
+        // kept beside it rather than published as the reason.
+        const settlement = this.#runSettlementCause(error);
         agentRecord.attempts.push(
           attemptRecord(
             attempt,
             "failed",
-            failure,
+            settlement ?? observed,
             partialWorkerTextOf(error),
             null,
             startedAt,
             null,
             workerExitStatusOf(error),
-            appServerDiagnosticOf(error)
+            appServerDiagnosticOf(error),
+            settlement === null ? null : observed
           )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
@@ -769,21 +819,29 @@ export class EnsembleRuntime {
         };
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
-        const failure = failureFromError(error);
+        const observed = failureFromError(error);
         // Terminalisation invariant: a failed turn's attempt record carries
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
+        //
+        // A run that ends under an in-flight turn tears the transport down
+        // itself, so the symptom the turn observed ("app-server closed")
+        // describes the run's exit and not the attempt's cause. The cause
+        // the runtime knows is named as the failure, and the observation is
+        // kept beside it rather than published as the reason.
+        const settlement = this.#runSettlementCause(error);
         agentRecord.attempts.push(
           attemptRecord(
             attempt,
             "failed",
-            failure,
+            settlement ?? observed,
             partialWorkerTextOf(error),
             null,
             startedAt,
             null,
             workerExitStatusOf(error),
-            appServerDiagnosticOf(error)
+            appServerDiagnosticOf(error),
+            settlement === null ? null : observed
           )
         );
         if (!isRetryableError(error) || attempt === maxAttempts) {
@@ -898,6 +956,7 @@ export class EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
+      terminationCause: null,
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
@@ -953,23 +1012,29 @@ function attemptRecord(
     "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics" | "resolvedModel"
   > | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
-  appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null
+  appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
+  observedFailure: { kind: string; message: string } | null = null
 ): RuntimeAgentAttemptRecord {
+  const endedAt = new Date();
   return {
     attempt,
     status,
     failure,
+    observedFailure,
     workerExit,
     appServerDiagnostic,
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
-    endedAt: new Date().toISOString(),
+    endedAt: endedAt.toISOString(),
     // Per-attempt served-model identity: retries can open fresh threads that
     // resolve differently, so each attempt keeps its own answer rather than
     // inheriting the agent-level last-write-wins field.
     resolvedModel: result?.resolvedModel ?? null,
-    durationMs: result?.durationMs ?? null,
+    // Engines that time their own turn say so; for the rest the attempt
+    // already holds both endpoints, and a null beside them would be the
+    // record discarding a figure it holds.
+    durationMs: result?.durationMs ?? Math.max(0, endedAt.getTime() - startedAtMs),
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
@@ -1008,10 +1073,7 @@ function recordOperationalFailure(
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {
-  if (error instanceof Error) {
-    return { kind: error.name, message: error.message };
-  }
-  return { kind: "error", message: String(error) };
+  return describeError(error);
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

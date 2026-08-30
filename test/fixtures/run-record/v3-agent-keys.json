@@ -24,6 +24,7 @@
   "schema_version",
   "status",
   "strip",
+  "termination_cause",
   "transcripts",
   "usage",
   "validated_output",

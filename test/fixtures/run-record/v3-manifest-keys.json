@@ -12,6 +12,7 @@
     "cost_rollup",
     "ended_at",
     "environment",
+    "error",
     "files",
     "git",
     "harness",

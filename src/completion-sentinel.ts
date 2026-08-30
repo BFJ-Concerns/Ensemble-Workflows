@@ -5,9 +5,31 @@ import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 1;
+export const SENTINEL_SCHEMA_VERSION = 2;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
+
+/**
+ * How the run's workers ended, as the launcher itself observed them. The
+ * outcome answers "how did the run end"; this answers "and did its work
+ * succeed", which the outcome alone cannot: worker failures collapse to
+ * `null` for the script by design, so a script that handles them
+ * returns cleanly and the run is genuinely `complete` — but a supervisor
+ * reading `complete` over a fan-out whose every worker failed has been
+ * answered wrongly. Null when the launcher had no progress model to read.
+ */
+export interface SentinelWorkerOutcomes {
+  done: number;
+  failed: number;
+  /** Workers still queued or running when the run ended (a timeout or interrupt). */
+  unsettled: number;
+}
+
+export interface SentinelTerminalDetail {
+  workers?: SentinelWorkerOutcomes | null;
+  /** What ended the run, when it ended badly; null on a clean end. */
+  error?: { kind: string; message: string } | null;
+}
 
 export interface CompletionSentinelOptions {
   /** The durable-record store directory (resolved even when recording is off). */
@@ -59,17 +81,25 @@ export class CompletionSentinel {
   async writeTerminal(
     outcome: SentinelOutcome,
     exitCode: number,
-    onError: (error: unknown) => void
+    onError: (error: unknown) => void,
+    detail: SentinelTerminalDetail = {}
   ): Promise<void> {
     if (this.#path === null || this.#written) {
       return;
     }
     this.#written = true;
+    const workers = detail.workers ?? null;
     const payload = {
       schema_version: SENTINEL_SCHEMA_VERSION,
       kind: "completion_sentinel",
       outcome,
       exit_code: exitCode,
+      // Read from the launcher's own progress model, not the archive: the
+      // sentinel resolves independently of the record switch, so recording
+      // being off must degrade nothing here.
+      workers:
+        workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      error: detail.error ?? null,
       ended_at: new Date().toISOString()
     };
     try {

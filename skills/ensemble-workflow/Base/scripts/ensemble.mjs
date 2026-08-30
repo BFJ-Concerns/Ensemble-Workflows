@@ -13693,9 +13693,9 @@ function harnessVersion(fromUrl = import.meta.url) {
 
 // src/usage-summary.ts
 var ENGINE_INCLUSION_RULES = {
-  codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
 };
 function summariseUsage(engine, events) {
   if (events.length === 0) {
@@ -13708,6 +13708,7 @@ function summariseUsage(engine, events) {
   let cacheCreationSeparable = true;
   let output = 0;
   let reasoning = 0;
+  let reasoningSeparable = true;
   let unclassified = 0;
   for (const event of events) {
     const delta = event.last;
@@ -13718,16 +13719,21 @@ function summariseUsage(engine, events) {
       cacheCreation += delta.cacheCreationInputTokens;
     }
     const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-    const deltaOutput = rules.reasoningWithinOutput ? Math.max(0, delta.outputTokens - delta.reasoningOutputTokens) : delta.outputTokens;
+    const deltaReasoning = delta.reasoningOutputTokens;
+    if (deltaReasoning === void 0) {
+      reasoningSeparable = false;
+    }
+    const reportedReasoning = deltaReasoning ?? 0;
+    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== void 0 ? Math.max(0, delta.outputTokens - reportedReasoning) : delta.outputTokens;
     fresh += deltaFresh;
-    reasoning += delta.reasoningOutputTokens;
+    reasoning += reportedReasoning;
     output += deltaOutput;
     unclassified += Math.max(
       0,
-      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + delta.reasoningOutputTokens)
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
     );
   }
-  const separableReasoning = rules.reasoningSeparable ? reasoning : null;
+  const separableReasoning = reasoningSeparable ? reasoning : null;
   return {
     freshInputTokens: fresh,
     cachedInputTokens: cached,
@@ -14927,16 +14933,25 @@ function breakdownFromUnknown(value) {
   const cachedInputTokens = numericField(value, "cachedInputTokens");
   const inputTokens = numericField(value, "inputTokens");
   const outputTokens = numericField(value, "outputTokens");
-  const reasoningOutputTokens = numericField(value, "reasoningOutputTokens");
+  const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
   const totalTokens = numericField(value, "totalTokens");
   if (cachedInputTokens === null || inputTokens === null || outputTokens === null || reasoningOutputTokens === null || totalTokens === null) {
     return null;
   }
-  return { cachedInputTokens, inputTokens, outputTokens, reasoningOutputTokens, totalTokens };
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens
+  };
 }
 function numericField(source, key) {
   const value = source[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function optionalNumericField(source, key) {
+  return source[key] === void 0 ? void 0 : numericField(source, key);
 }
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16465,7 +16480,6 @@ function usageSince(entries, fromIndex = 0) {
     cacheCreationInputTokens: lastCacheCreation,
     inputTokens: lastInput,
     outputTokens,
-    reasoningOutputTokens: 0,
     totalTokens: lastInput + lastCached + outputTokens
   };
 }
@@ -16504,7 +16518,6 @@ function zeroUsage() {
     cachedInputTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
-    reasoningOutputTokens: 0,
     totalTokens: 0
   };
 }

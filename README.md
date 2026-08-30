@@ -307,9 +307,11 @@ The manifest is `manifest.json`. Its top-level fields are:
   `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
   runtime only has token data, amount/currency are `null` and source is
   `estimated`. Each `tokens` object uses one declared vocabulary:
-  `freshInputTokens` (uncached input), `cachedInputTokens` (with optional
-  `cacheReadTokens` / `cacheCreationTokens` split where the engine separates
-  reads from writes), `outputTokens` (excluding reasoning where separable),
+  `freshInputTokens` (uncached input), `cachedInputTokens` (the combined cache
+  figure for admission and total reconciliation, not a pricing class when it
+  combines reads and writes; use the optional `cacheReadTokens` /
+  `cacheCreationTokens` split where the engine separates them), `outputTokens`
+  (excluding reasoning where separable),
   `reasoningOutputTokens` (`null` when the engine does not separate reasoning,
   never zero — `null` means "not knowable", zero means "no reasoning spend"),
   and `unclassifiedTokens` (spend the engine's total covers but no declared

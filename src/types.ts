@@ -137,7 +137,11 @@ export interface TokenUsageBreakdown {
   cacheCreationInputTokens?: number;
   inputTokens: number;
   outputTokens: number;
-  reasoningOutputTokens: number;
+  /**
+   * Reasoning output where the engine reports it separately. Absent means
+   * the engine did not report a separable measurement, never zero spend.
+   */
+  reasoningOutputTokens?: number;
   totalTokens: number;
 }
 

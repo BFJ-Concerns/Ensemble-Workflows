@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
+import { assertCompilableSchema, parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
+import { InvalidAgentSchemaError } from "../../src/errors.js";
 
 const nestedSchema = {
   type: "object",
@@ -19,6 +20,53 @@ const nestedSchema = {
     }
   }
 };
+
+test("the standard draft 2020-12 declaration is accepted and enforced under its own dialect", () => {
+  const schema = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    required: ["ok"],
+    additionalProperties: false,
+    properties: { ok: { type: "boolean" } },
+    // 2020-12 vocabulary a draft-07 compiler does not implement: the array
+    // form of items was replaced by prefixItems in this dialect.
+    prefixItems: [{ type: "string" }]
+  };
+  assert.doesNotThrow(() => assertCompilableSchema(schema));
+  assert.equal(validateJsonSchema({ ok: true }, schema).ok, true);
+  assert.equal(validateJsonSchema({ ok: "not-a-boolean" }, schema).ok, false);
+});
+
+test("an explicit draft-07 declaration keeps the default dialect", () => {
+  const schema = {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    required: ["ok"],
+    properties: { ok: { type: "boolean" } }
+  };
+  assert.doesNotThrow(() => assertCompilableSchema(schema));
+  assert.equal(validateJsonSchema({ ok: true }, schema).ok, true);
+});
+
+test("an unimplemented dialect is rejected pre-spawn, naming the supported dialects and the remedy", () => {
+  const schema = {
+    $schema: "https://json-schema.org/draft/2019-09/schema",
+    type: "object"
+  };
+  assert.throws(
+    () => assertCompilableSchema(schema),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentSchemaError);
+      // The pre-fix rejection was Ajv's bare "no schema with key or ref
+      // <uri>" — a message naming only the URI the author already wrote.
+      assert.match(error.message, /unsupported JSON Schema dialect/);
+      assert.match(error.message, /2020-12/);
+      assert.match(error.message, /draft-07/);
+      assert.match(error.message, /omit \$schema/);
+      return true;
+    }
+  );
+});
 
 test("parseJsonFromText extracts direct and wrapped JSON", () => {
   assert.deepEqual(parseJsonFromText("{\"x\":1}"), { value: { x: 1 }, source: "direct" });

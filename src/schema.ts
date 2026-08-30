@@ -1,4 +1,5 @@
 import { Ajv } from "ajv/dist/ajv.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 
 import { InvalidAgentSchemaError } from "./errors.js";
@@ -9,6 +10,44 @@ const ajv = new Ajv({
   allErrors: true,
   strict: false
 });
+
+const ajv2020 = new Ajv2020({
+  allErrors: true,
+  strict: false
+});
+
+type SchemaCompiler = Pick<Ajv, "compile">;
+
+const DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
+const DRAFT_07_URI = "http://json-schema.org/draft-07/schema";
+
+/**
+ * Dialect routing (a dialect is honoured or loudly rejected): the standard
+ * `"$schema"` declaration selects the compiler that actually implements
+ * that dialect — an undeclared schema keeps the default (draft-07
+ * semantics), the draft 2020-12 URI compiles under its own dialect, and a
+ * dialect nothing here implements is rejected pre-spawn *naming the
+ * supported dialects and the remedy*, never with a bare unresolved-URI
+ * message the author cannot act on.
+ */
+function compilerFor(schema: JsonSchema): SchemaCompiler {
+  const declared = schema.$schema;
+  if (typeof declared !== "string") {
+    return ajv;
+  }
+  const dialect = declared.replace(/#$/, "");
+  if (dialect === DRAFT_2020_12_URI) {
+    return ajv2020;
+  }
+  if (dialect === DRAFT_07_URI) {
+    return ajv;
+  }
+  throw new InvalidAgentSchemaError(
+    `unsupported JSON Schema dialect '${declared}' — supported dialects are ` +
+      `draft 2020-12 ("${DRAFT_2020_12_URI}") and draft-07 ("${DRAFT_07_URI}#", ` +
+      "also the default when $schema is omitted); declare one of those or omit $schema"
+  );
+}
 
 export interface ParsedJson {
   value: unknown;
@@ -92,6 +131,11 @@ export function assertCompilableSchema(schema: JsonSchema): void {
   try {
     compileSchema(schema);
   } catch (error) {
+    if (error instanceof InvalidAgentSchemaError) {
+      // Already the author-facing rejection (an unsupported dialect);
+      // re-wrapping would bury the remedy under a second layer of message.
+      throw error;
+    }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), { cause: error });
   }
 }
@@ -101,7 +145,7 @@ export function normaliseForCodexOutputSchema(schema: JsonSchema): JsonSchema {
 }
 
 function compileSchema(schema: JsonSchema): ValidateFunction {
-  return ajv.compile(schema);
+  return compilerFor(schema).compile(schema);
 }
 
 function normaliseSchemaNode(value: unknown): unknown {

@@ -458,6 +458,12 @@ pipelines used to hand-roll per script.
 `engine` is mandatory: `'codex'`, `'claude'`, or `'opencode'` — omitted or
 unknown values throw before any worker spawns.
 
+Schemas are JSON Schema **draft-07** (the default when `$schema` is
+omitted) or **draft 2020-12** (declare
+`"$schema": "https://json-schema.org/draft/2020-12/schema"`). Any other
+declared dialect is rejected before a worker spawns, naming the supported
+dialects.
+
 ## Programmatic runtime options
 
 The shipped bundle (`Base/scripts/ensemble.mjs`) is a CLI artefact with no

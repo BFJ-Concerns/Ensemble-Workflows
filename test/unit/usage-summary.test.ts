@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { addUsageSummary, summariseUsage } from "../../src/usage-summary.js";
+import { addUsageSummary, subtractUsage, summariseUsage } from "../../src/usage-summary.js";
 
 import type { TokenUsageBreakdown, TokenUsageEvent } from "../../src/types.js";
 
@@ -11,6 +11,27 @@ function event(last: TokenUsageBreakdown): TokenUsageEvent {
 
 test("no events yields null, never a zero-spend summary", () => {
   assert.equal(summariseUsage("codex", []), null);
+});
+
+test("usage subtraction distinguishes absent reasoning from a reported zero", () => {
+  const previous = {
+    cachedInputTokens: 4,
+    inputTokens: 10,
+    outputTokens: 3,
+    reasoningOutputTokens: 2,
+    totalTokens: 17
+  };
+  assert.deepEqual(
+    subtractUsage({ cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, totalTokens: 33 }, previous),
+    { cachedInputTokens: 4, inputTokens: 10, outputTokens: 2, totalTokens: 16 }
+  );
+  assert.equal(
+    subtractUsage(
+      { cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 33 },
+      previous
+    ).reasoningOutputTokens,
+    0
+  );
 });
 
 test("codex spend maps by subtraction: cached out of input, reasoning out of output", () => {

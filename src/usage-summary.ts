@@ -56,12 +56,16 @@ export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBr
     total.cacheCreationInputTokens === undefined
       ? undefined
       : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  const reasoningOutputTokens =
+    total.reasoningOutputTokens === undefined
+      ? undefined
+      : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
   return {
     cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
     ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
     inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
     outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
     totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
   };
 }

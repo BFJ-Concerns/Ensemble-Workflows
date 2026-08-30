@@ -7,10 +7,11 @@ import type { EngineName, TokenUsageEvent } from "./types.js";
  * `totalTokens` by construction, whatever the engine's native fields mean:
  *
  * - `freshInputTokens` — input actually processed uncached.
- * - `cachedInputTokens` — input served from (or written to) cache. Where
- *   the engine separates reads from writes, `cacheReadTokens` and
- *   `cacheCreationTokens` split this figure; absent means "not separable",
- *   never zero.
+ * - `cachedInputTokens` — the combined cache figure retained for admission
+ *   and total reconciliation. It is not itself a pricing class where it
+ *   combines reads and writes: use `cacheReadTokens` and
+ *   `cacheCreationTokens` when the engine separates them. Their absence
+ *   means "not separable", never zero.
  * - `outputTokens` — generated output, excluding reasoning where the
  *   engine reports reasoning separately.
  * - `reasoningOutputTokens` — reasoning output where the engine separates
@@ -54,9 +55,10 @@ export interface UsageSummary {
  *   *including* the reasoning share (judgement, 2026-08-27, from OpenAI
  *   usage-field semantics) — both are subtracted out to keep the classes
  *   disjoint.
- * - **claude** reports `inputTokens` *excluding* cache, `cachedInputTokens`
- *   as reads + creation with the creation share carried separately, and no
- *   reasoning split — reasoning is `null` and rides `outputTokens`
+ * - **claude** reports `inputTokens` *excluding* cache,
+ *   `cachedInputTokens` as reads + creation with the creation share carried
+ *   separately, and a reported reasoning value (currently zero). That zero
+ *   is evidence, not an absent split, so it survives in the summary
  *   (measured: `usageSince` in `src/claude-transcript.ts` builds exactly
  *   this shape).
  * - **opencode** reports input, output, reasoning, and cache all disjointly
@@ -71,7 +73,7 @@ const ENGINE_INCLUSION_RULES: Record<
   { cachedWithinInput: boolean; reasoningWithinOutput: boolean; reasoningSeparable: boolean }
 > = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: true },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
 };
 

@@ -13680,7 +13680,7 @@ function harnessVersion(fromUrl = import.meta.url) {
 // src/usage-summary.ts
 var ENGINE_INCLUSION_RULES = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: true },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
 };
 function summariseUsage(engine, events) {

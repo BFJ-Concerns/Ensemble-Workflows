@@ -302,17 +302,24 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     unclassifiedTokens: 0,
     totalTokens: 25
   });
-  // Claude separates neither reasoning nor (here) the cache split: reasoning
-  // is null — not knowable, never zero — and output carries the whole
-  // generation. 12 + 8 + 5 = 25.
+  // Claude's native event reports a reasoning zero. That is distinct from an
+  // unavailable split, so the cold-read summary retains it. 12 + 8 + 5 + 0
+  // = 25.
   assert.deepEqual(claude, {
     freshInputTokens: 12,
     cachedInputTokens: 8,
     outputTokens: 5,
-    reasoningOutputTokens: null,
+    reasoningOutputTokens: 0,
     unclassifiedTokens: 0,
     totalTokens: 25
   });
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000002", "agent.json"), "utf8")) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  // The agent and manifest are cold-read consumers of the same summary
+  // boundary, not independently maintained vocabulary mappings.
+  assert.deepEqual(agent.usage.summary, claude);
 });
 
 test("cache creation is accounted apart from cache reads when the engine separates them", async () => {
@@ -345,6 +352,11 @@ test("cache creation is accounted apart from cache reads when the engine separat
   assert.equal(tokens.cachedInputTokens, 10);
   assert.equal(tokens.cacheReadTokens, 7);
   assert.equal(tokens.cacheCreationTokens, 3);
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8")) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  assert.deepEqual(agent.usage.summary, tokens);
 });
 
 test("each agent record carries its usage in the declared vocabulary, or the reason it has none", async () => {

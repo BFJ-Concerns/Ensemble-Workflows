@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
+import { subtractUsage } from "./usage-summary.js";
 
 import type {
   EngineAttemptContext,
@@ -293,8 +294,8 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
             cost: exportData.info?.cost ?? null
           };
     // A token-bearing stream that carries no session id is still measured
-    // spend — suppressing it repeats the defect of spend that never reaches
-    // the ledger, behind a narrower gate. The identifiers
+    // spend — suppressing it reintroduces a fixed defect (spend that
+    // never reaches the ledger), behind a narrower gate. The identifiers
     // exist only to attribute the event, so a missing id gets a synthetic,
     // clearly-labelled one rather than costing the accounting.
     const usageEvent =
@@ -316,7 +317,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
 
     if (run.exitCode !== 0) {
       // An operational failure consumes a bounded retry attempt, the
-      // contract documented for every engine — so it returns
+      // contract the usage brief documents for every engine — so it returns
       // as a failed result the shared loop governs (imitating the Claude
       // engine's failedTurnResult), not a thrown error that would propagate
       // on the attempt it occurs. For a subprocess engine a retry means a
@@ -745,28 +746,6 @@ function openCodeTokenSnapshot(tokens: unknown): OpenCodeTokenSnapshot | null {
       inputTokens !== null ||
       outputTokens !== null ||
       reasoningOutputTokens !== null
-  };
-}
-
-function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBreakdown | null): TokenUsageBreakdown {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens =
-    total.cacheCreationInputTokens === undefined
-      ? undefined
-      : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
   };
 }
 

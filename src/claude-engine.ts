@@ -13,6 +13,7 @@ import {
   partialWorkerTextOf
 } from "./errors.js";
 import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
+import { subtractUsage } from "./usage-summary.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
@@ -630,28 +631,6 @@ function hasAssistantEntrySince(entries: TranscriptEntry[], fromIndex: number): 
     }
   }
   return false;
-}
-
-function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBreakdown | null): TokenUsageBreakdown {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens =
-    total.cacheCreationInputTokens === undefined
-      ? undefined
-      : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
-  };
 }
 
 function delay(ms: number, signal: AbortSignal, abortError: () => Error): Promise<void> {

@@ -13678,6 +13678,24 @@ function harnessVersion(fromUrl = import.meta.url) {
 }
 
 // src/usage-summary.ts
+function subtractUsage(total, previous) {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
+}
 var ENGINE_INCLUSION_RULES = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
   claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
@@ -16892,24 +16910,6 @@ function hasAssistantEntrySince(entries, fromIndex) {
   }
   return false;
 }
-function subtractUsage(total, previous) {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
-  };
-}
 function delay2(ms, signal, abortError) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -17172,7 +17172,7 @@ var OpenCodeEngineInvocation = class {
     return `opencode-no-session-${randomUUID3()}`;
   }
   #reportUsage(sessionId, total, cost) {
-    const last = subtractUsage2(total, this.#reportedUsage);
+    const last = subtractUsage(total, this.#reportedUsage);
     if (last.totalTokens === 0) {
       return;
     }
@@ -17467,24 +17467,6 @@ function openCodeTokenSnapshot(tokens) {
     reasoningOutputTokens: reasoningOutputTokens ?? 0,
     reportedTotal,
     hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
-  };
-}
-function subtractUsage2(total, previous) {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - before.reasoningOutputTokens),
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
   };
 }
 function aggregateOpenCodeUsage(tokenSnapshots) {

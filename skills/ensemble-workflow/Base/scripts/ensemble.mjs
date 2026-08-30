@@ -9622,8 +9622,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path14) {
-      let input = path14;
+    function removeDotSegments(path15) {
+      let input = path15;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -9875,8 +9875,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path14, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path14 && path14 !== "/" ? path14 : void 0;
+        const [path15, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13817,12 +13817,12 @@ var require__ = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path13 from "node:path";
+import path14 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
 import { readFile as readFile8 } from "node:fs/promises";
-import path12 from "node:path";
+import path13 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -15474,14 +15474,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path14) {
+async function readTranscriptFile(path15) {
   let text;
   try {
-    text = await readFile2(path14, "utf8");
+    text = await readFile2(path15, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path15}`, { cause: error });
   }
-  return { path: path14, text, entries: parseTranscriptText(text) };
+  return { path: path15, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -15972,11 +15972,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path14 = await this.#controlPlane.transcriptPath(handle);
-    if (path14 === null) {
+    const path15 = await this.#controlPlane.transcriptPath(handle);
+    if (path15 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path14);
+    return readTranscriptFile(path15);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -22595,14 +22595,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path14, ancestors, honourToJson) {
+function findUnserialisable(value, path15, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path14} is a function`;
+      return `${path15} is a function`;
     case "symbol":
-      return `${path14} is a symbol`;
+      return `${path15} is a symbol`;
     case "bigint":
-      return `${path14} is a BigInt`;
+      return `${path15} is a BigInt`;
     case "object":
       break;
     default:
@@ -22613,16 +22613,16 @@ function findUnserialisable(value, path14, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path14, ancestors, false);
+    return findUnserialisable(toJson.call(value), path15, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path14} closes a cycle`;
+    return `${path15} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path14}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path15}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -22630,7 +22630,7 @@ function findUnserialisable(value, path14, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path14}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path15}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -25244,6 +25244,11 @@ function itemTypeFromItem(item) {
   return typeof itemType === "string" ? itemType : "?";
 }
 
+// src/engines.ts
+import { existsSync, readdirSync } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import path11 from "node:path";
+
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -26233,6 +26238,30 @@ var EngineRegistry = class {
     await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 };
+function installedCodexSkillNames() {
+  const skillsDirectory = path11.join(process.env.CODEX_HOME ?? path11.join(homedir5(), ".codex"), "skills");
+  try {
+    return readdirSync(skillsDirectory, { withFileTypes: true }).filter((entry) => existsSync(path11.join(skillsDirectory, entry.name, "SKILL.md"))).map((entry) => entry.name).sort();
+  } catch {
+    return [];
+  }
+}
+function codexThreadConfig(strip) {
+  const strippedAgents = strip?.includes("agents") === true;
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
+    return void 0;
+  }
+  return {
+    ...strippedAgents ? { agents: { enabled: false } } : {},
+    ...strippedSkills ? {
+      skills: {
+        bundled: { enabled: false },
+        config: installedCodexSkillNames().map((name) => ({ name, enabled: false }))
+      }
+    } : {}
+  };
+}
 var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
@@ -26245,19 +26274,17 @@ var CodexEngineAdapter = class {
    *   tool namespace from the tool schema Codex sends the model, per
    *   thread, without leaking between sibling threads on one app-server
    *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
-   * - `skills` cannot be stripped mechanically: there is no skills tool in
-   *   the app-server surface — skills arrive as prompt text plus
-   *   filesystem paths, and the per-thread lever that removes a skill
-   *   from the listing leaves its files shell-readable. A strip request
-   *   therefore fails loud rather than claiming a satisfaction the engine
-   *   cannot deliver.
+   *   and its failure mode on a Codex rename would be silent — a live
+   *   test is what re-arms this judgement per release.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: `skills.bundled.enabled=false` turns
+   *   off bundled skills and `skills.config=[{ name, enabled=false }]` denies
+   *   every user skill found under `$CODEX_HOME/skills` when the thread opens.
    */
   capabilities = {
     skills: {
-      route: "unsupported",
-      detail: "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+      route: "config",
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies disables bundled and installed skills"
     },
     agents: {
       route: "config",
@@ -26328,11 +26355,11 @@ var CodexWorkerSession = class {
     }
     this.#opening ??= (async () => {
       try {
-        const strippedAgents = this.#options.strip?.includes("agents") === true;
+        const threadConfig = codexThreadConfig(this.#options.strip);
         const threadId = await this.#transport.openThread({
           ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
           ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-          ...strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {}
+          ...threadConfig !== void 0 ? { threadConfig } : {}
         });
         this.#threadId = threadId;
         return threadId;
@@ -26360,11 +26387,11 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const strippedAgents = this.#options.strip?.includes("agents") === true;
+    const threadConfig = codexThreadConfig(this.#options.strip);
     const threadId = await this.#transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {}
+      ...threadConfig !== void 0 ? { threadConfig } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -27749,7 +27776,7 @@ function decodeFailureDiagnosticFromParams(params) {
 import { randomUUID as randomUUID6 } from "node:crypto";
 import { link, readFile as readFile7, readdir as readdir5, rename as rename4, unlink, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname } from "node:os";
-import path11 from "node:path";
+import path12 from "node:path";
 var STATUS_FILENAME = "ensemble.local.json";
 var DEFAULT_HEARTBEAT_MS = 1e4;
 var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
@@ -27840,7 +27867,7 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     await this.#initialSweep;
-    const target = path11.join(this.#dir, STATUS_FILENAME);
+    const target = path12.join(this.#dir, STATUS_FILENAME);
     const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
@@ -27848,7 +27875,7 @@ var StatusFileWriter = class {
     await this.#fileOperations.rename(tmp, target);
   }
   async #removeSnapshot() {
-    const target = path11.join(this.#dir, STATUS_FILENAME);
+    const target = path12.join(this.#dir, STATUS_FILENAME);
     const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
@@ -27907,14 +27934,14 @@ var StatusFileWriter = class {
         continue;
       }
       try {
-        await this.#fileOperations.unlink(path11.join(this.#dir, entry));
+        await this.#fileOperations.unlink(path12.join(this.#dir, entry));
       } catch (error) {
         if (!isNodeError2(error) || error.code !== "ENOENT") {
           this.#reportError(error);
         }
       }
     }
-    const target = path11.join(this.#dir, STATUS_FILENAME);
+    const target = path12.join(this.#dir, STATUS_FILENAME);
     const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
     try {
       await this.#fileOperations.rename(target, claim);
@@ -28341,7 +28368,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     return {
-      workflowPath: path12.join(cwd, "<ensemble-agent>"),
+      workflowPath: path13.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -28353,7 +28380,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path12.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path13.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
@@ -28722,7 +28749,7 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path12.resolve(cwd, filename);
+    const filePath = path13.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
       source = await readFile8(filePath, "utf8");
@@ -28880,7 +28907,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path13.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path14.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {

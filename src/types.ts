@@ -269,9 +269,9 @@ export interface ThreadStartOptions {
    * field. The app server applies it over the machine's own `config.toml`
    * for this one thread — sibling threads on the same process are
    * unaffected, and the overlay wins over process-level config in both
-   * directions. The Codex capability-stripping route rides this
-   * (`{ agents: { enabled: false } }` removes the collaboration tool
-   * namespace from what Codex sends the model); it is sent only when a
+   * directions. The Codex capability-stripping route rides this: agents use
+   * `{ agents: { enabled: false } }`, while skills disable bundled skills and
+   * give each currently installed skill a named deny. It is sent only when a
    * dispatch asks for it, so an unstripped worker's thread/start stays
    * byte-identical and keeps the machine's own default tool surface.
    */

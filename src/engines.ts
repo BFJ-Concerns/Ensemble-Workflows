@@ -1,4 +1,7 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation, assertClaudeEffortSupported } from "./claude-engine.js";
 import {
@@ -129,8 +132,7 @@ export interface EngineAdapter {
    * Open a multi-turn worker session. Optional by design: an adapter
    * that does not implement it holds its engine at the one-shot surface,
    * and the runtime fails a session request loud before any worker spawns
-   * (opencode, which is held at the one-shot surface, and any future engine
-   * that never considered sessions, are safe by construction).
+   * (any engine that never considered sessions is safe by construction).
    * `options.schema` is ignored here — schema is per-turn, carried by each
    * `beginTurn`.
    */
@@ -167,6 +169,45 @@ export interface CodexEngineAdapterOptions {
   concurrency: number;
 }
 
+/**
+ * Codex discovers user-installed skills below `$CODEX_HOME/skills`. Read the
+ * directory when a thread opens, rather than when this module loads: an
+ * installation that arrives during a long-lived Ensemble process must be in
+ * the deny list for a later stripped worker too.
+ */
+function installedCodexSkillNames(): string[] {
+  const skillsDirectory = path.join(process.env.CODEX_HOME ?? path.join(homedir(), ".codex"), "skills");
+  try {
+    return readdirSync(skillsDirectory, { withFileTypes: true })
+      .filter((entry) => existsSync(path.join(skillsDirectory, entry.name, "SKILL.md")))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    // A Codex installation without a user skills directory has no named
+    // skills to deny. Bundled skills remain explicitly disabled below.
+    return [];
+  }
+}
+
+function codexThreadConfig(strip: readonly StrippableCapability[] | undefined): Record<string, unknown> | undefined {
+  const strippedAgents = strip?.includes("agents") === true;
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
+    return undefined;
+  }
+  return {
+    ...(strippedAgents ? { agents: { enabled: false } } : {}),
+    ...(strippedSkills
+      ? {
+          skills: {
+            bundled: { enabled: false },
+            config: installedCodexSkillNames().map((name) => ({ name, enabled: false }))
+          }
+        }
+      : {})
+  };
+}
+
 export class CodexEngineAdapter implements EngineAdapter {
   readonly name = "codex" satisfies EngineName;
   readonly concurrency: number;
@@ -179,20 +220,18 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   tool namespace from the tool schema Codex sends the model, per
    *   thread, without leaking between sibling threads on one app-server
    *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
-   * - `skills` cannot be stripped mechanically: there is no skills tool in
-   *   the app-server surface — skills arrive as prompt text plus
-   *   filesystem paths, and the per-thread lever that removes a skill
-   *   from the listing leaves its files shell-readable. A strip request
-   *   therefore fails loud rather than claiming a satisfaction the engine
-   *   cannot deliver.
+   *   and its failure mode on a Codex rename would be silent — a live
+   *   test is what re-arms this judgement per release.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: `skills.bundled.enabled=false` turns
+   *   off bundled skills and `skills.config=[{ name, enabled=false }]` denies
+   *   every user skill found under `$CODEX_HOME/skills` when the thread opens.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
-      route: "unsupported",
+      route: "config",
       detail:
-        "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies disables bundled and installed skills"
     },
     agents: {
       route: "config",
@@ -292,11 +331,11 @@ class CodexWorkerSession implements EngineWorkerSession {
     }
     this.#opening ??= (async () => {
       try {
-        const strippedAgents = this.#options.strip?.includes("agents") === true;
+        const threadConfig = codexThreadConfig(this.#options.strip);
         const threadId = await this.#transport.openThread({
           ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
           ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-          ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
+          ...(threadConfig !== undefined ? { threadConfig } : {})
         });
         this.#threadId = threadId;
         return threadId;
@@ -348,11 +387,11 @@ class CodexEngineInvocation implements EngineInvocation {
     // tool surface the machine's own config.toml gives it (stripping is opt-in
     // in both directions — a strip removes nothing unasked, and its
     // absence grants nothing the machine had turned off).
-    const strippedAgents = this.#options.strip?.includes("agents") === true;
+    const threadConfig = codexThreadConfig(this.#options.strip);
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
+      ...(threadConfig !== undefined ? { threadConfig } : {})
     });
 
     return this.#transport.runTurn(threadId, prompt, {
@@ -386,8 +425,8 @@ export class ClaudeEngineAdapter implements EngineAdapter {
    * deny rules ride the per-dispatch settings file the control plane
    * already writes (the one surface measured to reach the daemon-served
    * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1788,11 +1788,11 @@ test("an absent capability is satisfied by construction and recorded as absent",
   await runtime.close();
 });
 
-test("a codex agents strip rides the thread config overlay; an unstripped call sends none", async () => {
+test("a codex skills strip denies bundled and newly installed skills; an unstripped call sends none", async () => {
   // The Codex enforcement route end-to-end through the real adapter: the
-  // strip becomes thread/start's per-thread config overlay, and a dispatch
-  // that asked for nothing carries no overlay at all — the machine's own
-  // default tool surface is neither restricted nor re-enabled unasked.
+  // strip becomes thread/start's per-thread config overlay. The skill appears
+  // after adapter construction, proving enumeration happens at thread spawn;
+  // a dispatch that asked for nothing carries no overlay at all.
   const transport = new FakeTransport([turn("restricted"), turn("unrestricted")]);
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({
@@ -1805,29 +1805,54 @@ test("a codex agents strip rides the thread config overlay; an unstripped call s
       records.push(structuredClone(record));
     }
   } as RunRecordWriter);
+  const previousCodexHome = process.env.CODEX_HOME;
+  const codexHome = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-"));
+  try {
+    process.env.CODEX_HOME = codexHome;
+    await mkdir(path.join(codexHome, "skills", "late-installed-skill"), { recursive: true });
+    await writeFile(path.join(codexHome, "skills", "late-installed-skill", "SKILL.md"), "---\nname: late-installed-skill\n---\n");
 
-  await runtime.agent("restricted work", { engine: "codex", strip: ["agents"] });
-  await runtime.agent("unrestricted work", { engine: "codex" });
+    await runtime.agent("restricted work", { engine: "codex", strip: ["skills", "agents"] });
+    await runtime.agent("unrestricted work", { engine: "codex" });
 
-  assert.deepEqual(transport.openedThreads[0]?.threadConfig, { agents: { enabled: false } });
-  assert.ok(!("threadConfig" in (transport.openedThreads[1] ?? {})));
-  assert.deepEqual(records[0]?.strip, {
-    requested: ["agents"],
-    enforcement: {
+    assert.deepEqual(transport.openedThreads[0]?.threadConfig, {
+      agents: { enabled: false },
+      skills: {
+        bundled: { enabled: false },
+        config: [{ name: "late-installed-skill", enabled: false }]
+      }
+    });
+    assert.ok(!("threadConfig" in (transport.openedThreads[1] ?? {})));
+    assert.deepEqual(records[0]?.strip, {
+      requested: ["skills", "agents"],
+      enforcement: {
+        skills: {
+          route: "config",
+          detail:
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies disables bundled and installed skills"
+        },
       agents: {
         route: "config",
         detail:
           "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
       }
+      }
+    });
+  } finally {
+    if (previousCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = previousCodexHome;
     }
-  });
-  await runtime.close();
+    await rm(codexHome, { recursive: true, force: true });
+    await runtime.close();
+  }
 });
 
-test("a codex skills strip fails loud before any thread opens", async () => {
-  // No mechanical route exists (skills reach a Codex worker as prompt text
-  // plus shell-readable files), so the request must fail pre-spawn rather
-  // than dispatch a worker the author believes restricted.
+test("an unsupported strip fails loud before any thread opens", async () => {
+  // This adapter currently discharges both closed-vocabulary capabilities.
+  // Keep the generic pre-spawn refusal proof on an engine whose table still
+  // honestly reports no mechanical skills route.
   const transport = new FakeTransport([]);
   const runtime = new EnsembleRuntime({
     transport,
@@ -1835,7 +1860,7 @@ test("a codex skills strip fails loud before any thread opens", async () => {
     defaultMaxAttempts: 1
   });
   await assert.rejects(
-    () => runtime.agent("never starts", { engine: "codex", strip: ["skills"] }),
+    () => runtime.agent("never starts", { engine: "opencode", strip: ["skills"] }),
     CapabilityStripUnsupportedError
   );
   assert.deepEqual(transport.openedThreads, []);

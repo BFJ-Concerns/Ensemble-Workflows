@@ -15592,7 +15592,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = errorPayloadFromNotification(params);
+        const diagnostic = {
+          code: void 0,
+          message: "Codex app-server reported terminal systemError without a diagnostic",
+          data: params
+        };
         void this.#rejectTurn(
           threadId,
           turn,
@@ -18708,7 +18712,7 @@ async function createRuntime(options = {}) {
   return EnsembleRuntime.create(options);
 }
 function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError || error instanceof AppServerSystemError;
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
 }
 function requireTransport(transport) {
   if (transport === void 0) {

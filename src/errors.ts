@@ -181,7 +181,7 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
-/** A terminal app-server status whose service-window failures are transient. */
+/** A terminal app-server status with no protocol-level retryability signal. */
 export class AppServerSystemError extends AppServerRequestError {}
 
 /** A started turn that produced no output-bearing frame before its transport deadline. */

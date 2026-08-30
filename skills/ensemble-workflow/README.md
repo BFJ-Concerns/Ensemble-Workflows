@@ -411,10 +411,10 @@ same process has just created; an announcement failure does not fail the run.
   notification is terminalised by the programmatic
   `retryPromiseSilenceTimeoutMs` bound after 15 minutes by default. A
   `thread/status/changed` notification with `status.type: "systemError"`
-  rejects the live turn with the notification's own rendered request
-  diagnostic and retries within the attempt bound: recorded service-window
-  evidence classifies this terminal app-server status as transport-level
-  transience.
+  rejects the live turn as a non-retryable terminal app-server failure. The
+  current Codex protocol supplies no diagnostic field on that notification,
+  so Ensemble reports that absence rather than inventing request detail;
+  retryability remains reserved for explicit transport-level signals.
 - **Budget**: each `agent()` call checks the engine's ceiling once, when it
   starts (leaves the concurrency queue); once spend reaches the ceiling, a
   call that has not yet started throws a budget-exhausted error. A call that

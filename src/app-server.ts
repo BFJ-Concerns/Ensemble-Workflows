@@ -727,10 +727,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        // The status only says that the thread died; its inbound error carries
-        // the actionable service diagnostic. Preserve that existing payload
-        // shape, including its bounded renderer and exact-code treatment.
-        const diagnostic = errorPayloadFromNotification(params);
+        // The installed protocol carries only the terminal status and thread
+        // identity here. Do not manufacture an engine diagnostic from fields
+        // that are not part of that wire contract.
+        const diagnostic = {
+          code: undefined,
+          message: "Codex app-server reported terminal systemError without a diagnostic",
+          data: params
+        };
         void this.#rejectTurn(
           threadId,
           turn,

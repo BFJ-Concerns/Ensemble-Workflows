@@ -359,8 +359,7 @@ ephemeral: the archive records the prompt-bearing `turn/start` request and every
 scoped app-server notification through completion. Claude transcripts are copied
 from the background session JSONL before the session is removed. opencode
 transcripts preserve the `opencode run --format json` event stream plus the
-session export when available. The prompt lives in the transcript, not in a
-duplicated field.
+session export when available.
 
 The record contains only run and audit data. It does not score outputs, infer
 verifier relationships, or record evaluation concepts; those belong to the

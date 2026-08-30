@@ -1187,9 +1187,11 @@ class CompactingControlPlane implements ClaudeControlPlane {
   pollCount = 0;
   #path: string;
   #present = false;
+  #recoveredSnapshot: boolean;
 
-  constructor(dir: string) {
+  constructor(dir: string, options: { recoveredSnapshot?: boolean } = {}) {
     this.#path = path.join(dir, "compacting.jsonl");
+    this.#recoveredSnapshot = options.recoveredSnapshot ?? false;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -1205,7 +1207,13 @@ class CompactingControlPlane implements ClaudeControlPlane {
       // output tokens are generated in the same step.
       await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 40, output: 7 })}\n`);
     }
-    return { status: this.pollCount >= 2 ? "idle" : "busy", state: "working", present: this.#present };
+    if (this.#recoveredSnapshot && this.pollCount === 3) {
+      // The context is rebuilt after compaction: the input snapshot returns
+      // to its pre-compaction size with no new output generated.
+      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 100, output: 0 })}\n`);
+    }
+    const settled = this.pollCount >= (this.#recoveredSnapshot ? 3 : 2);
+    return { status: settled ? "idle" : "busy", state: "working", present: this.#present };
   }
 
   async transcriptPath(): Promise<string | null> {
@@ -1245,6 +1253,29 @@ test("output generated after a compacted input snapshot is still reported", asyn
       // has already paid for.
       assert.equal(second?.inputTokens, 0);
       assert.equal(second?.totalTokens, 7);
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an input snapshot recovering after compaction re-charges nothing", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-compaction-recovery-"));
+  try {
+    const controlPlane = new CompactingControlPlane(dir, { recoveredSnapshot: true });
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+      // The subtraction base is a per-component high-water mark, so input
+      // held at 100 through the compacted step and the snapshot's return to
+      // 100 grows no component — nothing is reported. A base saved from the
+      // shrunken snapshot would re-charge 60 input tokens here.
+      assert.equal(runtime.budget.spent("claude"), 117);
+      const deltas = runtime.budget.events.map((entry) => entry.event.last);
+      assert.equal(deltas.length, 2);
+      assert.equal(deltas.at(-1)?.outputTokens, 7);
     } finally {
       await runtime.close();
     }

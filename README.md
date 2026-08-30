@@ -219,7 +219,7 @@ Example:
 
 ## Durable run record
 
-Every run also writes a permanent archive of what happened. This is separate
+By default, a run writes a permanent archive of what happened. This is separate
 from `.claude/ensemble.local.json`: the status file is live-only and removed at
 the end; the run record is archival and kept for audit and for tools that
 evaluate runs after the fact.
@@ -272,7 +272,7 @@ Every JSON artefact carries:
   declared summary vocabulary keyed per served model; `strip` and `owner`
   arrived later as additive version-3 fields. Version 2 added worktree
   provenance and cross-engine token derivations over version 1.
-- `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
+- `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
@@ -280,6 +280,7 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
+- `caller_identity`: opaque identity of the invoking session, or `null`.
 - `namespace`: namespace strategy, id, hash, and local material.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
   `"interrupted"`, or `"abandoned"` (reaper-written only, see above).
@@ -346,7 +347,6 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
   (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
 - `queued_ms`, `execution_ms`.
-- `worker_exit`: `{ exit_code, signal }` or `null`.
 - `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
   `resolved_model`, `failure` (`{ kind, message }` or `null`), `diagnostics`,

@@ -244,16 +244,18 @@ writer refreshes a quiet run every 10 seconds.
 
 ## Durable run record
 
-Every run writes a permanent archive. The full schema is in the
+By default, every run writes a permanent archive (recording is disabled by
+`ENSEMBLE_RUN_RECORD=off` or a null run-record directory). The full schema is in the
 [root README](../../README.md#run-record-schema); the key structures are
 summarised here for quick reference.
 
 Each JSON artefact carries `schema_version` (currently `3`) and `kind`
-(`run_manifest`, `run_args`, `run_result`, or `agent_record`).
+(`run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`).
 
 ### Manifest (`manifest.json`)
 
-Top-level fields: `run_id`, `run_uuid`, `namespace` (strategy, id, hash,
+Top-level fields: `run_id`, `run_uuid`, `caller_identity` (opaque invoker
+identity or `null`), `namespace` (strategy, id, hash,
 material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
 `"interrupted"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
 `abandonment` (present on reaped manifests only), `started_at`/`ended_at` (ISO;
@@ -277,8 +279,7 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `null`), `strip` (requested names and resolved enforcement routes),
 `raw_output`, `validated_output`, `parse_route` (`"direct"`,
 `"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
-`usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`,
-`worker_exit` (`{ exit_code, signal }` or `null`).
+`usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`.
 
 `attempts` is an array; each entry carries: `attempt` (1-based index),
 `status`, `started_at`, `ended_at`, `duration_ms`, `first_delta_ms`,

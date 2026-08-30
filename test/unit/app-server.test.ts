@@ -222,6 +222,43 @@ test("a systemError makes a retry-promised schema diagnostic terminal and classi
   }
 });
 
+test("the diagnostic grace genuinely waits for a delayed schema diagnostic", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-delayed-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a diagnostic arriving after the grace leaves the honest diagnostic-less rejection", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-late-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a systemError followed by another diagnostic keeps that diagnostic attached", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-error");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -1141,6 +1178,8 @@ async function fakeCodexFailingTurnServer(
     | "system-error-then-schema-error"
     | "system-error-then-retrying-schema-error"
     | "system-error-then-error"
+    | "system-error-then-delayed-schema-error"
+    | "system-error-then-late-error"
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
@@ -1264,6 +1303,21 @@ reader.on("line", (line) => {
     } else if (mode === "system-error-then-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "upstream fell over" } } });
+    } else if (mode === "system-error-then-delayed-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // The diagnostic lands asynchronously, inside the client's grace
+      // window: only a grace that genuinely waits can attach it — a zero or
+      // synchronous-only grace rejects before this timer fires.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 10);
+    } else if (mode === "system-error-then-late-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // Well beyond the grace: the client must already have fallen back to
+      // the diagnostic-less rejection rather than waiting indefinitely.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 400);
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all", () => process.exit(7));
     } else if (mode === "terminated-garbage-line") {

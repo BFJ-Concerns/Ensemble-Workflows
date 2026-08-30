@@ -240,6 +240,7 @@ export class EnsembleRuntime {
   /** Injectable clock (tests): drives the staleness mark's idle reading. */
   #now: () => number;
   #holdManager: HoldManager | null = null;
+  #lastSettledAgentRecord: RuntimeAgentRecord | null = null;
   #holdsDir: string;
   #holdPollIntervalMs: number | undefined;
   #holdsCwd: string;
@@ -901,11 +902,20 @@ export class EnsembleRuntime {
       await this.#recordSettlementSafely(agentId, agentRecord);
       throw error;
     } finally {
+      // The most recent settled record, kept for operator diagnosis: an
+      // exhausted direct agent's per-attempt evidence is here whether or
+      // not a recorder was attached.
+      this.#lastSettledAgentRecord = agentRecord;
       executingRecords.delete(agentRecord);
       if (executingRecords.size === 0) {
         this.#executingAgentRecords.delete(engineName);
       }
     }
+  }
+
+  /** The last settled agent record, or null before any settlement. */
+  lastAgentRecord(): RuntimeAgentRecord | null {
+    return this.#lastSettledAgentRecord;
   }
 
   /**

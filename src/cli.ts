@@ -9,12 +9,13 @@ import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./comp
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
 import { defaultHoldsDirectory, enumerateHolds } from "./holds.js";
+import { presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 
-import type { EffectiveRunSettingsRecord } from "./run-record.js";
+import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
@@ -353,7 +354,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stdout.write(`${serialised}\n`);
     finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
     terminalError = describeError(error);
-    stderr.write(`${formatError(error)}\n`);
+    // Operational failures present a cause-first operator diagnosis;
+    // author errors keep their clean line, and only a genuinely unknown
+    // error falls through to its stack — internals as evidence, never as
+    // the default surface.
+    const diagnosis = presentTerminalError(error, {
+      archiveDir: runRecordWriter?.archiveDir ?? null,
+      lastAgentRecord:
+        (runtime as { lastAgentRecord?: () => RuntimeAgentRecord | null } | null)?.lastAgentRecord?.() ?? null
+    });
+    stderr.write(`${diagnosis ?? formatError(error)}\n`);
     return 1;
   } finally {
     try {

@@ -465,9 +465,29 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
  * only to discover the schema at validation time.
  */
 export class InvalidAgentSchemaError extends AgentOptionRejectedError {
-  constructor(message: string, options?: ErrorOptions) {
-    super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  constructor(message: string, options?: ErrorOptions & { offending?: unknown }) {
+    // The offending value beside the validator's reason: an author fixing
+    // "must be object" needs to see what was actually passed, bounded so a
+    // pathological schema cannot flood the diagnostic.
+    super(
+      `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
+      options
+    );
   }
+}
+
+function renderOffendingSchema(offending: unknown): string {
+  if (offending === undefined) {
+    return "";
+  }
+  let rendered: string;
+  try {
+    rendered = JSON.stringify(offending) ?? String(offending);
+  } catch {
+    rendered = String(offending);
+  }
+  const bounded = rendered.length > 300 ? `${rendered.slice(0, 300)}…` : rendered;
+  return ` (offending schema: ${bounded})`;
 }
 
 function formatAgentOptionValue(value: unknown): string {

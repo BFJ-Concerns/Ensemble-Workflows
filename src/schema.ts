@@ -136,7 +136,10 @@ export function assertCompilableSchema(schema: JsonSchema): void {
       // re-wrapping would bury the remedy under a second layer of message.
       throw error;
     }
-    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), { cause: error });
+    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
+      cause: error,
+      offending: schema
+    });
   }
 }
 

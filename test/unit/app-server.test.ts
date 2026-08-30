@@ -154,6 +154,25 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
   }
 });
 
+test("a systemError followed by completion remains a diagnostic-less terminal failure", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-completed");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a systemError followed by Codex's schema diagnostic keeps its classified cause", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -1094,6 +1113,7 @@ async function fakeCodexFailingTurnServer(
   mode:
     | "error-notification"
     | "system-error"
+    | "system-error-then-completed"
     | "system-error-then-schema-error"
     | "system-error-then-error"
     | "exit-mid-turn"
@@ -1207,6 +1227,9 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "system-error-then-completed") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
     } else if (mode === "system-error-then-schema-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
       send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });

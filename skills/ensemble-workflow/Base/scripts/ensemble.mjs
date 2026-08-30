@@ -24884,6 +24884,10 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     }
     if (method === "turn/completed") {
       turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
       this.#completeTurn(threadId, turn);
       return;
     }
@@ -24961,17 +24965,17 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
       return;
     }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
     turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      const diagnostic = {
-        code: void 0,
-        message: "Codex app-server reported terminal systemError without a diagnostic",
-        data: statusParams
-      };
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
-      );
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
     }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
   }
   #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
@@ -25112,6 +25116,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
       systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
       firstOutputDeadline: void 0,
       promise,
       resolve: resolveTurn,

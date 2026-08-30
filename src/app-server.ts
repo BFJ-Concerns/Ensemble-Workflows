@@ -67,6 +67,8 @@ interface TurnState {
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
   systemErrorDiagnosticGraceDeadline: NodeJS.Timeout | undefined;
+  /** The honest terminal rendering if Codex never sends its separate error notification. */
+  systemErrorDiagnosticFallback: Error | undefined;
   firstOutputDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
@@ -741,6 +743,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     if (method === "turn/completed") {
       turn.completedAt = now;
+      // A systemError has already made this turn terminal. Codex normally
+      // follows it with an error notification carrying the useful diagnostic,
+      // but a completion frame cannot turn that failed turn into success.
+      if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback!);
+        return;
+      }
       this.#completeTurn(threadId, turn);
       return;
     }
@@ -832,20 +841,20 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
       return;
     }
+    // The status envelope has no diagnostic fields in the installed protocol.
+    // Keep its fallback ready for either grace expiry or a misleading
+    // completion notification during the grace.
+    const diagnostic = {
+      code: undefined,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
     turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      // The status envelope has no diagnostic fields in the installed
-      // protocol. If its following error never arrives, keep that absence
-      // visible instead of manufacturing a cause.
-      const diagnostic = {
-        code: undefined,
-        message: "Codex app-server reported terminal systemError without a diagnostic",
-        data: statusParams
-      };
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
-      );
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback!);
     }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
   }
 
@@ -1015,6 +1024,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
       systemErrorDiagnosticGraceDeadline: undefined,
+      systemErrorDiagnosticFallback: undefined,
       firstOutputDeadline: undefined,
       promise,
       resolve: resolveTurn,

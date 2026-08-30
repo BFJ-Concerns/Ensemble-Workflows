@@ -1227,7 +1227,7 @@ async function judgeOwnerGone(
  * itself contain spaces and parentheses, hence the last-close-paren split).
  * Null where the stat file cannot be read: pid gone, or no proc filesystem.
  */
-async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
+export async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
   try {
     const statLine = await readFile(path.join(procDir, String(pid), "stat"), "utf8");
     const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);

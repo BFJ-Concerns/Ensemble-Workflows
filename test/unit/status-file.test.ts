@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { RunProgress } from "../../src/progress.js";
-import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
+import { STATUS_FILENAME, StatusFileWriter, snapshotOwnerGone } from "../../src/status-file.js";
 
 import type { BudgetView, ProgressSnapshot } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -63,6 +64,68 @@ async function exists(file: string): Promise<boolean> {
     return false;
   }
 }
+
+test("every published snapshot carries the writer's own liveness evidence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-owner-"));
+  const writer = new StatusFileWriter({ progress: newProgress(), dir });
+  try {
+    const raw = await waitForFile(path.join(dir, STATUS_FILENAME));
+    const published = JSON.parse(raw) as { owner?: { host: string; pid: number; start_ticks: string | null } };
+    // The pid + start-ticks discipline the archive manifest's owner block
+    // uses: a poller refutes a snapshot a killed run left behind instead of
+    // trusting cleanup-by-cooperation.
+    assert.equal(published.owner?.pid, process.pid);
+    assert.equal(typeof published.owner?.host, "string");
+    // This writer is alive with matching evidence, so it is not refutable.
+    assert.equal(await snapshotOwnerGone(published.owner), false);
+  } finally {
+    await writer.close();
+  }
+});
+
+test("snapshotOwnerGone refutes a dead or reused pid and never guesses without evidence", async () => {
+  const procDir = await mkdtemp(path.join(tmpdir(), "ensemble-status-proc-"));
+  // A fake proc filesystem: this process's own stat (so the judging side
+  // can read proc), and a target pid whose start ticks differ from the
+  // recorded evidence — the pid-reuse case.
+  // Field 22 of /proc/<pid>/stat is starttime: after ") " come state plus
+  // 18 filler fields, so the recorded ticks sit at split index 19.
+  await mkdir(path.join(procDir, String(process.pid)), { recursive: true });
+  await writeFile(path.join(procDir, String(process.pid), "stat"), `1 (node) S ${"0 ".repeat(18)}12345 0`);
+  await mkdir(path.join(procDir, "4242"), { recursive: true });
+  await writeFile(path.join(procDir, "4242", "stat"), `1 (node) S ${"0 ".repeat(18)}99999 0`);
+  const host = hostname();
+
+  // Dead pid (no stat entry at all) with readable proc: provably gone.
+  assert.equal(await snapshotOwnerGone({ host, pid: 555_555, start_ticks: "12345" }, procDir), true);
+  // Reused pid: alive, but with different start ticks than recorded.
+  assert.equal(await snapshotOwnerGone({ host, pid: 4242, start_ticks: "11111" }, procDir), true);
+  // Matching evidence: not gone.
+  assert.equal(await snapshotOwnerGone({ host, pid: 4242, start_ticks: "99999" }, procDir), false);
+  // No recorded ticks, another host, or absent owner: never a guess.
+  assert.equal(await snapshotOwnerGone({ host, pid: 4242, start_ticks: null }, procDir), false);
+  assert.equal(await snapshotOwnerGone({ host: "elsewhere", pid: 4242, start_ticks: "11111" }, procDir), false);
+  assert.equal(await snapshotOwnerGone(undefined, procDir), false);
+});
+
+test("a new writer's startup sweep removes a snapshot whose owner is provably gone", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-orphan-"));
+  const host = hostname();
+  // A SIGKILLed run's leftover: state "running", owner provably dead.
+  await writeFile(
+    path.join(dir, STATUS_FILENAME),
+    `${JSON.stringify({ runId: "run-dead", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`
+  );
+
+  const writer = new StatusFileWriter({ progress: newProgress(), dir });
+  try {
+    // The orphan is swept and replaced by this writer's own snapshot.
+    const snapshot = await waitForSnapshot(path.join(dir, STATUS_FILENAME), (published) => published.runId === "run-x");
+    assert.equal(snapshot.runId, "run-x");
+  } finally {
+    await writer.close();
+  }
+});
 
 test("StatusFileWriter publishes a live snapshot and removes it on close", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));

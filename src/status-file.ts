@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { link, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
+
+import { readProcessStartTicks } from "./run-record.js";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
 
@@ -26,6 +29,53 @@ export interface StatusFileWriterOptions {
   heartbeatMs?: number;
   /** Filesystem boundary. Tests replace individual operations to force lifecycle races. */
   fileOperations?: Partial<StatusFileOperations>;
+  /** Proc filesystem root for owner liveness evidence; injectable for tests. */
+  procDir?: string;
+}
+
+/**
+ * The publishing process's liveness evidence, stamped onto every snapshot —
+ * the same pid + start-ticks discipline the archive manifest's owner block
+ * uses, so a poller can *refute* a snapshot a killed run left behind
+ * instead of trusting cleanup-by-cooperation: an idle project must not
+ * show an unrefutable stale snapshot. `start_ticks` null means no
+ * readable proc filesystem: liveness is then unjudgeable, never assumed.
+ */
+export interface SnapshotOwnerEvidence {
+  host: string;
+  pid: number;
+  start_ticks: string | null;
+}
+
+/**
+ * A poller's (and the startup sweep's) refutation check: provably gone
+ * when the recorded pid no longer runs with the recorded start ticks on
+ * the recorded host. Mirrors the archive reaper's judgement rule —
+ * evidence, never age: a different host, missing ticks, or an unreadable
+ * proc filesystem on the judging side all return false (not provably
+ * gone) rather than guess.
+ */
+export async function snapshotOwnerGone(
+  owner: SnapshotOwnerEvidence | undefined,
+  procDir = "/proc",
+  host = hostname()
+): Promise<boolean> {
+  if (owner === undefined || typeof owner.pid !== "number" || owner.host !== host) {
+    return false;
+  }
+  if (typeof owner.start_ticks !== "string") {
+    return false;
+  }
+  const liveTicks = await readProcessStartTicks(procDir, owner.pid);
+  if (liveTicks === owner.start_ticks) {
+    return false;
+  }
+  // Distinguish "the pid is gone" from "proc unreadable here": absent stat
+  // is death evidence only where this process can read its own.
+  if (liveTicks === null && (await readProcessStartTicks(procDir, process.pid)) === null) {
+    return false;
+  }
+  return true;
 }
 
 export interface StatusFileOperations {
@@ -67,12 +117,20 @@ export class StatusFileWriter {
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
   #initialSweep: Promise<void>;
+  #ownerEvidence: Promise<SnapshotOwnerEvidence>;
+  #procDir: string;
 
   constructor(options: StatusFileWriterOptions) {
     this.#progress = options.progress;
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    this.#procDir = options.procDir ?? "/proc";
+    this.#ownerEvidence = (async () => ({
+      host: hostname(),
+      pid: process.pid,
+      start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+    }))();
     this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     // Progress transitions re-stamp updatedAt and notify subscribers (i.e. this
@@ -132,7 +190,10 @@ export class StatusFileWriter {
     const target = path.join(this.#dir, STATUS_FILENAME);
     // pid + sequence keep concurrent runs' temp files from colliding.
     const tmp = `${target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
-    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(snapshot)}\n`, "utf8");
+    // The published shape is the progress snapshot plus this process's own
+    // liveness evidence, so a snapshot outliving its run is refutable.
+    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}\n`, "utf8");
     await this.#fileOperations.rename(tmp, target);
   }
 
@@ -221,6 +282,27 @@ export class StatusFileWriter {
           this.#reportError(error);
         }
       }
+    }
+
+    // A snapshot a killed run left behind: the new writer starting in the
+    // namespace is the cleanup trigger (the same discipline as the archive
+    // reaper), and the judgement is the owner evidence, never age. A
+    // snapshot that is not provably orphaned is left for its own writer.
+    try {
+      const target = path.join(this.#dir, STATUS_FILENAME);
+      const current = JSON.parse(await this.#fileOperations.readFile(target, "utf8")) as {
+        owner?: SnapshotOwnerEvidence;
+      };
+      if (await snapshotOwnerGone(current.owner, this.#procDir)) {
+        await this.#fileOperations.unlink(target);
+      }
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      // Unparseable is not evidence of an orphan; the atomic-write
+      // discipline means a live writer never publishes half a file, but a
+      // foreign file is not this writer's to destroy on a parse error.
     }
   }
 

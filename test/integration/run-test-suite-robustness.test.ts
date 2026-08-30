@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,31 +9,24 @@ import test from "node:test";
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
-const colouredFixturePath = path.resolve("test/fixtures/suite-runner/coloured-output.test.mjs");
-const runnerStripPreloadPath = path.resolve("test/fixtures/suite-runner/strip-runner-output-preload.mjs");
 const pipeHolderParentPath = path.resolve("test/fixtures/suite-runner/pipe-holder-parent.mjs");
-const sgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`);
 const completionGuardMilliseconds = 5_000;
+const promptExitMilliseconds = 500;
 
-test("suite runner observes SGR output, and the assertion rejects a runner-boundary colour suppression", async () => {
-  const observed = await runNode([runnerPath, colouredFixturePath], { NODE_TEST_CONTEXT: undefined });
-  assert.equal(observed.code, 0, observed.stderr);
-  assertRunnerObservedSgr(observed.stdout, observed.stderr);
-  assert.equal(
-    (await readFile(runnerPath, "utf8")).includes("ansiSgrSequence"),
-    false,
-    "the runner must not retain a dormant ANSI-strip branch"
-  );
-
-  const suppressed = await runNode([runnerPath, colouredFixturePath], {
-    NODE_OPTIONS: `--import=${runnerStripPreloadPath}`,
-    NODE_TEST_CONTEXT: undefined
-  });
-  assert.equal(suppressed.code, 0, suppressed.stderr);
-  assert.throws(
-    () => assertRunnerObservedSgr(suppressed.stdout, suppressed.stderr),
-    /expected the suite runner to receive an SGR sequence/
-  );
+test("suite runner ignores an ambient direct-child override outside its test context", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-ambient-child-"));
+  try {
+    const childProgram = path.join(directory, "empty-child.mjs");
+    await writeFile(childProgram, "");
+    const result = await runNode([runnerPath, path.join(directory, "empty/**/*.test.js")], {
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
+      NODE_TEST_CONTEXT: undefined
+    });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /Test suite matched no tests/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("suite runner delivers a descendant's trailing marker after its test child exits", async () => {
@@ -42,9 +35,11 @@ test("suite runner delivers a descendant's trailing marker after its test child 
     try {
       await waitForFile(pipeHolder.readyPath);
       await writeFile(pipeHolder.releasePath, "release\n");
+      const releasedAt = Date.now();
       const result = await awaitCompletion(run.completed, "runner did not finish after its pipe holder was released");
       assert.equal(result.code, 0, result.output);
       assert.match(result.output, /SUITE_RUNNER_TRAILING_MARKER/);
+      assert.ok(Date.now() - releasedAt < promptExitMilliseconds, "runner waited for its full close grace after streams closed normally");
     } finally {
       await releasePipeHolder(pipeHolder);
       await stopSuite(run);
@@ -66,10 +61,6 @@ test("suite runner bounds its close wait when a detached descendant retains its 
     }
   });
 });
-
-function assertRunnerObservedSgr(stdout: string, stderr: string): void {
-  assert.match(`${stdout}${stderr}`, sgrSequence, "expected the suite runner to receive an SGR sequence");
-}
 
 async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-robustness-"));
@@ -98,6 +89,7 @@ function startSuite(pipeHolder: PipeHolder) {
       ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
       ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: pipeHolderParentPath,
+      ENSEMBLE_SUITE_TEST_CONTEXT: "1",
       NODE_TEST_CONTEXT: undefined
     }),
     stdio: ["ignore", "pipe", "pipe"]

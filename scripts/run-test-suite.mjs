@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
@@ -32,8 +33,10 @@ await rename(pendingSuiteDirectory, suiteDirectory);
 const schemaCacheDirectory = path.join(suiteDirectory, "schema-cache");
 const recordStoreDirectory = path.join(suiteDirectory, "run-records");
 // Test-only: estates that need to coordinate a real runner child can install
-// a direct child without changing the runner they exercise.
-const suiteTestChildProgram = process.env.ENSEMBLE_SUITE_TEST_CHILD_PROGRAM;
+// a direct child without changing the runner they exercise. The explicit
+// context marker prevents an ambient variable from replacing the gate child.
+const suiteTestChildProgram =
+  process.env.ENSEMBLE_SUITE_TEST_CONTEXT === "1" ? process.env.ENSEMBLE_SUITE_TEST_CHILD_PROGRAM : undefined;
 const child = spawn(
   process.execPath,
   suiteTestChildProgram === undefined ? ["--test", "--test-reporter=tap", testGlob] : [suiteTestChildProgram],
@@ -98,7 +101,7 @@ async function finish(code, signal) {
 }
 
 childExited.then(async ([code, signal]) => {
-  const streamsClosed = await Promise.race([childClosed.then(() => true), delay(childCloseGraceMilliseconds).then(() => false)]);
+  const streamsClosed = await waitForChildStreamsOrGrace();
   if (!streamsClosed) {
     child.stdout.destroy();
     child.stderr.destroy();
@@ -113,6 +116,20 @@ childExited.then(async ([code, signal]) => {
   process.stderr.write(`${error.stack ?? error}\n`);
   await finish(1, null);
 });
+
+async function waitForChildStreamsOrGrace() {
+  let graceTimer;
+  try {
+    return await Promise.race([
+      childClosed.then(() => true),
+      new Promise((resolve) => {
+        graceTimer = setTimeout(() => resolve(false), childCloseGraceMilliseconds);
+      })
+    ]);
+  } finally {
+    if (graceTimer !== undefined) clearTimeout(graceTimer);
+  }
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {

@@ -631,6 +631,7 @@ test("Claude worker tokens feed the Claude budget via the synthetic usage event"
         // totalTokens = input(5) + cached(2) + output(10), recorded as last-delta.
         assert.equal(runtime.budget.spent("claude"), 17);
         assert.equal(runtime.budget.spent("codex"), 0);
+        assert.equal("reasoningOutputTokens" in runtime.budget.events[0]!.event.last, false);
       } finally {
         await runtime.close();
       }

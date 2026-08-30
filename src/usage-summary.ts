@@ -57,9 +57,9 @@ export interface UsageSummary {
  *   disjoint.
  * - **claude** reports `inputTokens` *excluding* cache,
  *   `cachedInputTokens` as reads + creation with the creation share carried
- *   separately, but no reasoning split. The transcript adapter supplies a
- *   zero to satisfy the shared native-event shape, so the summary publishes
- *   reasoning as `null` and keeps the whole generation in `outputTokens`
+ *   separately, but no reasoning split. The transcript adapter leaves the
+ *   optional native field absent, so the summary publishes reasoning as
+ *   `null` and keeps the whole generation in `outputTokens`
  *   (measured: `usageSince` in `src/claude-transcript.ts` builds exactly
  *   this shape).
  * - **opencode** reports input, output, reasoning, and cache all disjointly
@@ -71,11 +71,11 @@ export interface UsageSummary {
  */
 const ENGINE_INCLUSION_RULES: Record<
   EngineName,
-  { cachedWithinInput: boolean; reasoningWithinOutput: boolean; reasoningSeparable: boolean }
+  { cachedWithinInput: boolean; reasoningWithinOutput: boolean }
 > = {
-  codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
 };
 
 /**
@@ -96,6 +96,7 @@ export function summariseUsage(engine: EngineName, events: readonly TokenUsageEv
   let cacheCreationSeparable = true;
   let output = 0;
   let reasoning = 0;
+  let reasoningSeparable = true;
   let unclassified = 0;
   for (const event of events) {
     const delta = event.last;
@@ -108,21 +109,26 @@ export function summariseUsage(engine: EngineName, events: readonly TokenUsageEv
     const deltaFresh = rules.cachedWithinInput
       ? Math.max(0, delta.inputTokens - delta.cachedInputTokens)
       : delta.inputTokens;
-    const deltaOutput = rules.reasoningWithinOutput
-      ? Math.max(0, delta.outputTokens - delta.reasoningOutputTokens)
+    const deltaReasoning = delta.reasoningOutputTokens;
+    if (deltaReasoning === undefined) {
+      reasoningSeparable = false;
+    }
+    const reportedReasoning = deltaReasoning ?? 0;
+    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== undefined
+      ? Math.max(0, delta.outputTokens - reportedReasoning)
       : delta.outputTokens;
     fresh += deltaFresh;
-    reasoning += delta.reasoningOutputTokens;
+    reasoning += reportedReasoning;
     output += deltaOutput;
     // Spend the engine's own total covers but no class does — opencode's
     // total-only steps are the known case. Counting it keeps a wholly
     // unclassifiable event from collapsing into a zero-spend summary.
     unclassified += Math.max(
       0,
-      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + delta.reasoningOutputTokens)
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
     );
   }
-  const separableReasoning = rules.reasoningSeparable ? reasoning : null;
+  const separableReasoning = reasoningSeparable ? reasoning : null;
   return {
     freshInputTokens: fresh,
     cachedInputTokens: cached,

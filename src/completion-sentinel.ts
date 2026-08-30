@@ -6,7 +6,7 @@ import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 4;
+export const SENTINEL_SCHEMA_VERSION = 3;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
 

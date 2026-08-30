@@ -686,7 +686,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")
   ) as { integrity: { manifest_sha256: string } };
   assert.deepEqual(sentinel, {
-    schema_version: 4,
+    schema_version: 3,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,

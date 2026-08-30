@@ -15389,7 +15389,7 @@ function safeName(filename, suffix) {
 
 // src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
-var SENTINEL_SCHEMA_VERSION = 4;
+var SENTINEL_SCHEMA_VERSION = 3;
 var CompletionSentinel = class {
   #path = null;
   #written = false;

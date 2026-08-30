@@ -358,14 +358,18 @@ test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", asy
   }
 });
 
-test("a capability strip reaches Claude dispatch as permission deny rules", async () => {
+test("an agents strip denies Claude spawn, discovery, and messaging tools", async () => {
   await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
     const runtime = makeRuntime(controlPlane);
     try {
       await runtime.agent("restricted", { engine: "claude", strip: ["skills", "agents"] });
-      // One capability, either spelling: `agents` denies both names the
-      // subagent tool has shipped under.
-      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, ["Skill", "Task", "Agent"]);
+      assert.deepEqual(controlPlane.dispatched[0]?.permissionDenyRules, [
+        "Skill",
+        "Task",
+        "Agent",
+        "ListAgents",
+        "SendMessage"
+      ]);
     } finally {
       await runtime.close();
     }

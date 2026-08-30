@@ -42,6 +42,44 @@ export class AgentCwdRejectedError extends PreSpawnAuthorError {}
 export class WorkflowScriptReadError extends PreSpawnAuthorError {}
 
 /**
+ * A multi-turn worker session requested on an engine that does not hold
+ * sessions open across turns. Pre-spawn by the options invariant: an engine
+ * limited to its one-shot surface (opencode) must throw before any
+ * worker spawns rather than silently dispatch a fresh session per send.
+ */
+export class MultiTurnUnsupportedError extends AgentOptionRejectedError {
+  constructor(engine: string) {
+    super(
+      `engine '${engine}' does not support multi-turn worker sessions — ` +
+        "create the session on 'claude' or 'codex', or use one-shot agent() calls"
+    );
+  }
+}
+
+/**
+ * A send on a worker session that has already been closed (explicitly, or by
+ * the run ending). Pre-spawn: nothing was dispatched, and the author's fix
+ * is the call ordering.
+ */
+export class SessionClosedError extends PreSpawnAuthorError {
+  constructor() {
+    super("this worker session is closed; create a new session to continue");
+  }
+}
+
+/**
+ * A send on a worker session whose previous turn has not settled. A session
+ * is one conversation: turns are strictly sequential, and overlapping sends
+ * would interleave prompts into one transcript with no defined attribution.
+ * Pre-spawn: the second send is rejected before anything is dispatched.
+ */
+export class SessionBusyError extends PreSpawnAuthorError {
+  constructor() {
+    super("this worker session is mid-turn; await the previous send() before sending again");
+  }
+}
+
+/**
  * Terminalisation invariant: whatever ends a turn, the text the worker had
  * produced travels with the failure instead of dying with the turn state.
  * The carrier is a plain property so any error class can carry it without

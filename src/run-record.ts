@@ -181,6 +181,15 @@ export interface RuntimeAgentRecord {
     requested: StrippableCapability[];
     enforcement: Partial<Record<StrippableCapability, DischargedEnforcement>>;
   } | null;
+  /**
+   * The multi-turn worker session this record is one turn of: the
+   * run-scoped session ordinal and this record's 1-based turn number within
+   * it. Null for a one-shot call. Grouping per-turn records by `session.id`
+   * and ordering by `turn` reconstructs a held worker's whole conversation
+   * from the archive alone — each turn's prompt, attempts, and usage are
+   * this record's own fields, exactly as for a one-shot call.
+   */
+  session: { id: number; turn: number } | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
@@ -726,6 +735,7 @@ export class RunRecordWriter {
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       strip: record.strip,
+      session: record.session,
       parse_route: record.parseRoute,
       decode_failure:
         record.decodeFailure === null

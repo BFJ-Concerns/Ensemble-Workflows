@@ -50,6 +50,17 @@ any worker spawns.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallbackModel` that every `agent()` call
   inherits and call-site options override.
+- `session(opts)` creates a multi-turn worker on `"claude"` or `"codex"`
+  (`"opencode"` throws before spawn): engine, model, and effort are fixed at
+  creation, and the returned handle's `send(prompt, { schema? })` runs
+  successive turns against the same held worker — schema is the only per-turn
+  variation, each turn under the one-shot call's validated-return and
+  bounded-retry contract, holding an engine-cap/ceiling slot only while it
+  executes. Claude sessions are dispatched with the 1-hour prompt-cache TTL;
+  `handle.stale` is the advisory staleness mark (TTL cliff on Claude, 60 idle
+  minutes on Codex; `stalenessMark: false` disables it) and never blocks a
+  send. Each turn is its own agent record carrying `session: { id, turn }`,
+  and every held session is closed when the run ends.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed

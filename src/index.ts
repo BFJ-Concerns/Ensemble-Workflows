@@ -59,7 +59,10 @@ export type {
   SentinelOutcome
 } from "./completion-sentinel.js";
 export {
+  MultiTurnUnsupportedError,
   PreSpawnAuthorError,
+  SessionBusyError,
+  SessionClosedError,
   WorkflowScriptReadError,
   attachPartialWorkerText,
   partialWorkerTextOf,
@@ -114,20 +117,25 @@ export type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
+  SessionTurnOptions,
   ThreadStartOptions,
   TokenAccountingMode,
   TokenUsageBreakdown,
   TokenUsageEvent,
   TurnResult,
-  TurnStartOptions
+  TurnStartOptions,
+  WorkerSessionOptions
 } from "./types.js";
+export { WorkerSession } from "./runtime.js";
 export type {
   EngineAdapter,
   EngineAttemptContext,
   EngineAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
-  EngineTurnOptions
+  EngineSessionTurn,
+  EngineTurnOptions,
+  EngineWorkerSession
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";

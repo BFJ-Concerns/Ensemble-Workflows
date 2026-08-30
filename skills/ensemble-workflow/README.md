@@ -342,6 +342,8 @@ orchestrator remains the real backstop.
 ## Hooks
 
 - `agent(prompt, options)` — dispatch one worker; see below.
+- `session(options)` — create a multi-turn worker session; see the section
+  below.
 - `workflow(nameOrRef, args?)` — run a saved workflow by name, or
   `{ scriptPath }` relative to the run cwd. One level only: a child workflow
   calling `workflow()` throws.
@@ -365,6 +367,57 @@ orchestrator remains the real backstop.
   tip commit, whether each worktree changed, and whether an unchanged worktree
   was removed.
 - `args` — the CLI positional strings, or the `--json-args` value.
+
+## Multi-turn worker sessions
+
+`session(options)` creates a persistent worker on `'claude'` or `'codex'` and
+returns a handle whose `send(prompt, { schema? })` runs one turn against the
+*same* worker each time — the follow-up that returns to the builder holding
+the context of what it built, instead of a cold dispatch re-briefed through a
+pasted summary. An opencode session throws before any worker spawns (the
+engine is held at its one-shot surface).
+
+- **Fixed at creation:** `engine`, `model`, `effort`, plus `fallbackModel`,
+  `cwd`, `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
+  and `stalenessMark` (below). Changing model or effort would invalidate the
+  session's prompt cache — escalation is a fresh dispatch, not a mid-session
+  switch. **Per turn:** `schema` alone, on `send()`; each turn gets the same
+  validated-return, tolerant-parse, and bounded-retry contract as a one-shot
+  `agent()` call (a schema turn resolves the validated value or `null`; a
+  bare turn resolves the reply text). Creation spawns nothing — the worker
+  starts at the first `send()`.
+- **Turns are sequential:** `send()` while a previous send is unsettled
+  throws, as does `send()` after `close()` or after the run ends.
+- **Concurrency and budget are per turn:** a turn holds its engine-cap and
+  ceiling slot from its dispatch to its settlement, and an idle session
+  holds nothing; each `send()`'s budget admission is judged at its own
+  dispatch, exactly like a one-shot call.
+- **Cache economics:** a Claude session's worker is dispatched with the
+  1-hour prompt-cache TTL in its environment
+  (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; a machine-declared
+  `worker_environment` value for that variable wins); one-shot Claude
+  workers keep the engine's 5-minute default. Codex exposes no TTL knob.
+- **The staleness mark:** `handle.stale` reads `true` once the idle gap
+  since the last settled turn outlives the session's cache economics — the
+  TTL cliff on Claude, 60 idle minutes on Codex — and `handle.idleMs`
+  carries the gap itself. Advisory only: a send to a stale session still
+  executes; the script decides whether to pay the re-read or dispatch a
+  fresh worker re-briefed from the original materials.
+  `stalenessMark: false` disables the mark for that session. The thresholds
+  are library-level runtime options (`claudeSessionStaleAfterMs`,
+  `codexSessionStaleAfterMs`), not CLI flags or ambient settings.
+- **Lifetime:** `handle.close()` stops the worker early; every held session
+  is closed when the run ends by any path — a run never leaves a held
+  worker live. Continuation lives within one live run only: a later run
+  cannot re-attach an earlier run's session.
+- **The archive:** each turn is its own agent record carrying a
+  `session: { id, turn }` field, so per-turn prompts, attempts, and usage
+  read back like any one-shot call's, grouped by session id. A session
+  using `isolation: 'worktree'` works one worktree for its whole life,
+  finalised at session close.
+- **Claude mechanics worth knowing:** follow-up turns ride the tmux reply
+  valve into the held session; without tmux, a session's follow-up or
+  correction fails loudly rather than silently substituting a fresh worker.
 
 ## `agent()` options and per-engine support
 

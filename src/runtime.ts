@@ -7,7 +7,11 @@ import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from 
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
-import { assertValidAgentOptions } from "./engine-option-validation.js";
+import {
+  assertValidAgentOptions,
+  assertValidSessionTurnOptions,
+  assertValidWorkerSessionOptions
+} from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
@@ -17,6 +21,9 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   MissingEngineError,
+  MultiTurnUnsupportedError,
+  SessionBusyError,
+  SessionClosedError,
   appServerDiagnosticOf,
   attachAgentIdentity,
   describeError,
@@ -50,16 +57,20 @@ import type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
+  SessionTurnOptions,
   TurnResult,
-  TokenUsageEvent
+  TokenUsageEvent,
+  WorkerSessionOptions
 } from "./types.js";
 import type {
   EngineAdapter,
   EngineAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
-  EngineTurnOptions
+  EngineTurnOptions,
+  EngineWorkerSession
 } from "./engines.js";
+import type { AgentPlacement } from "./agent-placement.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord, TerminalErrorRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
@@ -102,6 +113,98 @@ type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionResult }
   | { ok: false; error: unknown };
 
+/** A worker session's runtime-internal state, owned by EnsembleRuntime. */
+interface WorkerSessionState {
+  id: number;
+  options: WorkerSessionOptions;
+  engine: EngineAdapter;
+  stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
+  stalenessThresholdMs: number;
+  markStaleness: boolean;
+  engineSession: EngineWorkerSession | null;
+  placement: AgentPlacement | null;
+  turnCount: number;
+  lastTurnEndedAt: number | null;
+  inFlight: boolean;
+  closed: boolean;
+}
+
+/**
+ * A held multi-turn worker, as the script surface sees it. Turns are
+ * strictly sequential (`send()` while a turn is in flight throws), each turn
+ * takes the one-shot call's validated-return and bounded-retry contract with
+ * its own optional schema, and the advisory staleness mark is read
+ * here — computed by the runtime, acted on only by the script: a send to a
+ * stale-marked session still executes.
+ */
+export class WorkerSession {
+  #state: WorkerSessionState;
+  #now: () => number;
+  #sendTurn: (prompt: string, turn: SessionTurnOptions) => Promise<unknown>;
+  #close: () => Promise<void>;
+
+  constructor(options: {
+    state: WorkerSessionState;
+    now: () => number;
+    sendTurn: (prompt: string, turn: SessionTurnOptions) => Promise<unknown>;
+    close: () => Promise<void>;
+  }) {
+    this.#state = options.state;
+    this.#now = options.now;
+    this.#sendTurn = options.sendTurn;
+    this.#close = options.close;
+  }
+
+  /** Run-scoped session ordinal — the identity the archive's per-turn records carry. */
+  get id(): number {
+    return this.#state.id;
+  }
+
+  get engine(): EngineName {
+    return this.#state.options.engine;
+  }
+
+  /** Completed turns so far (a settled send, whatever its outcome). */
+  get turns(): number {
+    return this.#state.turnCount;
+  }
+
+  /** Milliseconds since the last settled turn, or null before the first. */
+  get idleMs(): number | null {
+    const last = this.#state.lastTurnEndedAt;
+    return last === null ? null : Math.max(0, this.#now() - last);
+  }
+
+  /**
+   * The advisory staleness mark: true once the idle gap since the
+   * last settled turn has outlived the session's cache economics — the
+   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * Always false while marking is disabled, before the first turn, and
+   * mid-turn. Advisory only: the runtime never blocks or reroutes a send
+   * on it — a fresh session cannot inherit the old transcript, so only the
+   * script can decide to re-brief.
+   */
+  get stale(): boolean {
+    const state = this.#state;
+    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
+      return false;
+    }
+    return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
+  }
+
+  send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<unknown | null>;
+  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string>;
+  send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
+  send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
+    return this.#sendTurn(prompt, turn);
+  }
+
+  /** Idempotent: stops the held worker and finalises the session's placement. */
+  close(): Promise<void> {
+    return this.#close();
+  }
+}
+
 export class EnsembleRuntime {
   readonly budget: TokenBudget;
   readonly worktrees: IsolatedWorktreeRecord[] = [];
@@ -128,6 +231,12 @@ export class EnsembleRuntime {
   #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
   #closed = false;
+  #workerSessions = new Set<WorkerSession>();
+  #sessionCounter = 0;
+  /** Injectable clock (tests): drives the staleness mark's idle reading. */
+  #now: () => number;
+  #claudeSessionStaleAfterMs: number;
+  #codexSessionStaleAfterMs: number;
 
   constructor(options: {
     engines?: EngineRegistry;
@@ -139,6 +248,8 @@ export class EnsembleRuntime {
     defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
+    claudeSessionStaleAfterMs?: number;
+    codexSessionStaleAfterMs?: number;
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
     now?: () => number;
@@ -157,6 +268,12 @@ export class EnsembleRuntime {
     });
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
+    // 1 hour on both by default: Claude's is the injected cache TTL's
+    // cliff, Codex's the measured 60-minute coin-flip point —
+    // numerically equal, semantically distinct knobs.
+    this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
+    this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
+    this.#now = options.now ?? (() => Date.now());
     this.#placement = new AgentPlacementManager({
       baseCwd: options.cwd ?? process.cwd(),
       ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {})
@@ -227,7 +344,13 @@ export class EnsembleRuntime {
       ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
       ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
-      ...(options.strip !== undefined ? { strip: options.strip } : {})
+      ...(options.strip !== undefined ? { strip: options.strip } : {}),
+      ...(options.claudeSessionStaleAfterMs !== undefined
+        ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
+        : {}),
+      ...(options.codexSessionStaleAfterMs !== undefined
+        ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs }
+        : {})
     });
 
     return runtime;
@@ -379,6 +502,257 @@ export class EnsembleRuntime {
     }
   }
 
+  /**
+   * Open a multi-turn worker session: one worker, held across turns,
+   * with engine, model, and effort fixed for its life. Creation spawns
+   * nothing — validation and strip enforcement run here, pre-spawn, and the
+   * worker itself starts at the first `send()`. An engine that does not
+   * hold sessions (opencode) throws before any worker exists.
+   */
+  createWorkerSession(options: WorkerSessionOptions): WorkerSession {
+    if (this.#closed) {
+      throw new SessionClosedError();
+    }
+    assertValidWorkerSessionOptions(options);
+    const engine = this.#engineFor(options.engine);
+    if (engine.createSession === undefined) {
+      throw new MultiTurnUnsupportedError(engine.name);
+    }
+    const strip = effectiveStrip(this.#strip, options.strip);
+    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+
+    this.#sessionCounter += 1;
+    const state: WorkerSessionState = {
+      id: this.#sessionCounter,
+      options: sessionOptions,
+      engine,
+      stripRoutes,
+      // The mark's threshold is per engine shape: Claude's is the cliff at
+      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // idle point — both overridable as library-level runtime options.
+      stalenessThresholdMs:
+        engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
+      markStaleness: sessionOptions.stalenessMark ?? true,
+      engineSession: null,
+      placement: null,
+      turnCount: 0,
+      lastTurnEndedAt: null,
+      inFlight: false,
+      closed: false
+    };
+    const session = new WorkerSession({
+      state,
+      now: this.#now,
+      sendTurn: (prompt, turn) => this.#runSessionTurn(state, prompt, turn),
+      close: () => this.#closeWorkerSession(state)
+    });
+    this.#workerSessions.add(session);
+    return session;
+  }
+
+  async #runSessionTurn(state: WorkerSessionState, prompt: string, turn: SessionTurnOptions): Promise<unknown> {
+    if (this.#closed || state.closed) {
+      throw new SessionClosedError();
+    }
+    if (state.inFlight) {
+      throw new SessionBusyError();
+    }
+    assertValidAgentPrompt(prompt);
+    assertValidSessionTurnOptions(turn);
+    if (turn.schema !== undefined) {
+      assertCompilableSchema(turn.schema);
+    }
+    const options = state.options;
+    const engine = state.engine;
+    state.inFlight = true;
+    try {
+      // Each turn is its own dispatch: budget admission is judged here, at
+      // this send, exactly as for a one-shot call — a held session
+      // buys no exemption from the ceiling.
+      this.budget.assertCanStart(engine.name);
+      const queuedAt = Date.now();
+      const agentId = this.progress.queueAgent({
+        engine: engine.name,
+        label: options.label ?? null,
+        phase: options.phase ?? null
+      });
+      if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {
+        this.#emitEvent({
+          method: "claude/unpinnedModel",
+          params: { agentId, label: options.label ?? null },
+          receivedAt: Date.now()
+        });
+      }
+      const turnNumber = state.turnCount + 1;
+      const recordOptions: Partial<AgentOptions> = {
+        engine: engine.name,
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.effort !== undefined ? { effort: options.effort } : {}),
+        ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
+        ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+        ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
+        ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
+        ...(options.label !== undefined ? { label: options.label } : {}),
+        ...(options.phase !== undefined ? { phase: options.phase } : {}),
+        ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
+        ...(options.strip !== undefined ? { strip: options.strip } : {})
+      };
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      agentRecord.session = { id: state.id, turn: turnNumber };
+      this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+      try {
+        await this.#recordAgentSafely(agentRecord);
+        const unsettled = this.#unsettledAgentRecords.get(agentId);
+        if (unsettled !== undefined) {
+          unsettled.stage = "admitting";
+        }
+        let started = false;
+        try {
+          // The engine-cap/ceiling slot spans this turn alone — from here to
+          // its settlement — never the session's idle life: an idle held
+          // worker costs the machine nothing, and charging it a slot would
+          // let loitering fleets starve fresh dispatches.
+          return await this.#admission.admit(engine.name, agentId, () =>
+            engine.schedule(async () => {
+              started = true;
+              return this.#executeAgent(
+                engine.name,
+                { label: options.label ?? null, phase: options.phase ?? null },
+                agentId,
+                agentRecord,
+                queuedAt,
+                () => this.#runSessionBody(state, prompt, turn, agentId, agentRecord)
+              );
+            })
+          );
+        } catch (error) {
+          if (!started) {
+            this.progress.settleAgent(agentId, "failed");
+            this.#settleTerminalStatus(agentRecord, error);
+            agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
+            agentRecord.executionMs = 0;
+            await this.#recordSettlementSafely(agentId, agentRecord);
+          }
+          throw error;
+        }
+      } finally {
+        this.#unsettledAgentRecords.delete(agentId);
+        state.turnCount = turnNumber;
+        state.lastTurnEndedAt = this.#now();
+      }
+    } finally {
+      state.inFlight = false;
+    }
+  }
+
+  async #runSessionBody(
+    state: WorkerSessionState,
+    prompt: string,
+    turn: SessionTurnOptions,
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
+  ): Promise<AgentExecutionResult> {
+    const options = state.options;
+    // Placement is the session's, opened once at its first turn and closed
+    // with the session — a worktree session works one tree for its life.
+    state.placement ??= await this.#placement.open({
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(options.isolation !== undefined ? { isolation: options.isolation } : {})
+    });
+    agentRecord.resolvedCwd = state.placement.cwd;
+    agentRecord.isolation = options.isolation ?? null;
+    const createSession = state.engine.createSession;
+    if (createSession === undefined) {
+      throw new MultiTurnUnsupportedError(state.engine.name);
+    }
+    state.engineSession ??= createSession.call(
+      state.engine,
+      this.#engineTurnOptions(
+        {
+          engine: state.engine.name,
+          ...(options.model !== undefined ? { model: options.model } : {}),
+          ...(options.effort !== undefined ? { effort: options.effort } : {}),
+          ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+          ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {})
+        },
+        state.placement.cwd
+      )
+    );
+    const invocation = state.engineSession.beginTurn(prompt, {
+      ...(turn.schema !== undefined ? { schema: turn.schema } : {})
+    });
+    const sharedOptions: Partial<AgentOptions> = {
+      ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {})
+    };
+    if (turn.schema !== undefined) {
+      return this.#runSchemaAgent(
+        state.engine.name,
+        invocation,
+        { ...sharedOptions, schema: turn.schema },
+        agentId,
+        agentRecord
+      );
+    }
+    return {
+      status: "complete",
+      value: await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord)
+    };
+  }
+
+  async #closeWorkerSession(state: WorkerSessionState): Promise<void> {
+    if (state.closed) {
+      return;
+    }
+    state.closed = true;
+    try {
+      await state.engineSession?.close();
+    } catch {
+      // Session teardown is best-effort: a stop failure must not mask the
+      // work the session already returned.
+    }
+    const placement = state.placement;
+    state.placement = null;
+    if (placement !== null) {
+      try {
+        const worktree = await this.#placement.close(placement);
+        if (worktree !== null) {
+          this.worktrees.push(worktree);
+          this.#emitEvent({
+            method: "worktree/finished",
+            params: {
+              path: worktree.path,
+              branch: worktree.branch,
+              changed: worktree.changed,
+              removed: worktree.removed
+            },
+            receivedAt: Date.now()
+          });
+        }
+      } catch (error) {
+        if (placement.worktree !== undefined) {
+          // Finalisation did not prove the branch unchanged or removed:
+          // retain the recoverable identity conservatively, as agent
+          // placement does.
+          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
+          this.#emitEvent({
+            method: "worktree/finalisationFailed",
+            params: {
+              sessionId: state.id,
+              path: placement.worktree.path,
+              branch: placement.worktree.branch,
+              message: failureFromError(error).message
+            },
+            receivedAt: Date.now()
+          });
+        }
+      }
+    }
+  }
+
   async #runAdmitted(
     engine: EngineAdapter,
     prompt: string,
@@ -392,7 +766,14 @@ export class EnsembleRuntime {
       return await this.#admission.admit(engine.name, agentId, () =>
         engine.schedule(async () => {
           started = true;
-          return this.#executeAgent(engine, prompt, options, agentId, agentRecord, queuedAt);
+          return this.#executeAgent(
+            engine.name,
+            { label: options.label ?? null, phase: options.phase ?? null },
+            agentId,
+            agentRecord,
+            queuedAt,
+            () => this.#runAgent(engine, prompt, options, agentId, agentRecord)
+          );
         })
       );
     } catch (error) {
@@ -412,20 +793,20 @@ export class EnsembleRuntime {
   }
 
   async #executeAgent(
-    engine: EngineAdapter,
-    prompt: string,
-    options: Partial<AgentOptions>,
+    engineName: EngineName,
+    identity: { label: string | null; phase: string | null },
     agentId: number,
     agentRecord: RuntimeAgentRecord,
-    queuedAt: number
+    queuedAt: number,
+    run: () => Promise<AgentExecutionResult>
   ): Promise<unknown> {
     const executionStartedAt = Date.now();
     this.progress.startAgent(agentId);
-    const executingRecords = this.#executingAgentRecords.get(engine.name) ?? new Set<RuntimeAgentRecord>();
-    this.#executingAgentRecords.set(engine.name, executingRecords);
+    const executingRecords = this.#executingAgentRecords.get(engineName) ?? new Set<RuntimeAgentRecord>();
+    this.#executingAgentRecords.set(engineName, executingRecords);
     executingRecords.add(agentRecord);
     try {
-      const execution = await this.#runAgent(engine, prompt, options, agentId, agentRecord);
+      const execution = await run();
       const outcome = execution.status === "complete" ? "done" : "failed";
       const executionEndedAt = Date.now();
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
@@ -444,9 +825,9 @@ export class EnsembleRuntime {
       if (outcome === "done") {
         this.#completed.push({
           id: agentId,
-          engine: engine.name,
-          label: options.label ?? null,
-          phase: options.phase ?? null,
+          engine: engineName,
+          label: identity.label,
+          phase: identity.phase,
           output: execution.value
         });
       }
@@ -465,7 +846,7 @@ export class EnsembleRuntime {
     } finally {
       executingRecords.delete(agentRecord);
       if (executingRecords.size === 0) {
-        this.#executingAgentRecords.delete(engine.name);
+        this.#executingAgentRecords.delete(engineName);
       }
     }
   }
@@ -509,6 +890,11 @@ export class EnsembleRuntime {
   async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    // Held workers close before the engines: every run end — clean return,
+    // failure, timeout, interrupt — must leave no held session live,
+    // and the engines' own teardown below is the backstop, not the plan.
+    await Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
+    this.#workerSessions.clear();
     this.#admission.close();
     await Promise.all(
       [...this.#unsettledAgentRecords.values()]
@@ -965,6 +1351,7 @@ export class EnsembleRuntime {
         stripRoutes === null || options.strip === undefined
           ? null
           : { requested: [...options.strip], enforcement: stripRoutes },
+      session: null,
       parseRoute: null,
       decodeFailure: null,
       rawOutput: null,

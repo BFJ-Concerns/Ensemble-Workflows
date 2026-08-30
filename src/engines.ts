@@ -95,6 +95,24 @@ export interface EngineInvocation {
   close?(): Promise<void>;
 }
 
+/** The one per-turn variation a session's engine sees: the turn's schema. */
+export interface EngineSessionTurn {
+  schema?: JsonSchema;
+}
+
+/**
+ * One held worker on one engine, alive across turns. `beginTurn`
+ * returns the invocation the runtime's shared bounded-retry loop drives for
+ * that turn — turn invocations never own the session's lifetime, so they
+ * carry no `close`; only the session's own `close()` (or the adapter's)
+ * tears the held worker down. Engine, model, and effort were fixed at
+ * creation; the turn brings only its prompt and schema.
+ */
+export interface EngineWorkerSession {
+  beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation;
+  close(): Promise<void>;
+}
+
 export interface EngineAdapter {
   readonly name: EngineName;
   readonly concurrency: number;
@@ -107,6 +125,16 @@ export interface EngineAdapter {
   readonly capabilities?: EngineCapabilityTable;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
+  /**
+   * Open a multi-turn worker session. Optional by design: an adapter
+   * that does not implement it holds its engine at the one-shot surface,
+   * and the runtime fails a session request loud before any worker spawns
+   * (opencode, which is held at the one-shot surface, and any future engine
+   * that never considered sessions, are safe by construction).
+   * `options.schema` is ignored here — schema is per-turn, carried by each
+   * `beginTurn`.
+   */
+  createSession?(options: EngineTurnOptions): EngineWorkerSession;
   close(): Promise<void>;
 }
 
@@ -195,9 +223,94 @@ export class CodexEngineAdapter implements EngineAdapter {
     });
   }
 
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    assertFallbackModelSupported(this.name, options.fallbackModel);
+    return new CodexWorkerSession({ options, transport: this.#transport });
+  }
+
   async close(): Promise<void> {
     this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
+  }
+}
+
+/**
+ * One held Codex worker: one app-server thread, opened at the first turn and
+ * reused by every later one, so the session's context — and its prompt
+ * cache — accumulates on the server side. Retries stay in-session too: a
+ * failed attempt's correction rides the same thread as a follow-up turn,
+ * unlike the one-shot invocation whose retries open a fresh thread.
+ */
+class CodexWorkerSession implements EngineWorkerSession {
+  #options: EngineTurnOptions;
+  #transport: RuntimeTransport;
+  #threadId: string | null = null;
+  #opening: Promise<string> | null = null;
+
+  constructor(options: { options: EngineTurnOptions; transport: RuntimeTransport }) {
+    this.#options = options.options;
+    this.#transport = options.transport;
+  }
+
+  beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context)
+    };
+  }
+
+  async #runTurnAttempt(
+    prompt: string,
+    schema: JsonSchema | undefined,
+    context: EngineAttemptContext
+  ): Promise<EngineAttemptResult> {
+    const threadId = await this.#ensureThread();
+    // In-session correction: the thread already holds the prompt and the
+    // failed reply, so the correction names only the failure — restating
+    // the whole prompt would spend cache re-reading what the thread knows.
+    const message =
+      context.previousFailure === undefined
+        ? prompt
+        : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+    return this.#transport.runTurn(threadId, message, {
+      ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
+      ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
+      ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
+      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
+      ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {})
+    });
+  }
+
+  /**
+   * Single-flight thread open, not failure-memoised: a failed open leaves
+   * the session threadless so the bounded retry (or the next turn) may try
+   * again — memoising the failure would terminalise a whole session on one
+   * transient spawn error.
+   */
+  #ensureThread(): Promise<string> {
+    if (this.#threadId !== null) {
+      return Promise.resolve(this.#threadId);
+    }
+    this.#opening ??= (async () => {
+      try {
+        const strippedAgents = this.#options.strip?.includes("agents") === true;
+        const threadId = await this.#transport.openThread({
+          ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
+          ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
+          ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
+        });
+        this.#threadId = threadId;
+        return threadId;
+      } finally {
+        this.#opening = null;
+      }
+    })();
+    return this.#opening;
+  }
+
+  async close(): Promise<void> {
+    // An app-server thread needs no per-thread teardown: it is server-side
+    // state that dies with the shared transport, which the adapter owns.
+    this.#threadId = null;
   }
 }
 
@@ -319,6 +432,27 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     });
     this.#activeInvocations.add(invocation);
     return invocation;
+  }
+
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
+    // A session is the invocation generalised across turns: same dispatch,
+    // valve, and collection machinery, registered for cancellation like any
+    // one-shot invocation so adapter close() tears held workers down too.
+    const session = new ClaudeEngineInvocation({
+      prompt: "",
+      cwd: options.cwd ?? this.#cwd,
+      options,
+      multiTurn: true,
+      controlPlane: this.#controlPlane,
+      ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
+      ...(this.#config !== undefined ? { config: this.#config } : {}),
+      onClose: (closed) => this.#activeInvocations.delete(closed)
+    });
+    this.#activeInvocations.add(session);
+    return session;
   }
 
   async close(): Promise<void> {

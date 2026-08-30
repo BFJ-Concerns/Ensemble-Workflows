@@ -23,6 +23,7 @@
   "resolved_model",
   "schema",
   "schema_version",
+  "session",
   "status",
   "strip",
   "termination_cause",

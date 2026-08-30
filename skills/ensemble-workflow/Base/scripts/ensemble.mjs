@@ -13466,6 +13466,8 @@ var ClaudeTranscriptError = class extends ClaudeWorkerError {
 };
 var ClaudeCollectionError = class extends ClaudeWorkerError {
 };
+var ClaudeWorkerDiagnosticError = class extends ClaudeWorkerError {
+};
 var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
   constructor(registered) {
     super(
@@ -13549,6 +13551,12 @@ function formatAgentOptionValue(value) {
   } catch {
     return String(value);
   }
+}
+function describeError(error) {
+  if (error instanceof Error) {
+    return { kind: error.name, message: error.message };
+  }
+  return { kind: "error", message: String(error) };
 }
 
 // src/capability-stripping.ts
@@ -13838,6 +13846,7 @@ var RunRecordWriter = class _RunRecordWriter {
         archive_path: null,
         exit_code: null
       },
+      error: null,
       workflow_invocations: [
         {
           ordinal: 0,
@@ -13990,6 +13999,7 @@ var RunRecordWriter = class _RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
+      termination_cause: record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -14027,7 +14037,10 @@ var RunRecordWriter = class _RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      transcripts: transcriptRefs
+      // Absence carries its reason, like `usage` — an empty list must not
+      // leave a consumer unable to tell "this worker produced none" from
+      // "the archive lost them".
+      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -14047,11 +14060,13 @@ var RunRecordWriter = class _RunRecordWriter {
         archive_path: "result.json",
         exit_code: options.exitCode
       };
+      this.manifest.error = options.error ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
         status: options.status,
         exit_code: options.exitCode,
+        error: options.error ?? null,
         value: options.result
       });
       await this.#writeManifest();
@@ -14092,6 +14107,18 @@ var RunRecordWriter = class _RunRecordWriter {
     });
   }
 };
+function transcriptAbsenceReason(record) {
+  if (record.attempts.length === 0) {
+    return "no-attempt-ran";
+  }
+  if (record.status === "interrupted") {
+    return "worker-interrupted";
+  }
+  if (record.status === "timed-out") {
+    return "worker-timed-out";
+  }
+  return "engine-produced-no-transcript";
+}
 function agentUsage(record) {
   const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
   const summary = summariseUsage(record.engine, events);
@@ -14356,7 +14383,7 @@ function safeName(filename, suffix) {
 
 // src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
-var SENTINEL_SCHEMA_VERSION = 1;
+var SENTINEL_SCHEMA_VERSION = 2;
 var CompletionSentinel = class {
   #path = null;
   #written = false;
@@ -14380,16 +14407,22 @@ var CompletionSentinel = class {
    * wins: the terminal transition that ends the run is the one a supervisor
    * must see, and a later bookkeeping path must not rewrite it.
    */
-  async writeTerminal(outcome, exitCode, onError) {
+  async writeTerminal(outcome, exitCode, onError, detail = {}) {
     if (this.#path === null || this.#written) {
       return;
     }
     this.#written = true;
+    const workers = detail.workers ?? null;
     const payload = {
       schema_version: SENTINEL_SCHEMA_VERSION,
       kind: "completion_sentinel",
       outcome,
       exit_code: exitCode,
+      // Read from the launcher's own progress model, not the archive: the
+      // sentinel resolves independently of the record switch, so recording
+      // being off must degrade nothing here.
+      workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      error: detail.error ?? null,
       ended_at: (/* @__PURE__ */ new Date()).toISOString()
     };
     try {
@@ -16342,6 +16375,17 @@ function finalAssistantText(entries, fromIndex = 0) {
   }
   return null;
 }
+var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+function endsInSyntheticReply(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
+}
 function resolvedModelSince(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
@@ -16349,7 +16393,7 @@ function resolvedModelSince(entries, fromIndex = 0) {
       continue;
     }
     const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0) {
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
       return model;
     }
   }
@@ -16688,6 +16732,11 @@ var ClaudeEngineInvocation = class {
   #buildResult(handle, transcript, fromIndex) {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const usageEvent = this.#feedBudget(handle, entries, fromIndex);
     return {
@@ -16858,6 +16907,9 @@ function claudeAttemptFailure(error) {
   }
   if (error instanceof ClaudeCollectionError) {
     return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-dispatch-error", message: error.message };
 }
@@ -18271,7 +18323,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     } catch (error) {
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+        this.#settleTerminalStatus(agentRecord, error);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -18292,7 +18344,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
-      agentRecord.status = outcome === "done" ? "complete" : this.#terminalAgentStatus(null, agentRecord);
+      if (outcome === "done") {
+        agentRecord.status = "complete";
+      } else {
+        this.#settleTerminalStatus(agentRecord, null);
+      }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
       if (outcome === "done") {
@@ -18311,7 +18367,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
-      agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+      this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
@@ -18369,14 +18425,36 @@ var EnsembleRuntime = class _EnsembleRuntime {
     );
     await this.#engines.close();
   }
-  #terminalAgentStatus(error, record) {
+  /**
+   * Settles a record's terminal status *and* the cause that produced it, so
+   * the two can never disagree. A run interrupt or whole-run timeout
+   * reaches a worker as whatever its transport noticed first — a closed
+   * app-server, an aborted poll — and that symptom is what the attempt
+   * records. The status alone would then look unexplained beside it, so the
+   * true cause is named here, leaving the observed evidence untouched.
+   */
+  #settleTerminalStatus(record, error) {
     if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
-      return this.#shutdownAgentStatus;
+      record.status = this.#shutdownAgentStatus;
+      record.terminationCause = {
+        kind: `run-${this.#shutdownAgentStatus}`,
+        message: `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+      };
+      return;
     }
-    if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
-      return "timed-out";
+    if (error instanceof TurnTimeoutError) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: "turn-timeout", message: error.message };
+      return;
     }
-    return "failed";
+    const lastFailure = record.attempts.at(-1)?.failure;
+    if (lastFailure?.kind.endsWith("-timeout") === true) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
+      return;
+    }
+    record.status = "failed";
+    record.terminationCause = null;
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const placement = await this.#placement.open(options);
@@ -18688,6 +18766,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
+      terminationCause: null,
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
@@ -18715,6 +18794,7 @@ function requireTransport(transport) {
   return transport;
 }
 function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null) {
+  const endedAt = /* @__PURE__ */ new Date();
   return {
     attempt,
     status,
@@ -18724,12 +18804,15 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
-    endedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    endedAt: endedAt.toISOString(),
     // Per-attempt served-model identity: retries can open fresh threads that
     // resolve differently, so each attempt keeps its own answer rather than
     // inheriting the agent-level last-write-wins field.
     resolvedModel: result?.resolvedModel ?? null,
-    durationMs: result?.durationMs ?? null,
+    // Engines that time their own turn say so; for the rest the attempt
+    // already holds both endpoints, and a null beside them would be the
+    // record discarding a figure it holds.
+    durationMs: result?.durationMs ?? Math.max(0, endedAt.getTime() - startedAtMs),
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
@@ -18760,10 +18843,7 @@ function recordOperationalFailure(record, attempt, startedAtMs, result) {
   return result.attemptFailure;
 }
 function failureFromError(error) {
-  if (error instanceof Error) {
-    return { kind: error.name, message: error.message };
-  }
-  return { kind: "error", message: String(error) };
+  return describeError(error);
 }
 function lastRawOutput(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -25712,6 +25792,7 @@ async function runEnsembleCli(argv, options = {}) {
   let statusWriter = null;
   let runRecordWriter = null;
   let finalRecord = null;
+  let terminalError = null;
   const sentinel = new CompletionSentinel();
   const reportSentinelError = (error) => {
     stderr.write(`[sentinel] ${formatError3(error)}
@@ -25865,6 +25946,7 @@ async function runEnsembleCli(argv, options = {}) {
     stdout.write(`${serialised}
 `);
     finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
+    terminalError = describeError(error);
     stderr.write(`${formatError3(error)}
 `);
     return 1;
@@ -25879,17 +25961,30 @@ async function runEnsembleCli(argv, options = {}) {
         await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
       }
       if (runRecordWriter !== null) {
-        await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+        await runRecordWriter.finish({
+          ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
+          error: terminalError
+        });
       }
     } finally {
       const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
-      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
+      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
+        workers: workerOutcomes(progress),
+        error: terminalError
+      });
     }
   }
 }
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
+}
+function workerOutcomes(progress) {
+  if (progress === void 0) {
+    return null;
+  }
+  const totals = progress.snapshot().totals;
+  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
 }
 function completedDirectAgentWithNull(runtime) {
   const completed = runtime.completedOutputs?.() ?? [];

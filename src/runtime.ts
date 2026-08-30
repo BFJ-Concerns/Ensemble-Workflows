@@ -18,6 +18,7 @@ import {
   MissingEngineError,
   appServerDiagnosticOf,
   attachAgentIdentity,
+  describeError,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -383,7 +384,7 @@ export class EnsembleRuntime {
       // counted as queued for ever.
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+        this.#settleTerminalStatus(agentRecord, error);
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -412,7 +413,11 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
-      agentRecord.status = outcome === "done" ? "complete" : this.#terminalAgentStatus(null, agentRecord);
+      if (outcome === "done") {
+        agentRecord.status = "complete";
+      } else {
+        this.#settleTerminalStatus(agentRecord, null);
+      }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
       // Retain successful outputs so a timeout can surface completed work.
@@ -434,7 +439,7 @@ export class EnsembleRuntime {
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
-      agentRecord.status = this.#terminalAgentStatus(error, agentRecord);
+      this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
@@ -503,14 +508,39 @@ export class EnsembleRuntime {
     await this.#engines.close();
   }
 
-  #terminalAgentStatus(error: unknown, record: RuntimeAgentRecord): "failed" | "timed-out" | "interrupted" {
+  /**
+   * Settles a record's terminal status *and* the cause that produced it, so
+   * the two can never disagree. A run interrupt or whole-run timeout
+   * reaches a worker as whatever its transport noticed first — a closed
+   * app-server, an aborted poll — and that symptom is what the attempt
+   * records. The status alone would then look unexplained beside it, so the
+   * true cause is named here, leaving the observed evidence untouched.
+   */
+  #settleTerminalStatus(record: RuntimeAgentRecord, error: unknown): void {
     if (error instanceof EngineShutdownError || (error instanceof AppServerExitedError && this.#closed)) {
-      return this.#shutdownAgentStatus;
+      record.status = this.#shutdownAgentStatus;
+      record.terminationCause = {
+        kind: `run-${this.#shutdownAgentStatus}`,
+        message: `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+      };
+      return;
     }
-    if (error instanceof TurnTimeoutError || record.attempts.at(-1)?.failure?.kind.endsWith("-timeout") === true) {
-      return "timed-out";
+    if (error instanceof TurnTimeoutError) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: "turn-timeout", message: error.message };
+      return;
     }
-    return "failed";
+    const lastFailure = record.attempts.at(-1)?.failure;
+    if (lastFailure?.kind.endsWith("-timeout") === true) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
+      return;
+    }
+    record.status = "failed";
+    // The attempts array already names an engine failure; a cause here
+    // would only restate it, and inventing one where no attempt ran would
+    // claim knowledge the runtime does not have.
+    record.terminationCause = null;
   }
 
   async #runAgent(
@@ -880,6 +910,7 @@ export class EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null,
       status: "in-progress",
+      terminationCause: null,
       creationOrder: id,
       concurrencyGroup: engine,
       schema: options.schema ?? null,
@@ -937,6 +968,7 @@ function attemptRecord(
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null
 ): RuntimeAgentAttemptRecord {
+  const endedAt = new Date();
   return {
     attempt,
     status,
@@ -946,12 +978,15 @@ function attemptRecord(
     rawOutput,
     validatedOutput,
     startedAt: new Date(startedAtMs).toISOString(),
-    endedAt: new Date().toISOString(),
+    endedAt: endedAt.toISOString(),
     // Per-attempt served-model identity: retries can open fresh threads that
     // resolve differently, so each attempt keeps its own answer rather than
     // inheriting the agent-level last-write-wins field.
     resolvedModel: result?.resolvedModel ?? null,
-    durationMs: result?.durationMs ?? null,
+    // Engines that time their own turn say so; for the rest the attempt
+    // already holds both endpoints, and a null beside them would be the
+    // record discarding a figure it holds.
+    durationMs: result?.durationMs ?? Math.max(0, endedAt.getTime() - startedAtMs),
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
@@ -990,10 +1025,7 @@ function recordOperationalFailure(
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {
-  if (error instanceof Error) {
-    return { kind: error.name, message: error.message };
-  }
-  return { kind: "error", message: String(error) };
+  return describeError(error);
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

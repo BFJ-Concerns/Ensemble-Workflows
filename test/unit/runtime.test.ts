@@ -1889,3 +1889,24 @@ test("an identified operational failure inside parallel resolves its envelope, n
 
   assert.deepEqual(results, [{ label: "verify", phase: "check", output: null }, null]);
 });
+
+test("an engine-reported attempt duration is recorded as the engine measured it", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn('{"ok":true}')]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await runtime.agent("read", { engine: "codex" });
+
+  // turn() reports 10ms; the record must not substitute its own wall clock
+  // for a duration the engine actually observed.
+  assert.equal(records.at(-1)?.attempts[0]?.durationMs, 10);
+  await runtime.close();
+});

@@ -283,6 +283,16 @@ export class ClaudeTranscriptError extends ClaudeWorkerError {}
  */
 export class ClaudeCollectionError extends ClaudeWorkerError {}
 
+/**
+ * The turn ended with Claude Code's own diagnostic in place of a model
+ * reply — the session never reached a model, so the text on the transcript
+ * is the client explaining why (an unknown model, a rejected request), not
+ * the worker's answer. Its own kind: promoting that text to an answer would
+ * archive a success that never happened, and it is neither a dispatch nor a
+ * collection failure.
+ */
+export class ClaudeWorkerDiagnosticError extends ClaudeWorkerError {}
+
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
     super(
@@ -402,4 +412,17 @@ function formatAgentOptionValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * An error described for a durable record: the class name as a
+ * discriminating kind, plus the message. The kind is what lets a consumer
+ * holding only the archive tell a script bug from an unknown-engine typo
+ * from a budget refusal, all of which otherwise read as bare `failed`.
+ */
+export function describeError(error: unknown): { kind: string; message: string } {
+  if (error instanceof Error) {
+    return { kind: error.name, message: error.message };
+  }
+  return { kind: "error", message: String(error) };
 }

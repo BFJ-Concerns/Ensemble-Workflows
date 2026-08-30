@@ -813,6 +813,7 @@ function agentRecord(
     label: null,
     phase: null,
     status: "complete" as const,
+    terminationCause: null,
     creationOrder: id,
     concurrencyGroup: engine,
     schema: null,
@@ -1100,3 +1101,50 @@ async function findManifests(store: string): Promise<string[]> {
 function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
+
+test("an interrupted worker's archive names its termination cause and why no transcript is there", async () => {
+  const cwd = await gitRepo("ensemble-record-termination-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-termination",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const interrupted = agentRecord(1, "claude", null, 0);
+  interrupted.status = "interrupted";
+  interrupted.terminationCause = {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  };
+  interrupted.attempts[0]!.status = "failed";
+  interrupted.attempts[0]!.transcripts = [];
+  await writer.recordAgent(interrupted);
+
+  const completed = agentRecord(2, "codex", null, 0);
+  await writer.recordAgent(completed);
+
+  const read = async (id: string) =>
+    JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      termination_cause: { kind: string; message: string } | null;
+      transcripts: unknown;
+    };
+
+  const interruptedAgent = await read("000001");
+  assert.deepEqual(interruptedAgent.termination_cause, {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  });
+  // No transcript survives an interruption, so the archive says why rather
+  // than showing an empty list a consumer would read as "the engine was silent".
+  assert.deepEqual(interruptedAgent.transcripts, { unavailable: "worker-interrupted" });
+
+  // A worker that finished carries neither an invented cause nor an excuse.
+  const completedAgent = await read("000002");
+  assert.equal(completedAgent.termination_cause, null);
+  assert.ok(Array.isArray(completedAgent.transcripts));
+});

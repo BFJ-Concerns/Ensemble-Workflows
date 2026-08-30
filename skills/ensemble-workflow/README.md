@@ -314,7 +314,15 @@ Each durable agent record always includes `resolved_cwd` and `isolation`
 (`null` when unused). Records for successfully created worktrees also include
 the branch, base commit, final tip commit, and `changed` / `removed` outcome.
 Agent status keeps terminal timeout and interruption distinct from generic
-failure. Successful schema agents record `parse_route` as `direct`,
+failure, and `termination_cause` names what settled a worker at that status
+(`{ kind, message }`) whenever the runtime — rather than an individual
+attempt — decided it: a run that ended under the worker, or a turn timeout.
+It is `null` for a worker whose attempts already tell the story, so a record
+never contradicts its own attempts. A record whose engine left no transcript
+carries `transcripts` as `{ "unavailable": <reason> }` — `no-attempt-ran`,
+`worker-interrupted`, `worker-timed-out`, or `engine-produced-no-transcript` —
+rather than an empty list a reader would take for engine silence.
+Successful schema agents record `parse_route` as `direct`,
 `object-fallback`, or `array-fallback`; it remains `null` until a valid value is
 selected.
 
@@ -345,7 +353,10 @@ The durable manifest records the effective ceiling and every registered
 engine's cap with the layer that supplied each value (`flag`, `env`,
 `config-file`, or `default`). An unbounded ceiling is written explicitly as
 `null`. Every agent record separates `queued_ms` from `execution_ms`; the
-existing attempt `duration_ms` retains its previous meaning. When an
+existing attempt `duration_ms` retains its previous meaning: it is the
+engine's own measurement where the engine reports one, and otherwise the
+attempt's own two recorded endpoints, so an attempt that ran never reports a
+duration of `null`. When an
 attempt's worker process dies rather than returns, the attempt record's
 `worker_exit` carries `{ exit_code, signal }` as the engine observed them —
 a killed leg is distinguishable from one that returned nothing; attempts that
@@ -356,7 +367,10 @@ sentinel file (`completion-sentinel.json`, under the run's own directory in
 the durable-record store) that the launcher process itself writes when the
 run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
-`outcome`, `exit_code`, and `ended_at`, and it is written even when durable
+`outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
+ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
+`null` when the launcher never got far enough to count any), and it is
+written even when durable
 recording is disabled: the sentinel is supervision surface, not archive, so
 the run directory is created for it alone. An uncatchable kill of the
 launcher leaves no sentinel — a supervisor should keep a scheduled fallback
@@ -366,6 +380,12 @@ timer behind its filesystem watch rather than trusting the file absolutely.
 prints one `[run-record-archive] ` line followed by JSON with `run_id` and
 `archive_path`. A tracker can parse that one line to resolve the archive the
 same process has just created; an announcement failure does not fail the run.
+
+The manifest and `result.json` both carry `error`: the `{ kind, message }` of
+whatever ended the run — a script fault, an unknown engine, a budget refusal,
+a whole-run timeout — or `null` when the run ended cleanly. A budget refusal
+reaches the archive as a refusal named by its cause; the pre-dispatch
+rejection itself is unchanged, invoking no engine.
 
 ## Return contract and failure modes
 

@@ -62,6 +62,7 @@ export interface EngineAttemptFailure {
     | "claude-valve-error"
     | "claude-transcript-error"
     | "claude-collection-error"
+    | "claude-worker-diagnostic"
     | "opencode-run-error";
   message: string;
 }

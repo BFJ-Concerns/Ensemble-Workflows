@@ -28112,7 +28112,6 @@ async function runEnsembleCli(argv, options = {}) {
   let runRecordWriter = null;
   let finalRecord = null;
   let terminalError = null;
-  let terminalWorkers = null;
   const sentinel = new CompletionSentinel();
   let interrupt = null;
   const reportSentinelError = (error) => {
@@ -28290,7 +28289,6 @@ async function runEnsembleCli(argv, options = {}) {
   } finally {
     try {
       interrupt?.dispose();
-      terminalWorkers = workerOutcomes(progress);
       progress?.finish();
       if (statusWriter !== null) {
         await statusWriter.close();
@@ -28308,7 +28306,7 @@ async function runEnsembleCli(argv, options = {}) {
     } finally {
       const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: terminalWorkers ?? workerOutcomes(progress),
+        workers: workerOutcomes(progress),
         error: terminalError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so

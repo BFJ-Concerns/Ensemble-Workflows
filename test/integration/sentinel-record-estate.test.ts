@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { watch } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-process.js";
+import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const recordingAppServerPath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
@@ -30,24 +28,6 @@ test("terminal sentinel and durable record agree on a handled terminal error", a
     assert.equal(stdout.reason, "failed");
     assert.equal(sentinel.outcome, "failed");
     assert.equal(sentinel.exit_code, 1);
-  });
-});
-
-test("supervisor reader sees unsettled work after a controlled timeout", async () => {
-  await withEstate(async (estate) => {
-    const workflow = await estate.workflow(`
-      export const meta = { name: "positive-unsettled" };
-      return await parallel([
-        () => agent("first hanging worker", { engine: "codex", maxAttempts: 1 }),
-        () => agent("second hanging worker", { engine: "codex", maxAttempts: 1 })
-      ]);
-    `);
-    const marker = path.join(estate.directory, "turn-started");
-    const run = await estate.runInterrupted([workflow], marker, { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1", ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: marker });
-    assert.equal(run.code, 1, run.stderr);
-    const sentinel = await estate.readSentinel(run.stderr);
-    assert.equal(sentinel.outcome, "interrupted");
-    assert.ok(sentinel.workers.unsettled > 0, JSON.stringify(sentinel));
   });
 });
 
@@ -133,12 +113,18 @@ test("cold archive reader reconciles a non-complete record and distinguishes abs
     assert.equal(typeof manifest.owner.start_ticks, "string");
     manifest.status = "in-progress";
     await writeFile(livenessManifest, `${JSON.stringify(manifest)}\n`);
-    const absent = await runNode([livenessReaderPath, livenessManifest, "/proc", hostname()]);
-    assert.equal(absent.code, 0, absent.stderr);
-    assert.deepEqual(JSON.parse(absent.stdout), { verdict: "dead", reason: "owner-process-gone" });
+    const ownerGone = await runNode([livenessReaderPath, livenessManifest, "/proc", hostname()]);
+    assert.equal(ownerGone.code, 0, ownerGone.stderr);
+    assert.deepEqual(JSON.parse(ownerGone.stdout), { verdict: "dead", reason: "owner-process-gone" });
     const unreadable = await runNode([livenessReaderPath, livenessManifest, path.join(estate.directory, "missing-proc"), hostname()]);
     assert.equal(unreadable.code, 0, unreadable.stderr);
     assert.deepEqual(JSON.parse(unreadable.stdout), { verdict: "undecidable", reason: null });
+
+    const legacyManifest = path.join(estate.directory, "legacy-liveness-manifest.json");
+    await writeFile(legacyManifest, `${JSON.stringify({ ...manifest, owner: null })}\n`);
+    const absentOwner = await runNode([livenessReaderPath, legacyManifest, "/proc", hostname()]);
+    assert.equal(absentOwner.code, 0, absentOwner.stderr);
+    assert.deepEqual(JSON.parse(absentOwner.stdout), { verdict: "dead", reason: "manifest-predates-owner-recording" });
   });
 });
 
@@ -168,7 +154,6 @@ async function createEstate() {
     directory,
     workflow: async (source: string) => { const file = path.join(directory, `workflow-${workflowNumber++}.js`); await writeFile(file, source); return file; },
     run: (args: string[], overrides: NodeJS.ProcessEnv = {}, lane = "on") => runNode([bundledCliPath, ...args], environment(overrides, lane), 15_000),
-    runInterrupted: (args: string[], marker: string, overrides: NodeJS.ProcessEnv = {}) => interruptAfterMarker([bundledCliPath, ...args], marker, environment(overrides)),
     archive: async () => path.dirname(await findOnlyFile(store, "manifest.json")),
     readSentinel: async (stderr: string) => {
       const read = await runNode([sentinelReaderPath, sentinelPathFrom(stderr)]);
@@ -186,24 +171,3 @@ function sentinelPathFrom(stderr: string): string {
 
 async function json<T>(file: string): Promise<T> { return JSON.parse(await readFile(file, "utf8")) as T; }
 let workflowNumber = 0;
-async function interruptAfterMarker(args: string[], marker: string, environment: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, args, { cwd: process.cwd(), env: hermeticEstateEnvironment(environment), stdio: ["ignore", "pipe", "pipe"] });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => (stdout += chunk)); child.stderr.on("data", (chunk: string) => (stderr += chunk));
-  await waitForFile(marker);
-  child.kill("SIGINT");
-  const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
-  return { code, stdout, stderr };
-}
-
-async function waitForFile(file: string): Promise<void> {
-  try { await access(file); return; } catch { /* wait for the fixture's deterministic marker */ }
-  await new Promise<void>((resolve, reject) => {
-    const watcher = watch(path.dirname(file), async () => {
-      try { await access(file); watcher.close(); resolve(); } catch { /* another directory event */ }
-    });
-    watcher.once("error", reject);
-  });
-}

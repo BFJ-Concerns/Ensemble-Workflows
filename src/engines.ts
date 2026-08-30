@@ -1,14 +1,16 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation, assertClaudeEffortSupported } from "./claude-engine.js";
 import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import { EngineShutdownError, InvalidAgentOptionValueError, OpenCodeModelRequiredError } from "./errors.js";
+import {
+  CapabilityStripUnsupportedError,
+  EngineShutdownError,
+  InvalidAgentOptionValueError,
+  OpenCodeModelRequiredError
+} from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -169,27 +171,11 @@ export interface CodexEngineAdapterOptions {
   concurrency: number;
 }
 
-/**
- * Codex discovers user-installed skills below `$CODEX_HOME/skills`. Read the
- * directory when a thread opens, rather than when this module loads: an
- * installation that arrives during a long-lived Ensemble process must be in
- * the deny list for a later stripped worker too.
- */
-function installedCodexSkillNames(): string[] {
-  const skillsDirectory = path.join(process.env.CODEX_HOME ?? path.join(homedir(), ".codex"), "skills");
-  try {
-    return readdirSync(skillsDirectory, { withFileTypes: true })
-      .filter((entry) => existsSync(path.join(skillsDirectory, entry.name, "SKILL.md")))
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    // A Codex installation without a user skills directory has no named
-    // skills to deny. Bundled skills remain explicitly disabled below.
-    return [];
-  }
-}
-
-function codexThreadConfig(strip: readonly StrippableCapability[] | undefined): Record<string, unknown> | undefined {
+async function codexThreadConfig(
+  strip: readonly StrippableCapability[] | undefined,
+  transport: RuntimeTransport,
+  cwd: string | undefined
+): Promise<Record<string, unknown> | undefined> {
   const strippedAgents = strip?.includes("agents") === true;
   const strippedSkills = strip?.includes("skills") === true;
   if (!strippedAgents && !strippedSkills) {
@@ -201,11 +187,22 @@ function codexThreadConfig(strip: readonly StrippableCapability[] | undefined): 
       ? {
           skills: {
             bundled: { enabled: false },
-            config: installedCodexSkillNames().map((name) => ({ name, enabled: false }))
+            config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
           }
         }
       : {})
   };
+}
+
+async function discoveredCodexSkillNames(transport: RuntimeTransport, cwd: string | undefined): Promise<readonly string[]> {
+  if (transport.listSkills === undefined) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's discovered skill set"
+    );
+  }
+  return transport.listSkills(cwd);
 }
 
 export class CodexEngineAdapter implements EngineAdapter {
@@ -225,13 +222,14 @@ export class CodexEngineAdapter implements EngineAdapter {
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: `skills.bundled.enabled=false` turns
    *   off bundled skills and `skills.config=[{ name, enabled=false }]` denies
-   *   every user skill found under `$CODEX_HOME/skills` when the thread opens.
+   *   every name the app-server discovers for the worker cwd when the thread
+   *   opens.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
       route: "config",
       detail:
-        "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies disables bundled and installed skills"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies the app-server's complete discovered skill set"
     },
     agents: {
       route: "config",
@@ -331,7 +329,7 @@ class CodexWorkerSession implements EngineWorkerSession {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = codexThreadConfig(this.#options.strip);
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
         const threadId = await this.#transport.openThread({
           ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
           ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
@@ -387,7 +385,7 @@ class CodexEngineInvocation implements EngineInvocation {
     // tool surface the machine's own config.toml gives it (stripping is opt-in
     // in both directions — a strip removes nothing unasked, and its
     // absence grants nothing the machine had turned off).
-    const threadConfig = codexThreadConfig(this.#options.strip);
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),

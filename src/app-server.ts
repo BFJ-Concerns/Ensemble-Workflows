@@ -147,6 +147,11 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
     return transport.openThread(options);
   }
 
+  async listSkills(cwd?: string): Promise<readonly string[]> {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
+  }
+
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
     const transport = await this.#transport();
     return transport.runTurn(threadId, prompt, options);
@@ -288,6 +293,41 @@ export class CodexAppServerTransport implements RuntimeTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+
+  async listSkills(cwd = this.cwd): Promise<readonly string[]> {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+
+    const names = new Set<string>();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {

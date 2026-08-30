@@ -280,6 +280,12 @@ export interface ThreadStartOptions {
 
 export interface RuntimeTransport {
   readonly cwd: string;
+  /**
+   * The Codex app-server's current discovery result for a worker cwd. A
+   * skills strip must deny these names rather than infer roots from the
+   * harness process, whose home and plugins can differ from the worker's.
+   */
+  listSkills?(cwd?: string): Promise<readonly string[]>;
   openThread(options: ThreadStartOptions): Promise<string>;
   runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult>;
   close(): Promise<void>;

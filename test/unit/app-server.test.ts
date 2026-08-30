@@ -972,9 +972,38 @@ test("Codex app-server sends a thread config overlay only when one is given", as
   }
 });
 
+test("Codex app-server lists the fresh discovered skills for the requested worker cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-list-"));
+  const capturePath = path.join(directory, "methods.txt");
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    skills: ["repo-skill", "plugin-management:plugin-management", "repo-skill"]
+  });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+  try {
+    assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), ["plugin-management:plugin-management", "repo-skill"]);
+    assert.ok((await readFile(capturePath, "utf8")).split("\n").includes("skills/list"));
+  } finally {
+    await transport.close();
+  }
+});
+
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
-  options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string; servedModel?: string | null } = {}
+  options: {
+    returnPromptBase64?: boolean;
+    capturePath?: string;
+    envCapturePath?: string;
+    servedModel?: string | null;
+    skills?: readonly string[];
+  } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
@@ -993,6 +1022,7 @@ const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
+const skills = ${JSON.stringify(options.skills ?? [])};
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
 }
@@ -1016,6 +1046,16 @@ reader.on("line", (line) => {
         thread: { id: "thread-" + threadCounter },
         ...(servedModel === null ? {} : { model: servedModel }),
         reasoningEffort: "medium"
+      }
+    });
+    return;
+  }
+  if (message.method === "skills/list") {
+    const cwd = message.params.cwds?.[0] ?? process.cwd();
+    send({
+      id: message.id,
+      result: {
+        data: [{ cwd, errors: [], skills: skills.map((name) => ({ name })) }]
       }
     });
     return;

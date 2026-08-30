@@ -169,7 +169,12 @@ Summary usage in the record (schema version 3) uses one declared vocabulary:
 subtracts both out). `reasoningOutputTokens: null` means the engine does not
 separate reasoning — not zero. The manifest's `cost_rollup` keys spend per
 engine and per *served* model (the literal `unresolved` when no served model
-was ever learned, never the requested pin), and each agent record carries its
+was ever learned, never the requested pin); its cost entries are
+`provider-reported` figures only, and a bucket with no provider figure reads
+`unavailable` with the reason (`no-provider-cost-reported`,
+`unlike-currencies`) rather than an amount-less estimate. Agent records
+record `resolved_effort` beside `resolved_model`, at record and attempt level.
+Each agent record carries its
 own `usage` — the summary, or `unavailable` with the reason
 (`no-attempt-ran`, `engine-reported-no-usage`) so an agent with no usage data
 is never indistinguishable from a zero-spend one. The engine-native usage
@@ -378,8 +383,12 @@ run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
 ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
-`null` when the launcher never got far enough to count any), and it is
-written even when durable
+`null` when the launcher never got far enough to count any). It also carries
+`manifest` — the sealed manifest's self-digest (`{ sha256 }`), or
+`{ unavailable }` naming why there is none (`recording-disabled`,
+`manifest-unsealed`) — and its own `integrity.sentinel_sha256`, computed by
+the same recipe the manifest uses, so one verification covers both files. It
+is written even when durable
 recording is disabled: the sentinel is supervision surface, not archive, so
 the run directory is created for it alone. An uncatchable kill of the
 launcher leaves no sentinel — a supervisor should keep a scheduled fallback

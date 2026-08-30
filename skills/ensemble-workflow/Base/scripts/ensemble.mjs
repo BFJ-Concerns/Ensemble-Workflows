@@ -17902,18 +17902,19 @@ var ClaudeEngineAdapter = class {
    * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
    * deny working (`Skill` absent under a skills strip, present in the
    * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
-   * 2.1.251: `Task`, `Agent`, `ListAgents`, and `SendMessage` were absent at
-   * the stripped worker, while the unstripped control demonstrated discovery
-   * and messaging; the witness cannot isolate `Task`/`Agent` from the
-   * machine-wide `Agent` deny. Deny rules outrank every allow layer and
-   * permission mode, `--dangerously-skip-permissions` included — a live
-   * test asserts that at the worker itself.
+   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
+   * while the unstripped control demonstrated discovery and messaging.
+   * `Agent` was also absent, but the witness cannot isolate it from the
+   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
+   * the exact-set regression proves. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
    */
   capabilities = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
     agents: {
       route: "config",
-      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: Task, Agent, ListAgents, and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging; the witness cannot isolate Task/Agent from the machine-wide Agent deny"
+      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves"
     }
   };
   #scheduler;

@@ -34,10 +34,11 @@ import type { RuntimeEvent, TurnResult } from "./types.js";
  * Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair
  * showed the bare `Skill` deny working (`Skill` absent under a skills strip,
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
- * Claude Code 2.1.251: `Task`, `Agent`, `ListAgents`, and `SendMessage` were
- * absent at the stripped worker, while the unstripped control demonstrated
- * discovery and messaging; the witness cannot isolate `Task`/`Agent`
- * from the machine-wide `Agent` deny. Deny rules outrank every allow
+ * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
+ * stripped worker, while the unstripped control demonstrated discovery and
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
+ * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
+ * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode,
  * so the operator's own settings cannot quietly re-enable a stripped tool.
  */

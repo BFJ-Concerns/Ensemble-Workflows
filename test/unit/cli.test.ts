@@ -929,6 +929,41 @@ test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and
   }
 });
 
+test("ensemble agent accepts a dash-leading prompt after --", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--", "--timeout"], {
+    stdin: Readable.from([]),
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '"--timeout"\n');
+});
+
+test("workflow invocation rejects duplicate scalar tuning flags before runtime creation", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  let runtimeCreations = 0;
+
+  const exitCode = await runEnsembleCli(["--agent-ceiling=1", "--agent-ceiling=null", "workflow.js"], {
+    stdout,
+    stderr,
+    createRuntime: async () => {
+      runtimeCreations += 1;
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(stderr.text(), "Option --agent-ceiling may only be specified once\n");
+  assert.equal(runtimeCreations, 0);
+});
+
 test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-worktree-"));
   await execFileAsync("git", ["init"], { cwd: directory });

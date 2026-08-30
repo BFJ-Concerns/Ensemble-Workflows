@@ -22,6 +22,27 @@ import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
 
+const AGENT_INVOCATION_OPTIONS = {
+  engine: { type: "string" },
+  model: { type: "string" },
+  effort: { type: "string" },
+  label: { type: "string" },
+  phase: { type: "string" },
+  "fallback-model": { type: "string" },
+  cwd: { type: "string" },
+  isolation: { type: "string" },
+  identity: { type: "boolean" },
+  schema: { type: "string" },
+  "max-attempts": { type: "string" },
+  strip: { type: "string", multiple: true },
+  task: { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  "caller-identity": { type: "string" }
+} as const;
+
 export interface EnsembleCliOptions {
   cwd?: string;
   stdin?: Readable;
@@ -586,26 +607,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   try {
     parsed = parseArgs({
       args: argv,
-      options: {
-        engine: { type: "string" },
-        model: { type: "string" },
-        effort: { type: "string" },
-        label: { type: "string" },
-        phase: { type: "string" },
-        "fallback-model": { type: "string" },
-        cwd: { type: "string" },
-        isolation: { type: "string" },
-        identity: { type: "boolean" },
-        schema: { type: "string" },
-        "max-attempts": { type: "string" },
-        strip: { type: "string", multiple: true },
-        task: { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        "caller-identity": { type: "string" }
-      },
+      options: AGENT_INVOCATION_OPTIONS,
       strict: true,
       allowPositionals: true
     });
@@ -763,8 +765,7 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
       continue;
     }
     if (value === "--") {
-      promptSeen = true;
-      continue;
+      return;
     }
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
       throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
@@ -809,19 +810,7 @@ function isRepeatableOption(flag: string): boolean {
 }
 
 function isKnownAgentOption(value: string): boolean {
-  return (
-    value === "--engine" ||
-    value === "--model" ||
-    value === "--effort" ||
-    value === "--label" ||
-    value === "--phase" ||
-    value === "--fallback-model" ||
-    value === "--cwd" ||
-    value === "--isolation" ||
-    value === "--schema" ||
-    value === "--max-attempts" ||
-    value === "--task"
-  );
+  return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
 }
 
 function isKnownOption(value: string): boolean {

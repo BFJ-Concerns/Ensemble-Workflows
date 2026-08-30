@@ -17,7 +17,6 @@ root.
 A minimal workflow that dispatches one Codex worker and prints its answer:
 
 ```js
-// hello.js
 export const meta = { name: "hello", description: "one-worker demo" };
 const answer = await agent("Say hello in one sentence.", {
   engine: "codex",
@@ -33,7 +32,9 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs hello.js
 ```
 
 Stdout is the run's result as JSON (here, a JSON-encoded string); stderr
-carries logs and progress.
+carries logs and progress. A workflow script must begin with the
+`export const meta` statement — anything before it, a comment included,
+is rejected before any worker spawns.
 
 ## Invocation
 

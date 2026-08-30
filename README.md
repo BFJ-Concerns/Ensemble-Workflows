@@ -342,6 +342,14 @@ The manifest is `manifest.json`. Its top-level fields are:
   it is not the hash of the envelope bytes.
 - `meta`: raw workflow meta and `task` copied verbatim, or `null`.
 - `cli_flags`: parsed run-tuning flags.
+- `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
+  ceilings and whole-run timeout, each as `{ value, layer }` naming the
+  layer that won — the same auditable shape as `concurrency` (both settings
+  resolve from the flag alone today, so their layers are `flag` or
+  `default`).
+- `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
+  answer, timeout) in event order, each entry carrying `hold_id`, `event`,
+  `verdict`/`reason` where applicable, and a timestamp.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.

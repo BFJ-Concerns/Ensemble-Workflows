@@ -64,6 +64,7 @@ export interface RunRecordStartOptions {
   args: unknown;
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
+  effectiveSettings?: EffectiveRunSettingsRecord;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -74,6 +75,20 @@ export interface RunRecordStartOptions {
 export interface EffectiveConcurrencyRecord {
   agentCeiling: Resolved<number | null>;
   engines: Partial<Record<EngineName, Resolved<number>>>;
+}
+
+/**
+ * Effective per-engine token ceilings and the whole-run timeout, each with
+ * the layer that won — the same auditable shape the agent ceiling and
+ * concurrency caps already record, so a consumer reconstructs which layer
+ * decided every run-shaping number without product knowledge. These two
+ * settings take no env or config-file layer today, so their honest layers
+ * are `flag` and `default`; the shape does not change if they ever gain
+ * more.
+ */
+export interface EffectiveRunSettingsRecord {
+  budgetCeilings: Partial<Record<EngineName, Resolved<number | null>>>;
+  runTimeoutMs: Resolved<number | null>;
 }
 
 export interface RuntimeAgentAttemptRecord {
@@ -348,6 +363,9 @@ interface Manifest {
     agent_ceiling: Resolved<number | null>;
     engines: Partial<Record<EngineName, Resolved<number>>>;
   };
+  /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
+  budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
+  run_timeout_ms: Resolved<number | null>;
   git: {
     start: GitState;
     end: GitState | null;
@@ -543,6 +561,8 @@ export class RunRecordWriter {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}
       },
+      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
+      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       git: {
         start: gitStart,
         end: null

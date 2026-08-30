@@ -13,6 +13,8 @@ import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
+
+import type { EffectiveRunSettingsRecord } from "./run-record.js";
 import { listSavedWorkflows } from "./workflow-registry.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
@@ -225,7 +227,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         args: prepared.recordArgs,
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
-        concurrency: recordConcurrency(ambientSettings, progress)
+        concurrency: recordConcurrency(ambientSettings, progress),
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -565,6 +568,31 @@ function recordConcurrency(
     }
   }
   return { agentCeiling: settings.agentCeiling, engines };
+}
+
+/**
+ * Effective budget ceilings and whole-run timeout with their winning
+ * layers, the shape `recordConcurrency` established. Both settings resolve
+ * from the flag alone today, so absence is honestly `default` — never an
+ * inferred env or config attribution. A programmatically injected timeout
+ * (a library caller's `timeoutMs`) records under `default` too: it is the
+ * baseline this run started from, not a layer the operator chose.
+ */
+function recordEffectiveSettings(
+  invocation: ParsedInvocation,
+  injectedTimeoutMs: number | undefined
+): EffectiveRunSettingsRecord {
+  const budgetCeilings: EffectiveRunSettingsRecord["budgetCeilings"] = {};
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    const flagged = invocation.budgetCeilings?.[engine];
+    budgetCeilings[engine] =
+      flagged !== undefined ? { value: flagged, layer: "flag" } : { value: null, layer: "default" };
+  }
+  const timeoutMs = invocation.timeoutMs ?? injectedTimeoutMs ?? null;
+  return {
+    budgetCeilings,
+    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== undefined ? "flag" : "default" }
+  };
 }
 
 class CliUsageError extends Error {

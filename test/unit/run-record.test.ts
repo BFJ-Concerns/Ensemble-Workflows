@@ -21,6 +21,58 @@ import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from
 
 const execFileAsync = promisify(execFile);
 
+test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
+  const cwd = await gitRepo("ensemble-record-effective-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-effective",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false, budget: { codex: 50_000 }, timeoutMs: 90_000 },
+    effectiveSettings: {
+      budgetCeilings: {
+        codex: { value: 50_000, layer: "flag" },
+        claude: { value: null, layer: "default" },
+        opencode: { value: null, layer: "default" }
+      },
+      runTimeoutMs: { value: 90_000, layer: "flag" }
+    }
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  // The auditor's read: which layer won each run-shaping number, without
+  // product knowledge — the shape the concurrency block established.
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    budget_ceilings: Record<string, { value: number | null; layer: string }>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(manifest.budget_ceilings.codex, { value: 50_000, layer: "flag" });
+  assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
+  assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
+
+  // A writer given no effective settings still publishes the honest default
+  // shape rather than omitting the keys.
+  const bare = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-effective-bare",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await bare.finish({ status: "complete", exitCode: 0, result: null });
+  const bareManifest = JSON.parse(await readFile(path.join(bare.archiveDir, "manifest.json"), "utf8")) as {
+    budget_ceilings: Record<string, unknown>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(bareManifest.budget_ceilings, {});
+  assert.deepEqual(bareManifest.run_timeout_ms, { value: null, layer: "default" });
+});
+
 test("run record manifest and agent schemas are fixture-locked", async () => {
   const cwd = await gitRepo("ensemble-record-schema-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));

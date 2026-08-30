@@ -6,6 +6,7 @@
   ],
   "manifest": [
     "args",
+    "budget_ceilings",
     "caller_identity",
     "cli_flags",
     "concurrency",
@@ -24,6 +25,7 @@
     "owner",
     "result",
     "run_id",
+    "run_timeout_ms",
     "run_uuid",
     "schema_version",
     "started_at",

@@ -45,7 +45,7 @@ test("an exhausted direct agent surfaces each worker diagnosis beside its harnes
       {
         attempt: 2,
         failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" },
-        rawOutput: null
+        rawOutput: ""
       }
     ]
   } as unknown as RuntimeAgentRecord;
@@ -56,11 +56,12 @@ test("an exhausted direct agent surfaces each worker diagnosis beside its harnes
   assert.equal(lines[0], "Agent exhausted its attempts without producing a result");
   assert.match(lines[1] ?? "", /attempt 1 \(invalid-json\): agent output did not contain parseable JSON/);
   assert.match(lines[1] ?? "", /worker diagnosis: The schema's minLength 2 and maxLength 1 are contradictory\./);
-  assert.match(lines[2] ?? "", /attempt 2 \(empty-output\): agent returned empty text on attempt 2/);
+  assert.equal(lines[2], "  attempt 2 (empty-output): agent returned empty text on attempt 2");
   assert.match(lines[3] ?? "", /agents\/000001\/agent\.json$/);
   // Detail lines are indented beneath the cause, never a stack.
+  assert.equal(lines.length, 4);
   assert.ok(lines.slice(1).every((line) => line.startsWith("  ")));
-  assert.equal(rendered.includes("at presentTerminalError"), false);
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
 test("an oversized prompt renders as the named platform limit, not raw spawn E2BIG frames", () => {

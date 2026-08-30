@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,7 +11,8 @@ import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueErro
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { usageSince } from "../../src/claude-transcript.js";
 
-import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
+import { RunRecordWriter } from "../../src/run-record.js";
+import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import type { TranscriptEntry } from "../../src/claude-transcript.js";
 import type {
   ClaudeControlPlane,
@@ -1255,3 +1256,54 @@ function parseTranscript(content: string): TranscriptEntry[] {
     .filter((line) => line.trim().length > 0)
     .map((line) => JSON.parse(line) as TranscriptEntry);
 }
+
+test("a failed Claude turn's spend and transcript read back cold from the archive", async () => {
+  // The consumer here is a program parsing the durable record later, with no
+  // run in memory: the failed attempt must be legible as spend that happened
+  // and a transcript that exists, reconciled against the transcript's own
+  // usage entries rather than against the writer's word for it.
+  await withControlPlane(
+    [{ outcome: "blocked", assistant: { text: "made a start", stop: "tool_use", input: 120, output: 30, cached: 9 } }],
+    async (controlPlane) => {
+      const store = await mkdtemp(path.join(tmpdir(), "ensemble-claude-failure-archive-"));
+      const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-claude-failure-cwd-"));
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1, blockedRecoveryBound: 0 });
+      try {
+        const writer = await RunRecordWriter.start({
+          storeDir: store,
+          cwd,
+          runUuid: "run-claude-failure",
+          workflowPath: path.join(cwd, "workflow.js"),
+          workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+          args: [],
+          cliFlags: { jsonArgs: false }
+        });
+        runtime.setRunRecorder(writer);
+        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        await writer.finish({ status: "failed", exitCode: 1, result: null });
+
+        const agent = JSON.parse(
+          await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")
+        ) as {
+          status: string;
+          usage: { summary?: { totalTokens: number; outputTokens: number }; unavailable?: string };
+          transcripts: Array<{ path: string }> | { unavailable: string };
+        };
+        assert.equal(agent.status, "failed");
+        // Not `{ unavailable: … }`: the turn spent tokens and left a
+        // transcript, and the archive is where a budget or audit consumer
+        // learns that.
+        assert.ok(Array.isArray(agent.transcripts), "the failed agent lists its transcript");
+        const archived = await readFile(path.join(writer.archiveDir, agent.transcripts[0]!.path), "utf8");
+        const proved = usageSince(parseTranscript(archived));
+        assert.equal(agent.usage.unavailable, undefined);
+        assert.equal(agent.usage.summary?.totalTokens, proved.totalTokens);
+        assert.equal(agent.usage.summary?.outputTokens, proved.outputTokens);
+      } finally {
+        await runtime.close();
+        await rm(store, { recursive: true, force: true });
+        await rm(cwd, { recursive: true, force: true });
+      }
+    }
+  );
+});

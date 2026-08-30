@@ -15389,7 +15389,7 @@ function safeName(filename, suffix) {
 
 // src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
-var SENTINEL_SCHEMA_VERSION = 3;
+var SENTINEL_SCHEMA_VERSION = 4;
 var CompletionSentinel = class {
   #path = null;
   #written = false;
@@ -15427,7 +15427,12 @@ var CompletionSentinel = class {
       // Read from the launcher's own progress model, not the archive: the
       // sentinel resolves independently of the record switch, so recording
       // being off must degrade nothing here.
-      workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      workers: workers === null ? null : {
+        done: workers.done,
+        failed: workers.failed,
+        cut_short: workers.cutShort,
+        unsettled: workers.unsettled
+      },
       error: detail.error ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" },
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -27270,9 +27275,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   /**
    * The worker tally at the moment the run ended, or null before close().
-   * `unsettled` counts the legs still in flight then — exactly the records
-   * close() terminalises as abandoned or settles with the run's own
-   * shutdown status, so the sentinel and the archive cannot disagree.
+   * Each in-flight leg is counted by the disposition close() itself decides
+   * for it — abandoned where no outcome was ever observed, cut short where
+   * teardown settles it with the run's own shutdown status — so the
+   * sentinel's figures and the archive's records state the same thing.
    */
   shutdownTally() {
     return this.#shutdownTally;
@@ -27280,13 +27286,22 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async close(status = "interrupted") {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
+      ({ record }) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
     const totals = this.progress.snapshot().totals;
-    this.#shutdownTally = { done: totals.done, failed: totals.failed, unsettled: this.#unsettledAgentRecords.size };
+    this.#shutdownTally = {
+      done: totals.done,
+      failed: totals.failed,
+      cutShort: inFlight.length - abandoning.length,
+      unsettled: abandoning.length
+    };
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+      abandoning.map(async (record) => {
         this.#abandonedAgentIds.add(record.id);
         record.status = "abandoned";
         await this.#recordAgentSafely(record);
@@ -28350,13 +28365,13 @@ function partialResult(runtime, reason) {
 function workerOutcomes(progress, runtime) {
   const tally = runtime?.shutdownTally?.() ?? null;
   if (tally !== null) {
-    return { done: tally.done, failed: tally.failed, unsettled: tally.unsettled };
+    return { done: tally.done, failed: tally.failed, cutShort: tally.cutShort, unsettled: tally.unsettled };
   }
   if (progress === void 0) {
     return null;
   }
   const totals = progress.snapshot().totals;
-  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
+  return { done: totals.done, failed: totals.failed, cutShort: 0, unsettled: totals.active + totals.queued };
 }
 function completedDirectAgentWithNull(runtime) {
   const completed = runtime.completedOutputs?.() ?? [];

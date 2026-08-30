@@ -502,9 +502,11 @@ function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["r
 
 /**
  * The run's worker tally as the launcher observed it, or null when there was
- * nothing to count (an injected test runtime with no progress model).
- * `unsettled` counts the workers still queued or running at the moment the
- * run ended — a fixed instant, not a race with teardown.
+ * nothing to count (an injected test runtime with no progress model). It is
+ * a partition of the run's legs: settled on their own account (`done`,
+ * `failed`), cut short by the run ending with a record naming the run's
+ * shutdown status (`cutShort`), or abandoned with no outcome ever observed
+ * (`unsettled`).
  */
 function workerOutcomes(progress: RunProgress | undefined, runtime: EnsembleRuntime | null): SentinelWorkerOutcomes | null {
   // The runtime's shutdown tally is the determinate figure: it was taken at
@@ -513,15 +515,19 @@ function workerOutcomes(progress: RunProgress | undefined, runtime: EnsembleRunt
   // whichever stragglers happened to land first.
   const tally = (runtime as { shutdownTally?: () => ShutdownTally | null } | null)?.shutdownTally?.() ?? null;
   if (tally !== null) {
-    return { done: tally.done, failed: tally.failed, unsettled: tally.unsettled };
+    return { done: tally.done, failed: tally.failed, cutShort: tally.cutShort, unsettled: tally.unsettled };
   }
   // An injected test runtime that never closed, or one with no progress
   // model at all, falls back to whatever the launcher itself can count.
   if (progress === undefined) {
     return null;
   }
+  // An injected runtime that publishes no tally never told the launcher how
+  // it disposed of its legs, so the launcher cannot claim any of them were
+  // cut short with a record: what it observed is workers whose outcome it
+  // never saw, which is exactly `unsettled`.
   const totals = progress.snapshot().totals;
-  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
+  return { done: totals.done, failed: totals.failed, cutShort: 0, unsettled: totals.active + totals.queued };
 }
 
 function completedDirectAgentWithNull(runtime: EnsembleRuntime): boolean {

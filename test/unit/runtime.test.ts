@@ -1549,7 +1549,10 @@ test("the shutdown tally is fixed at the moment the run ended, not at the moment
   // shows it in flight — which is exactly why a supervisor's tally cannot be
   // read from there after the fact.
   assert.equal(runtime.progress.snapshot().totals.active, 0);
-  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, unsettled: 1 });
+  // The leg was in flight at the engine, so teardown reached it and its
+  // record carries the run's shutdown status: it is cut short, not
+  // abandoned, and the tally says the same thing the record does.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
 });
 
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {
@@ -1657,6 +1660,10 @@ test("runtime close terminalises an unsettled dispatch record", async () => {
   assert.equal(recorder.records[0]?.status, "in-progress");
   assert.equal(recorder.records[1]?.status, "abandoned");
   assert.deepEqual(recorder.records[1]?.attempts, []);
+  // A leg whose turn never reached an engine is the one close() abandons —
+  // no outcome was ever observed for it — and that is what `unsettled`
+  // counts, distinct from a leg teardown cut short with a record.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 0, unsettled: 1 });
   recorder.releaseDispatch();
   await assert.rejects(agent, EngineShutdownError);
 });

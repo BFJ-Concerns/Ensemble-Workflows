@@ -611,14 +611,19 @@ the durable-record store) that the launcher process itself writes when the
 run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
-ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
-`null` when the launcher never got far enough to count any). The worker
-tally names one instant — the moment the run ended, before teardown — so
-`unsettled` is the number of workers still queued or running then, whether or
-not teardown had settled them by the time the file landed. Those torn-down
-workers are recorded as the run ended them: after a run whose script returned
-cleanly their records read `interrupted` with a `run-interrupted` cause, not
-`failed`. A teardown that fails after a clean body is itself a failed end —
+ended the run, or `null`), and `workers` (`{ done, failed, cut_short,
+unsettled }`, or `null` when the launcher never got far enough to count any).
+The worker tally is a partition of the run's workers, fixed at the moment the
+run ended and stating the same thing their durable records do: `done` and
+`failed` settled on their own account before that moment; `cut_short` counts
+the workers the run's end terminated, each of which carries a record naming
+the run's own shutdown status — after a run whose script returned cleanly
+those records read `interrupted` with a `run-interrupted` cause, never
+`failed`; `unsettled` counts the workers the run abandoned, dispatched but
+with no outcome ever observed, whose records say exactly that. The counts are
+taken from the disposition the run's end decides for each worker, so a
+supervisor's tally never depends on which straggler teardown happened to
+settle first. A teardown that fails after a clean body is itself a failed end —
 the run may leave workers alive or the archive unsealed — so the sentinel
 reports `outcome: "failed"`, the teardown error as its `error`, and the
 process exits non-zero rather than publishing `complete` over it. It also carries

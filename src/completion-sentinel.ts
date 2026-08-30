@@ -6,7 +6,7 @@ import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 3;
+export const SENTINEL_SCHEMA_VERSION = 4;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
 
@@ -20,9 +20,19 @@ export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted
  * answered wrongly. Null when the launcher had no progress model to read.
  */
 export interface SentinelWorkerOutcomes {
+  /** Settled on their own account, successfully. */
   done: number;
+  /** Settled on their own account, with a failure. */
   failed: number;
-  /** Workers still queued or running when the run ended (a timeout or interrupt). */
+  /**
+   * Workers the run's end cut short: teardown reached them, and each carries
+   * a durable record naming the run's own shutdown status.
+   */
+  cutShort: number;
+  /**
+   * Workers the run abandoned: dispatched, then left with no outcome ever
+   * observed, so their record says exactly that and nothing more.
+   */
   unsettled: number;
 }
 
@@ -114,7 +124,14 @@ export class CompletionSentinel {
       // sentinel resolves independently of the record switch, so recording
       // being off must degrade nothing here.
       workers:
-        workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+        workers === null
+          ? null
+          : {
+              done: workers.done,
+              failed: workers.failed,
+              cut_short: workers.cutShort,
+              unsettled: workers.unsettled
+            },
       error: detail.error ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" as const },
       ended_at: new Date().toISOString(),

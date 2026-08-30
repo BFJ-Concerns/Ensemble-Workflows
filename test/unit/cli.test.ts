@@ -686,7 +686,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")
   ) as { integrity: { manifest_sha256: string } };
   assert.deepEqual(sentinel, {
-    schema_version: 3,
+    schema_version: 4,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,
@@ -2649,13 +2649,13 @@ test("the sentinel carries worker outcomes, so `complete` cannot mean every work
   const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
     outcome: string;
     exit_code: number;
-    workers: { done: number; failed: number; unsettled: number } | null;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
   };
   // Outcome and exit code still describe the script, which succeeded.
   assert.equal(sentinel.outcome, "complete");
   assert.equal(sentinel.exit_code, 0);
   // What is added is the tally that stops `complete` reading as "all well".
-  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, unsettled: 0 });
+  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, cut_short: 0, unsettled: 0 });
 });
 
 test("the sentinel's worker tally counts a run's successes as its own observation", async () => {
@@ -2686,9 +2686,9 @@ test("the sentinel's worker tally counts a run's successes as its own observatio
   const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
   assert.ok(sentinelPath);
   const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
-    workers: { done: number; failed: number; unsettled: number } | null;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
   };
-  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, unsettled: 0 });
+  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, cut_short: 0, unsettled: 0 });
 });
 
 test("a successful run's torn-down workers are interrupted by the run ending, never failed", async () => {
@@ -2745,13 +2745,15 @@ test("a successful run's torn-down workers are interrupted by the run ending, ne
   assert.ok(sentinelPath);
   const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
     outcome: string;
-    workers: { done: number; failed: number; unsettled: number } | null;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
   };
   assert.equal(sentinel.outcome, "complete");
-  // The tally names one instant — the moment the run ended, with one leg
-  // still in flight — rather than whatever teardown had settled by the time
-  // the sentinel was written.
-  assert.deepEqual(sentinel.workers, { done: 1, failed: 0, unsettled: 1 });
+  // The tally partitions the run's workers by the disposition the run's end
+  // decided for each: one settled on its own account, one cut short by
+  // teardown and carrying the `interrupted` record asserted above. Nothing
+  // was abandoned, so nothing is `unsettled` — the sentinel's figures and
+  // the archive's records say the same thing.
+  assert.deepEqual(sentinel.workers, { done: 1, failed: 0, cut_short: 1, unsettled: 0 });
 });
 
 test("a teardown that fails after a clean body degrades the sentinel and the exit code", async () => {

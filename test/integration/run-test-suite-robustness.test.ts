@@ -9,7 +9,9 @@ import test from "node:test";
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
+const colouredEmptySuiteChildPath = path.resolve("test/fixtures/suite-runner/coloured-empty-suite-child.mjs");
 const pipeHolderParentPath = path.resolve("test/fixtures/suite-runner/pipe-holder-parent.mjs");
+const sgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`);
 const completionGuardMilliseconds = 5_000;
 const promptExitMilliseconds = 500;
 
@@ -27,6 +29,17 @@ test("suite runner ignores an ambient direct-child override outside its test con
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("suite runner rejects an SGR-coloured empty-suite summary from its guarded direct child", async () => {
+  const result = await runNode([runnerPath], {
+    ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: colouredEmptySuiteChildPath,
+    ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+    NODE_TEST_CONTEXT: undefined
+  });
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stdout, sgrSequence, "expected the runner to receive the coloured summary");
+  assert.match(result.stderr, /Test suite matched no tests/);
 });
 
 test("suite runner delivers a descendant's trailing marker after its test child exits", async () => {

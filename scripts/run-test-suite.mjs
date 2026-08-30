@@ -7,6 +7,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
+const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
 // A descendant can retain the test process's output pipe after that process
 // exits. Keep accepting its final output, but do not let that inherited pipe
 // hold the gate open indefinitely.
@@ -107,7 +108,8 @@ childExited.then(async ([code, signal]) => {
     child.stderr.destroy();
     child.unref();
   }
-  if (code === 0 && /(?:^|\n)# tests 0(?:\n|$)/.test(childOutput)) {
+  const tapOutput = childOutput.replace(ansiSgrSequence, "");
+  if (code === 0 && /(?:^|\n)# tests 0(?:\n|$)/.test(tapOutput)) {
     process.stderr.write("Test suite matched no tests\n");
     return finish(1, signal);
   }

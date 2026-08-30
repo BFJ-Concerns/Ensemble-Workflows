@@ -13,6 +13,7 @@ import {
   AppServerExitedError,
   AppServerOverloadedError,
   AppServerRetryPromiseBrokenError,
+  AgentPromptRejectedError,
   EmptyAgentOutputError,
   EngineShutdownError,
   MissingEngineError,
@@ -62,6 +63,15 @@ import type {
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord, TerminalErrorRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+
+function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
+  if (typeof prompt !== "string") {
+    throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
+  }
+  if (prompt.trim().length === 0) {
+    throw new AgentPromptRejectedError("agent() prompt must be a non-empty string");
+  }
+}
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
@@ -281,10 +291,18 @@ export class EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    assertValidAgentPrompt(prompt);
     assertValidAgentOptions(options);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
+    }
+
+    // The run cwd was already established by the caller. Only an explicit
+    // per-call override needs validation here; keeping the ordinary path
+    // synchronous preserves the dispatch-order admission boundary.
+    if (options.cwd !== undefined) {
+      await this.#placement.assertUsableCwd(options);
     }
 
     const engine = this.#engineFor(options.engine);

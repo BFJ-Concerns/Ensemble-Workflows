@@ -283,8 +283,8 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     args: [],
     cliFlags: { jsonArgs: false }
   });
-  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 25)));
-  await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, 0, 25)));
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 0, 25)));
+  await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, undefined, 25)));
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
@@ -296,13 +296,14 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
   assert.ok(claude);
   // Codex reports cached within input and reasoning within output: both are
   // subtracted out, so the declared classes are disjoint and sum to the
-  // total (12 + 8 + 3 + 2 = 25). The engine-native 20/5/27 figures stay in
+  // total (12 + 8 + 5 + 0 = 25). Its reported zero survives as zero. The
+  // engine-native 20/5/25 figures stay in
   // the attempt events beneath, untouched.
   assert.deepEqual(codex, {
     freshInputTokens: 12,
     cachedInputTokens: 8,
-    outputTokens: 3,
-    reasoningOutputTokens: 2,
+    outputTokens: 5,
+    reasoningOutputTokens: 0,
     unclassifiedTokens: 0,
     totalTokens: 25
   });
@@ -317,6 +318,17 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     unclassifiedTokens: 0,
     totalTokens: 25
   });
+
+  const agentJson = async (id: string) => JSON.parse(
+    await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")
+  ) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  // Each agent and its manifest roll-up are cold-read consumers of the same
+  // summary boundary: Codex's reported zero stays zero at both levels, while
+  // Claude's absent measurement stays null at both levels.
+  assert.deepEqual((await agentJson("000001")).usage.summary, codex);
+  assert.deepEqual((await agentJson("000002")).usage.summary, claude);
 });
 
 test("cache creation is accounted apart from cache reads when the engine separates them", async () => {
@@ -334,7 +346,7 @@ test("cache creation is accounted apart from cache reads when the engine separat
   // A Claude-shaped breakdown: 10 cached in total, of which 3 were cache
   // writes — so only 7 were input actually served from cache.
   await writer.recordAgent(
-    agentRecordWithUsage(1, "claude", { ...usage(220, 10, 40, 0, 270), cacheCreationInputTokens: 3 })
+    agentRecordWithUsage(1, "claude", { ...usage(220, 10, 40, undefined, 270), cacheCreationInputTokens: 3 })
   );
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
@@ -349,6 +361,11 @@ test("cache creation is accounted apart from cache reads when the engine separat
   assert.equal(tokens.cachedInputTokens, 10);
   assert.equal(tokens.cacheReadTokens, 7);
   assert.equal(tokens.cacheCreationTokens, 3);
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8")) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  assert.deepEqual(agent.usage.summary, tokens);
 });
 
 test("each agent record carries its usage in the declared vocabulary, or the reason it has none", async () => {
@@ -937,10 +954,16 @@ function usage(
   inputTokens: number,
   cachedInputTokens: number,
   outputTokens: number,
-  reasoningOutputTokens: number,
+  reasoningOutputTokens: number | undefined,
   totalTokens: number
 ): TokenUsageBreakdown {
-  return { cachedInputTokens, inputTokens, outputTokens, reasoningOutputTokens, totalTokens };
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    totalTokens
+  };
 }
 
 function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: number, currency?: string) {

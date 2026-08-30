@@ -64,15 +64,17 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   caps that engine's parallel workers. Both repeatable, one engine each.
 - `--agent-ceiling N` caps all workers in the run across every engine. It is
   unset and unbounded by default; `--agent-ceiling null` explicitly lifts a
-  lower-layer machine ceiling for one run.
+  lower-layer machine ceiling for one run. Scalar flags may be supplied once;
+  repeat only `--budget`, `--concurrency`, and `--strip`.
 - `--timeout ms` is the whole-workflow deadline, distinct from a per-call
   `timeoutMs` inside the script. At most 2147483647 (the 32-bit timer bound);
   a larger value is a usage error.
 - `--caller-identity <identity>` records the opaque identity of the invoking
   session. It applies to both workflow and direct-agent runs and outranks
   `ENSEMBLE_CALLER_IDENTITY` when both are supplied.
-- `agent` runs one worker without a script. Supply its prompt as the final
-  argument, or omit the argument and pipe the prompt on stdin. `--schema`
+- `agent` runs one worker without a script. Supply its non-empty prompt as the final
+  argument, or omit the argument and pipe the prompt on stdin; put run-tuning
+  flags after `agent` and before that prompt. `--schema`
   accepts inline JSON or `@file` and prints the same validated value that
   `agent()` returns in a workflow. `--max-attempts` overrides the per-call
   retry bound (default 3), as `maxAttempts` does in a script. `--label` and
@@ -85,7 +87,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   run-wide to every `agent()` call; on the `agent` subcommand it applies to
   that worker. Enforcement and failure semantics are the `strip` option's
   (see the options table).
-- Direct-agent `--cwd` and `--isolation worktree` use the same placement
+- Direct-agent `--cwd` must name an existing directory, and `--isolation worktree` uses the same placement
   lifecycle as a scripted call. An isolated run reports its branch on stderr;
   a branch containing changed work is retained for recovery.
 - `workflows` lists saved workflows from `.claude/ensemble/workflows/`
@@ -195,21 +197,26 @@ parent link — recorded before the child runs. Each args entry names a
 writer. The root's `meta.task` remains the single grouping identity.
 
 Summary usage in the record (schema version 3) uses one declared vocabulary:
-`freshInputTokens`, `cachedInputTokens` (with `cacheReadTokens` /
-`cacheCreationTokens` splitting it where the engine separates the two),
-`outputTokens`, and `reasoningOutputTokens` — disjoint classes summing to
-`totalTokens`, each engine's native fields mapped under one inclusion rule
-(Codex reports cached within input and reasoning within output; the summary
-subtracts both out). `reasoningOutputTokens: null` means the engine does not
-separate reasoning — not zero. The manifest's `cost_rollup` keys spend per
-engine and per *served* model (the literal `unresolved` when no served model
-was ever learned, never the requested pin); its cost entries are
-`provider-reported` figures only, and a bucket with no provider figure reads
-`unavailable` with the reason (`no-provider-cost-reported`,
-`unlike-currencies`) rather than an amount-less estimate. Agent records
-record `resolved_effort` beside `resolved_model`, at record and attempt level.
-Each agent record carries its
-own `usage` — the summary, or `unavailable` with the reason
+`freshInputTokens`, `cachedInputTokens`, `outputTokens`, and
+`reasoningOutputTokens` — disjoint classes summing to `totalTokens`, each
+engine's native fields mapped under one inclusion rule (Codex reports cached
+within input and reasoning within output; the summary subtracts both out).
+`cachedInputTokens` remains the combined cache figure used for admission and
+total reconciliation; it is not a single pricing class when it includes both
+cache reads and writes. Where the engine separates those costs,
+`cacheReadTokens` and `cacheCreationTokens` partition it; either optional
+field being absent means that part is not separable, never zero.
+`reasoningOutputTokens: null` means the engine does not separate reasoning —
+not zero; Claude's transcript-derived events do not separate it, so their
+summary is `null` and carries the whole generation in `outputTokens`. The
+manifest's `cost_rollup` keys spend per engine and per *served* model (the
+literal `unresolved` when no served model was ever learned, never the
+requested pin); its cost entries are `provider-reported` figures only, and a
+bucket with no provider figure reads `unavailable` with the reason
+(`no-provider-cost-reported`, `unlike-currencies`) rather than an amount-less
+estimate. Agent records record `resolved_effort` beside `resolved_model`, at
+record and attempt level. Each agent record carries its own `usage` — the
+summary, or `unavailable` with the reason
 (`no-attempt-ran`, `engine-reported-no-usage`) so an agent with no usage data
 is never indistinguishable from a zero-spend one. The engine-native usage
 events remain per attempt beneath the summaries, untouched. Status
@@ -416,6 +423,10 @@ being ignored. The `timeoutMs` maximum is Node's largest faithfully
 representable timer delay; larger authored deadlines are rejected instead of
 being shortened to approximately one millisecond.
 
+Every `agent()` prompt must be a non-empty string. An explicit per-call `cwd`
+must resolve to an existing directory; either error rejects before a worker or
+run-record entry is created.
+
 Placement is resolved once per `agent()` call and retained across all retries
 and in-session corrections. With `cwd` and worktree isolation together, `cwd`
 selects the source repository and the worker starts in a linked worktree cut
@@ -567,7 +578,10 @@ rejection itself is unchanged, invoking no engine.
   notification is terminalised by the programmatic
   `retryPromiseSilenceTimeoutMs` bound after 15 minutes by default. A
   `thread/status/changed` notification with `status.type: "systemError"`
-  rejects the live turn immediately and records `systemError`.
+  rejects the live turn as a non-retryable terminal app-server failure. The
+  current Codex protocol supplies no diagnostic field on that notification,
+  so Ensemble reports that absence rather than inventing request detail;
+  retryability remains reserved for explicit transport-level signals.
 - **Budget**: each `agent()` call checks the engine's ceiling once, when it
   starts (leaves the concurrency queue); once spend reaches the ceiling, a
   call that has not yet started throws a budget-exhausted error. A call that

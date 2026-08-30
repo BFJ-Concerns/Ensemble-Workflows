@@ -335,10 +335,12 @@ The manifest is `manifest.json`. Its top-level fields are:
   `{ "unavailable": "no-provider-cost-reported" }`, or
   `{ "unavailable": "unlike-currencies" }` where the attempts under one served
   model reported spend in currencies that cannot be added. The reason is stated
-  rather than an amount-less entry a consumer cannot tell from zero. Each `tokens` object uses one declared vocabulary:
-  `freshInputTokens` (uncached input), `cachedInputTokens` (with optional
-  `cacheReadTokens` / `cacheCreationTokens` split where the engine separates
-  reads from writes), `outputTokens` (excluding reasoning where separable),
+  rather than an amount-less entry a consumer cannot tell from zero. Each
+  `tokens` object uses one declared vocabulary: `freshInputTokens` (uncached
+  input), `cachedInputTokens` (the combined cache figure for admission and
+  total reconciliation, not a pricing class when it combines reads and writes;
+  use the optional `cacheReadTokens` / `cacheCreationTokens` split where the
+  engine separates them), `outputTokens` (excluding reasoning where separable),
   `reasoningOutputTokens` (`null` when the engine does not separate reasoning,
   never zero — `null` means "not knowable", zero means "no reasoning spend"),
   and `unclassifiedTokens` (spend the engine's total covers but no declared

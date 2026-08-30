@@ -23,6 +23,27 @@ import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
 
+const AGENT_INVOCATION_OPTIONS = {
+  engine: { type: "string" },
+  model: { type: "string" },
+  effort: { type: "string" },
+  label: { type: "string" },
+  phase: { type: "string" },
+  "fallback-model": { type: "string" },
+  cwd: { type: "string" },
+  isolation: { type: "string" },
+  identity: { type: "boolean" },
+  schema: { type: "string" },
+  "max-attempts": { type: "string" },
+  strip: { type: "string", multiple: true },
+  task: { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  "caller-identity": { type: "string" }
+} as const;
+
 export interface EnsembleCliOptions {
   cwd?: string;
   stdin?: Readable;
@@ -561,6 +582,7 @@ async function parseInvocation(argv: string[], cwd: string, stdin: Readable): Pr
 
 async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv);
+  rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
   try {
     parsed = parseArgs({
@@ -609,30 +631,13 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
 }
 
 async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+  rejectMisplacedAgentTuningFlags(argv);
+  rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
     parsed = parseArgs({
       args: argv,
-      options: {
-        engine: { type: "string" },
-        model: { type: "string" },
-        effort: { type: "string" },
-        label: { type: "string" },
-        phase: { type: "string" },
-        "fallback-model": { type: "string" },
-        cwd: { type: "string" },
-        isolation: { type: "string" },
-        identity: { type: "boolean" },
-        schema: { type: "string" },
-        "max-attempts": { type: "string" },
-        strip: { type: "string", multiple: true },
-        task: { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        "caller-identity": { type: "string" }
-      },
+      options: AGENT_INVOCATION_OPTIONS,
       strict: true,
       allowPositionals: true
     });
@@ -645,7 +650,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
   }
   const prompt = parsed.positionals[0] ?? (await readPrompt(stdin));
-  if (prompt.length === 0) {
+  if (prompt.trim().length === 0) {
     throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
   }
 
@@ -745,6 +750,10 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
       };
     }
 
+    if (value === "agent" && tuningArgs.length > 0) {
+      throw new CliUsageError("Tuning flags must appear after ensemble agent, not before it");
+    }
+
     if (isKnownInlineOption(value)) {
       tuningArgs.push(value);
       continue;
@@ -776,6 +785,62 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
   }
 
   return { tuningArgs, scriptArg: undefined, scriptArgs: [] };
+}
+
+function rejectMisplacedAgentTuningFlags(argv: string[]): void {
+  let promptSeen = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === undefined) {
+      continue;
+    }
+    if (value === "--") {
+      return;
+    }
+    if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
+      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+    }
+    if (isKnownInlineOption(value) || value === "--identity") {
+      continue;
+    }
+    if (isKnownAgentOption(value) || isKnownOption(value)) {
+      index += 1;
+      continue;
+    }
+    if (!value.startsWith("-")) {
+      promptSeen = true;
+    }
+  }
+}
+
+function rejectDuplicateScalarFlags(argv: string[]): void {
+  const repeated = new Set<string>();
+  for (const value of argv) {
+    const flag = optionName(value);
+    if (flag === undefined || isRepeatableOption(flag)) {
+      continue;
+    }
+    if (repeated.has(flag)) {
+      throw new CliUsageError(`Option ${flag} may only be specified once`);
+    }
+    repeated.add(flag);
+  }
+}
+
+function optionName(value: string): string | undefined {
+  if (!value.startsWith("--") || value === "--") {
+    return undefined;
+  }
+  const equalsIndex = value.indexOf("=");
+  return equalsIndex === -1 ? value : value.slice(0, equalsIndex);
+}
+
+function isRepeatableOption(flag: string): boolean {
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+}
+
+function isKnownAgentOption(value: string): boolean {
+  return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
 }
 
 function isKnownOption(value: string): boolean {

@@ -9,7 +9,9 @@ import { EngineRegistry } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
+  AgentCwdRejectedError,
   AgentOptionRejectedError,
+  AgentPromptRejectedError,
   AppServerExitedError,
   AppServerOverloadedError,
   BudgetExceededError,
@@ -789,6 +791,7 @@ test("Codex agents pass only turn options that remain configurable", async () =>
 });
 
 test("a per-call cwd reaches the Codex thread and overrides the run-wide cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-runtime-per-call-cwd-"));
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({
     transport,
@@ -796,9 +799,12 @@ test("a per-call cwd reaches the Codex thread and overrides the run-wide cwd", a
     defaultMaxAttempts: 1
   });
 
-  await runtime.agent("read", { engine: "codex", cwd: "/per-call/cwd" });
-
-  assert.deepEqual(transport.openedThreads, [{ cwd: "/per-call/cwd" }]);
+  try {
+    await runtime.agent("read", { engine: "codex", cwd: directory });
+    assert.deepEqual(transport.openedThreads, [{ cwd: directory }]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("worktree isolation uses the isolated cwd and records the finished worktree", async () => {
@@ -1130,6 +1136,37 @@ test("removed and unrecognised options fail before a Codex thread opens", async 
   ) => Promise<unknown>;
   await assert.rejects(() => unsafeAgent("removed", { engine: "codex", sandbox: "read-only" }), /sandbox.*was removed/);
   await assert.rejects(() => unsafeAgent("typo", { engine: "codex", maxAttemps: 2 }), /Unrecognised.*maxAttemps/);
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("invalid prompts and missing per-call cwd reject before a Codex thread opens", async () => {
+  for (const prompt of [123, "", " \t\n "]) {
+    const transport = new FakeTransport([turn("unused")]);
+    const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+    const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+      prompt: unknown,
+      options: Record<string, unknown>
+    ) => Promise<unknown>;
+
+    await assert.rejects(
+      () => unsafeAgent(prompt, { engine: "codex" }),
+      (error: unknown) => {
+        assert.ok(error instanceof AgentPromptRejectedError);
+        assert.match(error.message, prompt === 123 ? /must be a string, got number/ : /must be a non-empty string/);
+        return true;
+      }
+    );
+    assert.equal(transport.openedThreads.length, 0);
+    assert.equal(transport.turns.length, 0);
+  }
+
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+  await assert.rejects(
+    () => runtime.agent("never starts", { engine: "codex", cwd: "this-directory-does-not-exist" }),
+    AgentCwdRejectedError
+  );
   assert.equal(transport.openedThreads.length, 0);
   assert.equal(transport.turns.length, 0);
 });

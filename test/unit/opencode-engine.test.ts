@@ -421,6 +421,7 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
 });
 
 test("a per-call cwd reaches opencode run and overrides the adapter cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-per-call-cwd-"));
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ cwd: "/adapter/cwd", runner });
   const runtime = new EnsembleRuntime({
@@ -432,11 +433,12 @@ test("a per-call cwd reaches opencode run and overrides the adapter cwd", async 
     await runtime.agent("read", {
       engine: "opencode",
       model: "glm-5.2",
-      cwd: "/per-call/cwd"
+      cwd: directory
     });
-    assert.equal(runner.runs[0]?.cwd, "/per-call/cwd");
+    assert.equal(runner.runs[0]?.cwd, directory);
   } finally {
     await runtime.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

@@ -848,6 +848,33 @@ test("built CLI still collapses ordinary parallel and pipeline errors to null", 
   }
 });
 
+test("built CLI logs a parallel thunk error at the author's exact source position", async () => {
+  const fixture = await createProcessFixture("parallel-author-frame");
+
+  try {
+    await writeFile(
+      fixture.script,
+      [
+        'export const meta = { name: "parallel-author-frame" };',
+        "",
+        "await parallel([",
+        '  () => { throw new Error("PARALLEL_AUTHOR_FRAME"); }',
+        "]);",
+        "return null;",
+        ""
+      ].join("\n")
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stderr.includes(`${fixture.script}:4:`), result.stderr);
+    assert.doesNotMatch(result.stderr, /ensemble-workflow-body/, result.stderr);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI propagates a computed removed option from pipeline", async () => {
   const fixture = await createProcessFixture("pipeline-option-rejection", "sandbox");
 
@@ -2111,7 +2138,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
         };
         return await agent("must not wait on a dead thread", {
           engine: "codex",
-          maxAttempts: 1
+          maxAttempts: 2
         });
       `
     );
@@ -2128,8 +2155,8 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
     );
 
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /AppServerRequestError/);
-    assert.match(result.stderr, /systemError/);
+    assert.match(result.stderr, /AppServerSystemError/);
+    assert.match(result.stderr, /systemError without a diagnostic/);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
     assert.deepEqual(
@@ -2139,8 +2166,10 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
 
     const agent = await loadOnlyAgentRecord(recordStore);
     assert.equal(agent.attempts.length, 1);
-    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
-    assert.match(agent.attempts[0]?.failure?.message ?? "", /systemError/);
+    for (const attempt of agent.attempts) {
+      assert.equal(attempt.failure?.kind, "AppServerSystemError");
+      assert.match(attempt.failure?.message ?? "", /systemError without a diagnostic/);
+    }
   } finally {
     await fixture.cleanup();
   }

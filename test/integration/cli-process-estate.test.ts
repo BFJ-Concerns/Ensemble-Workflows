@@ -17,7 +17,6 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
-const transcriptContractReaderPath = path.resolve("test/consumers/read-agent-transcript-contract.mjs");
 // This only catches a wedged fixture process. It is not a product deadline and
 // must leave room for the gate's many process estates to contend for the host.
 const estateProcessHangGuardMs = 30_000;
@@ -553,16 +552,8 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
     // A separate consumer reads the finished built-bundle archive from its
     // resolved data home. This agent never began an attempt, so it verifies
     // the stable empty transcript array and its explicit absence reason.
-    const transcriptRead = await runNode(
-      [transcriptContractReaderPath, fixture.dataHome, "abandoned-sibling-15"],
-      {},
-      estateProcessHangGuardMs
-    );
-    assert.equal(transcriptRead.code, 0, transcriptRead.stderr);
-    assert.deepEqual(JSON.parse(transcriptRead.stdout), {
-      transcripts: [],
-      transcriptsUnavailable: "no-attempt-ran"
-    });
+    assert.deepEqual(abandoned.transcripts, []);
+    assert.equal(abandoned.transcripts_unavailable, "no-attempt-ran");
   } finally {
     await fixture.cleanup();
   }
@@ -2325,10 +2316,22 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
   };
 }
 
-async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{ label: string | null; status: string; attempts: unknown[] }>> {
+async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Array<{
+  label: string | null;
+  status: string;
+  attempts: unknown[];
+  transcripts: unknown[];
+  transcripts_unavailable: string | null;
+}>> {
   const result = await runNode([path.resolve("test/consumers/read-archived-agents.mjs"), dataHome]);
   assert.equal(result.code, 0, result.stderr);
-  return JSON.parse(result.stdout) as Array<{ label: string | null; status: string; attempts: unknown[] }>;
+  return JSON.parse(result.stdout) as Array<{
+    label: string | null;
+    status: string;
+    attempts: unknown[];
+    transcripts: unknown[];
+    transcripts_unavailable: string | null;
+  }>;
 }
 
 function isolatedEnvironment(directory: string): NodeJS.ProcessEnv {

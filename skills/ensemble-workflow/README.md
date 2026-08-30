@@ -302,6 +302,8 @@ message }` or `null`), `diagnostics`, `app_server_diagnostic`,
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
 `source`, and engine-specific ids (`session_id`, `thread_id`).
+`transcripts_unavailable` is `null` when that array has entries; otherwise it
+names why it is empty.
 
 ## Script shape
 
@@ -553,9 +555,11 @@ failure, and `termination_cause` names what settled a worker at that status
 attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record whose engine left no transcript
-carries `transcripts` as `{ "unavailable": <reason> }` — `no-attempt-ran`,
-`worker-interrupted`, `worker-timed-out`, or `engine-produced-no-transcript` —
-rather than an empty list a reader would take for engine silence.
+keeps `transcripts` as `[]` and carries the reason in
+`transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
+`worker-timed-out`, or `engine-produced-no-transcript` — so consumers can
+distinguish an empty archive from engine silence without changing the array's
+shape.
 Successful schema agents record `parse_route` as `direct`,
 `object-fallback`, or `array-fallback`; it remains `null` until a valid value is
 selected.

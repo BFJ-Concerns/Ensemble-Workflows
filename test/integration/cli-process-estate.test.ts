@@ -17,6 +17,7 @@ import type { EngineName } from "../../src/types.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
+const transcriptContractReaderPath = path.resolve("test/consumers/read-agent-transcript-contract.mjs");
 // This only catches a wedged fixture process. It is not a product deadline and
 // must leave room for the gate's many process estates to contend for the host.
 const estateProcessHangGuardMs = 30_000;
@@ -549,6 +550,19 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
     // exact sibling remained in-progress with no attempts after sealing.
     assert.equal(abandoned.status, "abandoned", JSON.stringify(agents.map((agent) => [agent.label, agent.status])));
     assert.deepEqual(abandoned.attempts, []);
+    // A separate consumer reads the finished built-bundle archive from its
+    // resolved data home. This agent never began an attempt, so it verifies
+    // the stable empty transcript array and its explicit absence reason.
+    const transcriptRead = await runNode(
+      [transcriptContractReaderPath, fixture.dataHome, "abandoned-sibling-15"],
+      {},
+      estateProcessHangGuardMs
+    );
+    assert.equal(transcriptRead.code, 0, transcriptRead.stderr);
+    assert.deepEqual(JSON.parse(transcriptRead.stdout), {
+      transcripts: [],
+      transcriptsUnavailable: "no-attempt-ran"
+    });
   } finally {
     await fixture.cleanup();
   }

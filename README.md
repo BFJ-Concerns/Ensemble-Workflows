@@ -17,8 +17,9 @@ bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
 `workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel agents on any engine — driven by the
-`ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
-non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
+`ensemble <script.js> [args]` CLI (result as JSON on stdout — structured
+objects as JSON objects, plain-text answers as JSON strings with enclosing
+quotes — logs on stderr, non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
 `'claude'`, or `'opencode'`): there is no default and no engine is privileged.
 opencode also requires a curated `model`; v1 ships `model: "glm-5.2"`, resolved
 to `openrouter/z-ai/glm-5.2` with `vision:false` and pay-as-you-go billing.
@@ -218,7 +219,7 @@ Example:
 
 ## Durable run record
 
-Every run also writes a permanent archive of what happened. This is separate
+By default, a run writes a permanent archive of what happened. This is separate
 from `.claude/ensemble.local.json`: the status file is live-only and removed at
 the end; the run record is archival and kept for audit and for tools that
 evaluate runs after the fact.
@@ -271,7 +272,7 @@ Every JSON artefact carries:
   declared summary vocabulary keyed per served model; `strip` and `owner`
   arrived later as additive version-3 fields. Version 2 added worktree
   provenance and cross-engine token derivations over version 1.
-- `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
+- `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
@@ -279,6 +280,7 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
+- `caller_identity`: opaque identity of the invoking session, or `null`.
 - `namespace`: namespace strategy, id, hash, and local material.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
   `"interrupted"`, or `"abandoned"` (reaper-written only, see above).
@@ -325,9 +327,13 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `schema_version`: `3`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
-- `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
-- `worktree`: isolated worktree `branch`, `base_commit`, and `tip_commit`,
-  otherwise `null`.
+- `engine`, `model`, `effort`, `fallback_model`, and `resolved_model` (`null`
+  when unknown).
+- `prompt`: the agent's prompt text.
+- `options`: `{ timeout_ms, max_attempts }`.
+- `resolved_cwd`, `isolation` (`null` when unused).
+- `worktree`: isolated worktree `branch`, `base_commit`, `tip_commit`,
+  `changed`, and `removed` — or `null`.
 - `label`, `phase`, and `status`. Agent status is `"in-progress"`,
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
   `"abandoned"` means the run ended while the dispatch record was still being
@@ -336,23 +342,32 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   status when the runtime decided it — a run that ended under the worker, or a
   turn timeout — and `null` when the attempts already name the cause.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
+- `strip`: requested capability names and resolved enforcement routes.
+- `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
+- `decode_failure`: `{ byte_length, line_prefix }` or `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.
 - `validated_output`: validated object/text result, or `null` on failure.
-- `attempts`: per-attempt status, structured failure, raw/validated output,
-  timing, and token usage events. Where the run's own settlement ended the
-  turn, the attempt's `failure` names that settlement and `observed_failure`
-  keeps the transport symptom the turn saw (a closed app-server, an aborted
-  poll); `observed_failure` is `null` when the engine's own failure is the
-  cause.
-- `transcripts`: archived transcript files for the attempts.
+- `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
+  (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
+- `queued_ms`, `execution_ms`.
+- `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
+  `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
+  `resolved_model`, `failure` (`{ kind, message }` or `null`),
+  `observed_failure`, `diagnostics`, `app_server_diagnostic`,
+  `token_usage_events`, `worker_exit`. Where the run's own settlement ended
+  the turn, the attempt's `failure` names that settlement and
+  `observed_failure` keeps the transport symptom the turn saw (a closed
+  app-server, an aborted poll); `observed_failure` is `null` when the
+  engine's own failure is the cause.
+- `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
+  `session_id`, `thread_id`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every
 scoped app-server notification through completion. Claude transcripts are copied
 from the background session JSONL before the session is removed. opencode
 transcripts preserve the `opencode run --format json` event stream plus the
-session export when available. The prompt lives in the transcript, not in a
-duplicated field.
+session export when available.
 
 The record contains only run and audit data. It does not score outputs, infer
 verifier relationships, or record evaluation concepts; those belong to the

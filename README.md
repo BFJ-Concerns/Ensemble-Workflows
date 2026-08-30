@@ -436,7 +436,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   app-server, an aborted poll); `observed_failure` is `null` when the
   engine's own failure is the cause.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
-  `session_id`, `thread_id`.
+  `session_id`, `thread_id`; empty when none were archived.
+- `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
+  the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
+  `"worker-timed-out"`, or `"engine-produced-no-transcript"`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every

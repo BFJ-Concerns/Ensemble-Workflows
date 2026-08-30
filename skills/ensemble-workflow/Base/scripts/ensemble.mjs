@@ -17898,9 +17898,10 @@ var ClaudeEngineAdapter = class {
    * Claude strips both named minimum capabilities mechanically: permission
    * deny rules ride the per-dispatch settings file the control plane already
    * writes (the one surface measured to reach the daemon-served session).
-   * The 2026-08-30 Claude Code 2.1.251 worker measurement found native
-   * `Task`, `Agent`, `ListAgents`, and `SendMessage`, with no MCP-prefixed
-   * discovery or messaging spelling. Deny rules outrank every allow layer and
+   * The 2026-08-28 Claude Code 2.1.250 worker measurement exposed the tool
+   * surface with `mcp__`-prefixed names and observed bare `Task`, `Agent`,
+   * `ListAgents`, and `SendMessage` deny rules reaching those collaboration
+   * tools. Deny rules outrank every allow layer and
    * permission mode, `--dangerously-skip-permissions` included — a live
    * test asserts that at the worker itself.
    */
@@ -17908,7 +17909,7 @@ var ClaudeEngineAdapter = class {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
     agents: {
       route: "config",
-      detail: "measured 2026-08-30 on Claude Code 2.1.251: per-dispatch permissions.deny covers Task, Agent, ListAgents, and SendMessage; no MCP-prefixed discovery or messaging spelling was exposed"
+      detail: "measured 2026-08-28 on Claude Code 2.1.250: the worker tool surface uses mcp__-prefixed names; bare Task, Agent, ListAgents, and SendMessage permissions.deny rules were observed to reach those collaboration tools"
     }
   };
   #scheduler;

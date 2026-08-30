@@ -1,11 +1,11 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
-import { ClaudeEngineInvocation } from "./claude-engine.js";
+import { ClaudeEngineInvocation, assertClaudeEffortSupported } from "./claude-engine.js";
 import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import { EngineShutdownError, OpenCodeModelRequiredError } from "./errors.js";
+import { EngineShutdownError, InvalidAgentOptionValueError, OpenCodeModelRequiredError } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -421,6 +421,10 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
+    // The engine's own effort domain, judged before any worker spawns: the
+    // CLI silently runs an unknown value at its default, which would let an
+    // author believe an unenforced level was in force.
+    assertClaudeEffortSupported(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -438,6 +442,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
+    assertClaudeEffortSupported(options.effort);
     // A session is the invocation generalised across turns: same dispatch,
     // valve, and collection machinery, registered for cancellation like any
     // one-shot invocation so adapter close() tears held workers down too.
@@ -544,6 +549,18 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
     const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
+    // The registry owns the variant domain as it owns the model list:
+    // `opencode run` forwards an unknown variant silently, so an
+    // out-of-domain effort must fail here, pre-spawn, or not at all.
+    if (options.effort !== undefined && !model.variants.includes(options.effort)) {
+      throw new InvalidAgentOptionValueError(
+        "effort",
+        options.effort,
+        model.variants.length > 0
+          ? `one of ${model.variants.join(" | ")} (the variants the registry declares for ${model.key})`
+          : `absent — the registry entry for ${model.key} declares no served variants`
+      );
+    }
     const invocation = new OpenCodeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,

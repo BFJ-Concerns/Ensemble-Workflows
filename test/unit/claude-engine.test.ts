@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { EmptyAgentOutputError, EngineShutdownError, partialWorkerTextOf } from "../../src/errors.js";
+import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueError, partialWorkerTextOf } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -230,6 +230,35 @@ async function withControlPlane(
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
+  await withControlPlane([{ assistant: { text: "ran at medium" } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+
+    // The CLI silently runs an unknown effort at its default (measured
+    // 2026-08-30), so the adapter's own domain judgement is the only loud
+    // boundary an author gets.
+    assert.throws(
+      () => adapter.createInvocation("work", { effort: "definitely-invalid" }),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidAgentOptionValueError);
+        assert.match(error.message, /low \| medium \| high/);
+        return true;
+      }
+    );
+    assert.throws(
+      () => adapter.createSession({ effort: "definitely-invalid" }),
+      InvalidAgentOptionValueError
+    );
+    assert.equal(controlPlane.dispatchCount, 0);
+
+    // The discriminating positive arm: a listed level still dispatches.
+    const invocation = adapter.createInvocation("work", { effort: "medium" });
+    assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "ran at medium");
+    assert.equal(controlPlane.dispatched[0]?.effort, "medium");
+    await adapter.close();
+  });
+});
 
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {
   await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "partial from Claude", stop: "tool_use" } }], async (controlPlane) => {

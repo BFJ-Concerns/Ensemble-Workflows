@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
+  InvalidAgentOptionValueError,
   ClaudeCollectionError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
@@ -100,6 +101,29 @@ export interface ClaudeEngineInvocationOptions {
  * default; see the control plane's settings-file spread order).
  */
 export const CLAUDE_MULTITURN_CACHE_TTL = "1h";
+
+/**
+ * The effort levels the Claude engine accepts (honoured or loudly
+ * rejected). This is the engine adapter speaking for its own CLI's domain
+ * — measured against Claude Code 2.1.x, which silently accepts an unknown
+ * `--effort` value and runs at its default (witnessed 2026-08-30:
+ * `--effort definitely-invalid` reached a healthy worker at exit 0), so a
+ * pass-through here would let an author believe an unenforced policy was
+ * enforced. The live tests re-check this measurement per release; if
+ * the CLI grows a level, the failure mode is a *loud* rejection of a valid
+ * value — correct the list — never a silent drop.
+ */
+export const CLAUDE_EFFORT_DOMAIN: readonly string[] = ["low", "medium", "high"];
+
+export function assertClaudeEffortSupported(effort: string | undefined): void {
+  if (effort !== undefined && !CLAUDE_EFFORT_DOMAIN.includes(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CLAUDE_EFFORT_DOMAIN.join(" | ")} (the Claude engine's accepted levels)`
+    );
+  }
+}
 
 let dispatchCounter = 0;
 

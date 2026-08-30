@@ -15,6 +15,7 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   FallbackModelUnsupportedError,
+  InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
 } from "../../src/errors.js";
@@ -355,6 +356,53 @@ test("opencode requires a registered curated model before spawning", () => {
   assert.throws(
     () => adapter.createInvocation("unknown", { timeoutMs: 1_000, model: "glm-later" }),
     OpenCodeModelNotRegisteredError
+  );
+  assert.equal(runner.runs.length, 0);
+});
+
+test("opencode rejects an effort outside the registry entry's declared variants before spawning", () => {
+  const runner = new FakeOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ runner });
+
+  // Every curated entry currently declares no served variants, so any
+  // effort request is out of domain — the pre-fix tree forwarded it to the
+  // provider silently and the worker ran at exit 0.
+  assert.throws(
+    () => adapter.createInvocation("variant", { model: "glm-5.2", effort: "definitely-invalid" }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionValueError);
+      assert.match(error.message, /declares no served variants/);
+      return true;
+    }
+  );
+  assert.equal(runner.runs.length, 0);
+
+  // An entry that does declare variants accepts exactly those.
+  const registry = {
+    get: (model: string) =>
+      model === "variant-model"
+        ? {
+            key: "variant-model",
+            providerModel: "prov/variant-model",
+            displayName: "Variant Model",
+            provider: "prov",
+            family: "variant",
+            capabilities: { vision: false },
+            billing: { mode: "pay-as-you-go" as const },
+            variants: ["fast", "thorough"]
+          }
+        : undefined,
+    names: () => ["variant-model"]
+  };
+  const variantAdapter = new OpenCodeEngineAdapter({ runner, modelRegistry: registry });
+  assert.doesNotThrow(() => variantAdapter.createInvocation("ok", { model: "variant-model", effort: "thorough" }));
+  assert.throws(
+    () => variantAdapter.createInvocation("bad", { model: "variant-model", effort: "leisurely" }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionValueError);
+      assert.match(error.message, /fast \| thorough/);
+      return true;
+    }
   );
   assert.equal(runner.runs.length, 0);
 });

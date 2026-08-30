@@ -30,10 +30,15 @@ import type { RuntimeEvent, TurnResult } from "./types.js";
  * The Claude rendering of each strippable capability: the permission deny
  * rules that remove it from the worker's tool surface. `agents` denies the
  * measured native spawn, discovery, and messaging tools: `Task`, `Agent`,
- * `ListAgents`, and `SendMessage`. The 2026-08-28 Claude Code 2.1.250 worker
- * captures expose the tool surface with `mcp__`-prefixed names and show these
- * bare deny rules reaching the named collaboration tools. Deny rules outrank
- * every allow layer and permission mode,
+ * `ListAgents`, and `SendMessage`. Worker tool surface measured 2026-08-28 on
+ * Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair
+ * showed the bare `Skill` deny working (`Skill` absent under a skills strip,
+ * present in the baseline). The agents deny set was witnessed 2026-08-30 on
+ * Claude Code 2.1.251: `Task`, `Agent`, `ListAgents`, and `SendMessage` were
+ * absent at the stripped worker, while the unstripped control demonstrated
+ * discovery and messaging; the witness cannot isolate `Task`/`Agent`
+ * from the machine-wide `Agent` deny. Deny rules outrank every allow
+ * layer and permission mode,
  * so the operator's own settings cannot quietly re-enable a stripped tool.
  */
 const CAPABILITY_DENY_RULES: Record<StrippableCapability, readonly string[]> = {

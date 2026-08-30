@@ -271,10 +271,14 @@ export class ClaudeEngineAdapter implements EngineAdapter {
    * Claude strips both named minimum capabilities mechanically: permission
    * deny rules ride the per-dispatch settings file the control plane already
    * writes (the one surface measured to reach the daemon-served session).
-   * The 2026-08-28 Claude Code 2.1.250 worker measurement exposed the tool
-   * surface with `mcp__`-prefixed names and observed bare `Task`, `Agent`,
-   * `ListAgents`, and `SendMessage` deny rules reaching those collaboration
-   * tools. Deny rules outrank every allow layer and
+   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
+   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
+   * deny working (`Skill` absent under a skills strip, present in the
+   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
+   * 2.1.251: `Task`, `Agent`, `ListAgents`, and `SendMessage` were absent at
+   * the stripped worker, while the unstripped control demonstrated discovery
+   * and messaging; the witness cannot isolate `Task`/`Agent` from the
+   * machine-wide `Agent` deny. Deny rules outrank every allow layer and
    * permission mode, `--dangerously-skip-permissions` included — a live
    * test asserts that at the worker itself.
    */
@@ -283,7 +287,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     agents: {
       route: "config",
       detail:
-        "measured 2026-08-28 on Claude Code 2.1.250: the worker tool surface uses mcp__-prefixed names; bare Task, Agent, ListAgents, and SendMessage permissions.deny rules were observed to reach those collaboration tools"
+        "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: Task, Agent, ListAgents, and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging; the witness cannot isolate Task/Agent from the machine-wide Agent deny"
     }
   };
 

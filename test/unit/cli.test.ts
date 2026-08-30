@@ -888,6 +888,47 @@ test("ensemble agent reports option mistakes as stack-free usage errors", async 
   assert.doesNotMatch(stderr.text(), /\n\s+at /);
 });
 
+test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and blank prompts before runtime creation", async () => {
+  const cases = [
+    {
+      argv: ["--timeout", "1000", "agent", "--engine=codex", "prompt"],
+      diagnostic: "Tuning flags must appear after ensemble agent, not before it"
+    },
+    {
+      argv: ["agent", "--engine=codex", "prompt", "--timeout", "1000"],
+      diagnostic: "Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt"
+    },
+    {
+      argv: ["agent", "--engine=codex", "--agent-ceiling=1", "--agent-ceiling=null", "prompt"],
+      diagnostic: "Option --agent-ceiling may only be specified once"
+    },
+    {
+      argv: ["agent", "--engine=codex", " \t "],
+      diagnostic: "ensemble agent requires a prompt argument or a non-empty prompt on stdin"
+    }
+  ];
+
+  for (const entry of cases) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    let runtimeCreations = 0;
+    const exitCode = await runEnsembleCli(entry.argv, {
+      stdin: Readable.from([]),
+      stdout,
+      stderr,
+      createRuntime: async () => {
+        runtimeCreations += 1;
+        return fakeRuntime();
+      }
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(stderr.text(), `${entry.diagnostic}\n`);
+    assert.equal(runtimeCreations, 0);
+  }
+});
+
 test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-worktree-"));
   await execFileAsync("git", ["init"], { cwd: directory });

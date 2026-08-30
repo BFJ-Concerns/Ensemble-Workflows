@@ -57,8 +57,9 @@ export interface UsageSummary {
  *   disjoint.
  * - **claude** reports `inputTokens` *excluding* cache,
  *   `cachedInputTokens` as reads + creation with the creation share carried
- *   separately, and a reported reasoning value (currently zero). That zero
- *   is evidence, not an absent split, so it survives in the summary
+ *   separately, but no reasoning split. The transcript adapter supplies a
+ *   zero to satisfy the shared native-event shape, so the summary publishes
+ *   reasoning as `null` and keeps the whole generation in `outputTokens`
  *   (measured: `usageSince` in `src/claude-transcript.ts` builds exactly
  *   this shape).
  * - **opencode** reports input, output, reasoning, and cache all disjointly
@@ -73,7 +74,7 @@ const ENGINE_INCLUSION_RULES: Record<
   { cachedWithinInput: boolean; reasoningWithinOutput: boolean; reasoningSeparable: boolean }
 > = {
   codex: { cachedWithinInput: true, reasoningWithinOutput: true, reasoningSeparable: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true, reasoningSeparable: false },
   opencode: { cachedWithinInput: false, reasoningWithinOutput: false, reasoningSeparable: true }
 };
 

@@ -302,14 +302,14 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     unclassifiedTokens: 0,
     totalTokens: 25
   });
-  // Claude's native event reports a reasoning zero. That is distinct from an
-  // unavailable split, so the cold-read summary retains it. 12 + 8 + 5 + 0
-  // = 25.
+  // Claude separates neither reasoning nor (here) the cache split: reasoning
+  // is null — not knowable, never zero — and output carries the whole
+  // generation. 12 + 8 + 5 = 25.
   assert.deepEqual(claude, {
     freshInputTokens: 12,
     cachedInputTokens: 8,
     outputTokens: 5,
-    reasoningOutputTokens: 0,
+    reasoningOutputTokens: null,
     unclassifiedTokens: 0,
     totalTokens: 25
   });

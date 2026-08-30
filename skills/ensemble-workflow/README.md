@@ -171,7 +171,8 @@ cache reads and writes. Where the engine separates those costs,
 `cacheReadTokens` and `cacheCreationTokens` partition it; either optional
 field being absent means that part is not separable, never zero.
 `reasoningOutputTokens: null` means the engine does not separate reasoning —
-not zero; a reported zero, including Claude's, remains `0`. The manifest's
+not zero; Claude's transcript-derived events do not separate it, so their
+summary is `null` and carries the whole generation in `outputTokens`. The manifest's
 `cost_rollup` keys spend per engine and per *served* model (the literal
 `unresolved` when no served model was ever learned, never the requested pin),
 and each agent record carries its own `usage` — the summary, or `unavailable` with the reason

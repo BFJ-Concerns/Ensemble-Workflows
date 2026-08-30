@@ -27,7 +27,7 @@ test("codex spend maps by subtraction: cached out of input, reasoning out of out
   });
 });
 
-test("claude preserves its reported reasoning zero and splits cache for pricing where reported", () => {
+test("claude spend keeps reasoning unknowable (null) and splits cache where reported", () => {
   const summary = summariseUsage("claude", [
     event({
       cachedInputTokens: 10,
@@ -44,7 +44,7 @@ test("claude preserves its reported reasoning zero and splits cache for pricing 
     cacheReadTokens: 7,
     cacheCreationTokens: 3,
     outputTokens: 40,
-    reasoningOutputTokens: 0,
+    reasoningOutputTokens: null,
     unclassifiedTokens: 0,
     totalTokens: 270
   });
@@ -113,7 +113,7 @@ test("merging drops a split that not every contributor carries", () => {
     freshInputTokens: 2,
     cachedInputTokens: 15,
     outputTokens: 2,
-    reasoningOutputTokens: 0,
+    reasoningOutputTokens: null,
     unclassifiedTokens: 0,
     totalTokens: 19
   });
@@ -123,18 +123,11 @@ test("merging folds separable reasoning into output when a contributor cannot se
   const codex = summariseUsage("codex", [
     event({ cachedInputTokens: 0, inputTokens: 4, outputTokens: 5, reasoningOutputTokens: 2, totalTokens: 9 })
   ]);
-  assert.ok(codex !== null);
-  // `null` remains the public representation for a genuinely unseparable
-  // reasoning class, even though Claude's native events now report zero.
-  const combinedReasoning = {
-    freshInputTokens: 4,
-    cachedInputTokens: 0,
-    outputTokens: 5,
-    reasoningOutputTokens: null,
-    unclassifiedTokens: 0,
-    totalTokens: 9
-  };
-  const merged = addUsageSummary(codex, combinedReasoning);
+  const claude = summariseUsage("claude", [
+    event({ cachedInputTokens: 0, inputTokens: 4, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 9 })
+  ]);
+  assert.ok(codex !== null && claude !== null);
+  const merged = addUsageSummary(codex, claude);
   assert.equal(merged.reasoningOutputTokens, null);
   assert.equal(merged.outputTokens, 10);
   assert.equal(merged.totalTokens, 18);

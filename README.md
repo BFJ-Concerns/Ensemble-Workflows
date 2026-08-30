@@ -61,6 +61,15 @@ any worker spawns.
   minutes on Codex; `stalenessMark: false` disables it) and never blocks a
   send. Each turn is its own agent record carrying `session: { id, turn }`,
   and every held session is closed when the run ends.
+- `hold({ content, verdicts, timeoutMs? })` raises a decision hold: the
+  request is published to the shared `$XDG_DATA_HOME/ensemble/holds/`
+  directory and the call resolves `{ verdict, note }` when any process — the
+  launcher or not — writes the nonce-correlated decision file the record
+  names. Stale nonces, unlisted verdicts, and malformed answers are rejected
+  and the hold keeps waiting; an optional timeout rejects with
+  `HoldTimeoutError`. Open holds appear in the live status snapshot and the
+  cross-run `ensemble holds [--json]` listing, and every raise, answer,
+  rejection, and timeout lands in the archive manifest's `hold_events`.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed

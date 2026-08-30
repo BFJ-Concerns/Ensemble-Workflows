@@ -11,6 +11,7 @@ import type {
   WorkerSessionOptions
 } from "./types.js";
 import type { WorkerSession } from "./runtime.js";
+import type { HoldDecision, RaiseHoldOptions } from "./holds.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
@@ -34,6 +35,12 @@ export interface WorkflowRuntime {
    * valid; the `session` hook fails loud, pre-spawn, when it is absent.
    */
   createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession;
+  /**
+   * Runtime holds; see EnsembleRuntime.raiseHold. Optional on the
+   * same terms as createWorkerSession; the `hold` hook fails loud when
+   * absent.
+   */
+  raiseHold?: (options: RaiseHoldOptions) => Promise<HoldDecision>;
   notePhase: (title: string) => void;
 }
 
@@ -56,6 +63,12 @@ export interface WorkflowHooks {
    * and fallbackModel where the call leaves them unset.
    */
   session: (options: WorkerSessionOptions) => WorkerSession;
+  /**
+   * Raise a hold and await its decision: content and accepted
+   * verdicts in, the decider's verdict (and note) back, from a decision
+   * file any process can write.
+   */
+  hold: (options: RaiseHoldOptions) => Promise<HoldDecision>;
   workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
   parallel: <T>(thunks: Array<() => T | Promise<T>>) => Promise<Array<Awaited<T> | null>>;
   pipeline: <Item>(
@@ -106,6 +119,13 @@ export function createWorkflowHooks(options: {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
+    },
+    hold: (holdOptions) => {
+      const raiseHold = options.runtime.raiseHold;
+      if (raiseHold === undefined) {
+        throw new PreSpawnAuthorError("this runtime does not support holds");
+      }
+      return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
     parallel: (thunks) => parallel(thunks, writeLog, options.presentError),

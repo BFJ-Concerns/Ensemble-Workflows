@@ -344,6 +344,8 @@ orchestrator remains the real backstop.
 - `agent(prompt, options)` — dispatch one worker; see below.
 - `session(options)` — create a multi-turn worker session; see the section
   below.
+- `hold(options)` — raise a decision hold and await its answer; see the
+  section below.
 - `workflow(nameOrRef, args?)` — run a saved workflow by name, or
   `{ scriptPath }` relative to the run cwd. One level only: a child workflow
   calling `workflow()` throws.
@@ -418,6 +420,38 @@ engine is held at its one-shot surface).
 - **Claude mechanics worth knowing:** follow-up turns ride the tmux reply
   valve into the held session; without tmux, a session's follow-up or
   correction fails loudly rather than silently substituting a fresh worker.
+
+## Holds
+
+`await hold({ content, verdicts, timeoutMs? })` publishes a decision request
+and resolves `{ verdict, note }` once a decider answers — the runtime's
+uniform rendering of the sentinel-file-and-poll convention hold-bearing
+pipelines used to hand-roll per script.
+
+- **Raising:** `content` is what the decider reads (a non-empty string);
+  `verdicts` the non-empty set of accepted answers. The hold is published
+  as a JSON file in the shared cross-run directory
+  (`$XDG_DATA_HOME/ensemble/holds/`), carrying everything a decider needs:
+  the content, the verdicts, a fresh nonce, and the decision path.
+- **Answering:** any process — the launcher or not, alive at raise time or
+  not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
+  accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
+  A stale nonce, an unlisted verdict, or a malformed file is rejected (the
+  bad file is consumed, an event says so, the hold keeps waiting) — an
+  invalid answer never reaches the script as a decision.
+- **Enumerating:** `ensemble holds` lists every open hold on the machine —
+  id, liveness of the raising process, verdicts, decision path, content —
+  and `ensemble holds --json` emits the full records; open holds also
+  appear in the run's live status snapshot while it waits.
+- **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
+  rejects the awaiting `hold()` with `HoldTimeoutError` (one clean line at
+  the CLI; catch it to treat expiry as an outcome).
+- **Observability:** raise, answer, rejected answer, and timeout each emit
+  a runtime event and land in the archive manifest's `hold_events` list,
+  so a consumer holding only the archive can reconstruct what the run
+  waited on. Settled and abandoned holds remove their files; the listing
+  shows only what is genuinely open (an `orphaned` marker flags holds
+  whose raising process has died).
 
 ## `agent()` options and per-engine support
 

@@ -83,9 +83,9 @@ export interface WorkerSessionOptions {
 
 /**
  * The one per-turn variation a session permits: a restate turn's shape
- * differs from a build turn's, so each
- * `send()` takes its own optional schema under the same validated-return and
- * bounded-retry contract as a one-shot call.
+ * differs from a build turn's, so each `send()` takes its own optional
+ * schema under the same validated-return and bounded-retry contract as a
+ * one-shot call.
  */
 export interface SessionTurnOptions {
   schema?: JsonSchema;
@@ -144,8 +144,8 @@ export interface RuntimeOptions {
    * deterministic cliff at the worker's configured prompt-cache TTL (the
    * 1-hour TTL its dispatch injects), past which resuming pays a full
    * uncached re-read. A library-level option like `requestTimeoutMs` —
-   * deliberately not a CLI flag or ambient setting — so expiry journeys are
-   * reachable from the built artefact. Defaults to 1 hour.
+   * deliberately not a CLI flag or ambient setting — so library callers
+   * and tests can reach expiry. Defaults to 1 hour.
    */
   claudeSessionStaleAfterMs?: number;
   /**
@@ -172,6 +172,14 @@ export interface RuntimeOptions {
   defaultMaxAttempts?: number;
   clientName?: string;
   clientVersion?: string;
+  /**
+   * Directory holds are published to and answered in. Shared across
+   * runs so open holds are enumerable machine-wide; defaults to
+   * `<XDG_DATA_HOME>/ensemble/holds`.
+   */
+  holdsDir?: string;
+  /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
+  holdPollIntervalMs?: number;
 }
 
 export interface Budget {

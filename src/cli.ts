@@ -7,7 +7,8 @@ import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { describeError, PreSpawnAuthorError } from "./errors.js";
+import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
+import { defaultHoldsDirectory, enumerateHolds } from "./holds.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -85,6 +86,41 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
     for (const note of listing.notes) {
       stderr.write(`[workflows] skipped ${note.scriptPath}: ${note.message}\n`);
+    }
+    return 0;
+  }
+
+  if (argv[0] === "holds") {
+    // The cross-run inbox: every open hold on this machine, with the
+    // content, accepted verdicts, and decision path a decider needs — so one
+    // watcher can wake one orchestrator instead of a resident session per
+    // run. `--json` is the machine-readable form; the answer is a JSON file
+    // at `decision_path` carrying the hold's nonce and a listed verdict.
+    const json = argv.includes("--json");
+    if (argv.length > (json ? 2 : 1)) {
+      stderr.write("Usage: ensemble holds [--json]\n");
+      return 2;
+    }
+    const holds = await enumerateHolds(defaultHoldsDirectory(env));
+    if (json) {
+      stdout.write(`${JSON.stringify(holds.map((hold) => ({ ...hold.record, live: hold.live })))}\n`);
+      return 0;
+    }
+    if (holds.length === 0) {
+      stdout.write(`No open holds under ${defaultHoldsDirectory(env)}\n`);
+      return 0;
+    }
+    for (const hold of holds) {
+      const { record } = hold;
+      stdout.write(
+        `${record.hold_id}\t${hold.live ? "live" : "orphaned"}\traised ${record.raised_at}` +
+          `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
+      );
+      stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
+      stdout.write(`  answer:   write {"nonce":"${record.nonce}","verdict":"…"} to ${record.decision_path}\n`);
+      for (const line of record.content.split("\n")) {
+        stdout.write(`  | ${line}\n`);
+      }
     }
     return 0;
   }
@@ -1047,6 +1083,7 @@ function usage(): string {
     "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
+    "       ensemble holds [--json]",
     ""
   ].join("\n");
 }
@@ -1074,7 +1111,7 @@ function formatError(error: unknown): string {
   // (WorkflowScriptError is a member) — is the author's to fix: one clean
   // line, no stack. A breached deadline is not an authoring mistake but
   // gets the same operator-facing surface.
-  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError) {
+  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

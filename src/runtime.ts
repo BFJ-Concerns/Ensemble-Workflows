@@ -20,6 +20,7 @@ import {
   AgentPromptRejectedError,
   EmptyAgentOutputError,
   EngineShutdownError,
+  HoldRejectedError,
   MissingEngineError,
   MultiTurnUnsupportedError,
   SessionBusyError,
@@ -32,7 +33,10 @@ import {
   UnknownEngineError,
   workerExitStatusOf
 } from "./errors.js";
+import { HoldManager, defaultHoldsDirectory } from "./holds.js";
 import { RunProgress } from "./progress.js";
+
+import type { HoldDecision } from "./holds.js";
 import {
   ClaudeEngineAdapter,
   CodexEngineAdapter,
@@ -235,6 +239,10 @@ export class EnsembleRuntime {
   #sessionCounter = 0;
   /** Injectable clock (tests): drives the staleness mark's idle reading. */
   #now: () => number;
+  #holdManager: HoldManager | null = null;
+  #holdsDir: string;
+  #holdPollIntervalMs: number | undefined;
+  #holdsCwd: string;
   #claudeSessionStaleAfterMs: number;
   #codexSessionStaleAfterMs: number;
 
@@ -250,6 +258,8 @@ export class EnsembleRuntime {
     strip?: StrippableCapability[];
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
+    holdsDir?: string;
+    holdPollIntervalMs?: number;
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
     now?: () => number;
@@ -274,6 +284,9 @@ export class EnsembleRuntime {
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
+    this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
+    this.#holdPollIntervalMs = options.holdPollIntervalMs;
+    this.#holdsCwd = options.cwd ?? process.cwd();
     this.#placement = new AgentPlacementManager({
       baseCwd: options.cwd ?? process.cwd(),
       ...(options.worktreeManager !== undefined ? { worktreeManager: options.worktreeManager } : {})
@@ -344,6 +357,8 @@ export class EnsembleRuntime {
       ...(options.defaultTurnTimeoutMs !== undefined ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {}),
       ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
+      ...(options.holdsDir !== undefined ? { holdsDir: options.holdsDir } : {}),
+      ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.claudeSessionStaleAfterMs !== undefined
         ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs }
@@ -499,6 +514,48 @@ export class EnsembleRuntime {
       throw error;
     } finally {
       this.#unsettledAgentRecords.delete(agentId);
+    }
+  }
+
+  /**
+   * Raise a hold and await its decision: the hold's content and
+   * accepted verdicts are published to the shared holds directory, any
+   * process — the launcher or not, alive at raise time or not — writes the
+   * decision file the record names, nonce correlation rejects stale
+   * answers, and the resolved decision is always one of the accepted
+   * verdicts. Open holds appear in the live status snapshot and the
+   * cross-run `ensemble holds` listing; raise, answer, rejection, and
+   * timeout each emit an event and land in the archive's hold_events.
+   */
+  async raiseHold(options: { content: string; verdicts: string[]; timeoutMs?: number }): Promise<HoldDecision> {
+    if (this.#closed) {
+      throw new HoldRejectedError("the run is closing; no new holds can be raised");
+    }
+    this.#holdManager ??= new HoldManager({
+      dir: this.#holdsDir,
+      runId: this.progress.runId,
+      cwd: this.#holdsCwd,
+      ...(this.#holdPollIntervalMs !== undefined ? { pollIntervalMs: this.#holdPollIntervalMs } : {}),
+      onEvent: (event) => {
+        this.#emitEvent(event);
+        void this.#recordHoldEventSafely(event);
+      },
+      onOpen: (hold) => this.progress.noteHoldRaised(hold),
+      onSettled: (id) => this.progress.noteHoldSettled(id)
+    });
+    return this.#holdManager.raise(options);
+  }
+
+  /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
+  async #recordHoldEventSafely(event: RuntimeEvent): Promise<void> {
+    try {
+      await this.#runRecorder?.recordHoldEvent(event);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { holdEvent: event.method, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
     }
   }
 
@@ -895,6 +952,9 @@ export class EnsembleRuntime {
     // and the engines' own teardown below is the backstop, not the plan.
     await Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#workerSessions.clear();
+    // Open holds are abandoned with the run: the waits reject, and each
+    // wait's own cleanup removes its published hold file.
+    this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
       [...this.#unsettledAgentRecords.values()]

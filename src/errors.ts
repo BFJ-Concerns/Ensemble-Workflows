@@ -42,9 +42,28 @@ export class AgentCwdRejectedError extends PreSpawnAuthorError {}
 export class WorkflowScriptReadError extends PreSpawnAuthorError {}
 
 /**
+ * A hold the runtime cannot raise: malformed options, or a raise after the
+ * run began closing. Pre-spawn in the family's sense — nothing was asked of
+ * anyone, and the author's fix is the call itself.
+ */
+export class HoldRejectedError extends PreSpawnAuthorError {}
+
+/**
+ * An optional per-hold timeout expired with no accepted answer. An
+ * operational bound, not an authoring mistake — deliberately outside the
+ * pre-spawn family (like WorkflowTimeoutError), rendered as one clean line;
+ * a script that treats expiry as an outcome catches it.
+ */
+export class HoldTimeoutError extends EnsembleError {
+  constructor(holdId: string, timeoutAt: string) {
+    super(`hold ${holdId} timed out unanswered${timeoutAt.length > 0 ? ` at ${timeoutAt}` : ""}`);
+  }
+}
+
+/**
  * A multi-turn worker session requested on an engine that does not hold
  * sessions open across turns. Pre-spawn by the options invariant: an engine
- * limited to its one-shot surface (opencode) must throw before any
+ * held at its one-shot surface (opencode, deliberately) must throw before any
  * worker spawns rather than silently dispatch a fresh session per send.
  */
 export class MultiTurnUnsupportedError extends AgentOptionRejectedError {

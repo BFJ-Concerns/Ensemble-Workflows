@@ -383,9 +383,27 @@ interface Manifest {
    * second run.
    */
   workflow_invocations: WorkflowInvocationEntry[];
+  /**
+   * The run's hold lifecycle, append-only in event order: each raise,
+   * accepted answer, rejected answer, and timeout, so a consumer holding
+   * only the archive can reconstruct what the run waited on and how each
+   * wait ended. The hold files themselves are transient coordination state;
+   * this list is their durable trace.
+   */
+  hold_events: HoldEventEntry[];
   cost_rollup: Record<string, Record<string, UsageRollup>>;
   files: FileEntry[];
   integrity: ManifestIntegrity;
+}
+
+interface HoldEventEntry {
+  hold_id: string;
+  event: "raised" | "answered" | "answer-rejected" | "timed-out";
+  /** The accepted verdict on `answered`; null elsewhere. */
+  verdict: string | null;
+  /** The rejection reason on `answer-rejected`; null elsewhere. */
+  reason: string | null;
+  at: string;
 }
 
 interface WorkflowInvocationEntry {
@@ -564,6 +582,7 @@ export class RunRecordWriter {
           }
         }
       ],
+      hold_events: [],
       cost_rollup: {},
       files: [],
       integrity: {
@@ -658,6 +677,34 @@ export class RunRecordWriter {
       });
       await this.#writeManifest();
       return ordinal;
+    });
+  }
+
+  /**
+   * Append one hold lifecycle event from the runtime's event stream.
+   * Same intent-before-outcome principle as the dispatch-time agent write:
+   * the raise is recorded when it happens, so a run that dies mid-hold
+   * still shows what it was waiting on. Unrecognised methods are ignored —
+   * the runtime forwards its hold events unfiltered.
+   */
+  async recordHoldEvent(event: { method: string; params: Record<string, unknown>; receivedAt: number }): Promise<void> {
+    const kind = holdEventKind(event.method);
+    if (kind === null || typeof event.params.holdId !== "string") {
+      return;
+    }
+    const entry: HoldEventEntry = {
+      hold_id: event.params.holdId,
+      event: kind,
+      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
+      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      at: new Date(event.receivedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
     });
   }
 
@@ -1264,6 +1311,21 @@ async function git(args: string[], cwd: string): Promise<string | null> {
     return stdout.trim();
   } catch {
     return null;
+  }
+}
+
+function holdEventKind(method: string): HoldEventEntry["event"] | null {
+  switch (method) {
+    case "hold/raised":
+      return "raised";
+    case "hold/answered":
+      return "answered";
+    case "hold/answerRejected":
+      return "answer-rejected";
+    case "hold/timedOut":
+      return "timed-out";
+    default:
+      return null;
   }
 }
 

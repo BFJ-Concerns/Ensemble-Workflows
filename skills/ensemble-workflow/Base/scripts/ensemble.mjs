@@ -15215,6 +15215,10 @@ async function reapAbandonedRuns(options) {
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      if (fresh.integrity !== void 0 && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
 `);
       reaped.push(entry.name);

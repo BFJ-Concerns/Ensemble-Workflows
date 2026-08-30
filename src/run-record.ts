@@ -1170,6 +1170,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        integrity?: { manifest_sha256?: string | null };
       };
       if (fresh.status !== "in-progress") {
         continue;
@@ -1180,6 +1181,15 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      // The reaper changes an attested manifest itself, so renew its
+      // self-attestation just as the writer does: null its field, hash the
+      // canonical form, then let the standalone helper atomically replace it.
+      // Pre-attestation manifests have no self-digest to renew, but remain
+      // eligible for the established reap route.
+      if (fresh.integrity !== undefined && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
       reaped.push(entry.name);
     } catch {

@@ -6,6 +6,35 @@ self-contained launcher for the Ensemble CLI, built from `src/` by
 orchestration is maintained separately and is not mirrored here; this file
 covers only what the runtime itself does, derived from `src/`.
 
+All invocation paths below are relative to the repository root — the parent
+of `skills/`. A cold consumer given the bundle beside this file can resolve
+the launcher as `Base/scripts/ensemble.mjs` from within this directory, or
+as `skills/ensemble-workflow/Base/scripts/ensemble.mjs` from the repository
+root.
+
+## Quick start
+
+A minimal workflow that dispatches one Codex worker and prints its answer:
+
+```js
+// hello.js
+export const meta = { name: "hello", description: "one-worker demo" };
+const answer = await agent("Say hello in one sentence.", {
+  engine: "codex",
+  model: "gpt-5.6-terra",
+});
+return answer;
+```
+
+Launch it (from the repository root):
+
+```sh
+node skills/ensemble-workflow/Base/scripts/ensemble.mjs hello.js
+```
+
+Stdout is the run's result as JSON (here, a JSON-encoded string); stderr
+carries logs and progress.
+
 ## Invocation
 
 There is no `ensemble` binary on `PATH`. Run the bundle with Node (>= 24.14.0;
@@ -63,9 +92,13 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
   entries are noted on stderr and skipped.
 
 Exit 0 prints the script's return value, or the direct agent's return value, as
-JSON on stdout. The return value and any `workflow()` arguments must be JSON
-values: a function, a symbol, a cycle, or a BigInt fails the run at settlement
-with the offending path named (one clean line, exit 1), never a lossy
+JSON on stdout — always JSON, every return type. A schema agent's structured
+object prints as a JSON object; a schema-less worker's plain-text answer prints
+as a JSON string (with the enclosing double quotes that `JSON.stringify`
+produces), so a shell caller consuming the output with `jq -r .` or similar
+recovers the original text. The return value and any `workflow()` arguments must
+be JSON values: a function, a symbol, a cycle, or a BigInt fails the run at
+settlement with the offending path named (one clean line, exit 1), never a lossy
 approximation. A `toJSON` method is honoured as `JSON.stringify` would, but the
 return value crosses a structured-clone boundary first, so a `toJSON` on a
 class prototype does not survive to settlement — return plain data instead.
@@ -178,6 +211,84 @@ defaults to the run's `.claude` directory only when that directory already
 exists; an explicit status directory must also
 already exist.
 
+## Live status snapshot
+
+While a run is active, Ensemble writes `ensemble.local.json` — a small JSON
+object describing the run's current state — atomically to the status directory.
+The file is removed when the run finishes; absence means no run is in flight.
+The full schema and a worked example are in the
+[root README](../../README.md#ensemblelocaljson-schema); the fields are:
+
+- `schema`: `1`.
+- `runId`: string.
+- `pid`: number, the launcher process id.
+- `workflow`: string or `null` (from `meta.name`).
+- `state`: `"running"` or `"finished"`.
+- `startedAt`, `updatedAt`, `finishedAt`: Unix epoch milliseconds; `finishedAt`
+  is `null` until the run ends.
+- `currentPhase`: string or `null`.
+- `totals`: `{ active, queued, done, failed }` — numeric counts across all
+  engines.
+- `engines`: object keyed by engine name (`codex`, `claude`, `opencode`). Each
+  entry carries numeric `active`, `queued`, `done`, `failed`, and `spent`;
+  `cap`, `ceiling`, and `remaining` are numbers or `null`. Spend and ceilings
+  are per-engine and never summed.
+- `agents`: array of live worker objects, each with numeric `id` and `attempt`,
+  string `engine`, `state` (`"queued"` or `"running"`), nullable string `label`
+  and `phase`, and two liveness stamps (`startedAtMs`, `firstEvidenceAtMs`) as
+  Unix epoch milliseconds or `null`. `firstEvidenceAtMs` is earliest-wins: a
+  worker with no evidence stamp has never produced output.
+
+Treat a snapshot whose `updatedAt` is more than 30 seconds old as stale; the
+writer refreshes a quiet run every 10 seconds.
+
+## Durable run record
+
+Every run writes a permanent archive. The full schema is in the
+[root README](../../README.md#run-record-schema); the key structures are
+summarised here for quick reference.
+
+Each JSON artefact carries `schema_version` (currently `3`) and `kind`
+(`run_manifest`, `run_args`, `run_result`, or `agent_record`).
+
+### Manifest (`manifest.json`)
+
+Top-level fields: `run_id`, `run_uuid`, `namespace` (strategy, id, hash,
+material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
+`"interrupted"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
+`abandonment` (present on reaped manifests only), `started_at`/`ended_at` (ISO;
+`ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
+`args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
+and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
+`git` (start/end HEAD, dirty flag, diff path), `environment` (OS arch/platform/
+release, Node version, tool versions for claude/codex/git/opencode), `harness`
+(package name, version, git commit), `result` (archive path, exit code),
+`cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
+path, size, SHA-256 for each archived artefact; the manifest itself is excluded).
+
+### Agent record (`agents/<id>/agent.json`)
+
+Top-level fields: `id`, `creation_order`, `concurrency_group`, `engine`,
+`model`, `effort`, `fallback_model`, `resolved_model` (`null` when unknown),
+`label`, `phase`, `status` (`"in-progress"`, `"complete"`, `"failed"`,
+`"timed-out"`, `"interrupted"`, `"abandoned"`), `prompt`, `schema` (requested
+JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
+`isolation`, `worktree` (branch, base commit, tip commit, changed, removed — or
+`null`), `strip` (requested names and resolved enforcement routes),
+`raw_output`, `validated_output`, `parse_route` (`"direct"`,
+`"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
+`usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`,
+`worker_exit` (`{ exit_code, signal }` or `null`).
+
+`attempts` is an array; each entry carries: `attempt` (1-based index),
+`status`, `started_at`, `ended_at`, `duration_ms`, `first_delta_ms`,
+`raw_output`, `validated_output`, `resolved_model`, `failure` (`{ kind,
+message }` or `null`), `diagnostics`, `app_server_diagnostic`,
+`token_usage_events` (engine-native per-attempt events), `worker_exit`.
+
+`transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
+`source`, and engine-specific ids (`session_id`, `thread_id`).
+
 ## Script shape
 
 A workflow script must begin with `export const meta = { name, description }`
@@ -247,6 +358,11 @@ orchestrator remains the real backstop.
 unknown values throw before any worker spawns.
 
 ## Programmatic runtime options
+
+The shipped bundle (`Base/scripts/ensemble.mjs`) is a CLI artefact with no
+public exports — importing it yields an empty module. The programmatic surface
+(`createRuntime()` and the library API) is available at the source level in
+`src/index.ts` for callers that build from source.
 
 `createRuntime()` accepts two Codex-only silence bounds for library callers:
 `retryPromiseSilenceTimeoutMs` limits silence after an in-band retry promise,

@@ -1412,6 +1412,8 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
   assert.equal(interruptedAgent.schema_version, 3);
+  const v3Keys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8")) as string[];
+  assert.deepEqual(Object.keys(interruptedAgent).sort(), v3Keys);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");

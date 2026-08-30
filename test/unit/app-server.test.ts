@@ -14,6 +14,7 @@ import {
   AppServerFirstOutputTimeoutError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
+  AppServerSystemError,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError,
   appServerDiagnosticOf,
@@ -126,6 +127,29 @@ test("every failing terminal path carries the worker's partial text", async () =
     } finally {
       await transport.close();
     }
+  }
+});
+
+test("the systemError failure-mode reports the protocol's missing diagnostic without inventing one", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: null,
+          message: "Codex app-server reported terminal systemError without a diagnostic",
+          payload: '{"threadId":"thread-1","status":{"type":"systemError"}}'
+        });
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
   }
 });
 

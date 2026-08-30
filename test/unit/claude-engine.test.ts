@@ -293,15 +293,20 @@ test("completion is read from the transcript even when state never reports done"
 });
 
 test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", async () => {
-  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
-    const runtime = makeRuntime(controlPlane);
-    try {
-      await runtime.agent("read", { engine: "claude", cwd: "/per-call/cwd" });
-      assert.equal(controlPlane.dispatched[0]?.cwd, "/per-call/cwd");
-    } finally {
-      await runtime.close();
-    }
-  });
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-claude-per-call-cwd-"));
+  try {
+    await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      try {
+        await runtime.agent("read", { engine: "claude", cwd: directory });
+        assert.equal(controlPlane.dispatched[0]?.cwd, directory);
+      } finally {
+        await runtime.close();
+      }
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("a capability strip reaches Claude dispatch as permission deny rules", async () => {
@@ -631,6 +636,7 @@ test("Claude worker tokens feed the Claude budget via the synthetic usage event"
         // totalTokens = input(5) + cached(2) + output(10), recorded as last-delta.
         assert.equal(runtime.budget.spent("claude"), 17);
         assert.equal(runtime.budget.spent("codex"), 0);
+        assert.equal("reasoningOutputTokens" in runtime.budget.events[0]!.event.last, false);
       } finally {
         await runtime.close();
       }

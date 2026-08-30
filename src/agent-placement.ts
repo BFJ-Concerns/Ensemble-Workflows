@@ -1,5 +1,7 @@
+import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import { AgentCwdRejectedError } from "./errors.js";
 import { GitWorktreeIsolationManager } from "./worktree-isolation.js";
 
 import type { AgentOptions } from "./types.js";
@@ -22,6 +24,20 @@ export class AgentPlacementManager {
   constructor(options: { baseCwd: string; worktreeManager?: WorktreeIsolationManager }) {
     this.baseCwd = path.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
+  }
+
+  async assertUsableCwd(options: Pick<Partial<AgentOptions>, "cwd">): Promise<void> {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    try {
+      if (!(await stat(requestedCwd)).isDirectory()) {
+        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
+      }
+    } catch (error) {
+      if (error instanceof AgentCwdRejectedError) {
+        throw error;
+      }
+      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
+    }
   }
 
   async open(options: Pick<Partial<AgentOptions>, "cwd" | "isolation">): Promise<AgentPlacement> {

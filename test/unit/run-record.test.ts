@@ -9,7 +9,12 @@ import test from "node:test";
 import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
-import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
+import {
+  RunRecordWriter,
+  judgeArchivedRunLiveness,
+  reapAbandonedRuns,
+  resolveRunDirectory
+} from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -264,6 +269,9 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
   assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"], undefined);
   assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.amount, 0.002);
   assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.source, "provider-reported");
+  // No engine reported money for the codex bucket, so the record says that
+  // rather than an amount-less "estimate" a consumer cannot tell from zero.
+  assert.deepEqual(manifest.cost_rollup.codex?.unresolved?.cost, { unavailable: "no-provider-cost-reported" });
   assert.equal("total" in manifest.cost_rollup, false);
 });
 
@@ -586,14 +594,14 @@ test("cost roll-up degrades to token-only accounting on unlike currencies", asyn
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
-    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; currency: string | null; source: string } }>>;
+    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: Record<string, unknown> }>>;
   };
   const bucket = manifest.cost_rollup.opencode?.unresolved;
   assert.ok(bucket);
   assert.equal(bucket.tokens.totalTokens, 7);
-  assert.equal(bucket.cost.amount, null);
-  assert.equal(bucket.cost.currency, null);
-  assert.equal(bucket.cost.source, "estimated");
+  // Token-only accounting, said out loud: the bucket saw money it could not
+  // sum, which is a different statement from "no engine reported any".
+  assert.deepEqual(bucket.cost, { unavailable: "unlike-currencies" });
 });
 
 test("CLI timeout leaves a usable partial archive with meta.task", async () => {
@@ -807,6 +815,7 @@ function agentRecord(
     effort: null,
     fallbackModel: null,
     resolvedModel: null,
+    resolvedEffort: null,
     resolvedCwd: "/fixture/repo",
     isolation: null,
     worktree: null,
@@ -835,6 +844,7 @@ function agentRecord(
         rawOutput: "ok",
         validatedOutput: "ok",
         resolvedModel: null,
+        resolvedEffort: null,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,
@@ -949,6 +959,134 @@ function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: nu
     }
   };
 }
+
+test("the manifest attests itself, and an edited field breaks the attestation", async () => {
+  const cwd = await gitRepo("ensemble-record-integrity-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-integrity",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: { item: "one" },
+    cliFlags: { jsonArgs: true }
+  });
+  await writer.recordAgent(agentRecord(1, "codex", null, 3));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifestPath = path.join(writer.archiveDir, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown> & {
+    integrity: { algorithm: string; manifest_sha256: string; files_lost: unknown[] };
+  };
+  assert.equal(manifest.integrity.algorithm, "sha256");
+  assert.deepEqual(manifest.integrity.files_lost, []);
+  assert.equal(manifest.status, "complete");
+  assert.equal(manifestSelfDigest(manifest), manifest.integrity.manifest_sha256);
+  assert.equal(writer.manifestDigest(), manifest.integrity.manifest_sha256);
+
+  // The tamper the archive-consumer session made and every hash check
+  // passed: an edited manifest field, with the files table untouched.
+  const tampered = JSON.parse(await readFile(manifestPath, "utf8")) as typeof manifest;
+  tampered.schema_version = 999;
+  assert.notEqual(manifestSelfDigest(tampered), tampered.integrity.manifest_sha256);
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("a run whose archive is deleted mid-flight cannot seal a complete manifest", async () => {
+  const cwd = await gitRepo("ensemble-record-lost-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-lost",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: { item: "one" },
+    cliFlags: { jsonArgs: true }
+  });
+  await writer.recordAgent(agentRecord(1, "codex", null, 3));
+  // The two shapes the reconciliation must catch: a file the manifest
+  // promises that is gone, and one replaced beneath the writer.
+  await rm(path.join(writer.archiveDir, "workflow.js"));
+  await writeFile(path.join(writer.archiveDir, "args.canonical.json"), "{}");
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    status: string;
+    files: Array<{ path: string }>;
+    integrity: { manifest_sha256: string; files_lost: Array<{ path: string; reason: string }> };
+  };
+  assert.equal(manifest.status, "incomplete");
+  assert.deepEqual(manifest.integrity.files_lost, [
+    { path: "args.canonical.json", reason: "size-mismatch" },
+    { path: "workflow.js", reason: "missing" }
+  ]);
+  // The file table still declares them: the record loses nothing it knew,
+  // it just stops claiming the archive is whole.
+  assert.ok(manifest.files.some((entry) => entry.path === "workflow.js"));
+  assert.equal(manifestSelfDigest(manifest), manifest.integrity.manifest_sha256);
+
+  // The run itself ended cleanly and its own envelope still says so —
+  // losing files is a recording failure, never a run failure.
+  const result = JSON.parse(await readFile(path.join(writer.archiveDir, "result.json"), "utf8")) as {
+    status: string;
+    exit_code: number;
+  };
+  assert.equal(result.status, "complete");
+  assert.equal(result.exit_code, 0);
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("an archived run's liveness is judged from its own owner block", async () => {
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-liveness-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    await writeProcStat(proc, 54321, "2222");
+    const host = hostname();
+
+    const dead = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999999, start_ticks: "3333", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(dead, { verdict: "dead", reason: "owner-process-gone" });
+
+    const reusedPid = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 54321, start_ticks: "9999", host } },
+      { procDir: proc, host }
+    );
+    assert.equal(reusedPid.verdict, "dead");
+
+    const live = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 54321, start_ticks: "2222", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(live, { verdict: "live", reason: null });
+
+    // Everything the reaper refuses to judge, the consumer refuses too.
+    const foreign = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999998, start_ticks: "4", host: "elsewhere.invalid" } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(foreign, { verdict: "undecidable", reason: null });
+
+    const noEvidence = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999997, start_ticks: null, host } },
+      { procDir: proc, host }
+    );
+    assert.equal(noEvidence.verdict, "undecidable");
+
+    const settled = await judgeArchivedRunLiveness(
+      { status: "complete", owner: { pid: 999999, start_ticks: "3333", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(settled, { verdict: "settled", reason: null });
+  } finally {
+    await rm(proc, { recursive: true, force: true });
+  }
+});
 
 test("the reaper flips provably-dead in-progress runs and leaves every judged-live one", async () => {
   const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-ns-"));
@@ -1172,3 +1310,28 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.attempts[0]?.observed_failure, null);
   assert.ok(Array.isArray(completedAgent.transcripts));
 });
+
+/**
+ * The consumer's verification recipe for the manifest's self-attestation:
+ * null the digest field, re-canonicalise in the writer's own form, hash.
+ */
+function manifestSelfDigest(manifest: Record<string, unknown>): string {
+  const copy = JSON.parse(JSON.stringify(manifest)) as { integrity: { manifest_sha256: string | null } };
+  copy.integrity.manifest_sha256 = null;
+  return createHash("sha256").update(canonicalJson(copy)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}

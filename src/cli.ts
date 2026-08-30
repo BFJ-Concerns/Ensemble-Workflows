@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
-import type { SentinelWorkerOutcomes } from "./completion-sentinel.js";
+import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, PreSpawnAuthorError } from "./errors.js";
 import { createRuntime } from "./index.js";
@@ -316,7 +316,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
         workers: workerOutcomes(progress),
-        error: terminalError
+        error: terminalError,
+        // The sealed manifest's own digest, attested from outside the file
+        // it covers. Absent recording, or a seal that never landed, says so
+        // rather than omitting the field.
+        manifest: manifestAttestation(runRecordWriter)
       });
     }
   }
@@ -936,6 +940,21 @@ function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv)
   }
   const inherited = env[CALLER_IDENTITY_ENV];
   return inherited !== undefined && inherited.trim().length > 0 ? inherited : undefined;
+}
+
+/**
+ * What the sentinel can say about the run manifest: its self-digest where
+ * the archive sealed, and otherwise the reason there is none. A writer that
+ * exists but has no digest never reached its first manifest write, so the
+ * manifest a consumer might find beside the sentinel is not one this run
+ * vouches for.
+ */
+function manifestAttestation(writer: RunRecordWriter | null): SentinelManifestAttestation {
+  if (writer === null) {
+    return { unavailable: "recording-disabled" };
+  }
+  const digest = writer.manifestDigest();
+  return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };
 }
 
 function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {

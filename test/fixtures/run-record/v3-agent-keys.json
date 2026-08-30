@@ -19,6 +19,7 @@
   "queued_ms",
   "raw_output",
   "resolved_cwd",
+  "resolved_effort",
   "resolved_model",
   "schema",
   "schema_version",

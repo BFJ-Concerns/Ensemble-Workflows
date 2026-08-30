@@ -25,14 +25,24 @@ const SCHEMA_VERSION = 3;
 const MANIFEST_PATH = "manifest.json";
 
 /**
- * `abandoned` is reaper-written only (see `reapAbandonedRuns`): the terminal
+ * `incomplete` is writer-written only: the run itself reached a terminal
+ * status, but at seal the archive could not account for every file its own
+ * manifest declares (see `ManifestIntegrity.files_lost`) — so the manifest
+ * refuses the completeness claim while `result.json` keeps the run's own
+ * outcome. `abandoned` is reaper-written only (see `reapAbandonedRuns`): the terminal
  * status for a durable in-progress run whose owning process is provably
  * gone. A launcher that can still write chooses one of the other terminal
  * statuses itself.
  */
-type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
+type RunStatus =
+  | "in-progress"
+  | "complete"
+  | "failed"
+  | "incomplete"
+  | "timed-out"
+  | "interrupted"
+  | "abandoned";
 type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
-type AccountingSource = "provider-reported" | "estimated";
 type ParseRoute = "direct" | "object-fallback" | "array-fallback";
 
 export interface CliFlagsRecord {
@@ -95,6 +105,14 @@ export interface RuntimeAgentAttemptRecord {
   validatedOutput: unknown;
   /** The served model this attempt's engine reported, when it reported one. */
   resolvedModel: string | null;
+  /**
+   * The reasoning effort this attempt's turn actually ran at, as its engine
+   * reported it — the resolved-option analogue of `resolvedModel`, and the
+   * only durable trace of an unpinned turn's ambient default. Null where the
+   * engine reports none, never the requested pin (which `effort` on the
+   * agent record already carries).
+   */
+  resolvedEffort: string | null;
   startedAt: string;
   endedAt: string;
   durationMs: number | null;
@@ -124,6 +142,8 @@ export interface RuntimeAgentRecord {
   effort: string | null;
   fallbackModel: string | null;
   resolvedModel: string | null;
+  /** The served effort, last write wins across attempts; see the attempt field. */
+  resolvedEffort: string | null;
   resolvedCwd: string;
   isolation: "worktree" | null;
   worktree: {
@@ -185,8 +205,12 @@ export interface TerminalErrorRecord {
 }
 
 export interface RunRecordFinishOptions {
-  /** The launcher's own terminal statuses; `abandoned` belongs to the reaper alone. */
-  status: Exclude<RunStatus, "in-progress" | "abandoned">;
+  /**
+   * The launcher's own terminal statuses. `abandoned` belongs to the reaper
+   * alone, and `incomplete` to the writer alone — a launcher reporting a
+   * clean run cannot also judge whether the archive that records it survived.
+   */
+  status: Exclude<RunStatus, "in-progress" | "abandoned" | "incomplete">;
   exitCode: number;
   result: unknown;
   /**
@@ -201,6 +225,43 @@ interface FileEntry {
   path: string;
   size: number;
   sha256: string;
+}
+
+/**
+ * A file the manifest declares that the archive could not account for when
+ * the run sealed. `missing` is the deleted-archive case (the file the
+ * manifest promises is ENOENT); `size-mismatch` is a file replaced beneath
+ * the writer. The reconciliation checks presence and size, not content —
+ * the recorded `sha256` is the consumer's own walk, and re-hashing every
+ * transcript at seal would buy nothing the consumer does not already do.
+ */
+interface FileLossRecord {
+  path: string;
+  reason: "missing" | "size-mismatch";
+}
+
+/**
+ * What the archive says about its own wholeness — the answer to the two
+ * questions the `files` table cannot answer about itself.
+ *
+ * `manifest_sha256` covers the manifest itself, which no entry in `files`
+ * ever can: it is the sha256 of the manifest's own canonical form with this
+ * field set to `null`. A consumer verifies it by parsing the manifest,
+ * writing `null` over this field, re-canonicalising, and hashing — the same
+ * two-space sorted-key JSON the writer emits. It is a self-attestation, not
+ * a signature: it catches the edited field and the truncated write, and a
+ * forger who recomputes it defeats it. There is no key material in the
+ * archive with which to do better.
+ *
+ * `files_lost` is written at seal, when the writer reconciles the table
+ * against the directory it describes. A run whose archive was deleted
+ * mid-flight lands here rather than in a `complete` status over absent
+ * files.
+ */
+interface ManifestIntegrity {
+  algorithm: "sha256";
+  manifest_sha256: string | null;
+  files_lost: FileLossRecord[];
 }
 
 interface NamespaceRecord {
@@ -314,6 +375,7 @@ interface Manifest {
   workflow_invocations: WorkflowInvocationEntry[];
   cost_rollup: Record<string, Record<string, UsageRollup>>;
   files: FileEntry[];
+  integrity: ManifestIntegrity;
 }
 
 interface WorkflowInvocationEntry {
@@ -356,11 +418,27 @@ export interface WorkflowInvocationRecord {
 interface UsageRollup {
   /** Summary usage in the declared vocabulary — see `src/usage-summary.ts`. */
   tokens: UsageSummary;
-  cost: {
-    amount: number | null;
-    currency: string | null;
-    source: AccountingSource;
-  };
+  /**
+   * Money, in the absence-with-a-reason idiom the summary vocabulary uses:
+   * the reported form only where an engine actually reported cost
+   * with its usage, and otherwise the reason there is no figure. The
+   * harness prices nothing itself, so the old shape — `amount: null` under
+   * `source: "estimated"` — asserted an estimate that never existed and a
+   * consumer could not tell from "this run cost nothing".
+   */
+  cost: ReportedCost | { unavailable: "no-provider-cost-reported" | "unlike-currencies" };
+}
+
+/** Provider-reported spend, summed across the bucket's own usage events. */
+interface ReportedCost {
+  amount: number;
+  currency: string | null;
+  /**
+   * Always `provider-reported`: the harness has no pricing table, so the
+   * only figure it can publish is one an engine handed it. The field stays
+   * so a consumer reading a cost knows where it came from.
+   */
+  source: "provider-reported";
 }
 
 export class RunRecordWriter {
@@ -477,7 +555,12 @@ export class RunRecordWriter {
         }
       ],
       cost_rollup: {},
-      files: []
+      files: [],
+      integrity: {
+        algorithm: "sha256",
+        manifest_sha256: null,
+        files_lost: []
+      }
     });
 
     await writer.#writeText("workflow.js", options.workflowSource);
@@ -621,6 +704,7 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      resolved_effort: record.resolvedEffort,
       resolved_cwd: record.resolvedCwd,
       isolation: record.isolation,
       worktree:
@@ -677,6 +761,7 @@ export class RunRecordWriter {
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,
+        resolved_effort: attempt.resolvedEffort,
         started_at: attempt.startedAt,
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
@@ -715,11 +800,25 @@ export class RunRecordWriter {
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
+        // The run's own outcome as the launcher reported it. Where the
+        // manifest later degrades to `incomplete`, the two are answering
+        // different questions: this envelope says how the run ended, the
+        // manifest says whether the archive recording it is whole.
         status: options.status,
         exit_code: options.exitCode,
         error: options.error ?? null,
         value: options.result
       });
+      // Reconcile before the manifest is written, so the self-digest attests
+      // a file table that has been checked against the directory it
+      // describes — and so no manifest ever carries `complete` over files
+      // that are not there. Losing files is a recording failure, never a run
+      // failure (the exit code and the terminal error stand as the launcher
+      // reported them); what changes is what the record claims about itself.
+      this.manifest.integrity.files_lost = await this.#reconcileFiles();
+      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
+        this.manifest.status = "incomplete";
+      }
       await this.#writeManifest();
       // Calls queued after finish belong to workers that outlived the workflow.
       // The archive is now a coherent final snapshot; reopening it would race
@@ -742,6 +841,11 @@ export class RunRecordWriter {
 
   async #writeManifest(): Promise<void> {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    // Self-attestation last, over everything above it: null the field, hash
+    // the canonical form, then write. Computed on every manifest write, not
+    // only at seal, so a manifest read mid-run is verifiable too.
+    this.manifest.integrity.manifest_sha256 = null;
+    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
     const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
@@ -752,6 +856,34 @@ export class RunRecordWriter {
   #tmpSuffix(): string {
     this.#tmpSeq += 1;
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
+  }
+
+  /**
+   * Checks every file the manifest declares against the archive directory,
+   * returning what is no longer accountable. Presence and size only: the
+   * recorded digest is what a consumer walks, and re-hashing the whole
+   * archive at seal would repeat that walk for no extra evidence.
+   */
+  async #reconcileFiles(): Promise<FileLossRecord[]> {
+    const lost: FileLossRecord[] = [];
+    for (const entry of [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+      const metadata = await stat(path.join(this.archiveDir, entry.path)).catch(() => null);
+      if (metadata === null) {
+        lost.push({ path: entry.path, reason: "missing" });
+      } else if (metadata.size !== entry.size) {
+        lost.push({ path: entry.path, reason: "size-mismatch" });
+      }
+    }
+    return lost;
+  }
+
+  /**
+   * The sealed manifest's self-digest, for a consumer of this writer that
+   * publishes an attestation elsewhere (the completion sentinel). Null
+   * before the first manifest write.
+   */
+  manifestDigest(): string | null {
+    return this.manifest.integrity.manifest_sha256;
   }
 
   async #trackFile(relativePath: string): Promise<void> {
@@ -798,7 +930,12 @@ function agentUsage(
 
 function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<string, UsageRollup>> {
   const rollup: Record<string, Record<string, UsageRollup>> = {};
-  const unlikeCurrencies = new Set<UsageRollup["cost"]>();
+  // Cost is accumulated separately from the published shape because the
+  // published shape is a statement, not a running total: a bucket that never
+  // sees a provider-reported figure must publish the reason rather than a
+  // zero, and one that sees unlike currencies must publish that reason
+  // rather than a cross-currency sum.
+  const accumulators = new Map<string, CostAccumulator>();
   for (const record of records) {
     const engine = record.engine;
     // Spend is keyed under the model that actually served each attempt's
@@ -817,25 +954,41 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
       const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
-      rollup[engine][model] =
-        existing === undefined
-          ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } }
-          : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
-      const bucket = rollup[engine][model];
+      const key = `${engine}\u0000${model}`;
+      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
+      accumulators.set(key, accumulator);
       for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(bucket.cost, event, unlikeCurrencies);
+        addProviderCost(accumulator, event);
       }
+      rollup[engine][model] = {
+        tokens: existing === undefined ? summary : addUsageSummary(existing.tokens, summary),
+        cost: publishedCost(accumulator)
+      };
     }
   }
   return rollup;
 }
 
-function addProviderCost(
-  target: UsageRollup["cost"],
-  event: TokenUsageEvent,
-  unlikeCurrencies: Set<UsageRollup["cost"]>
-): void {
-  if (unlikeCurrencies.has(target)) {
+interface CostAccumulator {
+  amount: number;
+  currency: string | null;
+  reported: boolean;
+  /** Latched once two events disagree on currency; never unlatched. */
+  unlike: boolean;
+}
+
+function publishedCost(accumulator: CostAccumulator): UsageRollup["cost"] {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+
+function addProviderCost(target: CostAccumulator, event: TokenUsageEvent): void {
+  if (target.unlike) {
     return;
   }
   const cost = event.raw.cost;
@@ -846,14 +999,11 @@ function addProviderCost(
   // Unlike currencies cannot be summed; an explicit unknown beats a silent
   // cross-currency total, so the bucket degrades to token-only accounting.
   if (target.currency !== null && currency !== null && currency !== target.currency) {
-    unlikeCurrencies.add(target);
-    target.amount = null;
-    target.currency = null;
-    target.source = "estimated";
+    target.unlike = true;
     return;
   }
-  target.amount = (target.amount ?? 0) + cost;
-  target.source = "provider-reported";
+  target.amount += cost;
+  target.reported = true;
   if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
@@ -958,6 +1108,60 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
     }
   }
   return reaped;
+}
+
+/**
+ * The dead-vs-live reading a cold archive consumer must make for itself.
+ *
+ * A durable `in-progress` manifest says nothing about whether its writer is
+ * still running: a SIGKILLed run and a live one are byte-identical until
+ * some later writer's reap sweeps the namespace, and no consumer should
+ * have to wait for that (or start a run to trigger it). The evidence is
+ * already in the manifest's `owner` block, so a consumer answers the
+ * question with the same judgement the reaper uses, on the same
+ * conservative terms: only a provably-gone owner on this host is `dead`;
+ * an owner on another machine, one recorded without proc evidence, and a
+ * proc filesystem this consumer cannot read all yield `undecidable`.
+ *
+ * `verdict: "live"` means the recorded pid is present with matching start
+ * ticks — the writer is running now. A terminal manifest is `settled`: its
+ * own status already answers the question.
+ */
+export interface ArchivedRunLiveness {
+  verdict: "settled" | "live" | "dead" | "undecidable";
+  /** The reaper's own reason on a `dead` verdict; null otherwise. */
+  reason: AbandonmentRecord["reason"] | null;
+}
+
+export async function judgeArchivedRunLiveness(
+  manifest: { status?: unknown; owner?: unknown },
+  options: { procDir?: string; host?: string } = {}
+): Promise<ArchivedRunLiveness> {
+  if (manifest.status !== "in-progress") {
+    return { verdict: "settled", reason: null };
+  }
+  const procDir = options.procDir ?? "/proc";
+  const host = options.host ?? os.hostname();
+  const reason = await judgeOwnerGone(manifest.owner, procDir, host);
+  if (reason !== null) {
+    return { verdict: "dead", reason };
+  }
+  // Not provably gone splits two ways, and the difference matters to a
+  // consumer deciding whether to wait: an owner it can positively see in
+  // the process table is live, and everything else is unjudgeable here.
+  const owner = manifest.owner as Partial<RunOwnerRecord> | null | undefined;
+  if (
+    owner !== null &&
+    owner !== undefined &&
+    typeof owner === "object" &&
+    typeof owner.pid === "number" &&
+    typeof owner.start_ticks === "string" &&
+    owner.host === host &&
+    (await readProcessStartTicks(procDir, owner.pid)) === owner.start_ticks
+  ) {
+    return { verdict: "live", reason: null };
+  }
+  return { verdict: "undecidable", reason: null };
 }
 
 async function judgeOwnerGone(

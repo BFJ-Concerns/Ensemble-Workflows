@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -5,7 +6,7 @@ import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 2;
+export const SENTINEL_SCHEMA_VERSION = 3;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
 
@@ -25,10 +26,25 @@ export interface SentinelWorkerOutcomes {
   unsettled: number;
 }
 
+/**
+ * The sealed manifest's self-digest, or why this run has none. The sentinel
+ * is the run's terminal statement and lands after the archive seals, so it
+ * is the one artefact that can attest the manifest from outside it — which
+ * is what makes the manifest's own digest checkable against a second file
+ * rather than only against itself. The attestation is one-directional and
+ * stays that way: the sentinel resolves independently of the record switch,
+ * so a run with recording off publishes the reason there is no digest and
+ * writes exactly as before.
+ */
+export type SentinelManifestAttestation =
+  | { sha256: string }
+  | { unavailable: "recording-disabled" | "manifest-unsealed" };
+
 export interface SentinelTerminalDetail {
   workers?: SentinelWorkerOutcomes | null;
   /** What ended the run, when it ended badly; null on a clean end. */
   error?: { kind: string; message: string } | null;
+  manifest?: SentinelManifestAttestation;
 }
 
 export interface CompletionSentinelOptions {
@@ -100,13 +116,21 @@ export class CompletionSentinel {
       workers:
         workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
       error: detail.error ?? null,
-      ended_at: new Date().toISOString()
+      manifest: detail.manifest ?? { unavailable: "recording-disabled" as const },
+      ended_at: new Date().toISOString(),
+      // Self-attestation, computed last over everything above it: the
+      // digest of this payload with `integrity.sentinel_sha256` null, in
+      // the same canonical form (sorted keys, two-space indent) the run
+      // manifest uses, so one verification recipe covers both files. Like
+      // the manifest's, it catches an edited field, not a forger.
+      integrity: { algorithm: "sha256" as const, sentinel_sha256: null as string | null }
     };
+    payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
       await mkdir(path.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
-        await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+        await writeFile(temporary, `${canonicalJson(payload)}\n`, "utf8");
         await rename(temporary, this.#path);
       } catch (error) {
         await rm(temporary, { force: true });
@@ -116,4 +140,29 @@ export class CompletionSentinel {
       onError(error);
     }
   }
+}
+
+/**
+ * The run manifest's canonical form, duplicated here rather than imported
+ * so the sentinel keeps its independence from the record module's writer
+ * state — one recipe, stated in both places, is what lets a consumer verify
+ * either file without knowing which wrote it.
+ */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }

@@ -75,7 +75,7 @@ export class StatusFileWriter {
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
-    // markChanged() re-stamps updatedAt and notifies subscribers (i.e. this
+    // Progress transitions re-stamp updatedAt and notify subscribers (i.e. this
     // writer), so a run with long quiet turns never reads as stale/absent.
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();

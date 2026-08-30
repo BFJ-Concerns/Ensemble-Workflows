@@ -36,6 +36,21 @@ class CaptureStream extends Writable {
   }
 }
 
+class InterruptOnSentinelAnnouncementStream extends CaptureStream {
+  #interrupted = false;
+
+  override _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    if (!this.#interrupted && /\[sentinel\] will write \S+ when the run ends\n/.test(chunk.toString())) {
+      this.#interrupted = true;
+      // This is the former startup gap: stderr is publishing the supervisor's
+      // only handle, so the signal arrives before any later CLI setup can arm
+      // interruption handling.
+      process.emit("SIGINT");
+    }
+    super._write(chunk, encoding, callback);
+  }
+}
+
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
   const matches = stderr.match(announcement) ?? [];
@@ -184,6 +199,35 @@ test("the launcher announces the sentinel path before workers spawn and writes i
   assert.equal(sentinel.outcome, "complete");
   assert.equal(sentinel.exit_code, 0);
   assert.ok(sentinel.ended_at.length > 0);
+});
+
+test("a SIGINT delivered as the sentinel path is announced still writes the interrupted envelope", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-startup-interrupt-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "sentinel-startup-interrupt" }; return "unreached";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new InterruptOnSentinelAnnouncementStream();
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 1);
+    assert.deepEqual(JSON.parse(stdout.text()), { partial: true, reason: "interrupted", completed: [] });
+    const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, "the interrupted run must retain the announced sentinel path");
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.equal(sentinel.outcome, "interrupted");
+    assert.equal(sentinel.exit_code, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the sentinel is written even when durable recording is disabled ambiently", async () => {

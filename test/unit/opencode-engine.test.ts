@@ -40,6 +40,8 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
   /** Per-attempt overrides, consumed in dispatch order; the base result serves any attempt beyond the list. */
   #runResults: Array<Partial<OpenCodeRunResult>>;
   #exportResult: OpenCodeSessionExportResult;
+  #onDataChunks: string[];
+  #beforeResolve: (() => Promise<void>) | undefined;
 
   constructor(
     options: {
@@ -47,6 +49,10 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       runResults?: Array<Partial<OpenCodeRunResult>>;
       exportText?: string | null;
       exportResult?: OpenCodeSessionExportResult;
+      /** Chunks emitted while the runner is still active, before it resolves. */
+      onDataChunks?: string[];
+      /** Test-only barrier after live chunks have been delivered. */
+      beforeResolve?: () => Promise<void>;
     } = {}
   ) {
     this.#runResult = {
@@ -58,6 +64,8 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       ...options.runResult
     };
     this.#runResults = [...(options.runResults ?? [])];
+    this.#onDataChunks = options.onDataChunks ?? [];
+    this.#beforeResolve = options.beforeResolve;
     this.#exportResult =
       options.exportResult ??
       (options.exportText === null
@@ -67,6 +75,10 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
     this.runs.push(options);
+    for (const chunk of this.#onDataChunks) {
+      options.onData?.(chunk);
+    }
+    await this.#beforeResolve?.();
     return { ...this.#runResult, ...this.#runResults.shift() };
   }
 
@@ -418,6 +430,64 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.deepEqual(events, ["thread/tokenUsage/updated"]);
   assert.equal(result.transcripts?.[0]?.filename, "transcript.opencode.jsonl");
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
+});
+
+test("opencode publishes streamed usage while its worker is still running", async () => {
+  let releaseRunner: () => void;
+  const runnerHeld = new Promise<void>((resolve) => {
+    releaseRunner = resolve;
+  });
+  let liveChunksDelivered: () => void;
+  const liveChunksDeliveredPromise = new Promise<void>((resolve) => {
+    liveChunksDelivered = resolve;
+  });
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_live_usage" }),
+    JSON.stringify({
+      type: "step_finish",
+      sessionID: "ses_live_usage",
+      part: {
+        type: "step-finish",
+        tokens: { input: 5, output: 3, reasoning: 2, cache: { read: 0, write: 0 } }
+      }
+    })
+  ].join("\n");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { stdout: `${stream}\n` },
+    onDataChunks: [`${stream}\n`],
+    beforeResolve: async () => {
+      liveChunksDelivered();
+      await runnerHeld;
+    }
+  });
+  let runtime: EnsembleRuntime | null = null;
+  const adapter = new OpenCodeEngineAdapter({
+    runner,
+    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    defaultMaxAttempts: 1
+  });
+  let settled = false;
+  const result = runtime.agent("report live usage", { engine: "opencode", model: "glm-5.2" }).then((value) => {
+    settled = true;
+    return value;
+  });
+
+  try {
+    await liveChunksDeliveredPromise;
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(settled, false);
+    assert.equal(snapshot.state, "running");
+    assert.equal(snapshot.engines.opencode?.active, 1);
+    assert.equal(snapshot.engines.opencode?.done, 0);
+    assert.equal(snapshot.engines.opencode?.spent, 10);
+  } finally {
+    releaseRunner!();
+    await result;
+    await runtime.close();
+  }
 });
 
 test("a per-call cwd reaches opencode run and overrides the adapter cwd", async () => {

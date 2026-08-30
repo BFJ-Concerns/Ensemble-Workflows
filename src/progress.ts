@@ -122,6 +122,7 @@ export class RunProgress {
   #nextAgentId = 0;
   #live = new Map<number, AgentRecord>();
   #engines = new Map<EngineName, EngineCounters>();
+  #reportedSpend = new Map<EngineName, number>();
   #listeners = new Set<ProgressListener>();
 
   constructor(options: RunProgressOptions) {
@@ -240,10 +241,20 @@ export class RunProgress {
   }
 
   /**
-   * Refreshes the change stamp without a state transition — used when token
-   * usage lands, so the snapshot's spend figures stay current and subscribers
-   * re-serialise.
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
    */
+  noteEngineSpend(engine: EngineName): void {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+
+  /** Refreshes the live snapshot without changing its modelled state. */
   markChanged(): void {
     this.#touch();
   }

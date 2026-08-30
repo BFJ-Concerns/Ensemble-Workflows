@@ -1,4 +1,4 @@
-import type { EngineName, TokenUsageEvent } from "./types.js";
+import type { EngineName, TokenUsageBreakdown, TokenUsageEvent } from "./types.js";
 
 /**
  * The declared summary vocabulary: the one shape every summary usage
@@ -37,6 +37,37 @@ export interface UsageSummary {
   reasoningOutputTokens: number | null;
   unclassifiedTokens: number;
   totalTokens: number;
+}
+
+/**
+ * Return the monotonic usage increase since the previous engine report.
+ * Engines may repeat their cumulative total while a worker is live; clamping
+ * each field keeps the event stream delta-shaped and never charges a reset.
+ */
+export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBreakdown | null): TokenUsageBreakdown {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens =
+    total.cacheCreationInputTokens === undefined
+      ? undefined
+      : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  const reasoningOutputTokens =
+    total.reasoningOutputTokens === undefined
+      ? undefined
+      : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
 }
 
 /**

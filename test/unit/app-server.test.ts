@@ -12,6 +12,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
+  AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   AppServerSystemError,
@@ -995,6 +996,23 @@ test("Codex app-server lists the fresh discovered skills for the requested worke
   }
 });
 
+test("Codex app-server rejects an incomplete skill discovery result", async () => {
+  const codexBin = await fakeCodexTurnServer({ skillErrors: true });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+  try {
+    await assert.rejects(() => transport.listSkills(), AppServerRequestError);
+  } finally {
+    await transport.close();
+  }
+});
+
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
   options: {
@@ -1003,6 +1021,7 @@ async function fakeCodexTurnServer(
     envCapturePath?: string;
     servedModel?: string | null;
     skills?: readonly string[];
+    skillErrors?: boolean;
   } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
@@ -1023,6 +1042,7 @@ const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 const skills = ${JSON.stringify(options.skills ?? [])};
+const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
 }
@@ -1055,7 +1075,11 @@ reader.on("line", (line) => {
     send({
       id: message.id,
       result: {
-        data: [{ cwd, errors: [], skills: skills.map((name) => ({ name })) }]
+        data: [{
+          cwd,
+          errors: skillErrors ? [{ path: "/fake/broken-skill", message: "broken skill" }] : [],
+          skills: skills.map((name) => ({ name }))
+        }]
       }
     });
     return;

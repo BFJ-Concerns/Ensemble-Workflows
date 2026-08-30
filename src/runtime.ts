@@ -115,6 +115,16 @@ interface UnsettledAgentRecord {
   stage: "dispatching" | "admitting";
 }
 
+/**
+ * The run's worker tally at shutdown: finished workers, failed workers, and
+ * the legs still in flight when the run ended.
+ */
+export interface ShutdownTally {
+  done: number;
+  failed: number;
+  unsettled: number;
+}
+
 type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionResult }
   | { ok: false; error: unknown };
@@ -248,6 +258,11 @@ export class EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally: ShutdownTally | null = null;
   #closed = false;
   #workerSessions = new Set<WorkerSession>();
   #sessionCounter = 0;
@@ -1002,9 +1017,23 @@ export class EnsembleRuntime {
     return this.#completed;
   }
 
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * `unsettled` counts the legs still in flight then — exactly the records
+   * close() terminalises as abandoned or settles with the run's own
+   * shutdown status, so the sentinel and the archive cannot disagree.
+   */
+  shutdownTally(): ShutdownTally | null {
+    return this.#shutdownTally;
+  }
+
   async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    // Captured here, before the first await: teardown settles some legs and
+    // not others, so a later read would tally whatever the race produced.
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = { done: totals.done, failed: totals.failed, unsettled: this.#unsettledAgentRecords.size };
     // Held workers start closing now, but the wait for them overlaps the
     // engines' teardown below: a session with a server-held turn in flight
     // settles only when its transport dies, so awaiting sessions strictly

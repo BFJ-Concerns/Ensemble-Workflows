@@ -21,7 +21,7 @@ import { harnessVersion } from "./harness-version.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
-import type { CompletedAgentOutput, EnsembleRuntime } from "./runtime.js";
+import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally } from "./runtime.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
 import type { Readable, Writable } from "node:stream";
@@ -213,6 +213,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const reportSentinelError = (error: unknown): void => {
     stderr.write(`[sentinel] ${formatError(error)}\n`);
   };
+  // The exit code is settled by the body below but returned after teardown:
+  // a teardown that fails after a clean body must be able to degrade it
+  // rather than exit 0 under a `complete` sentinel.
+  let exitCode = 1;
 
   try {
     const prepared = await prepareRun(invocation, cwd);
@@ -386,7 +390,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       const serialised = serialiseResult(result);
       stdout.write(`${serialised}\n`);
       finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      return 0;
+      exitCode = 0;
     } finally {
       interrupt.dispose();
     }
@@ -413,8 +417,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         (runtime as { lastAgentRecord?: () => RuntimeAgentRecord | null } | null)?.lastAgentRecord?.() ?? null
     });
     stderr.write(`${diagnosis ?? formatError(error)}\n`);
-    return 1;
+    exitCode = 1;
   } finally {
+    // A teardown failure is the run's own failure to end cleanly: workers
+    // may still be alive, the archive may be unsealed. It surfaces here —
+    // on stderr, in the sentinel, and in the exit code — instead of
+    // escaping past a `complete` sentinel that has already promised a clean
+    // end. Surfacing only: nothing is retried.
+    let teardownError: { kind: string; message: string } | null = null;
     try {
       interrupt?.dispose();
       // Tear workers down while the archive is still open so their terminal
@@ -425,7 +435,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       }
       if (runtime !== null) {
         const terminalStatus = finalRecord?.status;
-        await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
+        // A run whose body returned cleanly did not fail, so the workers it
+        // tears down here were interrupted by the run ending — not failed
+        // with a `run-failed` cause. The word is chosen here, the one site
+        // that already knows the body's outcome; `abandoned` stays the
+        // reaper's alone.
+        await runtime.close(
+          terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
+        );
       }
       if (runRecordWriter !== null) {
         await runRecordWriter.finish({
@@ -433,6 +450,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           error: terminalError
         });
       }
+    } catch (error) {
+      teardownError = describeError(error);
+      stderr.write(`[teardown] the run failed to end cleanly: ${formatError(error)}\n`);
     } finally {
       // Last, so a supervisor woken by the sentinel finds the archive already
       // sealed — and in its own finally, so a teardown or archive-seal error
@@ -440,10 +460,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // can handle passes through here — success, failure, timeout,
       // interruption, salvage — and a missing finalRecord is itself a
       // failure outcome.
-      const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
+      const settled = finalRecord ?? { status: "failed" as const, exitCode: 1 };
+      // A teardown failure degrades whatever the body earned: the outcome
+      // the sentinel publishes and the code the process exits with both say
+      // the run did not end cleanly. The reason rides the existing `error`
+      // field, so the payload grows by nothing.
+      const terminal = teardownError === null ? settled : { status: "failed" as const, exitCode: 1 };
+      exitCode = terminal.exitCode;
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
-        error: terminalError,
+        workers: workerOutcomes(progress, runtime),
+        error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so
         // rather than omitting the field.
@@ -451,6 +477,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       });
     }
   }
+  return exitCode;
 }
 
 /**
@@ -475,10 +502,21 @@ function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["r
 
 /**
  * The run's worker tally as the launcher observed it, or null when there was
- * no progress model to read (an injected test runtime). `unsettled` counts
- * workers still queued or running when the run ended.
+ * nothing to count (an injected test runtime with no progress model).
+ * `unsettled` counts the workers still queued or running at the moment the
+ * run ended — a fixed instant, not a race with teardown.
  */
-function workerOutcomes(progress: RunProgress | undefined): SentinelWorkerOutcomes | null {
+function workerOutcomes(progress: RunProgress | undefined, runtime: EnsembleRuntime | null): SentinelWorkerOutcomes | null {
+  // The runtime's shutdown tally is the determinate figure: it was taken at
+  // the instant the run ended, before teardown settled some in-flight legs
+  // and not others. Reading the live progress model here would report
+  // whichever stragglers happened to land first.
+  const tally = (runtime as { shutdownTally?: () => ShutdownTally | null } | null)?.shutdownTally?.() ?? null;
+  if (tally !== null) {
+    return { done: tally.done, failed: tally.failed, unsettled: tally.unsettled };
+  }
+  // An injected test runtime that never closed, or one with no progress
+  // model at all, falls back to whatever the launcher itself can count.
   if (progress === undefined) {
     return null;
   }

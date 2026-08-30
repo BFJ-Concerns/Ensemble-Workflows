@@ -612,7 +612,16 @@ run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
 ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
-`null` when the launcher never got far enough to count any). It also carries
+`null` when the launcher never got far enough to count any). The worker
+tally names one instant — the moment the run ended, before teardown — so
+`unsettled` is the number of workers still queued or running then, whether or
+not teardown had settled them by the time the file landed. Those torn-down
+workers are recorded as the run ended them: after a run whose script returned
+cleanly their records read `interrupted` with a `run-interrupted` cause, not
+`failed`. A teardown that fails after a clean body is itself a failed end —
+the run may leave workers alive or the archive unsealed — so the sentinel
+reports `outcome: "failed"`, the teardown error as its `error`, and the
+process exits non-zero rather than publishing `complete` over it. It also carries
 `manifest` — the sealed manifest's self-digest (`{ sha256 }`), or
 `{ unavailable }` naming why there is none (`recording-disabled`,
 `manifest-unsealed`) — and its own `integrity.sentinel_sha256`, computed by

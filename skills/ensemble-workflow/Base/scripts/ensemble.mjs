@@ -26672,6 +26672,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally = null;
   #closed = false;
   #workerSessions = /* @__PURE__ */ new Set();
   #sessionCounter = 0;
@@ -27263,9 +27268,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
   completedOutputs() {
     return this.#completed;
   }
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * `unsettled` counts the legs still in flight then — exactly the records
+   * close() terminalises as abandoned or settles with the run's own
+   * shutdown status, so the sentinel and the archive cannot disagree.
+   */
+  shutdownTally() {
+    return this.#shutdownTally;
+  }
   async close(status = "interrupted") {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = { done: totals.done, failed: totals.failed, unsettled: this.#unsettledAgentRecords.size };
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
@@ -28118,6 +28134,7 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(`[sentinel] ${formatError3(error)}
 `);
   };
+  let exitCode = 1;
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -28267,7 +28284,7 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`${serialised}
 `);
       finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      return 0;
+      exitCode = 0;
     } finally {
       interrupt.dispose();
     }
@@ -28285,8 +28302,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     stderr.write(`${diagnosis ?? formatError3(error)}
 `);
-    return 1;
+    exitCode = 1;
   } finally {
+    let teardownError = null;
     try {
       interrupt?.dispose();
       progress?.finish();
@@ -28295,7 +28313,9 @@ async function runEnsembleCli(argv, options = {}) {
       }
       if (runtime !== null) {
         const terminalStatus = finalRecord?.status;
-        await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+        await runtime.close(
+          terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+        );
       }
       if (runRecordWriter !== null) {
         await runRecordWriter.finish({
@@ -28303,11 +28323,17 @@ async function runEnsembleCli(argv, options = {}) {
           error: terminalError
         });
       }
+    } catch (error) {
+      teardownError = describeError(error);
+      stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+`);
     } finally {
-      const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
+      const settled = finalRecord ?? { status: "failed", exitCode: 1 };
+      const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
+      exitCode = terminal.exitCode;
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
-        error: terminalError,
+        workers: workerOutcomes(progress, runtime),
+        error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so
         // rather than omitting the field.
@@ -28315,12 +28341,17 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
   }
+  return exitCode;
 }
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
 }
-function workerOutcomes(progress) {
+function workerOutcomes(progress, runtime) {
+  const tally = runtime?.shutdownTally?.() ?? null;
+  if (tally !== null) {
+    return { done: tally.done, failed: tally.failed, unsettled: tally.unsettled };
+  }
   if (progress === void 0) {
     return null;
   }

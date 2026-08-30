@@ -1532,6 +1532,26 @@ test("a returned retry-exhaustion failure retains failed status while the runtim
   assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "invalid-json");
 });
 
+test("the shutdown tally is fixed at the moment the run ended, not at the moment it is read", async () => {
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  const agent = runtime.agent("hang until the run ends", { engine: "codex" });
+  await transport.started;
+  await runtime.close("interrupted");
+  await assert.rejects(agent, EngineShutdownError);
+
+  // Teardown has now settled the leg, so the live progress model no longer
+  // shows it in flight — which is exactly why a supervisor's tally cannot be
+  // read from there after the fact.
+  assert.equal(runtime.progress.snapshot().totals.active, 0);
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, unsettled: 1 });
+});
+
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {
   for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
     for (const status of ["timed-out", "interrupted"] as const) {

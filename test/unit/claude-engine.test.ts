@@ -293,15 +293,20 @@ test("completion is read from the transcript even when state never reports done"
 });
 
 test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", async () => {
-  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
-    const runtime = makeRuntime(controlPlane);
-    try {
-      await runtime.agent("read", { engine: "claude", cwd: "/per-call/cwd" });
-      assert.equal(controlPlane.dispatched[0]?.cwd, "/per-call/cwd");
-    } finally {
-      await runtime.close();
-    }
-  });
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-claude-per-call-cwd-"));
+  try {
+    await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      try {
+        await runtime.agent("read", { engine: "claude", cwd: directory });
+        assert.equal(controlPlane.dispatched[0]?.cwd, directory);
+      } finally {
+        await runtime.close();
+      }
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("a capability strip reaches Claude dispatch as permission deny rules", async () => {

@@ -60,6 +60,8 @@ export function createWorkflowHooks(options: {
   args: unknown;
   log: WorkflowLogSink;
   workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
+  /** Presents a caught author error before the combinator logs its stack. */
+  presentError?: (error: unknown) => void;
   /** Script-level `export const defaults`; per-call options override it. */
   defaults?: WorkflowDefaults;
 }): WorkflowHooks {
@@ -83,8 +85,8 @@ export function createWorkflowHooks(options: {
   return {
     agent: agentWithDefaults,
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
+    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
+    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -105,7 +107,8 @@ export function createWorkflowHooks(options: {
 
 export async function parallel<T>(
   thunks: Array<() => T | Promise<T>>,
-  log: WorkflowLogSink
+  log: WorkflowLogSink,
+  presentError?: (error: unknown) => void
 ): Promise<Array<Awaited<T> | null>> {
   return Promise.all(
     thunks.map(async (thunk, index) => {
@@ -118,6 +121,7 @@ export async function parallel<T>(
         if (error instanceof PreSpawnAuthorError) {
           throw error;
         }
+        presentError?.(error);
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         // An identified call's failure keeps its identity: the carrier
         // the runtime attached becomes the envelope the fan-in reads, with
@@ -136,7 +140,8 @@ export async function parallel<T>(
 export async function pipeline<Item>(
   items: Item[],
   stages: Array<(previous: unknown, originalItem: Item, index: number) => unknown | Promise<unknown>>,
-  log: WorkflowLogSink
+  log: WorkflowLogSink,
+  presentError?: (error: unknown) => void
 ): Promise<unknown[]> {
   return Promise.all(
     items.map(async (item, index) => {
@@ -154,6 +159,7 @@ export async function pipeline<Item>(
           if (error instanceof PreSpawnAuthorError) {
             throw error;
           }
+          presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           // Same identity-preserving collapse as parallel(): the failed
           // item resolves its identity envelope when the failing call

@@ -1159,7 +1159,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
-        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
+        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
         if (operationalFailure !== undefined) {
@@ -1233,7 +1233,7 @@ export class EnsembleRuntime {
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
-        this.#recordResolvedCodexDefault(engine, options, agentId, agentRecord, result);
+        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
         if (operationalFailure !== undefined) {
@@ -1318,18 +1318,24 @@ export class EnsembleRuntime {
     }
   }
 
-  #recordResolvedCodexDefault(
+  /**
+   * An unpinned call's first resolved served model becomes a named notice —
+   * on every engine that reports one, so the Claude notice names its model
+   * exactly as the Codex line does (an unpinned worker's real identity is
+   * operator-facing information, not a Codex privilege).
+   */
+  #recordResolvedUnpinnedModel(
     engine: EngineName,
     options: Partial<AgentOptions>,
     agentId: number,
     record: RuntimeAgentRecord,
     result: TurnResult
   ): void {
-    if (engine !== "codex" || options.model !== undefined || record.resolvedModel !== null || result.resolvedModel === undefined) {
+    if (options.model !== undefined || record.resolvedModel !== null || result.resolvedModel === undefined) {
       return;
     }
     this.#emitEvent({
-      method: "codex/unpinnedModelResolved",
+      method: `${engine}/unpinnedModelResolved`,
       params: {
         agentId,
         label: options.label ?? null,

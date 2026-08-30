@@ -1817,8 +1817,66 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
         "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-      "       ensemble workflows\n"
+      "       ensemble workflows\n" +
+      "       ensemble holds [--json]\n"
   );
+});
+
+test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
+  for (const flag of ["--help", "-h"]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    assert.equal(await runEnsembleCli([flag], { stdout, stderr }), 0);
+    assert.match(stdout.text(), /^Usage: ensemble /);
+    assert.equal(stderr.text(), "");
+  }
+
+  const stdout = new CaptureStream();
+  assert.equal(await runEnsembleCli(["--version"], { stdout, stderr: new CaptureStream() }), 0);
+  assert.match(stdout.text().trim(), /^\d+\.\d+\.\d+/);
+
+  // Per-subcommand help is an answer, never a usage *error*: exit 0.
+  for (const argv of [["workflows", "--help"], ["holds", "--help"], ["agent", "--help"]]) {
+    const subStdout = new CaptureStream();
+    assert.equal(await runEnsembleCli(argv, { stdout: subStdout, stderr: new CaptureStream() }), 0);
+    assert.match(subStdout.text(), /Usage: ensemble/);
+  }
+});
+
+test("an empty workflows catalogue says what it found and where it looked", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-empty-workflows-"));
+  const dataHome = path.join(directory, "data-home");
+  const stdout = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["workflows"], {
+    cwd: directory,
+    stdout,
+    stderr: new CaptureStream(),
+    env: { XDG_DATA_HOME: dataHome }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(stdout.text(), /No saved workflows found/);
+  assert.ok(stdout.text().includes(path.join(directory, ".claude", "ensemble", "workflows")));
+  assert.ok(stdout.text().includes(path.join(dataHome, "ensemble", "workflows")));
+});
+
+test("an unpinned Claude worker's resolution notice names the served model, like the Codex line", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-claude-resolved-"));
+  const engine = new FixedResponseEngine("claude", "done", { model: "claude-opus-5" });
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=claude", "greet"], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr,
+    runRecordDir: null,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.match(stderr.text(), /\[claude\] agent 1 runs unpinned — no model pinned; the ambient default applies/);
+  assert.match(stderr.text(), /\[claude\] agent 1 runs unpinned — resolved ambient default: claude-opus-5/);
 });
 
 test("CLI workflows lists saved workflows and notes unparseable files without crashing", async () => {

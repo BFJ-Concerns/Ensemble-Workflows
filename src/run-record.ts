@@ -1238,7 +1238,12 @@ export async function readProcessStartTicks(procDir: string, pid: number): Promi
 }
 
 function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {
-  return path.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
+  // The path component is the same truncated hash the run id carries
+  // (`namespace.id` is `cwd:<hash24>`), so the startup line's identifiers
+  // carry to the filesystem without transformation: run id
+  // `cwd:<hash24>:<uuid>` names `runs/cwd/<hash24>/<uuid>` verbatim. The
+  // manifest's namespace block still records the full hash.
+  return path.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
 }
 
 async function deriveNamespace(cwd: string): Promise<NamespaceRecord> {

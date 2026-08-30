@@ -21,6 +21,35 @@ import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from
 
 const execFileAsync = promisify(execFile);
 
+test("the run id and the archive directory carry one identifier, verbatim", async () => {
+  const cwd = await gitRepo("ensemble-record-identifier-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-identifier-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-ident",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  // A user carries the startup line's run id straight to the filesystem:
+  // `cwd:<hash24>:<uuid>` names `runs/cwd/<hash24>/<uuid>` with no
+  // transformation (the pre-fix tree used the full hash in the path and
+  // the truncated one in the id).
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    run_id: string;
+  };
+  const match = /^cwd:([0-9a-f]{24}):run-ident$/.exec(manifest.run_id);
+  assert.ok(match, `unexpected run_id shape: ${manifest.run_id}`);
+  assert.ok(
+    writer.archiveDir.endsWith(path.join("runs", "cwd", match![1]!, "run-ident")),
+    `archive dir ${writer.archiveDir} does not carry the run id's namespace component`
+  );
+});
+
 test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
   const cwd = await gitRepo("ensemble-record-effective-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));

@@ -16,7 +16,8 @@ import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 
 import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
-import { listSavedWorkflows } from "./workflow-registry.js";
+import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
+import { harnessVersion } from "./harness-version.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
@@ -77,12 +78,35 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
 
+  // Discovery gestures for a cold arrival: help and version answer before
+  // any invocation parsing, and each subcommand's --help prints its own
+  // usage at exit 0 rather than a usage *error* at exit 2.
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    stdout.write(usage());
+    return 0;
+  }
+  if (argv[0] === "--version") {
+    stdout.write(`${harnessVersion()}\n`);
+    return 0;
+  }
+
   if (argv[0] === "workflows") {
+    if (argv[1] === "--help" || argv[1] === "-h") {
+      stdout.write("Usage: ensemble workflows\nLists saved workflows from the project and user registries.\n");
+      return 0;
+    }
     if (argv.length > 1) {
       stderr.write("Usage: ensemble workflows\n");
       return 2;
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
+    if (listing.entries.length === 0) {
+      // An empty catalogue speaks: what was found (nothing) and where the
+      // CLI looked, so a cold user learns the registry locations instead
+      // of staring at silent exit 0.
+      const dirs = defaultWorkflowRegistryDirs(cwd, env);
+      stdout.write(`No saved workflows found. Looked in:\n  ${dirs.project}\n  ${dirs.user}\n`);
+    }
     for (const entry of listing.entries) {
       const scope = entry.shadowed ? "user (shadowed by project)" : entry.scope;
       stdout.write(`${entry.name}\t${entry.description}\t${scope}\t${entry.scriptPath}\n`);
@@ -93,7 +117,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 0;
   }
 
+  if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
+    stdout.write(usage());
+    return 0;
+  }
+
   if (argv[0] === "holds") {
+    if (argv[1] === "--help" || argv[1] === "-h") {
+      stdout.write("Usage: ensemble holds [--json]\nLists open holds across runs; --json emits the full records.\n");
+      return 0;
+    }
     // The cross-run inbox: every open hold on this machine, with the
     // content, accepted verdicts, and decision path a decider needs — so one
     // watcher can wake one orchestrator instead of a resident session per
@@ -250,7 +283,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
-        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model: set, the ambient default applies\n`);
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model pinned; the ambient default applies\n`);
+        return;
+      }
+      if (event.method === "claude/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}\n`);
         return;
       }
       if (event.method === "codex/unpinnedModelResolved") {

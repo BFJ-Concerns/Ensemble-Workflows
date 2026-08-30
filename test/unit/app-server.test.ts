@@ -975,9 +975,9 @@ test("Codex app-server sends a thread config overlay only when one is given", as
 
 test("Codex app-server lists the fresh discovered skills for the requested worker cwd", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-list-"));
-  const capturePath = path.join(directory, "methods.txt");
+  const requestCapturePath = path.join(directory, "requests.jsonl");
   const codexBin = await fakeCodexTurnServer({
-    capturePath,
+    requestCapturePath,
     skills: ["repo-skill", "plugin-management:plugin-management", "repo-skill"]
   });
   const transport = await CodexAppServerTransport.start({
@@ -990,7 +990,14 @@ test("Codex app-server lists the fresh discovered skills for the requested worke
   });
   try {
     assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), ["plugin-management:plugin-management", "repo-skill"]);
-    assert.ok((await readFile(capturePath, "utf8")).split("\n").includes("skills/list"));
+    const requests = (await readFile(requestCapturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params?: unknown });
+    assert.deepEqual(requests.find((request) => request.method === "skills/list"), {
+      method: "skills/list",
+      params: { cwds: ["/fake/worker-cwd"], forceReload: true }
+    });
   } finally {
     await transport.close();
   }
@@ -1018,6 +1025,7 @@ async function fakeCodexTurnServer(
   options: {
     returnPromptBase64?: boolean;
     capturePath?: string;
+    requestCapturePath?: string;
     envCapturePath?: string;
     servedModel?: string | null;
     skills?: readonly string[];
@@ -1039,6 +1047,7 @@ if (process.argv[2] !== "app-server") {
 let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
+const requestCapturePath = ${JSON.stringify(options.requestCapturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 const skills = ${JSON.stringify(options.skills ?? [])};
@@ -1053,6 +1062,9 @@ reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (capturePath !== null) {
     appendFileSync(capturePath, message.method + "\\n");
+  }
+  if (requestCapturePath !== null) {
+    appendFileSync(requestCapturePath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
   }
   if (message.method === "initialize") {
     send({ id: message.id, result: {} });

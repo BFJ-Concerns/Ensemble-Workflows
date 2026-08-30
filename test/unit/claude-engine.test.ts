@@ -994,6 +994,11 @@ test("a client diagnostic in place of a model reply is archived as a failure, no
         // served model: recording it would name a model that never ran.
         assert.equal(settled?.resolvedModel, null);
         assert.equal(settled?.validatedOutput, null);
+        // The diagnostic is the failure's message and nothing else. A cold
+        // consumer reading raw_output must not find an API error string
+        // sitting where the worker's own text belongs.
+        assert.equal(settled?.rawOutput, "");
+        assert.equal(settled?.attempts[0]?.rawOutput, "");
       } finally {
         await runtime.close();
       }

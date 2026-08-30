@@ -362,6 +362,15 @@ attempt's worker process dies rather than returns, the attempt record's
 a killed leg is distinguishable from one that returned nothing; attempts that
 returned normally record `worker_exit: null`.
 
+A run that ends while a turn is in flight tears the transport down itself, so
+the turn observes a symptom of the run's exit — a closed app-server, an
+aborted poll — rather than a fault of its own. The attempt's `failure` then
+names the run's settlement (`run-interrupted`, `run-timed-out`), matching the
+agent's `termination_cause` above it, and the symptom is kept verbatim in
+`observed_failure` (`{ kind, message }`). An attempt that failed on the
+engine's own account records that failure as `failure` and
+`observed_failure: null`.
+
 **Completion sentinel.** At startup the CLI prints, on stderr, the path of a
 sentinel file (`completion-sentinel.json`, under the run's own directory in
 the durable-record store) that the launcher process itself writes when the

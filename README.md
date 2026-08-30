@@ -332,11 +332,18 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
   `"abandoned"` means the run ended while the dispatch record was still being
   persisted, so the harness did not observe an agent outcome.
+- `termination_cause`: the `{ kind, message }` that settled this agent at that
+  status when the runtime decided it — a run that ended under the worker, or a
+  turn timeout — and `null` when the attempts already name the cause.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.
 - `validated_output`: validated object/text result, or `null` on failure.
 - `attempts`: per-attempt status, structured failure, raw/validated output,
-  timing, and token usage events.
+  timing, and token usage events. Where the run's own settlement ended the
+  turn, the attempt's `failure` names that settlement and `observed_failure`
+  keeps the transport symptom the turn saw (a closed app-server, an aborted
+  poll); `observed_failure` is `null` when the engine's own failure is the
+  cause.
 - `transcripts`: archived transcript files for the attempts.
 
 Codex transcripts are captured from the app-server stream because threads are

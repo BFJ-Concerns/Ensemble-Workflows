@@ -485,7 +485,14 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       return;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
+    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+      // Claude Code composed the last reply itself, so the text on the
+      // transcript is its diagnostic and not the worker's. It reaches the
+      // record as the failure's message; carrying it here as well would put
+      // an error string in the slot a consumer reads as model output.
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
     if (text !== null) {
       attachPartialWorkerText(error, text);
     }

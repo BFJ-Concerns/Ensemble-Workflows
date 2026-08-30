@@ -70,6 +70,16 @@ export interface RuntimeAgentAttemptRecord {
   status: "complete" | "failed";
   failure: { kind: string; message: string } | null;
   /**
+   * The transport symptom this attempt observed, when what `failure` names
+   * is the run's own settlement rather than an engine fault. A shutdown or
+   * whole-run timeout reaches an in-flight turn as whatever the transport
+   * noticed first — a closed app-server, an aborted poll — which describes
+   * the run's exit, not the attempt's cause, so `failure` names the cause
+   * and the observation is kept here rather than discarded. Null whenever
+   * `failure` is already the engine's own account.
+   */
+  observedFailure: { kind: string; message: string } | null;
+  /**
    * How the attempt's worker process died, when the engine observed it —
    * the exit status or terminating signal, so a killed leg is
    * distinguishable from one that returned nothing. Null when the worker
@@ -651,6 +661,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         failure: attempt.failure,
+        observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null
             ? null

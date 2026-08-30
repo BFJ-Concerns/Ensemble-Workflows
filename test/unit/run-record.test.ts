@@ -829,6 +829,7 @@ function agentRecord(
         attempt: 1,
         status: "complete" as const,
         failure: null,
+        observedFailure: null,
         workerExit: null,
         appServerDiagnostic: null,
         rawOutput: "ok",
@@ -1123,6 +1124,14 @@ test("an interrupted worker's archive names its termination cause and why no tra
   };
   interrupted.attempts[0]!.status = "failed";
   interrupted.attempts[0]!.transcripts = [];
+  interrupted.attempts[0]!.failure = {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  };
+  interrupted.attempts[0]!.observedFailure = {
+    kind: "AppServerExitedError",
+    message: "codex app-server closed"
+  };
   await writer.recordAgent(interrupted);
 
   const completed = agentRecord(2, "codex", null, 0);
@@ -1132,6 +1141,10 @@ test("an interrupted worker's archive names its termination cause and why no tra
     JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
       termination_cause: { kind: string; message: string } | null;
       transcripts: unknown;
+      attempts: Array<{
+        failure: { kind: string; message: string } | null;
+        observed_failure: { kind: string; message: string } | null;
+      }>;
     };
 
   const interruptedAgent = await read("000001");
@@ -1142,9 +1155,20 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // No transcript survives an interruption, so the archive says why rather
   // than showing an empty list a consumer would read as "the engine was silent".
   assert.deepEqual(interruptedAgent.transcripts, { unavailable: "worker-interrupted" });
+  // The attempt reads the same cause as the agent above it, and the symptom
+  // its transport reported survives beside it rather than as the reason.
+  assert.deepEqual(interruptedAgent.attempts[0]?.failure, {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  });
+  assert.deepEqual(interruptedAgent.attempts[0]?.observed_failure, {
+    kind: "AppServerExitedError",
+    message: "codex app-server closed"
+  });
 
   // A worker that finished carries neither an invented cause nor an excuse.
   const completedAgent = await read("000002");
   assert.equal(completedAgent.termination_cause, null);
+  assert.equal(completedAgent.attempts[0]?.observed_failure, null);
   assert.ok(Array.isArray(completedAgent.transcripts));
 });

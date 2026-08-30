@@ -134,8 +134,9 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
  * generation, no double-count) and is the dominant, exactly-correct signal; the
  * input side is taken as the final message's snapshot (the representative
  * context size, charged once) rather than summed, which would multiply-count the
- * context carried into every step. Claude does not separate reasoning tokens, so
- * thinking rides `outputTokens`. Documented as best-effort: what Claude tokens
+ * context carried into every step. Claude does not report a separate reasoning
+ * measurement, so the optional field stays absent and thinking rides
+ * `outputTokens`. Documented as best-effort: what Claude tokens
  * should mean against a subscription allowance is not yet settled.
  * Returns all-zero when no assistant usage is present.
  */
@@ -179,7 +180,6 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     cacheCreationInputTokens: lastCacheCreation,
     inputTokens: lastInput,
     outputTokens,
-    reasoningOutputTokens: 0,
     totalTokens: lastInput + lastCached + outputTokens
   };
 }
@@ -227,7 +227,6 @@ function zeroUsage(): TokenUsageBreakdown {
     cachedInputTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
-    reasoningOutputTokens: 0,
     totalTokens: 0
   };
 }

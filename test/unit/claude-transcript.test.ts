@@ -137,7 +137,7 @@ test("usageSince sums output tokens and snapshots the final input side", () => {
   // The creation share travels beside the combined figure, so a consumer can
   // tell input served from cache (7) from cache being written (3).
   assert.equal(usage.cacheCreationInputTokens, 3);
-  assert.equal(usage.reasoningOutputTokens, 0);
+  assert.equal("reasoningOutputTokens" in usage, false);
   assert.equal(usage.totalTokens, 220 + 10 + 40);
 });
 
@@ -182,7 +182,6 @@ test("usageSince returns all-zero when no assistant usage is present", () => {
     cachedInputTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
-    reasoningOutputTokens: 0,
     totalTokens: 0
   });
 });

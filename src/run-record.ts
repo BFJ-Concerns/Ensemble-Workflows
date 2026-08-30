@@ -13,6 +13,7 @@ import type {
   JsonSchema,
   TokenUsageEvent
 } from "./types.js";
+import { canonicalJson, sha256 } from "./canonical-document.js";
 import { harnessVersion } from "./harness-version.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
@@ -1110,60 +1111,6 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
   return reaped;
 }
 
-/**
- * The dead-vs-live reading a cold archive consumer must make for itself.
- *
- * A durable `in-progress` manifest says nothing about whether its writer is
- * still running: a SIGKILLed run and a live one are byte-identical until
- * some later writer's reap sweeps the namespace, and no consumer should
- * have to wait for that (or start a run to trigger it). The evidence is
- * already in the manifest's `owner` block, so a consumer answers the
- * question with the same judgement the reaper uses, on the same
- * conservative terms: only a provably-gone owner on this host is `dead`;
- * an owner on another machine, one recorded without proc evidence, and a
- * proc filesystem this consumer cannot read all yield `undecidable`.
- *
- * `verdict: "live"` means the recorded pid is present with matching start
- * ticks — the writer is running now. A terminal manifest is `settled`: its
- * own status already answers the question.
- */
-export interface ArchivedRunLiveness {
-  verdict: "settled" | "live" | "dead" | "undecidable";
-  /** The reaper's own reason on a `dead` verdict; null otherwise. */
-  reason: AbandonmentRecord["reason"] | null;
-}
-
-export async function judgeArchivedRunLiveness(
-  manifest: { status?: unknown; owner?: unknown },
-  options: { procDir?: string; host?: string } = {}
-): Promise<ArchivedRunLiveness> {
-  if (manifest.status !== "in-progress") {
-    return { verdict: "settled", reason: null };
-  }
-  const procDir = options.procDir ?? "/proc";
-  const host = options.host ?? os.hostname();
-  const reason = await judgeOwnerGone(manifest.owner, procDir, host);
-  if (reason !== null) {
-    return { verdict: "dead", reason };
-  }
-  // Not provably gone splits two ways, and the difference matters to a
-  // consumer deciding whether to wait: an owner it can positively see in
-  // the process table is live, and everything else is unjudgeable here.
-  const owner = manifest.owner as Partial<RunOwnerRecord> | null | undefined;
-  if (
-    owner !== null &&
-    owner !== undefined &&
-    typeof owner === "object" &&
-    typeof owner.pid === "number" &&
-    typeof owner.start_ticks === "string" &&
-    owner.host === host &&
-    (await readProcessStartTicks(procDir, owner.pid)) === owner.start_ticks
-  ) {
-    return { verdict: "live", reason: null };
-  }
-  return { verdict: "undecidable", reason: null };
-}
-
 async function judgeOwnerGone(
   owner: unknown,
   procDir: string,
@@ -1315,25 +1262,6 @@ function extractTask(meta: unknown): unknown {
     return null;
   }
   return (meta as { task?: unknown }).task ?? null;
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
 }
 
 async function hashFile(filePath: string): Promise<string> {

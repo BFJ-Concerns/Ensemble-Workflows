@@ -13591,12 +13591,30 @@ function resolveStripEnforcement(engine, table, strip) {
 }
 
 // src/completion-sentinel.ts
-import { createHash as createHash2 } from "node:crypto";
 import { mkdir as mkdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import path4 from "node:path";
 
-// src/run-record.ts
+// src/canonical-document.ts
 import { createHash } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+// src/run-record.ts
+import { createHash as createHash2 } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path3 from "node:path";
@@ -14392,25 +14410,9 @@ function extractTask(meta) {
   }
   return meta.task ?? null;
 }
-function canonicalJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-function sortJson(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
 async function hashFile(filePath) {
   const text = await readFile(filePath);
-  return createHash("sha256").update(text).digest("hex");
+  return createHash2("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
   await mkdir(path3.dirname(destination), { recursive: true });
@@ -14488,12 +14490,12 @@ var CompletionSentinel = class {
       // the manifest's, it catches an edited field, not a forger.
       integrity: { algorithm: "sha256", sentinel_sha256: null }
     };
-    payload.integrity.sentinel_sha256 = sha2562(canonicalJson2(payload));
+    payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
       await mkdir2(path4.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
-        await writeFile2(temporary, `${canonicalJson2(payload)}
+        await writeFile2(temporary, `${canonicalJson(payload)}
 `, "utf8");
         await rename2(temporary, this.#path);
       } catch (error) {
@@ -14505,22 +14507,6 @@ var CompletionSentinel = class {
     }
   }
 };
-function canonicalJson2(value) {
-  return JSON.stringify(sortJson2(value), null, 2);
-}
-function sortJson2(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson2);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson2(entryValue)]));
-  }
-  return value;
-}
-function sha2562(text) {
-  return createHash2("sha256").update(text).digest("hex");
-}
 
 // src/opencode-model-registry.ts
 var MODELS = [

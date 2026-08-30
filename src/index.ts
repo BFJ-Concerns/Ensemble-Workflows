@@ -46,8 +46,8 @@ export {
 } from "./script-runner.js";
 export { parseJsonFromText, validateJsonSchema } from "./schema.js";
 export { RunProgress } from "./progress.js";
-export { RunRecordWriter, judgeArchivedRunLiveness, resolveRunDirectory } from "./run-record.js";
-export type { ArchivedRunLiveness, WorkflowInvocationRecord } from "./run-record.js";
+export { RunRecordWriter, resolveRunDirectory } from "./run-record.js";
+export type { WorkflowInvocationRecord } from "./run-record.js";
 export {
   CompletionSentinel,
   SENTINEL_FILENAME,

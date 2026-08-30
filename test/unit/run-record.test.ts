@@ -3,18 +3,14 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
-import {
-  RunRecordWriter,
-  judgeArchivedRunLiveness,
-  reapAbandonedRuns,
-  resolveRunDirectory
-} from "../../src/run-record.js";
+import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -1039,6 +1035,21 @@ test("a run whose archive is deleted mid-flight cannot seal a complete manifest"
   await rm(store, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });
+
+/**
+ * The reading belongs to the consumer, not the harness: the archive exports
+ * no liveness API, so a cold reader applies the owner-block check itself.
+ * This pins that copy against the same conservative terms the reaper holds
+ * to, case for case, so the two cannot drift apart unnoticed.
+ */
+const { judgeArchivedRunLiveness } = (await import(
+  pathToFileURL(path.resolve("test/consumers/archive-liveness.mjs")).href
+)) as {
+  judgeArchivedRunLiveness: (
+    manifest: unknown,
+    options: { procDir: string; host: string }
+  ) => Promise<{ verdict: string; reason: string | null }>;
+};
 
 test("an archived run's liveness is judged from its own owner block", async () => {
   const proc = await mkdtemp(path.join(tmpdir(), "ensemble-liveness-proc-"));

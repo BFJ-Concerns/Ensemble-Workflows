@@ -10,7 +10,6 @@ import { findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-proce
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
-const distIndexPath = path.resolve("dist/src/index.js");
 
 interface IntegrityReading {
   status: string;
@@ -23,7 +22,7 @@ interface IntegrityReading {
 }
 
 async function readArchive(archiveDir: string): Promise<IntegrityReading> {
-  const reading = await runNode([consumerPath, archiveDir, distIndexPath]);
+  const reading = await runNode([consumerPath, archiveDir]);
   assert.equal(reading.code, 0, reading.stderr);
   return JSON.parse(reading.stdout) as IntegrityReading;
 }

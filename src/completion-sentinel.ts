@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { canonicalJson, sha256 } from "./canonical-document.js";
 import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
@@ -142,27 +142,3 @@ export class CompletionSentinel {
   }
 }
 
-/**
- * The run manifest's canonical form, duplicated here rather than imported
- * so the sentinel keeps its independence from the record module's writer
- * state — one recipe, stated in both places, is what lets a consumer verify
- * either file without knowing which wrote it.
- */
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}

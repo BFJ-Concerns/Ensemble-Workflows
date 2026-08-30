@@ -5,7 +5,8 @@
  * cold, in its own process, with no access to the run that wrote it. It
  * answers three questions the archive is supposed to answer by itself —
  * is this archive unedited, is it whole, and is the run that owns it still
- * alive — and prints the answers as JSON for the caller to pin.
+ * alive — and prints the answers as JSON for the caller to pin. Every check
+ * is the consumer's own: nothing here imports the harness.
  */
 
 import { createHash } from "node:crypto";
@@ -13,12 +14,10 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { readJson } from "./archive-helpers.mjs";
+import { judgeArchivedRunLiveness } from "./archive-liveness.mjs";
 
-const [archiveDir, distIndex] = process.argv.slice(2);
-assert.ok(archiveDir, "usage: read-archive-integrity.mjs <archive-dir> <dist-index>");
-assert.ok(distIndex, "usage: read-archive-integrity.mjs <archive-dir> <dist-index>");
-
-const { judgeArchivedRunLiveness } = await import(path.resolve(distIndex));
+const [archiveDir] = process.argv.slice(2);
+assert.ok(archiveDir, "usage: read-archive-integrity.mjs <archive-dir>");
 
 const manifest = await readJson(path.join(archiveDir, "manifest.json"));
 assert.equal(manifest.integrity?.algorithm, "sha256");

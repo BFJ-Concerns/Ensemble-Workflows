@@ -277,14 +277,15 @@ from the process table, or start ticks that no longer match (pid reuse) —
 rewriting `status` to the terminal `"abandoned"` with an `abandonment` block
 naming what was observed, when, and by which run. Judgement is same-host and
 evidence-only: an owner on another machine, or one recorded without a
-readable proc filesystem, is left as written, and a consumer can apply the
-same check itself from the `owner` block without waiting for a reap:
-`judgeArchivedRunLiveness(manifest)` is that check as the harness exports it,
-answering `settled` for any terminal manifest, `dead` for an owner provably
-gone, `live` for one still in the process table with matching start ticks, and
-`undecidable` for everything else — so a supervisor can tell a killed run from
-a running one at read time, on an archive nobody has rewritten. Agent records
-under a reaped run are preserved untouched.
+readable proc filesystem, is left as written. A consumer need not wait for a
+reap: the `owner` block is the evidence, so a cold reader applies the same
+check itself — a terminal manifest is settled; an owner on this host whose pid
+is absent, or whose start ticks no longer match, is dead; one present with
+matching start ticks is live; and everything else, including a pid the reader
+has no readable proc filesystem to check, is undecidable. That reading is a
+consumer's to make, not an API the harness exports, and it lets a supervisor
+tell a killed run from a running one at read time, on an archive nobody has
+rewritten. Agent records under a reaped run are preserved untouched.
 
 ### Run record schema
 

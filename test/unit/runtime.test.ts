@@ -1926,3 +1926,95 @@ test("an identified operational failure inside parallel resolves its envelope, n
 
   assert.deepEqual(results, [{ label: "verify", phase: "check", output: null }, null]);
 });
+
+test("an engine-reported attempt duration is recorded as the engine measured it", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new FakeTransport([turn('{"ok":true}')]),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await runtime.agent("read", { engine: "codex" });
+
+  // turn() reports 10ms; the record must not substitute its own wall clock
+  // for a duration the engine actually observed.
+  assert.equal(records.at(-1)?.attempts[0]?.durationMs, 10);
+  await runtime.close();
+});
+
+test("a run that ends under an in-flight turn names itself as the cause, agent and attempt alike", async () => {
+  for (const [status, expectedKind] of [
+    ["interrupted", "run-interrupted"],
+    ["timed-out", "run-timed-out"]
+  ] as const) {
+    const records: RuntimeAgentRecord[] = [];
+    const transport = new ClosingTransport(new AppServerExitedError("codex app-server closed"));
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultMaxAttempts: 1
+    });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    const agent = runtime.agent("run past the end", { engine: "codex" });
+    await transport.started;
+    await runtime.close(status);
+    await assert.rejects(agent, AppServerExitedError);
+
+    // The runtime settles the status and the cause together: a consumer must
+    // not have to infer why a worker is interrupted or timed out.
+    const settled = records.at(-1);
+    assert.equal(settled?.status, status);
+    assert.deepEqual(settled?.terminationCause, {
+      kind: expectedKind,
+      message: `the run ended (${status}) while this worker's turn was in flight`
+    });
+
+    // The attempt is where a consumer walking the record reads a cause, so
+    // it must not report the run's own teardown as an engine fault. The
+    // transport symptom is kept beside it rather than destroyed.
+    const attempt = settled?.attempts.at(-1);
+    assert.deepEqual(attempt?.failure, {
+      kind: expectedKind,
+      message: `the run ended (${status}) while this worker's turn was in flight`
+    });
+    assert.deepEqual(attempt?.observedFailure, {
+      kind: "AppServerExitedError",
+      message: "codex app-server closed"
+    });
+  }
+});
+
+test("an engine's own failure stays the attempt's cause, with nothing beside it", async () => {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(new AppServerExitedError("transport exited unexpectedly")),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(() => runtime.agent("survive the transport", { engine: "codex" }), AppServerExitedError);
+
+  const attempt = records.at(-1)?.attempts.at(-1);
+  assert.deepEqual(attempt?.failure, {
+    kind: "AppServerExitedError",
+    message: "transport exited unexpectedly"
+  });
+  assert.equal(attempt?.observedFailure, null);
+  assert.equal(records.at(-1)?.terminationCause, null);
+});

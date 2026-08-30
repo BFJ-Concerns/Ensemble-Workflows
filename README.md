@@ -340,6 +340,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
   `"abandoned"` means the run ended while the dispatch record was still being
   persisted, so the harness did not observe an agent outcome.
+- `termination_cause`: the `{ kind, message }` that settled this agent at that
+  status when the runtime decided it — a run that ended under the worker, or a
+  turn timeout — and `null` when the attempts already name the cause.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `strip`: requested capability names and resolved enforcement routes.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
@@ -351,8 +354,13 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `queued_ms`, `execution_ms`.
 - `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
-  `resolved_model`, `failure` (`{ kind, message }` or `null`), `diagnostics`,
-  `app_server_diagnostic`, `token_usage_events`, `worker_exit`.
+  `resolved_model`, `failure` (`{ kind, message }` or `null`),
+  `observed_failure`, `diagnostics`, `app_server_diagnostic`,
+  `token_usage_events`, `worker_exit`. Where the run's own settlement ended
+  the turn, the attempt's `failure` names that settlement and
+  `observed_failure` keeps the transport symptom the turn saw (a closed
+  app-server, an aborted poll); `observed_failure` is `null` when the
+  engine's own failure is the cause.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`.
 

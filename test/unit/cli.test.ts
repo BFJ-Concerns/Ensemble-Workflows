@@ -592,13 +592,23 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     kind: string;
     outcome: string;
     exit_code: number;
+    workers: unknown;
+    error: { kind: string; message: string } | null;
     ended_at: string;
   };
   assert.deepEqual(sentinel, {
-    schema_version: 1,
+    schema_version: 2,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,
+    // This runtime is injected and carries no progress model, so the
+    // launcher observed no worker tally — null says so rather than
+    // publishing a zeroed one it did not measure.
+    workers: null,
+    error: {
+      kind: "SingleAgentFailedError",
+      message: "Agent exhausted its attempts without producing a result"
+    },
     ended_at: sentinel.ended_at
   });
 });
@@ -2277,3 +2287,216 @@ test("a missing workflow script path is one clean pre-spawn line naming the path
     `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
   );
 });
+
+test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {
+  // Four causes that all read as bare `failed` on status alone. Each must
+  // be told apart by a consumer holding only the archive.
+  const cases = [
+    {
+      name: "script-throw",
+      source: `export const meta = { name: "cause-script" };\nreturn { value: 1n };`,
+      kind: "WorkflowScriptError",
+      message: /BigInt/
+    },
+    {
+      name: "unknown-engine",
+      source: `export const meta = { name: "cause-engine" };\nawait agent("hi", { engine: "codexx" });`,
+      kind: "UnknownEngineError",
+      message: /Unknown agent engine/
+    },
+    {
+      name: "budget-refusal",
+      source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
+      kind: "BudgetExceededError",
+      message: /Token budget exhausted for codex/
+    }
+  ] as const;
+
+  for (const terminal of cases) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-cli-cause-${terminal.name}-`));
+    const runRecordDir = path.join(directory, "records");
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, terminal.source);
+
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([new HangOnPromptEngine("codex", 4)]),
+          defaultMaxAttempts: 1,
+          // A zero ceiling refuses the first codex dispatch outright; the
+          // other two cases never reach the budget.
+          ...(terminal.name === "budget-refusal" ? { budgetCeilings: { codex: 0 } } : {})
+        })
+    });
+
+    assert.equal(exitCode, 1, `${terminal.name}: ${stderr.text()}`);
+
+    const archive = announcedRunRecord(stderr.text()).archive_path;
+    const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
+      status: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(manifest.status, "failed", terminal.name);
+    assert.equal(manifest.error?.kind, terminal.kind, `${terminal.name} manifest kind`);
+    assert.match(manifest.error?.message ?? "", terminal.message, `${terminal.name} manifest message`);
+
+    const result = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8")) as {
+      status: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(result.error?.kind, terminal.kind, `${terminal.name} result kind`);
+    assert.match(result.error?.message ?? "", terminal.message, `${terminal.name} result message`);
+
+    const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+    assert.ok(sentinelPath, `${terminal.name}: sentinel path must be announced`);
+    const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+      outcome: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(sentinel.outcome, "failed", terminal.name);
+    assert.equal(sentinel.error?.kind, terminal.kind, `${terminal.name} sentinel kind`);
+  }
+});
+
+test("a clean run's durable surfaces carry no invented cause", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-cause-clean-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cause-clean" };\nreturn "ok";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const archive = announcedRunRecord(stderr.text()).archive_path;
+  const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as { error: unknown };
+  const result = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8")) as { error: unknown };
+  assert.equal(manifest.error, null);
+  assert.equal(result.error, null);
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { error: unknown };
+  assert.equal(sentinel.error, null);
+});
+
+test("the sentinel carries worker outcomes, so `complete` cannot mean every worker failed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-workers-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  // Worker failures collapse to null, and this script handles them —
+  // so the run genuinely succeeds and exits 0. The sentinel is the only
+  // surface a supervisor has, and it must not answer "complete" alone.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-all-failed" };
+      const results = await parallel([
+        () => agent("fail", { engine: "codex" }),
+        () => agent("fail", { engine: "codex" })
+      ]);
+      return { nulls: results.filter((value) => value === null).length };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fixedEngineRuntime(new AlwaysFailingEngine("codex", 4), 1)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.deepEqual(JSON.parse(stdout.text()), { nulls: 2 });
+
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    exit_code: number;
+    workers: { done: number; failed: number; unsettled: number } | null;
+  };
+  // Outcome and exit code still describe the script, which succeeded.
+  assert.equal(sentinel.outcome, "complete");
+  assert.equal(sentinel.exit_code, 0);
+  // What is added is the tally that stops `complete` reading as "all well".
+  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, unsettled: 0 });
+});
+
+test("the sentinel's worker tally counts a run's successes as its own observation", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-workers-ok-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-workers-ok" };
+      await agent("one", { engine: "codex" });
+      await agent("two", { engine: "codex" });
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fixedEngineRuntime(new HangOnPromptEngine("codex", 4), 1)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    workers: { done: number; failed: number; unsettled: number } | null;
+  };
+  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, unsettled: 0 });
+});
+
+class AlwaysFailingEngine implements EngineAdapter {
+  readonly concurrency: number;
+  readonly scheduler: Scheduler;
+
+  constructor(
+    readonly name: EngineName,
+    concurrency: number
+  ) {
+    this.concurrency = concurrency;
+    this.scheduler = new Scheduler(concurrency);
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(): EngineInvocation {
+    return {
+      runAttempt: async () => {
+        throw new Error("engine refused the turn");
+      },
+      close: async () => {}
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}

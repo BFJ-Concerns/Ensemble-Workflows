@@ -5,8 +5,9 @@ import { parseArgs } from "node:util";
 import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
+import type { SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { PreSpawnAuthorError } from "./errors.js";
+import { describeError, PreSpawnAuthorError } from "./errors.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -119,6 +120,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let statusWriter: StatusFileWriter | null = null;
   let runRecordWriter: RunRecordWriter | null = null;
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
+  // What ended the run. The diagnostic exists on stderr already; a consumer
+  // holding only the archive has no way to reconstruct it, so it is
+  // resolved here — the one site that sees the terminal error — and carried
+  // onto every durable surface (manifest, result envelope, sentinel).
+  let terminalError: { kind: string; message: string } | null = null;
   // The launcher owns the sentinel: written on every terminal transition this
   // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
@@ -300,6 +306,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}\n`);
     finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
+    terminalError = describeError(error);
     stderr.write(`${formatError(error)}\n`);
     return 1;
   } finally {
@@ -315,7 +322,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
       }
       if (runRecordWriter !== null) {
-        await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+        await runRecordWriter.finish({
+          ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
+          error: terminalError
+        });
       }
     } finally {
       // Last, so a supervisor woken by the sentinel finds the archive already
@@ -325,7 +335,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // interruption, salvage — and a missing finalRecord is itself a
       // failure outcome.
       const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
-      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
+      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
+        workers: workerOutcomes(progress),
+        error: terminalError
+      });
     }
   }
 }
@@ -348,6 +361,19 @@ function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["r
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
+}
+
+/**
+ * The run's worker tally as the launcher observed it, or null when there was
+ * no progress model to read (an injected test runtime). `unsettled` counts
+ * workers still queued or running when the run ended.
+ */
+function workerOutcomes(progress: RunProgress | undefined): SentinelWorkerOutcomes | null {
+  if (progress === undefined) {
+    return null;
+  }
+  const totals = progress.snapshot().totals;
+  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
 }
 
 function completedDirectAgentWithNull(runtime: EnsembleRuntime): boolean {

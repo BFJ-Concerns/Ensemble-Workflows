@@ -70,6 +70,16 @@ export interface RuntimeAgentAttemptRecord {
   status: "complete" | "failed";
   failure: { kind: string; message: string } | null;
   /**
+   * The transport symptom this attempt observed, when what `failure` names
+   * is the run's own settlement rather than an engine fault. A shutdown or
+   * whole-run timeout reaches an in-flight turn as whatever the transport
+   * noticed first — a closed app-server, an aborted poll — which describes
+   * the run's exit, not the attempt's cause, so `failure` names the cause
+   * and the observation is kept here rather than discarded. Null whenever
+   * `failure` is already the engine's own account.
+   */
+  observedFailure: { kind: string; message: string } | null;
+  /**
    * How the attempt's worker process died, when the engine observed it —
    * the exit status or terminating signal, so a killed leg is
    * distinguishable from one that returned nothing. Null when the worker
@@ -126,6 +136,15 @@ export interface RuntimeAgentRecord {
   label: string | null;
   phase: string | null;
   status: AgentStatus;
+  /**
+   * Why this agent ended as it did, when the runtime ended it rather than
+   * the engine — a run interrupt or a whole-run timeout reaches a worker as
+   * whatever its transport happened to notice (a closed app-server, an
+   * aborted poll), so the attempt's own failure names the symptom and this
+   * names the cause. Null when the engine's own failure is the cause, and
+   * never an inference: the attempts array keeps what was observed.
+   */
+  terminationCause: TerminalErrorRecord | null;
   creationOrder: number;
   concurrencyGroup: string;
   schema: JsonSchema | null;
@@ -152,11 +171,29 @@ export interface RuntimeAgentRecord {
   attempts: RuntimeAgentAttemptRecord[];
 }
 
+/**
+ * The terminal error that ended a run, as a consumer holding only the
+ * archive reads it. `kind` is the error's class name, which is what
+ * discriminates a script bug (`WorkflowScriptError`) from an unknown-engine
+ * typo (`UnknownEngineError`) from a whole-run timeout
+ * (`WorkflowTimeoutError`) from a budget refusal (`BudgetExceededError`) —
+ * four cases that otherwise all read as bare `failed`.
+ */
+export interface TerminalErrorRecord {
+  kind: string;
+  message: string;
+}
+
 export interface RunRecordFinishOptions {
   /** The launcher's own terminal statuses; `abandoned` belongs to the reaper alone. */
   status: Exclude<RunStatus, "in-progress" | "abandoned">;
   exitCode: number;
   result: unknown;
+  /**
+   * What ended the run, when it ended badly. Null on a clean finish and
+   * where the launcher never saw an error — never an inferred cause.
+   */
+  error?: TerminalErrorRecord | null;
   endedAt?: string;
 }
 
@@ -262,6 +299,12 @@ interface Manifest {
     archive_path: string | null;
     exit_code: number | null;
   };
+  /**
+   * What ended the run: the terminal error's kind and message, or null when
+   * the run ended cleanly (or ended badly with no error observed). The one
+   * thing a consumer cannot reconstruct from the rest of the archive.
+   */
+  error: TerminalErrorRecord | null;
   /**
    * The root workflow and every composed child it invoked, in call order.
    * One run, one grouping identity: the root's `meta.task` remains the
@@ -416,6 +459,7 @@ export class RunRecordWriter {
         archive_path: null,
         exit_code: null
       },
+      error: null,
       workflow_invocations: [
         {
           ordinal: 0,
@@ -592,6 +636,7 @@ export class RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
+      termination_cause: record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -616,6 +661,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         failure: attempt.failure,
+        observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null
             ? null
@@ -638,7 +684,10 @@ export class RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      transcripts: transcriptRefs
+      // Absence carries its reason, like `usage` — an empty list must not
+      // leave a consumer unable to tell "this worker produced none" from
+      // "the archive lost them".
+      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -659,11 +708,16 @@ export class RunRecordWriter {
         archive_path: "result.json",
         exit_code: options.exitCode
       };
+      // The terminal cause rides both surfaces: a consumer that reads only
+      // the manifest and one that reads only the result envelope must each
+      // be able to say why the run ended, without the other file.
+      this.manifest.error = options.error ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
         status: options.status,
         exit_code: options.exitCode,
+        error: options.error ?? null,
         value: options.result
       });
       await this.#writeManifest();
@@ -709,6 +763,26 @@ export class RunRecordWriter {
       sha256: contentHash
     });
   }
+}
+
+/**
+ * Why an agent record carries no transcript, in the same vocabulary shape as
+ * `usage.unavailable`: the worker never ran, the runtime ended it before a
+ * transcript existed, or its engine produced none for the attempts that ran.
+ */
+function transcriptAbsenceReason(
+  record: RuntimeAgentRecord
+): "no-attempt-ran" | "worker-interrupted" | "worker-timed-out" | "engine-produced-no-transcript" {
+  if (record.attempts.length === 0) {
+    return "no-attempt-ran";
+  }
+  if (record.status === "interrupted") {
+    return "worker-interrupted";
+  }
+  if (record.status === "timed-out") {
+    return "worker-timed-out";
+  }
+  return "engine-produced-no-transcript";
 }
 
 function agentUsage(

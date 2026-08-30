@@ -26,6 +26,7 @@ test("terminal sentinel and durable record agree on a handled terminal error", a
     const stdout = JSON.parse(run.stdout);
     assert.deepEqual(sentinel.error, manifest.error);
     assert.deepEqual(sentinel.error, result.error);
+    assert.deepEqual(sentinel.error, { kind: "Error", message: "ESTATE_TERMINAL_ERROR" });
     assert.equal(stdout.reason, "failed");
     assert.equal(sentinel.outcome, "failed");
     assert.equal(sentinel.exit_code, 1);
@@ -123,9 +124,14 @@ test("cold archive reader reconciles a non-complete record and distinguishes abs
     assert.equal(result.status, "complete");
 
     const livenessManifest = path.join(estate.directory, "liveness-manifest.json");
-    const manifest = await json<{ status: string; owner: unknown }>(path.join(archive, "manifest.json"));
+    const manifest = await json<{ status: string; owner: { pid: number; start_ticks: string | null; host: string } }>(path.join(archive, "manifest.json"));
+    // Preserve the owner evidence written by the completed product run.  Only
+    // status is re-opened to exercise how a cold consumer treats that durable
+    // owner once its writing process has exited.
+    assert.equal(typeof manifest.owner.pid, "number");
+    assert.equal(typeof manifest.owner.host, "string");
+    assert.equal(typeof manifest.owner.start_ticks, "string");
     manifest.status = "in-progress";
-    manifest.owner = { pid: 999999, start_ticks: "123", host: hostname() };
     await writeFile(livenessManifest, `${JSON.stringify(manifest)}\n`);
     const absent = await runNode([livenessReaderPath, livenessManifest, "/proc", hostname()]);
     assert.equal(absent.code, 0, absent.stderr);

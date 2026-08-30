@@ -905,6 +905,7 @@ function agentRecord(
     engine,
     prompt: "fixture prompt",
     options: { timeoutMs: null, maxAttempts: 3 },
+    session: null,
     model,
     effort: null,
     fallbackModel: null,

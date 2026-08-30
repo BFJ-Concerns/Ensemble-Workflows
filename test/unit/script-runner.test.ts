@@ -1320,7 +1320,8 @@ test("load-time defaults validation consults the runtime's own opencode registry
             provider: "custom",
             family: "custom",
             capabilities: { vision: false },
-            billing: { mode: "self-hosted" as const }
+            billing: { mode: "self-hosted" as const },
+            variants: []
           }
         : undefined,
     names: () => ["custom-model"]

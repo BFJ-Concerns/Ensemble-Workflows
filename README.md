@@ -175,6 +175,16 @@ JSON object with these fields:
   has never produced output and is suspect; a leg with evidence has
   produced output at least once. The fields do not distinguish a leg
   streaming now from one that stalled after its first output.
+- `holds`: array of open decision holds, empty when the run is not waiting.
+  Each object has string `id`, string `content` (bounded to 500 characters;
+  the hold file carries the full text), string-array `verdicts`, and numeric
+  `raisedAtMs` (Unix epoch milliseconds).
+
+The published file also carries an `owner` object (`host`, `pid`,
+`start_ticks`) — the writer's own liveness evidence, added at publication
+rather than being part of the in-memory snapshot — so a poller can refute a
+snapshot a killed run left behind (`snapshotOwnerGone` implements the
+judgement).
 
 Example:
 

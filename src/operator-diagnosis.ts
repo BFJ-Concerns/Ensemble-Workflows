@@ -64,7 +64,10 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   if (error instanceof Error && error.name === "AppServerExitedError") {
     // Discriminate how the server died from the evidence the error already
     // carries, rather than presenting one generic class for interrupt,
-    // termination, and crash alike.
+    // termination, and crash alike. The message itself is kept whole in
+    // the detail lines: the server's own last words routinely carry the
+    // actionable cause (a fixture's validation failure, a stderr tail),
+    // and truncating them would trade evidence for tidiness.
     const exit = workerExitStatusOf(error);
     const how =
       exit?.signal !== null && exit?.signal !== undefined
@@ -72,10 +75,10 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
         : exit?.exitCode !== null && exit?.exitCode !== undefined
           ? `exited with code ${exit.exitCode}`
           : "exited unexpectedly";
-    const lines = [`Codex app-server ${how} — ${bounded(error.message)}`];
+    const lines = [`Codex app-server ${how}`, ...error.message.split("\n")];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      lines.push(`server diagnostic: ${bounded(diagnostic.message)}`);
+      lines.push(`server diagnostic: ${diagnostic.message}`);
     }
     return lines;
   }

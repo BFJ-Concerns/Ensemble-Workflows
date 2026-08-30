@@ -125,11 +125,12 @@ export class StatusFileWriter {
     this.#dir = options.dir;
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
-    this.#procDir = options.procDir ?? "/proc";
+    const procDir = options.procDir ?? "/proc";
+    this.#procDir = procDir;
     this.#ownerEvidence = (async () => ({
       host: hostname(),
       pid: process.pid,
-      start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+      start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
     this.#initialSweep = this.#sweepStaleArtifacts();
     this.#unsubscribe = this.#progress.onChange(() => this.#request());

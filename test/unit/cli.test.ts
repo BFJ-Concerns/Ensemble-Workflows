@@ -1573,7 +1573,7 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.equal(envelope.completed[0]?.engine, "codex");
   assert.equal(envelope.completed[0]?.label, "alpha");
   assert.equal(envelope.completed[0]?.output, "codex:done-fast");
-  assert.match(stderr.text(), /Workflow interrupted by SIGINT/);
+  assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
 });
 
 test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", async () => {
@@ -2381,7 +2381,7 @@ test("CLI warns on unpinned Claude calls and stays quiet when defaults pin the m
     createRuntime: makeRuntime
   });
   assert.equal(unpinnedExit, 0);
-  assert.match(unpinnedStderr.text(), /\[claude\] agent 1 \(loose\) runs unpinned — no model: set/);
+  assert.match(unpinnedStderr.text(), /\[claude\] agent 1 \(loose\) runs unpinned — no model pinned; the ambient default applies/);
 
   const pinnedStderr = new CaptureStream();
   const pinnedStdout = new CaptureStream();

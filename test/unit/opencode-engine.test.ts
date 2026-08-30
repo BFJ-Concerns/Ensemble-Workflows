@@ -456,8 +456,28 @@ test("opencode refuses unproven capability strips before the runner starts", asy
 test("opencode run parses final text, usage, transcript, and effort variant", async () => {
   const runner = new FakeOpenCodeRunner();
   const events: string[] = [];
+  // The variant must be one the registry entry declares (the registry owns
+  // the domain); the curated entries declare none, so this test injects an
+  // entry that does.
+  const registry = {
+    get: (model: string) =>
+      model === "glm-5.2"
+        ? {
+            key: "glm-5.2",
+            providerModel: "openrouter/z-ai/glm-5.2",
+            displayName: "GLM 5.2",
+            provider: "openrouter",
+            family: "glm",
+            capabilities: { vision: false },
+            billing: { mode: "pay-as-you-go" as const },
+            variants: ["minimal"]
+          }
+        : undefined,
+    names: () => ["glm-5.2"]
+  };
   const adapter = new OpenCodeEngineAdapter({
     runner,
+    modelRegistry: registry,
     onEvent: (event) => events.push(event.method)
   });
   const invocation = adapter.createInvocation("answer shortly", {

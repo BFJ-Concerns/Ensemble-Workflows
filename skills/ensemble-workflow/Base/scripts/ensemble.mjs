@@ -13326,6 +13326,10 @@ var PreSpawnAuthorError = class extends EnsembleError {
 };
 var AgentOptionRejectedError = class extends PreSpawnAuthorError {
 };
+var AgentPromptRejectedError = class extends PreSpawnAuthorError {
+};
+var AgentCwdRejectedError = class extends PreSpawnAuthorError {
+};
 var WorkflowScriptReadError = class extends PreSpawnAuthorError {
 };
 function attachPartialWorkerText(error, text) {
@@ -13404,6 +13408,8 @@ var AppServerBackpressureError = class extends AppServerRequestError {
 var AppServerOverloadedError = class extends AppServerRequestError {
 };
 var AppServerRetryPromiseBrokenError = class extends AppServerRequestError {
+};
+var AppServerSystemError = class extends AppServerRequestError {
 };
 var AppServerFirstOutputTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
@@ -14588,6 +14594,7 @@ function assertPositiveIntegerOption(options, option, maximum) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/agent-placement.ts
+import { stat as stat2 } from "node:fs/promises";
 import path6 from "node:path";
 
 // src/worktree-isolation.ts
@@ -14699,6 +14706,19 @@ var AgentPlacementManager = class {
   constructor(options) {
     this.baseCwd = path6.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
+  }
+  async assertUsableCwd(options) {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    try {
+      if (!(await stat2(requestedCwd)).isDirectory()) {
+        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
+      }
+    } catch (error) {
+      if (error instanceof AgentCwdRejectedError) {
+        throw error;
+      }
+      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
+    }
   }
   async open(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
@@ -15624,11 +15644,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = { code: "systemError", message: "systemError", data: params };
+        const diagnostic = {
+          code: void 0,
+          message: "Codex app-server reported terminal systemError without a diagnostic",
+          data: params
+        };
         void this.#rejectTurn(
           threadId,
           turn,
-          attachAppServerDiagnostic(new AppServerRequestError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
+          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
         );
       }
       return;
@@ -18126,6 +18150,14 @@ A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this
 }
 
 // src/runtime.ts
+function assertValidAgentPrompt(prompt) {
+  if (typeof prompt !== "string") {
+    throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
+  }
+  if (prompt.trim().length === 0) {
+    throw new AgentPromptRejectedError("agent() prompt must be a non-empty string");
+  }
+}
 var EnsembleRuntime = class _EnsembleRuntime {
   budget;
   worktrees = [];
@@ -18269,9 +18301,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
+    assertValidAgentPrompt(prompt);
     assertValidAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
+    }
+    if (options.cwd !== void 0) {
+      await this.#placement.assertUsableCwd(options);
     }
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
@@ -18890,8 +18926,8 @@ function createWorkflowHooks(options) {
   return {
     agent: agentWithDefaults,
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
+    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
+    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -18909,7 +18945,7 @@ function createWorkflowHooks(options) {
     args: Array.isArray(options.args) ? [...options.args] : options.args
   };
 }
-async function parallel(thunks, log) {
+async function parallel(thunks, log, presentError) {
   return Promise.all(
     thunks.map(async (thunk, index) => {
       try {
@@ -18918,6 +18954,7 @@ async function parallel(thunks, log) {
         if (error instanceof PreSpawnAuthorError) {
           throw error;
         }
+        presentError?.(error);
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         const identity = agentIdentityOf(error);
         if (identity !== null) {
@@ -18928,7 +18965,7 @@ async function parallel(thunks, log) {
     })
   );
 }
-async function pipeline(items, stages, log) {
+async function pipeline(items, stages, log, presentError) {
   return Promise.all(
     items.map(async (item, index) => {
       let previous = item;
@@ -18943,6 +18980,7 @@ async function pipeline(items, stages, log) {
           if (error instanceof PreSpawnAuthorError) {
             throw error;
           }
+          presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           const identity = agentIdentityOf(error);
           if (identity !== null) {
@@ -24918,6 +24956,7 @@ async function runWorkflowScript(options) {
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    presentError: presentAuthorFrames,
     ...defaults !== void 0 ? { defaults } : {},
     workflow: workflowDepth === 0 ? async (nameOrRef, args) => {
       assertJsonSerialisable(args ?? [], "workflow() arguments", "args");
@@ -25763,6 +25802,26 @@ async function createRuntime2(options = {}) {
 }
 
 // src/cli.ts
+var AGENT_INVOCATION_OPTIONS = {
+  engine: { type: "string" },
+  model: { type: "string" },
+  effort: { type: "string" },
+  label: { type: "string" },
+  phase: { type: "string" },
+  "fallback-model": { type: "string" },
+  cwd: { type: "string" },
+  isolation: { type: "string" },
+  identity: { type: "boolean" },
+  schema: { type: "string" },
+  "max-attempts": { type: "string" },
+  strip: { type: "string", multiple: true },
+  task: { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  "caller-identity": { type: "string" }
+};
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
@@ -26143,6 +26202,7 @@ async function parseInvocation(argv, cwd, stdin) {
 }
 async function parseWorkflowInvocation(argv, cwd) {
   const split = splitTuningFlags(argv);
+  rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
   try {
     parsed = parseArgs({
@@ -26186,30 +26246,13 @@ async function parseWorkflowInvocation(argv, cwd) {
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
+  rejectMisplacedAgentTuningFlags(argv);
+  rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
     parsed = parseArgs({
       args: argv,
-      options: {
-        engine: { type: "string" },
-        model: { type: "string" },
-        effort: { type: "string" },
-        label: { type: "string" },
-        phase: { type: "string" },
-        "fallback-model": { type: "string" },
-        cwd: { type: "string" },
-        isolation: { type: "string" },
-        identity: { type: "boolean" },
-        schema: { type: "string" },
-        "max-attempts": { type: "string" },
-        strip: { type: "string", multiple: true },
-        task: { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        "caller-identity": { type: "string" }
-      },
+      options: AGENT_INVOCATION_OPTIONS,
       strict: true,
       allowPositionals: true
     });
@@ -26221,7 +26264,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
   }
   const prompt = parsed.positionals[0] ?? await readPrompt(stdin);
-  if (prompt.length === 0) {
+  if (prompt.trim().length === 0) {
     throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
   }
   const rawEngine = parsed.values.engine;
@@ -26307,6 +26350,9 @@ function splitTuningFlags(argv) {
         scriptArgs: argv.slice(index + 2)
       };
     }
+    if (value === "agent" && tuningArgs.length > 0) {
+      throw new CliUsageError("Tuning flags must appear after ensemble agent, not before it");
+    }
     if (isKnownInlineOption(value)) {
       tuningArgs.push(value);
       continue;
@@ -26333,6 +26379,57 @@ function splitTuningFlags(argv) {
     return { tuningArgs, scriptArg: value, scriptArgs };
   }
   return { tuningArgs, scriptArg: void 0, scriptArgs: [] };
+}
+function rejectMisplacedAgentTuningFlags(argv) {
+  let promptSeen = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === void 0) {
+      continue;
+    }
+    if (value === "--") {
+      return;
+    }
+    if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
+      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+    }
+    if (isKnownInlineOption(value) || value === "--identity") {
+      continue;
+    }
+    if (isKnownAgentOption(value) || isKnownOption(value)) {
+      index += 1;
+      continue;
+    }
+    if (!value.startsWith("-")) {
+      promptSeen = true;
+    }
+  }
+}
+function rejectDuplicateScalarFlags(argv) {
+  const repeated = /* @__PURE__ */ new Set();
+  for (const value of argv) {
+    const flag = optionName(value);
+    if (flag === void 0 || isRepeatableOption(flag)) {
+      continue;
+    }
+    if (repeated.has(flag)) {
+      throw new CliUsageError(`Option ${flag} may only be specified once`);
+    }
+    repeated.add(flag);
+  }
+}
+function optionName(value) {
+  if (!value.startsWith("--") || value === "--") {
+    return void 0;
+  }
+  const equalsIndex = value.indexOf("=");
+  return equalsIndex === -1 ? value : value.slice(0, equalsIndex);
+}
+function isRepeatableOption(flag) {
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+}
+function isKnownAgentOption(value) {
+  return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
 }
 function isKnownOption(value) {
   return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity";

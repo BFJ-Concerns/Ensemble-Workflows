@@ -23381,7 +23381,10 @@ function diagnose(error, context) {
     const lines = [error.message];
     for (const attempt of context.lastAgentRecord?.attempts ?? []) {
       if (attempt.failure !== null) {
-        lines.push(`attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}`);
+        const workerDiagnosis = attempt.rawOutput === null ? "" : `; worker diagnosis: ${bounded(attempt.rawOutput)}`;
+        lines.push(
+          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
+        );
       }
     }
     const record = context.lastAgentRecord;

@@ -304,7 +304,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
       prompt: "hello",
       name,
       cwd: dir,
-      permissionDenyRules: ["Skill", "Task", "Agent"]
+      permissionDenyRules: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"]
     });
 
     const dispatchArgv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
@@ -312,7 +312,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
       env: { [WORKER_MARKER_VARIABLE]: name },
-      permissions: { deny: ["Skill", "Task", "Agent"] }
+      permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"] }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });

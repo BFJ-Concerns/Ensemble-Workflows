@@ -16443,7 +16443,7 @@ function zeroUsage() {
 // src/claude-engine.ts
 var CAPABILITY_DENY_RULES = {
   skills: ["Skill"],
-  agents: ["Task", "Agent"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
 };
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
@@ -17896,15 +17896,20 @@ var ClaudeEngineAdapter = class {
   concurrency;
   /**
    * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane
-   * already writes (the one surface measured to reach the daemon-served
-   * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * The 2026-08-30 Claude Code 2.1.251 worker measurement found native
+   * `Task`, `Agent`, `ListAgents`, and `SendMessage`, with no MCP-prefixed
+   * discovery or messaging spelling. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live
+   * test asserts that at the worker itself.
    */
   capabilities = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+    agents: {
+      route: "config",
+      detail: "measured 2026-08-30 on Claude Code 2.1.251: per-dispatch permissions.deny covers Task, Agent, ListAgents, and SendMessage; no MCP-prefixed discovery or messaging spelling was exposed"
+    }
   };
   #scheduler;
   #cwd;

@@ -151,7 +151,7 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   thread, without leaking between sibling threads on one app-server
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
+   *   is what re-arms this judgement per release.
    * - `skills` cannot be stripped mechanically: there is no skills tool in
    *   the app-server surface — skills arrive as prompt text plus
    *   filesystem paths, and the per-thread lever that removes a skill
@@ -269,15 +269,21 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   readonly concurrency: number;
   /**
    * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane
-   * already writes (the one surface measured to reach the daemon-served
-   * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * The 2026-08-30 Claude Code 2.1.251 worker measurement found native
+   * `Task`, `Agent`, `ListAgents`, and `SendMessage`, with no MCP-prefixed
+   * discovery or messaging spelling. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live
+   * test asserts that at the worker itself.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+    agents: {
+      route: "config",
+      detail:
+        "measured 2026-08-30 on Claude Code 2.1.251: per-dispatch permissions.deny covers Task, Agent, ListAgents, and SendMessage; no MCP-prefixed discovery or messaging spelling was exposed"
+    }
   };
 
   #scheduler: Scheduler;

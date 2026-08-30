@@ -28,14 +28,16 @@ import type { RuntimeEvent, TurnResult } from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
- * rules that remove it from the worker's tool surface. `agents` denies both
- * spellings the subagent tool has shipped under — one capability, either
- * name — and deny rules outrank every allow layer and permission mode, so
- * the operator's own settings cannot quietly re-enable a stripped tool.
+ * rules that remove it from the worker's tool surface. `agents` denies the
+ * measured native spawn, discovery, and messaging tools: `Task`, `Agent`,
+ * `ListAgents`, and `SendMessage`. The 2026-08-30 worker captures exposed no
+ * MCP-prefixed spelling of the latter two, so the native names are the whole
+ * measured deny set. Deny rules outrank every allow layer and permission mode,
+ * so the operator's own settings cannot quietly re-enable a stripped tool.
  */
 const CAPABILITY_DENY_RULES: Record<StrippableCapability, readonly string[]> = {
   skills: ["Skill"],
-  agents: ["Task", "Agent"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
 };
 
 export function permissionDenyRulesFor(strip: readonly StrippableCapability[] | undefined): string[] {

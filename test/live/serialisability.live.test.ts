@@ -22,6 +22,18 @@ function withoutSentinelAnnouncement(stderr: string): string {
   return stderr.replace(announcement, "");
 }
 
+// The CLI likewise announces the run's id and archive path on stderr at
+// startup. Same discipline as the sentinel helper: remove exactly one
+// well-formed announcement, failing when it is absent, malformed, or
+// duplicated, so the exact-stderr assertion keeps its protection while this
+// line's own shape stays pinned.
+function withoutArchiveAnnouncement(stderr: string): string {
+  const announcement = /^\[run-record-archive\] \{"run_id":"[^"\n]+","archive_path":"[^"\n]+"\}\n/gm;
+  const matches = stderr.match(announcement) ?? [];
+  assert.equal(matches.length, 1, `expected exactly one run-record-archive announcement, got:\n${stderr}`);
+  return stderr.replace(announcement, "");
+}
+
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
   { skip: !isLive, timeout: 300_000 },
@@ -64,7 +76,7 @@ test(
 
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
-        withoutSentinelAnnouncement(result.stderr),
+        withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr)),
         "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;

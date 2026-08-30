@@ -21,6 +21,7 @@ import {
   turnComplete,
   usageSince
 } from "./claude-transcript.js";
+import { subtractUsage } from "./usage-summary.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
@@ -32,7 +33,7 @@ import type {
   EngineTurnOptions
 } from "./engines.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { RuntimeEvent, TurnResult } from "./types.js";
+import type { RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
@@ -120,6 +121,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #options: EngineTurnOptions;
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #reportedUsage: TokenUsageBreakdown | null = null;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -165,6 +167,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
+    this.#reportedUsage = null;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
@@ -325,6 +328,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
         // Evidence means output *the worker produced this turn*: only an
         // assistant entry beyond the high-water mark counts. The transcript's
         // first entry is routinely the persisted user prompt (and a steer
@@ -428,7 +432,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       );
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
+    const usage = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
@@ -503,31 +509,44 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    */
-  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult["tokenUsageEvents"][number] | null {
-    if (this.#onEvent === undefined) {
-      return null;
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
     }
-    const breakdown = usageSince(entries, fromIndex);
-    if (breakdown.totalTokens === 0) {
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+
+  #usageEvent(
+    handle: ClaudeSessionHandle,
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown
+  ): TokenUsageEvent | null {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
     const event = {
       threadId: handle.sessionId,
       turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last: breakdown, total: breakdown }
+        tokenUsage: { last, total }
       }
     };
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
 

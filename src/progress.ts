@@ -49,6 +49,15 @@ export interface EngineProgressSnapshot {
   remaining: number | null;
 }
 
+/** An open hold as the snapshot shows it: what a poller needs to see the run is waiting. */
+export interface OpenHoldSnapshot {
+  id: string;
+  /** Bounded to keep the snapshot small; the hold file carries the full text. */
+  content: string;
+  verdicts: string[];
+  raisedAtMs: number;
+}
+
 export interface ProgressSnapshot {
   /** Snapshot schema version, bumped if the shape ever changes. */
   schema: 1;
@@ -63,6 +72,8 @@ export interface ProgressSnapshot {
   totals: { active: number; queued: number; done: number; failed: number };
   engines: Record<string, EngineProgressSnapshot>;
   agents: LiveAgentSnapshot[];
+  /** Open holds: present while the run awaits decisions, empty otherwise. */
+  holds: OpenHoldSnapshot[];
 }
 
 export interface RunProgressOptions {
@@ -121,7 +132,9 @@ export class RunProgress {
 
   #nextAgentId = 0;
   #live = new Map<number, AgentRecord>();
+  #openHolds = new Map<string, OpenHoldSnapshot>();
   #engines = new Map<EngineName, EngineCounters>();
+  #reportedSpend = new Map<EngineName, number>();
   #listeners = new Set<ProgressListener>();
 
   constructor(options: RunProgressOptions) {
@@ -131,6 +144,24 @@ export class RunProgress {
     this.#pid = options.pid ?? process.pid;
     this.#startedAt = this.#now();
     this.#updatedAt = this.#startedAt;
+  }
+
+  /** An open hold joins the snapshot the moment it is raised. */
+  noteHoldRaised(hold: { id: string; content: string; verdicts: string[] }): void {
+    this.#openHolds.set(hold.id, {
+      id: hold.id,
+      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}…` : hold.content,
+      verdicts: [...hold.verdicts],
+      raisedAtMs: this.#now()
+    });
+    this.#touch();
+  }
+
+  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
+  noteHoldSettled(id: string): void {
+    if (this.#openHolds.delete(id)) {
+      this.#touch();
+    }
   }
 
   /** Records an engine's concurrency cap so the snapshot can show saturation. */
@@ -240,10 +271,20 @@ export class RunProgress {
   }
 
   /**
-   * Refreshes the change stamp without a state transition — used when token
-   * usage lands, so the snapshot's spend figures stay current and subscribers
-   * re-serialise.
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
    */
+  noteEngineSpend(engine: EngineName): void {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+
+  /** Refreshes the live snapshot without changing its modelled state. */
   markChanged(): void {
     this.#touch();
   }
@@ -289,7 +330,8 @@ export class RunProgress {
       currentPhase: this.#currentPhase,
       totals,
       engines,
-      agents: this.#liveAgents()
+      agents: this.#liveAgents(),
+      holds: [...this.#openHolds.values()]
     };
   }
 

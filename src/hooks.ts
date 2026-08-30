@@ -7,8 +7,11 @@ import type {
   Budget,
   EngineName,
   IdentifiedAgentResult,
-  JsonSchema
+  JsonSchema,
+  WorkerSessionOptions
 } from "./types.js";
+import type { WorkerSession } from "./runtime.js";
+import type { HoldDecision, RaiseHoldOptions } from "./holds.js";
 import type { IsolatedWorktreeRecord } from "./worktree-isolation.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 
@@ -26,6 +29,18 @@ export interface WorkflowRuntime {
   // *last* overload alone, which is exactly the collapse that hid the
   // schema and identity signatures from hooks consumers.
   agent: AgentCallSignature;
+  /**
+   * Multi-turn worker sessions; see EnsembleRuntime.createWorkerSession.
+   * Optional so a minimal WorkflowRuntime (a test fake, an embedding) stays
+   * valid; the `session` hook fails loud, pre-spawn, when it is absent.
+   */
+  createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession;
+  /**
+   * Runtime holds; see EnsembleRuntime.raiseHold. Optional on the
+   * same terms as createWorkerSession; the `hold` hook fails loud when
+   * absent.
+   */
+  raiseHold?: (options: RaiseHoldOptions) => Promise<HoldDecision>;
   notePhase: (title: string) => void;
 }
 
@@ -42,6 +57,18 @@ export type WorkflowLogSink = (message: string) => void;
 
 export interface WorkflowHooks {
   agent: WorkflowRuntime["agent"];
+  /**
+   * Create a multi-turn worker session. Script defaults merge exactly
+   * as for `agent()`: the session's engine block supplies model, effort,
+   * and fallbackModel where the call leaves them unset.
+   */
+  session: (options: WorkerSessionOptions) => WorkerSession;
+  /**
+   * Raise a hold and await its decision: content and accepted
+   * verdicts in, the decider's verdict (and note) back, from a decision
+   * file any process can write.
+   */
+  hold: (options: RaiseHoldOptions) => Promise<HoldDecision>;
   workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
   parallel: <T>(thunks: Array<() => T | Promise<T>>) => Promise<Array<Awaited<T> | null>>;
   pipeline: <Item>(
@@ -60,6 +87,8 @@ export function createWorkflowHooks(options: {
   args: unknown;
   log: WorkflowLogSink;
   workflow: (nameOrRef: unknown, args?: unknown) => Promise<unknown>;
+  /** Presents a caught author error before the combinator logs its stack. */
+  presentError?: (error: unknown) => void;
   /** Script-level `export const defaults`; per-call options override it. */
   defaults?: WorkflowDefaults;
 }): WorkflowHooks {
@@ -82,9 +111,25 @@ export function createWorkflowHooks(options: {
 
   return {
     agent: agentWithDefaults,
+    session: (sessionOptions) => {
+      const createWorkerSession = options.runtime.createWorkerSession;
+      if (createWorkerSession === undefined) {
+        // Pre-spawn and loud, like every capability the runtime cannot
+        // honour — never a silent no-op session.
+        throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
+      }
+      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
+    },
+    hold: (holdOptions) => {
+      const raiseHold = options.runtime.raiseHold;
+      if (raiseHold === undefined) {
+        throw new PreSpawnAuthorError("this runtime does not support holds");
+      }
+      return raiseHold.call(options.runtime, holdOptions);
+    },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog),
+    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
+    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);
@@ -105,7 +150,8 @@ export function createWorkflowHooks(options: {
 
 export async function parallel<T>(
   thunks: Array<() => T | Promise<T>>,
-  log: WorkflowLogSink
+  log: WorkflowLogSink,
+  presentError?: (error: unknown) => void
 ): Promise<Array<Awaited<T> | null>> {
   return Promise.all(
     thunks.map(async (thunk, index) => {
@@ -118,6 +164,7 @@ export async function parallel<T>(
         if (error instanceof PreSpawnAuthorError) {
           throw error;
         }
+        presentError?.(error);
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         // An identified call's failure keeps its identity: the carrier
         // the runtime attached becomes the envelope the fan-in reads, with
@@ -136,7 +183,8 @@ export async function parallel<T>(
 export async function pipeline<Item>(
   items: Item[],
   stages: Array<(previous: unknown, originalItem: Item, index: number) => unknown | Promise<unknown>>,
-  log: WorkflowLogSink
+  log: WorkflowLogSink,
+  presentError?: (error: unknown) => void
 ): Promise<unknown[]> {
   return Promise.all(
     items.map(async (item, index) => {
@@ -154,6 +202,7 @@ export async function pipeline<Item>(
           if (error instanceof PreSpawnAuthorError) {
             throw error;
           }
+          presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           // Same identity-preserving collapse as parallel(): the failed
           // item resolves its identity envelope when the failing call
@@ -193,6 +242,29 @@ function mergeAgentDefaults(
     }
   }
   return merged as Partial<AgentOptions>;
+}
+
+/**
+ * The session analogue of {@link mergeAgentDefaults}: the engine block's
+ * model/effort/fallbackModel apply where the creation call leaves them
+ * unset, and defined call-site values win. Validation stays the runtime's —
+ * this merge must not pre-judge keys.
+ */
+function mergeSessionDefaults(
+  defaults: WorkflowDefaults,
+  sessionOptions: WorkerSessionOptions
+): WorkerSessionOptions {
+  const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : undefined;
+  if (engineDefaults === undefined) {
+    return sessionOptions;
+  }
+  const merged: Record<string, unknown> = { ...engineDefaults };
+  for (const [key, value] of Object.entries(sessionOptions)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged as unknown as WorkerSessionOptions;
 }
 
 function formatError(error: unknown): string {

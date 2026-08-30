@@ -89,7 +89,35 @@ export function finalAssistantText(entries: TranscriptEntry[], fromIndex = 0): s
   return null;
 }
 
-/** The last model id Claude reports for an assistant message in this turn. */
+/**
+ * Claude Code's placeholder model id on a message it composed itself — a
+ * client-side diagnostic rather than a model reply. It names no served
+ * model, so it is never reported as one.
+ */
+export const SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+
+/**
+ * Whether the turn's last assistant message is Claude Code's own synthetic
+ * reply: the client answered in place of a model, so whatever text the
+ * message carries is a diagnostic, not the worker's answer.
+ */
+export function endsInSyntheticReply(entries: TranscriptEntry[], fromIndex = 0): boolean {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
+}
+
+/**
+ * The last model id Claude reports for an assistant message in this turn.
+ * The synthetic placeholder is not a model id: a record that published it as
+ * `resolved_model` would put a sentinel string in a typed slot, so it reads
+ * as "no model reported" (the same honesty rule as `worker_exit: null`).
+ */
 export function resolvedModelSince(entries: TranscriptEntry[], fromIndex = 0): string | null {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
@@ -97,7 +125,7 @@ export function resolvedModelSince(entries: TranscriptEntry[], fromIndex = 0): s
       continue;
     }
     const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0) {
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
       return model;
     }
   }
@@ -134,8 +162,9 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
  * generation, no double-count) and is the dominant, exactly-correct signal; the
  * input side is taken as the final message's snapshot (the representative
  * context size, charged once) rather than summed, which would multiply-count the
- * context carried into every step. Claude does not separate reasoning tokens, so
- * thinking rides `outputTokens`. Documented as best-effort: what Claude tokens
+ * context carried into every step. Claude does not report a separate reasoning
+ * measurement, so the optional field stays absent and thinking rides
+ * `outputTokens`. Documented as best-effort: what Claude tokens
  * should mean against a subscription allowance is not yet settled.
  * Returns all-zero when no assistant usage is present.
  */
@@ -179,7 +208,6 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     cacheCreationInputTokens: lastCacheCreation,
     inputTokens: lastInput,
     outputTokens,
-    reasoningOutputTokens: 0,
     totalTokens: lastInput + lastCached + outputTokens
   };
 }
@@ -227,7 +255,6 @@ function zeroUsage(): TokenUsageBreakdown {
     cachedInputTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
-    reasoningOutputTokens: 0,
     totalTokens: 0
   };
 }

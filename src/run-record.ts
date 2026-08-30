@@ -13,6 +13,7 @@ import type {
   JsonSchema,
   TokenUsageEvent
 } from "./types.js";
+import { canonicalJson, sha256 } from "./canonical-document.js";
 import { harnessVersion } from "./harness-version.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
@@ -25,14 +26,24 @@ const SCHEMA_VERSION = 3;
 const MANIFEST_PATH = "manifest.json";
 
 /**
- * `abandoned` is reaper-written only (see `reapAbandonedRuns`): the terminal
+ * `incomplete` is writer-written only: the run itself reached a terminal
+ * status, but at seal the archive could not account for every file its own
+ * manifest declares (see `ManifestIntegrity.files_lost`) — so the manifest
+ * refuses the completeness claim while `result.json` keeps the run's own
+ * outcome. `abandoned` is reaper-written only (see `reapAbandonedRuns`): the terminal
  * status for a durable in-progress run whose owning process is provably
  * gone. A launcher that can still write chooses one of the other terminal
  * statuses itself.
  */
-type RunStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
+type RunStatus =
+  | "in-progress"
+  | "complete"
+  | "failed"
+  | "incomplete"
+  | "timed-out"
+  | "interrupted"
+  | "abandoned";
 type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
-type AccountingSource = "provider-reported" | "estimated";
 type ParseRoute = "direct" | "object-fallback" | "array-fallback";
 
 export interface CliFlagsRecord {
@@ -53,6 +64,7 @@ export interface RunRecordStartOptions {
   args: unknown;
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
+  effectiveSettings?: EffectiveRunSettingsRecord;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -65,10 +77,34 @@ export interface EffectiveConcurrencyRecord {
   engines: Partial<Record<EngineName, Resolved<number>>>;
 }
 
+/**
+ * Effective per-engine token ceilings and the whole-run timeout, each with
+ * the layer that won — the same auditable shape the agent ceiling and
+ * concurrency caps already record, so a consumer reconstructs which layer
+ * decided every run-shaping number without product knowledge. These two
+ * settings take no env or config-file layer today, so their honest layers
+ * are `flag` and `default`; the shape does not change if they ever gain
+ * more.
+ */
+export interface EffectiveRunSettingsRecord {
+  budgetCeilings: Partial<Record<EngineName, Resolved<number | null>>>;
+  runTimeoutMs: Resolved<number | null>;
+}
+
 export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
   failure: { kind: string; message: string } | null;
+  /**
+   * The transport symptom this attempt observed, when what `failure` names
+   * is the run's own settlement rather than an engine fault. A shutdown or
+   * whole-run timeout reaches an in-flight turn as whatever the transport
+   * noticed first — a closed app-server, an aborted poll — which describes
+   * the run's exit, not the attempt's cause, so `failure` names the cause
+   * and the observation is kept here rather than discarded. Null whenever
+   * `failure` is already the engine's own account.
+   */
+  observedFailure: { kind: string; message: string } | null;
   /**
    * How the attempt's worker process died, when the engine observed it —
    * the exit status or terminating signal, so a killed leg is
@@ -85,6 +121,14 @@ export interface RuntimeAgentAttemptRecord {
   validatedOutput: unknown;
   /** The served model this attempt's engine reported, when it reported one. */
   resolvedModel: string | null;
+  /**
+   * The reasoning effort this attempt's turn actually ran at, as its engine
+   * reported it — the resolved-option analogue of `resolvedModel`, and the
+   * only durable trace of an unpinned turn's ambient default. Null where the
+   * engine reports none, never the requested pin (which `effort` on the
+   * agent record already carries).
+   */
+  resolvedEffort: string | null;
   startedAt: string;
   endedAt: string;
   durationMs: number | null;
@@ -114,6 +158,8 @@ export interface RuntimeAgentRecord {
   effort: string | null;
   fallbackModel: string | null;
   resolvedModel: string | null;
+  /** The served effort, last write wins across attempts; see the attempt field. */
+  resolvedEffort: string | null;
   resolvedCwd: string;
   isolation: "worktree" | null;
   worktree: {
@@ -126,6 +172,15 @@ export interface RuntimeAgentRecord {
   label: string | null;
   phase: string | null;
   status: AgentStatus;
+  /**
+   * Why this agent ended as it did, when the runtime ended it rather than
+   * the engine — a run interrupt or a whole-run timeout reaches a worker as
+   * whatever its transport happened to notice (a closed app-server, an
+   * aborted poll), so the attempt's own failure names the symptom and this
+   * names the cause. Null when the engine's own failure is the cause, and
+   * never an inference: the attempts array keeps what was observed.
+   */
+  terminationCause: TerminalErrorRecord | null;
   creationOrder: number;
   concurrencyGroup: string;
   schema: JsonSchema | null;
@@ -141,6 +196,15 @@ export interface RuntimeAgentRecord {
     requested: StrippableCapability[];
     enforcement: Partial<Record<StrippableCapability, DischargedEnforcement>>;
   } | null;
+  /**
+   * The multi-turn worker session this record is one turn of: the
+   * run-scoped session ordinal and this record's 1-based turn number within
+   * it. Null for a one-shot call. Grouping per-turn records by `session.id`
+   * and ordering by `turn` reconstructs a held worker's whole conversation
+   * from the archive alone — each turn's prompt, attempts, and usage are
+   * this record's own fields, exactly as for a one-shot call.
+   */
+  session: { id: number; turn: number } | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
@@ -152,11 +216,33 @@ export interface RuntimeAgentRecord {
   attempts: RuntimeAgentAttemptRecord[];
 }
 
+/**
+ * The terminal error that ended a run, as a consumer holding only the
+ * archive reads it. `kind` is the error's class name, which is what
+ * discriminates a script bug (`WorkflowScriptError`) from an unknown-engine
+ * typo (`UnknownEngineError`) from a whole-run timeout
+ * (`WorkflowTimeoutError`) from a budget refusal (`BudgetExceededError`) —
+ * four cases that otherwise all read as bare `failed`.
+ */
+export interface TerminalErrorRecord {
+  kind: string;
+  message: string;
+}
+
 export interface RunRecordFinishOptions {
-  /** The launcher's own terminal statuses; `abandoned` belongs to the reaper alone. */
-  status: Exclude<RunStatus, "in-progress" | "abandoned">;
+  /**
+   * The launcher's own terminal statuses. `abandoned` belongs to the reaper
+   * alone, and `incomplete` to the writer alone — a launcher reporting a
+   * clean run cannot also judge whether the archive that records it survived.
+   */
+  status: Exclude<RunStatus, "in-progress" | "abandoned" | "incomplete">;
   exitCode: number;
   result: unknown;
+  /**
+   * What ended the run, when it ended badly. Null on a clean finish and
+   * where the launcher never saw an error — never an inferred cause.
+   */
+  error?: TerminalErrorRecord | null;
   endedAt?: string;
 }
 
@@ -164,6 +250,43 @@ interface FileEntry {
   path: string;
   size: number;
   sha256: string;
+}
+
+/**
+ * A file the manifest declares that the archive could not account for when
+ * the run sealed. `missing` is the deleted-archive case (the file the
+ * manifest promises is ENOENT); `size-mismatch` is a file replaced beneath
+ * the writer. The reconciliation checks presence and size, not content —
+ * the recorded `sha256` is the consumer's own walk, and re-hashing every
+ * transcript at seal would buy nothing the consumer does not already do.
+ */
+interface FileLossRecord {
+  path: string;
+  reason: "missing" | "size-mismatch";
+}
+
+/**
+ * What the archive says about its own wholeness — the answer to the two
+ * questions the `files` table cannot answer about itself.
+ *
+ * `manifest_sha256` covers the manifest itself, which no entry in `files`
+ * ever can: it is the sha256 of the manifest's own canonical form with this
+ * field set to `null`. A consumer verifies it by parsing the manifest,
+ * writing `null` over this field, re-canonicalising, and hashing — the same
+ * two-space sorted-key JSON the writer emits. It is a self-attestation, not
+ * a signature: it catches the edited field and the truncated write, and a
+ * forger who recomputes it defeats it. There is no key material in the
+ * archive with which to do better.
+ *
+ * `files_lost` is written at seal, when the writer reconciles the table
+ * against the directory it describes. A run whose archive was deleted
+ * mid-flight lands here rather than in a `complete` status over absent
+ * files.
+ */
+interface ManifestIntegrity {
+  algorithm: "sha256";
+  manifest_sha256: string | null;
+  files_lost: FileLossRecord[];
 }
 
 interface NamespaceRecord {
@@ -240,6 +363,9 @@ interface Manifest {
     agent_ceiling: Resolved<number | null>;
     engines: Partial<Record<EngineName, Resolved<number>>>;
   };
+  /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
+  budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
+  run_timeout_ms: Resolved<number | null>;
   git: {
     start: GitState;
     end: GitState | null;
@@ -263,14 +389,39 @@ interface Manifest {
     exit_code: number | null;
   };
   /**
+   * What ended the run: the terminal error's kind and message, or null when
+   * the run ended cleanly (or ended badly with no error observed). The one
+   * thing a consumer cannot reconstruct from the rest of the archive.
+   */
+  error: TerminalErrorRecord | null;
+  /**
    * The root workflow and every composed child it invoked, in call order.
    * One run, one grouping identity: the root's `meta.task` remains the
    * consumer's key, and a child is an invocation inside the run, never a
    * second run.
    */
   workflow_invocations: WorkflowInvocationEntry[];
+  /**
+   * The run's hold lifecycle, append-only in event order: each raise,
+   * accepted answer, rejected answer, and timeout, so a consumer holding
+   * only the archive can reconstruct what the run waited on and how each
+   * wait ended. The hold files themselves are transient coordination state;
+   * this list is their durable trace.
+   */
+  hold_events: HoldEventEntry[];
   cost_rollup: Record<string, Record<string, UsageRollup>>;
   files: FileEntry[];
+  integrity: ManifestIntegrity;
+}
+
+interface HoldEventEntry {
+  hold_id: string;
+  event: "raised" | "answered" | "answer-rejected" | "timed-out";
+  /** The accepted verdict on `answered`; null elsewhere. */
+  verdict: string | null;
+  /** The rejection reason on `answer-rejected`; null elsewhere. */
+  reason: string | null;
+  at: string;
 }
 
 interface WorkflowInvocationEntry {
@@ -313,11 +464,27 @@ export interface WorkflowInvocationRecord {
 interface UsageRollup {
   /** Summary usage in the declared vocabulary — see `src/usage-summary.ts`. */
   tokens: UsageSummary;
-  cost: {
-    amount: number | null;
-    currency: string | null;
-    source: AccountingSource;
-  };
+  /**
+   * Money, in the absence-with-a-reason idiom the summary vocabulary uses:
+   * the reported form only where an engine actually reported cost
+   * with its usage, and otherwise the reason there is no figure. The
+   * harness prices nothing itself, so the old shape — `amount: null` under
+   * `source: "estimated"` — asserted an estimate that never existed and a
+   * consumer could not tell from "this run cost nothing".
+   */
+  cost: ReportedCost | { unavailable: "no-provider-cost-reported" | "unlike-currencies" };
+}
+
+/** Provider-reported spend, summed across the bucket's own usage events. */
+interface ReportedCost {
+  amount: number;
+  currency: string | null;
+  /**
+   * Always `provider-reported`: the harness has no pricing table, so the
+   * only figure it can publish is one an engine handed it. The field stays
+   * so a consumer reading a cost knows where it came from.
+   */
+  source: "provider-reported";
 }
 
 export class RunRecordWriter {
@@ -394,6 +561,8 @@ export class RunRecordWriter {
         agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
         engines: options.concurrency?.engines ?? {}
       },
+      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
+      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       git: {
         start: gitStart,
         end: null
@@ -416,6 +585,7 @@ export class RunRecordWriter {
         archive_path: null,
         exit_code: null
       },
+      error: null,
       workflow_invocations: [
         {
           ordinal: 0,
@@ -432,8 +602,14 @@ export class RunRecordWriter {
           }
         }
       ],
+      hold_events: [],
       cost_rollup: {},
-      files: []
+      files: [],
+      integrity: {
+        algorithm: "sha256",
+        manifest_sha256: null,
+        files_lost: []
+      }
     });
 
     await writer.#writeText("workflow.js", options.workflowSource);
@@ -524,6 +700,34 @@ export class RunRecordWriter {
     });
   }
 
+  /**
+   * Append one hold lifecycle event from the runtime's event stream.
+   * Same intent-before-outcome principle as the dispatch-time agent write:
+   * the raise is recorded when it happens, so a run that dies mid-hold
+   * still shows what it was waiting on. Unrecognised methods are ignored —
+   * the runtime forwards its hold events unfiltered.
+   */
+  async recordHoldEvent(event: { method: string; params: Record<string, unknown>; receivedAt: number }): Promise<void> {
+    const kind = holdEventKind(event.method);
+    if (kind === null || typeof event.params.holdId !== "string") {
+      return;
+    }
+    const entry: HoldEventEntry = {
+      hold_id: event.params.holdId,
+      event: kind,
+      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
+      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      at: new Date(event.receivedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
+    });
+  }
+
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
     // Snapshot at the boundary: the runtime keeps mutating its live record
     // between the dispatch-time write and settlement, and the manifest
@@ -577,6 +781,7 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      resolved_effort: record.resolvedEffort,
       resolved_cwd: record.resolvedCwd,
       isolation: record.isolation,
       worktree:
@@ -592,10 +797,12 @@ export class RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
+      termination_cause: record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       strip: record.strip,
+      session: record.session,
       parse_route: record.parseRoute,
       decode_failure:
         record.decodeFailure === null
@@ -616,6 +823,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         failure: attempt.failure,
+        observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null
             ? null
@@ -631,6 +839,7 @@ export class RunRecordWriter {
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,
+        resolved_effort: attempt.resolvedEffort,
         started_at: attempt.startedAt,
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
@@ -638,7 +847,10 @@ export class RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      transcripts: transcriptRefs
+      // Absence carries its reason, like `usage` — an empty list must not
+      // leave a consumer unable to tell "this worker produced none" from
+      // "the archive lost them".
+      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -659,13 +871,32 @@ export class RunRecordWriter {
         archive_path: "result.json",
         exit_code: options.exitCode
       };
+      // The terminal cause rides both surfaces: a consumer that reads only
+      // the manifest and one that reads only the result envelope must each
+      // be able to say why the run ended, without the other file.
+      this.manifest.error = options.error ?? null;
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
+        // The run's own outcome as the launcher reported it. Where the
+        // manifest later degrades to `incomplete`, the two are answering
+        // different questions: this envelope says how the run ended, the
+        // manifest says whether the archive recording it is whole.
         status: options.status,
         exit_code: options.exitCode,
+        error: options.error ?? null,
         value: options.result
       });
+      // Reconcile before the manifest is written, so the self-digest attests
+      // a file table that has been checked against the directory it
+      // describes — and so no manifest ever carries `complete` over files
+      // that are not there. Losing files is a recording failure, never a run
+      // failure (the exit code and the terminal error stand as the launcher
+      // reported them); what changes is what the record claims about itself.
+      this.manifest.integrity.files_lost = await this.#reconcileFiles();
+      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
+        this.manifest.status = "incomplete";
+      }
       await this.#writeManifest();
       // Calls queued after finish belong to workers that outlived the workflow.
       // The archive is now a coherent final snapshot; reopening it would race
@@ -688,6 +919,11 @@ export class RunRecordWriter {
 
   async #writeManifest(): Promise<void> {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    // Self-attestation last, over everything above it: null the field, hash
+    // the canonical form, then write. Computed on every manifest write, not
+    // only at seal, so a manifest read mid-run is verifiable too.
+    this.manifest.integrity.manifest_sha256 = null;
+    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
     const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
@@ -700,6 +936,34 @@ export class RunRecordWriter {
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
   }
 
+  /**
+   * Checks every file the manifest declares against the archive directory,
+   * returning what is no longer accountable. Presence and size only: the
+   * recorded digest is what a consumer walks, and re-hashing the whole
+   * archive at seal would repeat that walk for no extra evidence.
+   */
+  async #reconcileFiles(): Promise<FileLossRecord[]> {
+    const lost: FileLossRecord[] = [];
+    for (const entry of [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+      const metadata = await stat(path.join(this.archiveDir, entry.path)).catch(() => null);
+      if (metadata === null) {
+        lost.push({ path: entry.path, reason: "missing" });
+      } else if (metadata.size !== entry.size) {
+        lost.push({ path: entry.path, reason: "size-mismatch" });
+      }
+    }
+    return lost;
+  }
+
+  /**
+   * The sealed manifest's self-digest, for a consumer of this writer that
+   * publishes an attestation elsewhere (the completion sentinel). Null
+   * before the first manifest write.
+   */
+  manifestDigest(): string | null {
+    return this.manifest.integrity.manifest_sha256;
+  }
+
   async #trackFile(relativePath: string): Promise<void> {
     const absolute = path.join(this.archiveDir, relativePath);
     const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
@@ -709,6 +973,26 @@ export class RunRecordWriter {
       sha256: contentHash
     });
   }
+}
+
+/**
+ * Why an agent record carries no transcript, in the same vocabulary shape as
+ * `usage.unavailable`: the worker never ran, the runtime ended it before a
+ * transcript existed, or its engine produced none for the attempts that ran.
+ */
+function transcriptAbsenceReason(
+  record: RuntimeAgentRecord
+): "no-attempt-ran" | "worker-interrupted" | "worker-timed-out" | "engine-produced-no-transcript" {
+  if (record.attempts.length === 0) {
+    return "no-attempt-ran";
+  }
+  if (record.status === "interrupted") {
+    return "worker-interrupted";
+  }
+  if (record.status === "timed-out") {
+    return "worker-timed-out";
+  }
+  return "engine-produced-no-transcript";
 }
 
 function agentUsage(
@@ -724,7 +1008,12 @@ function agentUsage(
 
 function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<string, UsageRollup>> {
   const rollup: Record<string, Record<string, UsageRollup>> = {};
-  const unlikeCurrencies = new Set<UsageRollup["cost"]>();
+  // Cost is accumulated separately from the published shape because the
+  // published shape is a statement, not a running total: a bucket that never
+  // sees a provider-reported figure must publish the reason rather than a
+  // zero, and one that sees unlike currencies must publish that reason
+  // rather than a cross-currency sum.
+  const accumulators = new Map<string, CostAccumulator>();
   for (const record of records) {
     const engine = record.engine;
     // Spend is keyed under the model that actually served each attempt's
@@ -743,25 +1032,41 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
       const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
-      rollup[engine][model] =
-        existing === undefined
-          ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } }
-          : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
-      const bucket = rollup[engine][model];
+      const key = `${engine}\u0000${model}`;
+      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
+      accumulators.set(key, accumulator);
       for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(bucket.cost, event, unlikeCurrencies);
+        addProviderCost(accumulator, event);
       }
+      rollup[engine][model] = {
+        tokens: existing === undefined ? summary : addUsageSummary(existing.tokens, summary),
+        cost: publishedCost(accumulator)
+      };
     }
   }
   return rollup;
 }
 
-function addProviderCost(
-  target: UsageRollup["cost"],
-  event: TokenUsageEvent,
-  unlikeCurrencies: Set<UsageRollup["cost"]>
-): void {
-  if (unlikeCurrencies.has(target)) {
+interface CostAccumulator {
+  amount: number;
+  currency: string | null;
+  reported: boolean;
+  /** Latched once two events disagree on currency; never unlatched. */
+  unlike: boolean;
+}
+
+function publishedCost(accumulator: CostAccumulator): UsageRollup["cost"] {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+
+function addProviderCost(target: CostAccumulator, event: TokenUsageEvent): void {
+  if (target.unlike) {
     return;
   }
   const cost = event.raw.cost;
@@ -772,14 +1077,11 @@ function addProviderCost(
   // Unlike currencies cannot be summed; an explicit unknown beats a silent
   // cross-currency total, so the bucket degrades to token-only accounting.
   if (target.currency !== null && currency !== null && currency !== target.currency) {
-    unlikeCurrencies.add(target);
-    target.amount = null;
-    target.currency = null;
-    target.source = "estimated";
+    target.unlike = true;
     return;
   }
-  target.amount = (target.amount ?? 0) + cost;
-  target.source = "provider-reported";
+  target.amount += cost;
+  target.reported = true;
   if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
@@ -925,7 +1227,7 @@ async function judgeOwnerGone(
  * itself contain spaces and parentheses, hence the last-close-paren split).
  * Null where the stat file cannot be read: pid gone, or no proc filesystem.
  */
-async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
+export async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
   try {
     const statLine = await readFile(path.join(procDir, String(pid), "stat"), "utf8");
     const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
@@ -936,7 +1238,12 @@ async function readProcessStartTicks(procDir: string, pid: number): Promise<stri
 }
 
 function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {
-  return path.join(storeDir, "runs", "cwd", namespace.hash, runUuid);
+  // The path component is the same truncated hash the run id carries
+  // (`namespace.id` is `cwd:<hash24>`), so the startup line's identifiers
+  // carry to the filesystem without transformation: run id
+  // `cwd:<hash24>:<uuid>` names `runs/cwd/<hash24>/<uuid>` verbatim. The
+  // manifest's namespace block still records the full hash.
+  return path.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
 }
 
 async function deriveNamespace(cwd: string): Promise<NamespaceRecord> {
@@ -1032,30 +1339,26 @@ async function git(args: string[], cwd: string): Promise<string | null> {
   }
 }
 
+function holdEventKind(method: string): HoldEventEntry["event"] | null {
+  switch (method) {
+    case "hold/raised":
+      return "raised";
+    case "hold/answered":
+      return "answered";
+    case "hold/answerRejected":
+      return "answer-rejected";
+    case "hold/timedOut":
+      return "timed-out";
+    default:
+      return null;
+  }
+}
+
 function extractTask(meta: unknown): unknown {
   if (typeof meta !== "object" || meta === null || !("task" in meta)) {
     return null;
   }
   return (meta as { task?: unknown }).task ?? null;
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
 }
 
 async function hashFile(filePath: string): Promise<string> {

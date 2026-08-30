@@ -1,13 +1,51 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { canonicalJson, sha256 } from "./canonical-document.js";
 import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
 export const SENTINEL_FILENAME = "completion-sentinel.json";
-export const SENTINEL_SCHEMA_VERSION = 1;
+export const SENTINEL_SCHEMA_VERSION = 3;
 
 export type SentinelOutcome = "complete" | "failed" | "timed-out" | "interrupted";
+
+/**
+ * How the run's workers ended, as the launcher itself observed them. The
+ * outcome answers "how did the run end"; this answers "and did its work
+ * succeed", which the outcome alone cannot: worker failures collapse to
+ * `null` for the script by design, so a script that handles them
+ * returns cleanly and the run is genuinely `complete` — but a supervisor
+ * reading `complete` over a fan-out whose every worker failed has been
+ * answered wrongly. Null when the launcher had no progress model to read.
+ */
+export interface SentinelWorkerOutcomes {
+  done: number;
+  failed: number;
+  /** Workers still queued or running when the run ended (a timeout or interrupt). */
+  unsettled: number;
+}
+
+/**
+ * The sealed manifest's self-digest, or why this run has none. The sentinel
+ * is the run's terminal statement and lands after the archive seals, so it
+ * is the one artefact that can attest the manifest from outside it — which
+ * is what makes the manifest's own digest checkable against a second file
+ * rather than only against itself. The attestation is one-directional and
+ * stays that way: the sentinel resolves independently of the record switch,
+ * so a run with recording off publishes the reason there is no digest and
+ * writes exactly as before.
+ */
+export type SentinelManifestAttestation =
+  | { sha256: string }
+  | { unavailable: "recording-disabled" | "manifest-unsealed" };
+
+export interface SentinelTerminalDetail {
+  workers?: SentinelWorkerOutcomes | null;
+  /** What ended the run, when it ended badly; null on a clean end. */
+  error?: { kind: string; message: string } | null;
+  manifest?: SentinelManifestAttestation;
+}
 
 export interface CompletionSentinelOptions {
   /** The durable-record store directory (resolved even when recording is off). */
@@ -59,24 +97,40 @@ export class CompletionSentinel {
   async writeTerminal(
     outcome: SentinelOutcome,
     exitCode: number,
-    onError: (error: unknown) => void
+    onError: (error: unknown) => void,
+    detail: SentinelTerminalDetail = {}
   ): Promise<void> {
     if (this.#path === null || this.#written) {
       return;
     }
     this.#written = true;
+    const workers = detail.workers ?? null;
     const payload = {
       schema_version: SENTINEL_SCHEMA_VERSION,
       kind: "completion_sentinel",
       outcome,
       exit_code: exitCode,
-      ended_at: new Date().toISOString()
+      // Read from the launcher's own progress model, not the archive: the
+      // sentinel resolves independently of the record switch, so recording
+      // being off must degrade nothing here.
+      workers:
+        workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      error: detail.error ?? null,
+      manifest: detail.manifest ?? { unavailable: "recording-disabled" as const },
+      ended_at: new Date().toISOString(),
+      // Self-attestation, computed last over everything above it: the
+      // digest of this payload with `integrity.sentinel_sha256` null, in
+      // the same canonical form (sorted keys, two-space indent) the run
+      // manifest uses, so one verification recipe covers both files. Like
+      // the manifest's, it catches an edited field, not a forger.
+      integrity: { algorithm: "sha256" as const, sentinel_sha256: null as string | null }
     };
+    payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
       await mkdir(path.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
-        await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+        await writeFile(temporary, `${canonicalJson(payload)}\n`, "utf8");
         await rename(temporary, this.#path);
       } catch (error) {
         await rm(temporary, { force: true });
@@ -87,3 +141,4 @@ export class CompletionSentinel {
     }
   }
 }
+

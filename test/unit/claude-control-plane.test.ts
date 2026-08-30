@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { spawn } from "node:child_process";
 
-import { ClaudeCliControlPlane, WORKER_MARKER_VARIABLE } from "../../src/claude-control-plane.js";
+import { CLAUDE_CACHE_TTL_VARIABLE, ClaudeCliControlPlane, WORKER_MARKER_VARIABLE } from "../../src/claude-control-plane.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
@@ -200,6 +200,60 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     assert.equal(dirMode, 0o700);
     await controlPlane.stop(handle);
     await assert.rejects(access(settingsPath));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a requested cache TTL joins the settings env block, and a machine declaration for the same variable wins", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-cache-ttl-"));
+  try {
+    const settingsCopyPath = path.join(dir, "settings-copy.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000006";
+    const name = "cache-ttl-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { copyFile, writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          const flag = args.indexOf("--settings");
+          if (flag !== -1) {
+            await copyFile(args[flag + 1], ${JSON.stringify(settingsCopyPath)});
+          }
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "cache-ttl-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    // The operator's word outranks the harness default: a machine-declared
+    // value for the TTL variable must survive the dispatch's own request.
+    const declared = { [CLAUDE_CACHE_TTL_VARIABLE]: "5m" };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      workerEnv: declared
+    });
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir, cacheTtl: "1h" });
+    assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      env: { [CLAUDE_CACHE_TTL_VARIABLE]: "5m", [WORKER_MARKER_VARIABLE]: name }
+    });
+    await controlPlane.stop(handle);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

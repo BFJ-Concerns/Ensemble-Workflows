@@ -1320,7 +1320,8 @@ test("load-time defaults validation consults the runtime's own opencode registry
             provider: "custom",
             family: "custom",
             capabilities: { vision: false },
-            billing: { mode: "self-hosted" as const }
+            billing: { mode: "self-hosted" as const },
+            variants: []
           }
         : undefined,
     names: () => ["custom-model"]
@@ -1401,6 +1402,29 @@ test("a script with a defaults block still exposes its meta to registry readers"
 // stack. The render discipline is subtractive (cut only what is provably the
 // harness's or Node's; keep every author shape verbatim), so these tests pin
 // author-content *survival* as much as runtime-frame removal.
+
+test("a parallel thunk log cites the author's source position", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-thunk-author-frame-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const logs: string[] = [];
+  const source = [
+    'export const meta = { name: "thunk-author-frame" };',
+    "const results = await parallel([",
+    "  () => {",
+    '    throw new Error("thunk author boom");',
+    "  }",
+    "]);",
+    "return results;",
+    ""
+  ].join("\n");
+
+  const result = await runWorkflowScript({ filename: scriptPath, runtime, log: (message) => logs.push(message), source });
+
+  assert.deepEqual(result.result, [null]);
+  assert.equal(logs.length, 1);
+  assert.ok((logs[0] ?? "").includes(`${scriptPath}:4:11`), logs[0]);
+  assert.doesNotMatch(logs[0] ?? "", /ensemble-workflow-body/);
+});
 
 test("an unreadable script path is a named pre-spawn author error, not an errno stack", async () => {
   const { readWorkflowScript } = await import("../../src/script-runner.js");

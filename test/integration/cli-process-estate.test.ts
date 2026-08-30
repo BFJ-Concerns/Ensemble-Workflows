@@ -50,7 +50,8 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
       "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-      "       ensemble workflows\n");
+      "       ensemble workflows\n" +
+      "       ensemble holds [--json]\n");
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {
@@ -237,7 +238,7 @@ test("built CLI rejects a removed agent option with its removal reason", async (
   }
 });
 
-test("built CLI leaves a missing status namespace absent", async () => {
+test("built CLI fails loud when an explicitly configured status directory is missing", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-estate-"));
   const script = path.join(directory, "workflow.js");
   const statusDir = path.join(directory, "not-opted-in");
@@ -248,7 +249,7 @@ test("built CLI leaves a missing status namespace absent", async () => {
       `
         export const meta = {
           name: "status-publication-opt-in",
-          description: "Filesystem proof that disabled publication stays invisible"
+          description: "Process proof that a named-but-missing status directory cannot silently publish nothing"
         };
         return { completed: true };
       `
@@ -259,8 +260,11 @@ test("built CLI leaves a missing status namespace absent", async () => {
 
     const result = await runNode([bundledCliPath, script], env);
 
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, `{"completed":true}\n`);
+    // The operator named a directory and it is unusable: exit 2 with the
+    // cause, never a successful run that published no observability.
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /Configured status directory does not exist or is not a directory/);
+    assert.match(result.stderr, /ENSEMBLE_STATUS_DIR/);
     await assert.rejects(() => readdir(statusDir), { code: "ENOENT" });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -283,7 +287,11 @@ test("built CLI shuts down cleanly when its status reporter throws", async () =>
         return { completed: true };
       `
     );
-    await writeFile(statusTarget, "not a directory\n");
+    // A real directory the writer cannot write into: publication resolves
+    // (the explicit directory exists), every snapshot write fails, and the
+    // "[status]" error report is what the preload turns into a throwing
+    // reporter — the journey this test exists for.
+    await mkdir(statusTarget, { mode: 0o500 });
     const env = isolatedEnvironment(directory);
     delete env.ENSEMBLE_STATUS;
     env.ENSEMBLE_STATUS_DIR = statusTarget;
@@ -843,6 +851,33 @@ test("built CLI still collapses ordinary parallel and pipeline errors to null", 
     assert.match(result.stderr, /pipeline item 0 stage 0 failed: Error: ordinary pipeline bug/);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 2);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI logs a parallel thunk error at the author's exact source position", async () => {
+  const fixture = await createProcessFixture("parallel-author-frame");
+
+  try {
+    await writeFile(
+      fixture.script,
+      [
+        'export const meta = { name: "parallel-author-frame" };',
+        "",
+        "await parallel([",
+        '  () => { throw new Error("PARALLEL_AUTHOR_FRAME"); }',
+        "]);",
+        "return null;",
+        ""
+      ].join("\n")
+    );
+
+    const result = await fixture.run();
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stderr.includes(`${fixture.script}:4:`), result.stderr);
+    assert.doesNotMatch(result.stderr, /ensemble-workflow-body/, result.stderr);
   } finally {
     await fixture.cleanup();
   }
@@ -2111,7 +2146,7 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
         };
         return await agent("must not wait on a dead thread", {
           engine: "codex",
-          maxAttempts: 1
+          maxAttempts: 2
         });
       `
     );
@@ -2128,8 +2163,8 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
     );
 
     assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /AppServerRequestError/);
-    assert.match(result.stderr, /systemError/);
+    assert.match(result.stderr, /AppServerSystemError/);
+    assert.match(result.stderr, /systemError without a diagnostic/);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
     assert.deepEqual(
@@ -2139,8 +2174,10 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
 
     const agent = await loadOnlyAgentRecord(recordStore);
     assert.equal(agent.attempts.length, 1);
-    assert.equal(agent.attempts[0]?.failure?.kind, "AppServerRequestError");
-    assert.match(agent.attempts[0]?.failure?.message ?? "", /systemError/);
+    for (const attempt of agent.attempts) {
+      assert.equal(attempt.failure?.kind, "AppServerSystemError");
+      assert.match(attempt.failure?.message ?? "", /systemError without a diagnostic/);
+    }
   } finally {
     await fixture.cleanup();
   }

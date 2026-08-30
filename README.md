@@ -17,8 +17,9 @@ bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
 `workflow()` composition over saved workflows, and `isolation:'worktree'` for writable parallel agents on any engine — driven by the
-`ensemble <script.js> [args]` CLI (result JSON on stdout, logs on stderr,
-non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
+`ensemble <script.js> [args]` CLI (result as JSON on stdout — structured
+objects as JSON objects, plain-text answers as JSON strings with enclosing
+quotes — logs on stderr, non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
 `'claude'`, or `'opencode'`): there is no default and no engine is privileged.
 opencode also requires a curated `model`; v1 ships `model: "glm-5.2"`, resolved
 to `openrouter/z-ai/glm-5.2` with `vision:false` and pay-as-you-go billing.
@@ -49,6 +50,26 @@ any worker spawns.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallbackModel` that every `agent()` call
   inherits and call-site options override.
+- `session(opts)` creates a multi-turn worker on `"claude"` or `"codex"`
+  (`"opencode"` throws before spawn): engine, model, and effort are fixed at
+  creation, and the returned handle's `send(prompt, { schema? })` runs
+  successive turns against the same held worker — schema is the only per-turn
+  variation, each turn under the one-shot call's validated-return and
+  bounded-retry contract, holding an engine-cap/ceiling slot only while it
+  executes. Claude sessions are dispatched with the 1-hour prompt-cache TTL;
+  `handle.stale` is the advisory staleness mark (TTL cliff on Claude, 60 idle
+  minutes on Codex; `stalenessMark: false` disables it) and never blocks a
+  send. Each turn is its own agent record carrying `session: { id, turn }`,
+  and every held session is closed when the run ends.
+- `hold({ content, verdicts, timeoutMs? })` raises a decision hold: the
+  request is published to the shared `$XDG_DATA_HOME/ensemble/holds/`
+  directory and the call resolves `{ verdict, note }` when any process — the
+  launcher or not — writes the nonce-correlated decision file the record
+  names. Stale nonces, unlisted verdicts, and malformed answers are rejected
+  and the hold keeps waiting; an optional timeout rejects with
+  `HoldTimeoutError`. Open holds appear in the live status snapshot and the
+  cross-run `ensemble holds [--json]` listing, and every raise, answer,
+  rejection, and timeout lands in the archive manifest's `hold_events`.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed
@@ -154,6 +175,16 @@ JSON object with these fields:
   has never produced output and is suspect; a leg with evidence has
   produced output at least once. The fields do not distinguish a leg
   streaming now from one that stalled after its first output.
+- `holds`: array of open decision holds, empty when the run is not waiting.
+  Each object has string `id`, string `content` (bounded to 500 characters;
+  the hold file carries the full text), string-array `verdicts`, and numeric
+  `raisedAtMs` (Unix epoch milliseconds).
+
+The published file also carries an `owner` object (`host`, `pid`,
+`start_ticks`) — the writer's own liveness evidence, added at publication
+rather than being part of the in-memory snapshot — so a poller can refute a
+snapshot a killed run left behind (`snapshotOwnerGone` implements the
+judgement).
 
 Example:
 
@@ -218,7 +249,7 @@ Example:
 
 ## Durable run record
 
-Every run also writes a permanent archive of what happened. This is separate
+By default, a run writes a permanent archive of what happened. This is separate
 from `.claude/ensemble.local.json`: the status file is live-only and removed at
 the end; the run record is archival and kept for audit and for tools that
 evaluate runs after the fact.
@@ -247,8 +278,26 @@ from the workflow meta block when present.
 The archive is written incrementally. `manifest.json` starts as
 `status: "in-progress"`, each completed agent flushes its own directory with
 atomic temp-then-rename writes, and the final manifest records `complete`,
-`failed`, `timed-out`, or `interrupted`. A stopped run therefore leaves a usable
-partial archive.
+`failed`, `timed-out`, `interrupted`, or `incomplete`. A stopped run therefore
+leaves a usable partial archive.
+
+At the seal the writer re-reads every file its integrity table declares. A
+file that has gone missing, or whose size no longer matches what was hashed,
+is recorded in `integrity.files_lost` rather than passed over, and a run that
+would otherwise have sealed `complete` seals `incomplete` instead: the
+manifest may not assert a whole archive over files a reader cannot read. The
+run's own outcome is unaffected — `result.json` still says how the run ended,
+because how the run ended and whether its archive survived are two different
+questions.
+
+Every manifest write ends by attesting itself: `integrity.manifest_sha256` is
+the SHA-256 of the manifest's own canonical form (keys sorted recursively,
+two-space indent) with that field set to `null`. `completion-sentinel.json`
+carries the same self-attestation and, being written after the seal, also
+carries the sealed manifest's digest — so the manifest is checkable against a
+second file rather than only against itself. Both are self-attestations, not
+signatures: no key material lives in the archive, so they catch an edited
+field or a truncated write, not a forger who rewrites the digest too.
 
 A run that dies with its launcher — a kill the process cannot handle — never
 writes its own terminal status, so the manifest records liveness evidence
@@ -259,9 +308,15 @@ from the process table, or start ticks that no longer match (pid reuse) —
 rewriting `status` to the terminal `"abandoned"` with an `abandonment` block
 naming what was observed, when, and by which run. Judgement is same-host and
 evidence-only: an owner on another machine, or one recorded without a
-readable proc filesystem, is left as written, and a consumer can apply the
-same check itself from the `owner` block without waiting for a reap. Agent
-records under a reaped run are preserved untouched.
+readable proc filesystem, is left as written. A consumer need not wait for a
+reap: the `owner` block is the evidence, so a cold reader applies the same
+check itself — a terminal manifest is settled; an owner on this host whose pid
+is absent, or whose start ticks no longer match, is dead; one present with
+matching start ticks is live; and everything else, including a pid the reader
+has no readable proc filesystem to check, is undecidable. That reading is a
+consumer's to make, not an API the harness exports, and it lets a supervisor
+tell a killed run from a running one at read time, on an archive nobody has
+rewritten. Agent records under a reaped run are preserved untouched.
 
 ### Run record schema
 
@@ -271,7 +326,7 @@ Every JSON artefact carries:
   declared summary vocabulary keyed per served model; `strip` and `owner`
   arrived later as additive version-3 fields. Version 2 added worktree
   provenance and cross-engine token derivations over version 1.
-- `kind`: one of `run_manifest`, `run_args`, `run_result`, or `agent_record`.
+- `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
@@ -279,9 +334,11 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.
+- `caller_identity`: opaque identity of the invoking session, or `null`.
 - `namespace`: namespace strategy, id, hash, and local material.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
-  `"interrupted"`, or `"abandoned"` (reaper-written only, see above).
+  `"interrupted"`, `"incomplete"` (the run ended but files it archived were
+  gone at the seal, see above), or `"abandoned"` (reaper-written only).
 - `owner`: the writing process's liveness evidence — `pid`, `start_ticks`
   (`null` where no readable proc filesystem exists), and `host`.
 - `abandonment`: present only on reaped manifests — `observed_at`, `reason`
@@ -295,6 +352,14 @@ The manifest is `manifest.json`. Its top-level fields are:
   it is not the hash of the envelope bytes.
 - `meta`: raw workflow meta and `task` copied verbatim, or `null`.
 - `cli_flags`: parsed run-tuning flags.
+- `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
+  ceilings and whole-run timeout, each as `{ value, layer }` naming the
+  layer that won — the same auditable shape as `concurrency` (both settings
+  resolve from the flag alone today, so their layers are `flag` or
+  `default`).
+- `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
+  answer, timeout) in event order, each entry carrying `hold_id`, `event`,
+  `verdict`/`reason` where applicable, and a timestamp.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
@@ -302,12 +367,18 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *served* model — the literal `"unresolved"` when
   no served model was ever learned, never the requested pin. Cost entries carry
-  `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
-  runtime only has token data, amount/currency are `null` and source is
-  `estimated`. Each `tokens` object uses one declared vocabulary:
-  `freshInputTokens` (uncached input), `cachedInputTokens` (with optional
-  `cacheReadTokens` / `cacheCreationTokens` split where the engine separates
-  reads from writes), `outputTokens` (excluding reasoning where separable),
+  `amount`, `currency`, and `source: "provider-reported"` — the only source
+  there is, because the harness never estimates money. A bucket with no
+  provider figure carries no amount at all: it reads
+  `{ "unavailable": "no-provider-cost-reported" }`, or
+  `{ "unavailable": "unlike-currencies" }` where the attempts under one served
+  model reported spend in currencies that cannot be added. The reason is stated
+  rather than an amount-less entry a consumer cannot tell from zero. Each
+  `tokens` object uses one declared vocabulary: `freshInputTokens` (uncached
+  input), `cachedInputTokens` (the combined cache figure for admission and
+  total reconciliation, not a pricing class when it combines reads and writes;
+  use the optional `cacheReadTokens` / `cacheCreationTokens` split where the
+  engine separates them), `outputTokens` (excluding reasoning where separable),
   `reasoningOutputTokens` (`null` when the engine does not separate reasoning,
   never zero — `null` means "not knowable", zero means "no reasoning spend"),
   and `unclassifiedTokens` (spend the engine's total covers but no declared
@@ -318,34 +389,61 @@ The manifest is `manifest.json`. Its top-level fields are:
   separable (`null`). The engine-native usage events remain per attempt beneath
   the summaries, untouched. Figures are never summed across engines.
 - `files`: integrity table for archived artefacts, each with `path`, `size`, and
-  `sha256`. `manifest.json` is excluded to avoid self-hashing recursion.
+  `sha256`. `manifest.json` is excluded to avoid self-hashing recursion; it
+  attests itself instead (see above).
+- `integrity`: `algorithm` (`"sha256"`), `manifest_sha256` (the manifest's own
+  self-digest), and `files_lost` — one `{ path, reason }` entry, sorted by
+  path, for each declared file that was `missing` or a `size-mismatch` at the
+  seal. Empty on a whole archive.
 
 Agent records live at `agents/<zero-padded-id>/agent.json`:
 
 - `schema_version`: `3`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
-- `engine`, `model`, `effort`, and `resolved_model` (`null` when unknown).
-- `worktree`: isolated worktree `branch`, `base_commit`, and `tip_commit`,
-  otherwise `null`.
+- `engine`, `model`, `effort` (what was asked for), `fallback_model`, and
+  `resolved_model` / `resolved_effort` — what the engine reported it actually
+  served, `null` when it never said. Attempts carry `resolved_effort` too,
+  since a retry may be served differently from the attempt before it.
+- `prompt`: the agent's prompt text.
+- `options`: `{ timeout_ms, max_attempts }`.
+- `resolved_cwd`, `isolation` (`null` when unused).
+- `worktree`: isolated worktree `branch`, `base_commit`, `tip_commit`,
+  `changed`, and `removed` — or `null`.
 - `label`, `phase`, and `status`. Agent status is `"in-progress"`,
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
   `"abandoned"` means the run ended while the dispatch record was still being
   persisted, so the harness did not observe an agent outcome.
+- `termination_cause`: the `{ kind, message }` that settled this agent at that
+  status when the runtime decided it — a run that ended under the worker, or a
+  turn timeout — and `null` when the attempts already name the cause.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
+- `strip`: requested capability names and resolved enforcement routes.
+- `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
+- `decode_failure`: `{ byte_length, line_prefix }` or `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.
 - `validated_output`: validated object/text result, or `null` on failure.
-- `attempts`: per-attempt status, structured failure, raw/validated output,
-  timing, and token usage events.
-- `transcripts`: archived transcript files for the attempts.
+- `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
+  (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
+- `queued_ms`, `execution_ms`.
+- `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
+  `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
+  `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
+  `null`), `observed_failure`, `diagnostics`, `app_server_diagnostic`,
+  `token_usage_events`, `worker_exit`. Where the run's own settlement ended
+  the turn, the attempt's `failure` names that settlement and
+  `observed_failure` keeps the transport symptom the turn saw (a closed
+  app-server, an aborted poll); `observed_failure` is `null` when the
+  engine's own failure is the cause.
+- `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
+  `session_id`, `thread_id`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every
 scoped app-server notification through completion. Claude transcripts are copied
 from the background session JSONL before the session is removed. opencode
 transcripts preserve the `opencode run --format json` event stream plus the
-session export when available. The prompt lives in the transcript, not in a
-duplicated field.
+session export when available.
 
 The record contains only run and audit data. It does not score outputs, infer
 verifier relationships, or record evaluation concepts; those belong to the

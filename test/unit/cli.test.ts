@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, glob, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,6 +34,21 @@ class CaptureStream extends Writable {
 
   text(): string {
     return this.chunks.join("");
+  }
+}
+
+class InterruptOnSentinelAnnouncementStream extends CaptureStream {
+  #interrupted = false;
+
+  override _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+    if (!this.#interrupted && /\[sentinel\] will write \S+ when the run ends\n/.test(chunk.toString())) {
+      this.#interrupted = true;
+      // This is the former startup gap: stderr is publishing the supervisor's
+      // only handle, so the signal arrives before any later CLI setup can arm
+      // interruption handling.
+      process.emit("SIGINT");
+    }
+    super._write(chunk, encoding, callback);
   }
 }
 
@@ -180,10 +196,73 @@ test("the launcher announces the sentinel path before workers spawn and writes i
     outcome: string;
     exit_code: number;
     ended_at: string;
+    manifest: { sha256?: string; unavailable?: string };
+    integrity: { algorithm: string; sentinel_sha256: string };
   };
   assert.equal(sentinel.outcome, "complete");
   assert.equal(sentinel.exit_code, 0);
   assert.ok(sentinel.ended_at.length > 0);
+
+  // The sentinel attests the sealed manifest from outside it, so the
+  // manifest's own digest is checkable against a second file.
+  const manifest = JSON.parse(
+    await readFile(path.join(path.dirname(sentinelPath), "manifest.json"), "utf8")
+  ) as { integrity: { manifest_sha256: string } };
+  assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256);
+  // Both files verify under one recipe: the digest of the payload with its
+  // own digest field null, canonicalised.
+  assert.equal(manifest.integrity.manifest_sha256, selfDigest(manifest, "integrity", "manifest_sha256"));
+  assert.equal(sentinel.integrity.sentinel_sha256, selfDigest(sentinel, "integrity", "sentinel_sha256"));
+});
+
+function selfDigest(document: unknown, block: string, field: string): string {
+  const copy = JSON.parse(JSON.stringify(document)) as Record<string, Record<string, unknown>>;
+  copy[block]![field] = null;
+  return createHash("sha256").update(canonicalJson(copy)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+
+test("a SIGINT delivered as the sentinel path is announced still writes the interrupted envelope", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-startup-interrupt-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "sentinel-startup-interrupt" }; return "unreached";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new InterruptOnSentinelAnnouncementStream();
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 1);
+    assert.deepEqual(JSON.parse(stdout.text()), { partial: true, reason: "interrupted", completed: [] });
+    const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, "the interrupted run must retain the announced sentinel path");
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.equal(sentinel.outcome, "interrupted");
+    assert.equal(sentinel.exit_code, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the sentinel is written even when durable recording is disabled ambiently", async () => {
@@ -221,9 +300,14 @@ test("the sentinel is written even when durable recording is disabled ambiently"
   assert.ok(announced, "recording off must not remove the supervisor's wake signal");
   const sentinelPath = announced[1]!;
   assert.ok(sentinelPath.startsWith(path.join(dataHome, "ensemble")));
-  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { outcome: string };
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    manifest: { unavailable?: string };
+  };
   assert.equal(sentinel.outcome, "complete");
-  // No archive: the run directory exists for the sentinel alone.
+  // No archive: the run directory exists for the sentinel alone, and the
+  // attestation says why there is no digest rather than omitting it.
+  assert.deepEqual(sentinel.manifest, { unavailable: "recording-disabled" });
   await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
 });
 
@@ -592,15 +676,34 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     kind: string;
     outcome: string;
     exit_code: number;
+    workers: unknown;
+    error: { kind: string; message: string } | null;
+    manifest: unknown;
+    integrity: { algorithm: string; sentinel_sha256: string };
     ended_at: string;
   };
+  const sealed = JSON.parse(
+    await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")
+  ) as { integrity: { manifest_sha256: string } };
   assert.deepEqual(sentinel, {
-    schema_version: 1,
+    schema_version: 3,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,
+    // This runtime is injected and carries no progress model, so the
+    // launcher observed no worker tally — null says so rather than
+    // publishing a zeroed one it did not measure.
+    workers: null,
+    error: {
+      kind: "SingleAgentFailedError",
+      message: "Agent exhausted its attempts without producing a result"
+    },
+    // A failed run still seals its archive, so the sentinel can attest it.
+    manifest: { sha256: sealed.integrity.manifest_sha256 },
+    integrity: { algorithm: "sha256", sentinel_sha256: sentinel.integrity.sentinel_sha256 },
     ended_at: sentinel.ended_at
   });
+  assert.equal(sentinel.integrity.sentinel_sha256, selfDigest(sentinel, "integrity", "sentinel_sha256"));
 });
 
 test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
@@ -812,6 +915,38 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
   assert.equal(record.fallback_model, "claude-sonnet-fallback");
 });
 
+test("the archive records the effort the engine actually served, beside the effort that was asked for", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-effort-"));
+  const runRecordDir = path.join(directory, "records");
+  // The request and the service can disagree; the archive must not let the
+  // request stand in for what ran.
+  const engine = new FixedResponseEngine("codex", "done", { model: "gpt-5.6-terra", effort: "medium" });
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--effort=low", "think"], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr,
+    runRecordDir,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const records = [];
+  for await (const record of glob(path.join(runRecordDir, "runs/**/agents/000001/agent.json"))) {
+    records.push(record);
+  }
+  assert.equal(records.length, 1);
+  const record = JSON.parse(await readFile(records[0]!, "utf8")) as {
+    effort: string | null;
+    resolved_effort: string | null;
+    attempts: Array<{ resolved_effort: string | null }>;
+  };
+  assert.equal(record.effort, "low");
+  assert.equal(record.resolved_effort, "medium");
+  assert.equal(record.attempts[0]?.resolved_effort, "medium");
+});
+
 test("ensemble agent leaves fallback-model support to the engine and rejects malformed flag syntax before runtime", async () => {
   for (const engineName of ["codex", "opencode"] as const) {
     const externalCalls: string[] = [];
@@ -886,6 +1021,82 @@ test("ensemble agent reports option mistakes as stack-free usage errors", async 
   assert.match(stderr.text(), /Unknown option '--unknown'/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
   assert.doesNotMatch(stderr.text(), /\n\s+at /);
+});
+
+test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and blank prompts before runtime creation", async () => {
+  const cases = [
+    {
+      argv: ["--timeout", "1000", "agent", "--engine=codex", "prompt"],
+      diagnostic: "Tuning flags must appear after ensemble agent, not before it"
+    },
+    {
+      argv: ["agent", "--engine=codex", "prompt", "--timeout", "1000"],
+      diagnostic: "Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt"
+    },
+    {
+      argv: ["agent", "--engine=codex", "--agent-ceiling=1", "--agent-ceiling=null", "prompt"],
+      diagnostic: "Option --agent-ceiling may only be specified once"
+    },
+    {
+      argv: ["agent", "--engine=codex", " \t "],
+      diagnostic: "ensemble agent requires a prompt argument or a non-empty prompt on stdin"
+    }
+  ];
+
+  for (const entry of cases) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    let runtimeCreations = 0;
+    const exitCode = await runEnsembleCli(entry.argv, {
+      stdin: Readable.from([]),
+      stdout,
+      stderr,
+      createRuntime: async () => {
+        runtimeCreations += 1;
+        return fakeRuntime();
+      }
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(stderr.text(), `${entry.diagnostic}\n`);
+    assert.equal(runtimeCreations, 0);
+  }
+});
+
+test("ensemble agent accepts a dash-leading prompt after --", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--", "--timeout"], {
+    stdin: Readable.from([]),
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '"--timeout"\n');
+});
+
+test("workflow invocation rejects duplicate scalar tuning flags before runtime creation", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  let runtimeCreations = 0;
+
+  const exitCode = await runEnsembleCli(["--agent-ceiling=1", "--agent-ceiling=null", "workflow.js"], {
+    stdout,
+    stderr,
+    createRuntime: async () => {
+      runtimeCreations += 1;
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(stderr.text(), "Option --agent-ceiling may only be specified once\n");
+  assert.equal(runtimeCreations, 0);
 });
 
 test("ensemble agent reports a recoverable branch carrying the worker commit", async () => {
@@ -1362,7 +1573,7 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.equal(envelope.completed[0]?.engine, "codex");
   assert.equal(envelope.completed[0]?.label, "alpha");
   assert.equal(envelope.completed[0]?.output, "codex:done-fast");
-  assert.match(stderr.text(), /Workflow interrupted by SIGINT/);
+  assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
 });
 
 test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", async () => {
@@ -1606,8 +1817,102 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
         "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-      "       ensemble workflows\n"
+      "       ensemble workflows\n" +
+      "       ensemble holds [--json]\n"
   );
+});
+
+test("the CLI attributes effective budget and timeout to the layers that actually decided them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-effective-"));
+  const runRecordDir = path.join(directory, "records");
+  const engine = new FixedResponseEngine("codex", "done");
+  const stderr = new CaptureStream();
+
+  // One flag supplied, one left to its default: the manifest must tell
+  // them apart from the producer's own resolution, not from test-supplied
+  // attributions.
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--budget", "codex=50000", "--timeout", "90000", "work"],
+    {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr,
+      runRecordDir,
+      createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+    }
+  );
+  assert.equal(exitCode, 0, stderr.text());
+
+  const manifests = [];
+  for await (const manifest of glob(path.join(runRecordDir, "runs/**/manifest.json"))) {
+    manifests.push(manifest);
+  }
+  assert.equal(manifests.length, 1);
+  const manifest = JSON.parse(await readFile(manifests[0]!, "utf8")) as {
+    budget_ceilings: Record<string, { value: number | null; layer: string }>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(manifest.budget_ceilings.codex, { value: 50_000, layer: "flag" });
+  assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
+  assert.deepEqual(manifest.budget_ceilings.opencode, { value: null, layer: "default" });
+  assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
+});
+
+test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
+  for (const flag of ["--help", "-h"]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    assert.equal(await runEnsembleCli([flag], { stdout, stderr }), 0);
+    assert.match(stdout.text(), /^Usage: ensemble /);
+    assert.equal(stderr.text(), "");
+  }
+
+  const stdout = new CaptureStream();
+  assert.equal(await runEnsembleCli(["--version"], { stdout, stderr: new CaptureStream() }), 0);
+  assert.match(stdout.text().trim(), /^\d+\.\d+\.\d+/);
+
+  // Per-subcommand help is an answer, never a usage *error*: exit 0.
+  for (const argv of [["workflows", "--help"], ["holds", "--help"], ["agent", "--help"]]) {
+    const subStdout = new CaptureStream();
+    assert.equal(await runEnsembleCli(argv, { stdout: subStdout, stderr: new CaptureStream() }), 0);
+    assert.match(subStdout.text(), /Usage: ensemble/);
+  }
+});
+
+test("an empty workflows catalogue says what it found and where it looked", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-empty-workflows-"));
+  const dataHome = path.join(directory, "data-home");
+  const stdout = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["workflows"], {
+    cwd: directory,
+    stdout,
+    stderr: new CaptureStream(),
+    env: { XDG_DATA_HOME: dataHome }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.match(stdout.text(), /No saved workflows found/);
+  assert.ok(stdout.text().includes(path.join(directory, ".claude", "ensemble", "workflows")));
+  assert.ok(stdout.text().includes(path.join(dataHome, "ensemble", "workflows")));
+});
+
+test("an unpinned Claude worker's resolution notice names the served model, like the Codex line", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-claude-resolved-"));
+  const engine = new FixedResponseEngine("claude", "done", { model: "claude-opus-5" });
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=claude", "greet"], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr,
+    runRecordDir: null,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.match(stderr.text(), /\[claude\] agent 1 runs unpinned — no model pinned; the ambient default applies/);
+  assert.match(stderr.text(), /\[claude\] agent 1 runs unpinned — resolved ambient default: claude-opus-5/);
 });
 
 test("CLI workflows lists saved workflows and notes unparseable files without crashing", async () => {
@@ -1897,7 +2202,8 @@ class FixedResponseEngine implements EngineAdapter {
 
   constructor(
     readonly name: EngineName,
-    private readonly response: string
+    private readonly response: string,
+    private readonly resolvedDefault?: { model: string; effort?: string }
   ) {}
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -1910,7 +2216,7 @@ class FixedResponseEngine implements EngineAdapter {
     return {
       runAttempt: async () => {
         this.attempts += 1;
-        return turn(this.response);
+        return turn(this.response, this.resolvedDefault);
       }
     };
   }
@@ -2111,7 +2417,7 @@ test("CLI warns on unpinned Claude calls and stays quiet when defaults pin the m
     createRuntime: makeRuntime
   });
   assert.equal(unpinnedExit, 0);
-  assert.match(unpinnedStderr.text(), /\[claude\] agent 1 \(loose\) runs unpinned — no model: set/);
+  assert.match(unpinnedStderr.text(), /\[claude\] agent 1 \(loose\) runs unpinned — no model pinned; the ambient default applies/);
 
   const pinnedStderr = new CaptureStream();
   const pinnedStdout = new CaptureStream();
@@ -2201,3 +2507,216 @@ test("a missing workflow script path is one clean pre-spawn line naming the path
     `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
   );
 });
+
+test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {
+  // Four causes that all read as bare `failed` on status alone. Each must
+  // be told apart by a consumer holding only the archive.
+  const cases = [
+    {
+      name: "script-throw",
+      source: `export const meta = { name: "cause-script" };\nreturn { value: 1n };`,
+      kind: "WorkflowScriptError",
+      message: /BigInt/
+    },
+    {
+      name: "unknown-engine",
+      source: `export const meta = { name: "cause-engine" };\nawait agent("hi", { engine: "codexx" });`,
+      kind: "UnknownEngineError",
+      message: /Unknown agent engine/
+    },
+    {
+      name: "budget-refusal",
+      source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
+      kind: "BudgetExceededError",
+      message: /Token budget exhausted for codex/
+    }
+  ] as const;
+
+  for (const terminal of cases) {
+    const directory = await mkdtemp(path.join(tmpdir(), `ensemble-cli-cause-${terminal.name}-`));
+    const runRecordDir = path.join(directory, "records");
+    const script = path.join(directory, "workflow.js");
+    await writeFile(script, terminal.source);
+
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([new HangOnPromptEngine("codex", 4)]),
+          defaultMaxAttempts: 1,
+          // A zero ceiling refuses the first codex dispatch outright; the
+          // other two cases never reach the budget.
+          ...(terminal.name === "budget-refusal" ? { budgetCeilings: { codex: 0 } } : {})
+        })
+    });
+
+    assert.equal(exitCode, 1, `${terminal.name}: ${stderr.text()}`);
+
+    const archive = announcedRunRecord(stderr.text()).archive_path;
+    const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
+      status: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(manifest.status, "failed", terminal.name);
+    assert.equal(manifest.error?.kind, terminal.kind, `${terminal.name} manifest kind`);
+    assert.match(manifest.error?.message ?? "", terminal.message, `${terminal.name} manifest message`);
+
+    const result = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8")) as {
+      status: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(result.error?.kind, terminal.kind, `${terminal.name} result kind`);
+    assert.match(result.error?.message ?? "", terminal.message, `${terminal.name} result message`);
+
+    const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+    assert.ok(sentinelPath, `${terminal.name}: sentinel path must be announced`);
+    const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+      outcome: string;
+      error: { kind: string; message: string } | null;
+    };
+    assert.equal(sentinel.outcome, "failed", terminal.name);
+    assert.equal(sentinel.error?.kind, terminal.kind, `${terminal.name} sentinel kind`);
+  }
+});
+
+test("a clean run's durable surfaces carry no invented cause", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-cause-clean-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "cause-clean" };\nreturn "ok";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fakeRuntime()
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const archive = announcedRunRecord(stderr.text()).archive_path;
+  const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as { error: unknown };
+  const result = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8")) as { error: unknown };
+  assert.equal(manifest.error, null);
+  assert.equal(result.error, null);
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { error: unknown };
+  assert.equal(sentinel.error, null);
+});
+
+test("the sentinel carries worker outcomes, so `complete` cannot mean every worker failed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-workers-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  // Worker failures collapse to null, and this script handles them —
+  // so the run genuinely succeeds and exits 0. The sentinel is the only
+  // surface a supervisor has, and it must not answer "complete" alone.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-all-failed" };
+      const results = await parallel([
+        () => agent("fail", { engine: "codex" }),
+        () => agent("fail", { engine: "codex" })
+      ]);
+      return { nulls: results.filter((value) => value === null).length };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fixedEngineRuntime(new AlwaysFailingEngine("codex", 4), 1)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.deepEqual(JSON.parse(stdout.text()), { nulls: 2 });
+
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    exit_code: number;
+    workers: { done: number; failed: number; unsettled: number } | null;
+  };
+  // Outcome and exit code still describe the script, which succeeded.
+  assert.equal(sentinel.outcome, "complete");
+  assert.equal(sentinel.exit_code, 0);
+  // What is added is the tally that stops `complete` reading as "all well".
+  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, unsettled: 0 });
+});
+
+test("the sentinel's worker tally counts a run's successes as its own observation", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-workers-ok-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "sentinel-workers-ok" };
+      await agent("one", { engine: "codex" });
+      await agent("two", { engine: "codex" });
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fixedEngineRuntime(new HangOnPromptEngine("codex", 4), 1)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    workers: { done: number; failed: number; unsettled: number } | null;
+  };
+  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, unsettled: 0 });
+});
+
+class AlwaysFailingEngine implements EngineAdapter {
+  readonly concurrency: number;
+  readonly scheduler: Scheduler;
+
+  constructor(
+    readonly name: EngineName,
+    concurrency: number
+  ) {
+    this.concurrency = concurrency;
+    this.scheduler = new Scheduler(concurrency);
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(): EngineInvocation {
+    return {
+      runAttempt: async () => {
+        throw new Error("engine refused the turn");
+      },
+      close: async () => {}
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}

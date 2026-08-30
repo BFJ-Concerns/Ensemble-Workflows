@@ -22,6 +22,16 @@ export class PreSpawnAuthorError extends EnsembleError {}
 /** A workflow-authored agent option that the runtime cannot honour. */
 export class AgentOptionRejectedError extends PreSpawnAuthorError {}
 
+/** An agent prompt that cannot be meaningfully sent to a worker. */
+export class AgentPromptRejectedError extends PreSpawnAuthorError {}
+
+/**
+ * A per-call working directory that cannot be used for worker placement.
+ * This is pre-spawn: accepting it would let the engine substitute an
+ * unspecified directory while the run record claims the requested one.
+ */
+export class AgentCwdRejectedError extends PreSpawnAuthorError {}
+
 /**
  * A workflow script path that cannot be read — missing, a directory, or
  * unreadable. Pre-spawn by construction: the script's source is the first
@@ -30,6 +40,63 @@ export class AgentOptionRejectedError extends PreSpawnAuthorError {}
  * the filesystem said, never a raw errno stack.
  */
 export class WorkflowScriptReadError extends PreSpawnAuthorError {}
+
+/**
+ * A hold the runtime cannot raise: malformed options, or a raise after the
+ * run began closing. Pre-spawn in the family's sense — nothing was asked of
+ * anyone, and the author's fix is the call itself.
+ */
+export class HoldRejectedError extends PreSpawnAuthorError {}
+
+/**
+ * An optional per-hold timeout expired with no accepted answer. An
+ * operational bound, not an authoring mistake — deliberately outside the
+ * pre-spawn family (like WorkflowTimeoutError), rendered as one clean line;
+ * a script that treats expiry as an outcome catches it.
+ */
+export class HoldTimeoutError extends EnsembleError {
+  constructor(holdId: string, timeoutAt: string) {
+    super(`hold ${holdId} timed out unanswered${timeoutAt.length > 0 ? ` at ${timeoutAt}` : ""}`);
+  }
+}
+
+/**
+ * A multi-turn worker session requested on an engine that does not hold
+ * sessions open across turns. Pre-spawn by the options invariant: an engine
+ * held at its one-shot surface (opencode, deliberately) must throw before any
+ * worker spawns rather than silently dispatch a fresh session per send.
+ */
+export class MultiTurnUnsupportedError extends AgentOptionRejectedError {
+  constructor(engine: string) {
+    super(
+      `engine '${engine}' does not support multi-turn worker sessions — ` +
+        "create the session on 'claude' or 'codex', or use one-shot agent() calls"
+    );
+  }
+}
+
+/**
+ * A send on a worker session that has already been closed (explicitly, or by
+ * the run ending). Pre-spawn: nothing was dispatched, and the author's fix
+ * is the call ordering.
+ */
+export class SessionClosedError extends PreSpawnAuthorError {
+  constructor() {
+    super("this worker session is closed; create a new session to continue");
+  }
+}
+
+/**
+ * A send on a worker session whose previous turn has not settled. A session
+ * is one conversation: turns are strictly sequential, and overlapping sends
+ * would interleave prompts into one transcript with no defined attribution.
+ * Pre-spawn: the second send is rejected before anything is dispatched.
+ */
+export class SessionBusyError extends PreSpawnAuthorError {
+  constructor() {
+    super("this worker session is mid-turn; await the previous send() before sending again");
+  }
+}
 
 /**
  * Terminalisation invariant: whatever ends a turn, the text the worker had
@@ -181,6 +248,9 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
+/** A terminal app-server status with no protocol-level retryability signal. */
+export class AppServerSystemError extends AppServerRequestError {}
+
 /** A started turn that produced no output-bearing frame before its transport deadline. */
 export class AppServerFirstOutputTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
@@ -282,6 +352,16 @@ export class ClaudeTranscriptError extends ClaudeWorkerError {}
  * behind a worker that will never say more.
  */
 export class ClaudeCollectionError extends ClaudeWorkerError {}
+
+/**
+ * The turn ended with Claude Code's own diagnostic in place of a model
+ * reply — the session never reached a model, so the text on the transcript
+ * is the client explaining why (an unknown model, a rejected request), not
+ * the worker's answer. Its own kind: promoting that text to an answer would
+ * archive a success that never happened, and it is neither a dispatch nor a
+ * collection failure.
+ */
+export class ClaudeWorkerDiagnosticError extends ClaudeWorkerError {}
 
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
@@ -385,9 +465,29 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
  * only to discover the schema at validation time.
  */
 export class InvalidAgentSchemaError extends AgentOptionRejectedError {
-  constructor(message: string, options?: ErrorOptions) {
-    super(`agent schema does not compile as JSON Schema: ${message}`, options);
+  constructor(message: string, options?: ErrorOptions & { offending?: unknown }) {
+    // The offending value beside the validator's reason: an author fixing
+    // "must be object" needs to see what was actually passed, bounded so a
+    // pathological schema cannot flood the diagnostic.
+    super(
+      `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
+      options
+    );
   }
+}
+
+function renderOffendingSchema(offending: unknown): string {
+  if (offending === undefined) {
+    return "";
+  }
+  let rendered: string;
+  try {
+    rendered = JSON.stringify(offending) ?? String(offending);
+  } catch {
+    rendered = String(offending);
+  }
+  const bounded = rendered.length > 300 ? `${rendered.slice(0, 300)}…` : rendered;
+  return ` (offending schema: ${bounded})`;
 }
 
 function formatAgentOptionValue(value: unknown): string {
@@ -402,4 +502,17 @@ function formatAgentOptionValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * An error described for a durable record: the class name as a
+ * discriminating kind, plus the message. The kind is what lets a consumer
+ * holding only the archive tell a script bug from an unknown-engine typo
+ * from a budget refusal, all of which otherwise read as bare `failed`.
+ */
+export function describeError(error: unknown): { kind: string; message: string } {
+  if (error instanceof Error) {
+    return { kind: error.name, message: error.message };
+  }
+  return { kind: "error", message: String(error) };
 }

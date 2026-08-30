@@ -46,6 +46,51 @@ export interface AgentOptions {
   strip?: StrippableCapability[];
 }
 
+/**
+ * Options fixed for a multi-turn worker session's whole life. Engine,
+ * model, and effort never vary per turn — changing them would invalidate the
+ * session's prompt cache, the asset the capability exists to exploit — and
+ * escalation is a fresh dispatch. Everything here is resolved once, at
+ * creation; the only per-turn variation is `schema` on `send()`.
+ */
+export interface WorkerSessionOptions {
+  /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
+  engine: EngineName;
+  model?: string;
+  effort?: string;
+  /** Claude only: declared degradation when the pinned model tier is unavailable. */
+  fallbackModel?: string;
+  cwd?: string;
+  isolation?: IsolationMode;
+  /** Per-turn deadline applied to every send; same semantics as a one-shot call's. */
+  timeoutMs?: number;
+  /** Per-turn retry bound applied to every send; same semantics as a one-shot call's. */
+  maxAttempts?: number;
+  label?: string;
+  phase?: string;
+  /**
+   * Named tool-surface capabilities to strip from the session's worker,
+   * enforced once at creation for the session's whole life.
+   */
+  strip?: StrippableCapability[];
+  /**
+   * The advisory staleness mark: on by default. When false the session
+   * never reads stale, whatever its idle gap. The mark is author-facing
+   * information only — it never blocks or reroutes a send.
+   */
+  stalenessMark?: boolean;
+}
+
+/**
+ * The one per-turn variation a session permits: a restate turn's shape
+ * differs from a build turn's, so each `send()` takes its own optional
+ * schema under the same validated-return and bounded-retry contract as a
+ * one-shot call.
+ */
+export interface SessionTurnOptions {
+  schema?: JsonSchema;
+}
+
 /** The identified resolution shape `identity: true` opts a call into. */
 export interface IdentifiedAgentResult {
   label: string | null;
@@ -95,6 +140,21 @@ export interface RuntimeOptions {
   firstOutputTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   /**
+   * Idle gap after which a Claude multi-turn worker reads stale — the
+   * deterministic cliff at the worker's configured prompt-cache TTL (the
+   * 1-hour TTL its dispatch injects), past which resuming pays a full
+   * uncached re-read. A library-level option like `requestTimeoutMs` —
+   * deliberately not a CLI flag or ambient setting — so library callers
+   * and tests can reach expiry. Defaults to 1 hour.
+   */
+  claudeSessionStaleAfterMs?: number;
+  /**
+   * Idle gap after which a Codex multi-turn worker reads stale — the
+   * measured coin-flip point on Codex's cache-decay curve. Same library-only
+   * seam as `claudeSessionStaleAfterMs`. Defaults to 60 minutes.
+   */
+  codexSessionStaleAfterMs?: number;
+  /**
    * Machine-declared per-engine worker environment (the config file's
    * `worker_environment` section). Injected values override inherited ones
    * for the declared engine's workers only, so one engine's settings never
@@ -112,6 +172,14 @@ export interface RuntimeOptions {
   defaultMaxAttempts?: number;
   clientName?: string;
   clientVersion?: string;
+  /**
+   * Directory holds are published to and answered in. Shared across
+   * runs so open holds are enumerable machine-wide; defaults to
+   * `<XDG_DATA_HOME>/ensemble/holds`.
+   */
+  holdsDir?: string;
+  /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
+  holdPollIntervalMs?: number;
 }
 
 export interface Budget {
@@ -137,7 +205,11 @@ export interface TokenUsageBreakdown {
   cacheCreationInputTokens?: number;
   inputTokens: number;
   outputTokens: number;
-  reasoningOutputTokens: number;
+  /**
+   * Reasoning output where the engine reports it separately. Absent means
+   * the engine did not report a separable measurement, never zero spend.
+   */
+  reasoningOutputTokens?: number;
   totalTokens: number;
 }
 

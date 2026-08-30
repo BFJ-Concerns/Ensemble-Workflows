@@ -5,7 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
-import { EmptyAgentOutputError, EngineShutdownError, partialWorkerTextOf } from "../../src/errors.js";
+import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
+import { validateEngineDefaults } from "../../src/engine-option-validation.js";
+import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueError, partialWorkerTextOf } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord, RunRecordWriter } from "../../src/run-record.js";
@@ -231,6 +233,53 @@ async function withControlPlane(
   }
 }
 
+test("a statically declared out-of-domain Claude effort fails before the body runs", () => {
+  // The defaults validator judges the same domain the adapter does —
+  // a bad static declaration must not first fail at the first paid
+  // dispatch, potentially after phases on other engines.
+  assert.throws(() => validateEngineDefaults("claude", { effort: "extreme" }), InvalidAgentOptionValueError);
+  assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "medium" }));
+  assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
+});
+
+test("claudeCacheTtlToMs parses the settings value formats and refuses the rest", () => {
+  assert.equal(claudeCacheTtlToMs("1h"), 3_600_000);
+  assert.equal(claudeCacheTtlToMs("5m"), 300_000);
+  assert.equal(claudeCacheTtlToMs("30s"), 30_000);
+  assert.equal(claudeCacheTtlToMs("90"), 90_000);
+  assert.equal(claudeCacheTtlToMs("soon"), null);
+  assert.equal(claudeCacheTtlToMs("0m"), null);
+});
+
+test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
+  await withControlPlane([{ assistant: { text: "ran at medium" } }], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+
+    // The CLI silently runs an unknown effort at its default (measured
+    // 2026-08-30), so the adapter's own domain judgement is the only loud
+    // boundary an author gets.
+    assert.throws(
+      () => adapter.createInvocation("work", { effort: "definitely-invalid" }),
+      (error: unknown) => {
+        assert.ok(error instanceof InvalidAgentOptionValueError);
+        assert.match(error.message, /low \| medium \| high/);
+        return true;
+      }
+    );
+    assert.throws(
+      () => adapter.createSession({ effort: "definitely-invalid" }),
+      InvalidAgentOptionValueError
+    );
+    assert.equal(controlPlane.dispatchCount, 0);
+
+    // The discriminating positive arm: a listed level still dispatches.
+    const invocation = adapter.createInvocation("work", { effort: "medium" });
+    assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "ran at medium");
+    assert.equal(controlPlane.dispatched[0]?.effort, "medium");
+    await adapter.close();
+  });
+});
+
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {
   await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "partial from Claude", stop: "tool_use" } }], async (controlPlane) => {
     // A long poll interval: without the abortable delay, close() would sit
@@ -293,15 +342,20 @@ test("completion is read from the transcript even when state never reports done"
 });
 
 test("a per-call cwd reaches Claude dispatch and overrides the adapter cwd", async () => {
-  await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
-    const runtime = makeRuntime(controlPlane);
-    try {
-      await runtime.agent("read", { engine: "claude", cwd: "/per-call/cwd" });
-      assert.equal(controlPlane.dispatched[0]?.cwd, "/per-call/cwd");
-    } finally {
-      await runtime.close();
-    }
-  });
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-claude-per-call-cwd-"));
+  try {
+    await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      try {
+        await runtime.agent("read", { engine: "claude", cwd: directory });
+        assert.equal(controlPlane.dispatched[0]?.cwd, directory);
+      } finally {
+        await runtime.close();
+      }
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("an agents strip denies Claude spawn, discovery, and messaging tools", async () => {
@@ -635,6 +689,7 @@ test("Claude worker tokens feed the Claude budget via the synthetic usage event"
         // totalTokens = input(5) + cached(2) + output(10), recorded as last-delta.
         assert.equal(runtime.budget.spent("claude"), 17);
         assert.equal(runtime.budget.spent("codex"), 0);
+        assert.equal("reasoningOutputTokens" in runtime.budget.events[0]!.event.last, false);
       } finally {
         await runtime.close();
       }
@@ -968,4 +1023,88 @@ test("Claude liveness evidence waits for an assistant entry, not the persisted p
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("a client diagnostic in place of a model reply is archived as a failure, not an answer", async () => {
+  await withControlPlane(
+    [
+      {
+        assistant: {
+          text: "API Error: 400 unknown provider for model definitely-not-a-model",
+          stop: "stop_sequence",
+          model: "<synthetic>"
+        }
+      }
+    ],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        const result = await runtime.agent("decide", { engine: "claude", model: "definitely-not-a-model", schema: okSchema });
+        assert.equal(result, null);
+        const settled = records.at(-1);
+        assert.equal(settled?.status, "failed");
+        assert.equal(settled?.attempts[0]?.failure?.kind, "claude-worker-diagnostic");
+        assert.match(settled?.attempts[0]?.failure?.message ?? "", /unknown provider/);
+        // The placeholder Claude Code writes on its own diagnostic is not a
+        // served model: recording it would name a model that never ran.
+        assert.equal(settled?.resolvedModel, null);
+        assert.equal(settled?.validatedOutput, null);
+        // The diagnostic is the failure's message and nothing else. A cold
+        // consumer reading raw_output must not find an API error string
+        // sitting where the worker's own text belongs.
+        assert.equal(settled?.rawOutput, "");
+        assert.equal(settled?.attempts[0]?.rawOutput, "");
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a real served model is still recorded on a completed Claude turn", async () => {
+  await withControlPlane(
+    [{ assistant: { text: '{"ok":true}', model: "claude-served" } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+        const settled = records.at(-1);
+        assert.equal(settled?.status, "complete");
+        assert.equal(settled?.resolvedModel, "claude-served");
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
+});
+
+test("a Claude attempt whose engine reports no duration still measures itself", async () => {
+  await withControlPlane(
+    [{ busyPolls: 2, assistant: { text: '{"ok":true}' } }],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      try {
+        assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
+        const attempt = records.at(-1)?.attempts[0];
+        const startedAt = Date.parse(attempt?.startedAt ?? "");
+        const endedAt = Date.parse(attempt?.endedAt ?? "");
+        assert.ok(typeof attempt?.durationMs === "number", "the attempt carries a measured duration");
+        assert.equal(attempt?.durationMs, Math.max(0, endedAt - startedAt));
+      } finally {
+        await runtime.close();
+      }
+    }
+  );
 });

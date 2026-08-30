@@ -10,6 +10,16 @@ export interface OpenCodeModelRegistryEntry {
   billing: {
     mode: "pay-as-you-go" | "self-hosted";
   };
+  /**
+   * The served variants this entry accepts as `effort` — the registry is
+   * the domain's owner, exactly as it owns the model list, because
+   * `opencode run` forwards an unknown variant to the provider silently
+   * (measured 2026-08-30: `--effort definitely-invalid` reached a healthy
+   * worker at exit 0). Empty means the served model declares no variants,
+   * so any `effort` request fails loud pre-spawn; a curator adds variants
+   * from the provider's own listing, never by guess.
+   */
+  variants: readonly string[];
 }
 
 export interface OpenCodeModelRegistry {
@@ -38,7 +48,8 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     },
     billing: {
       mode: "pay-as-you-go"
-    }
+    },
+    variants: []
   },
   {
     key: "qwen-3-8-27b",
@@ -51,7 +62,8 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     },
     billing: {
       mode: "self-hosted"
-    }
+    },
+    variants: []
   },
   {
     key: "qwen-3-8-27b-heretic-ara",
@@ -64,7 +76,8 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     },
     billing: {
       mode: "self-hosted"
-    }
+    },
+    variants: []
   },
   {
     key: "muse-glimmer-30b",
@@ -77,7 +90,8 @@ const MODELS: readonly OpenCodeModelRegistryEntry[] = [
     },
     billing: {
       mode: "self-hosted"
-    }
+    },
+    variants: []
   }
 ];
 

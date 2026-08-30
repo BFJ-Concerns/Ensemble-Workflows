@@ -187,6 +187,8 @@ interface ExtractedWorkflow {
  */
 const HOOK_BINDING_NAMES = [
   "agent",
+  "session",
+  "hold",
   "workflow",
   "parallel",
   "pipeline",
@@ -219,6 +221,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    presentError: presentAuthorFrames,
     ...(defaults !== undefined ? { defaults } : {}),
     workflow:
       workflowDepth === 0
@@ -261,6 +264,8 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings: WorkflowBodyBindings = {
     agent: hooks.agent,
+    session: hooks.session,
+    hold: hooks.hold,
     workflow: hooks.workflow,
     parallel: hooks.parallel,
     pipeline: hooks.pipeline,

@@ -58,7 +58,20 @@ export interface ClaudeDispatchOptions {
    * until a live test observes it at a real worker.
    */
   permissionDenyRules?: string[];
+  /**
+   * Prompt-cache TTL for the worker session, in Claude Code's
+   * settings value format ("1h"). Rides the same settings-file `env` block
+   * as the declared worker environment, as
+   * `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` — and a machine-declared value
+   * for that variable wins over this one (the operator's word outranks the
+   * harness default; see the spread order in the writer). Absent means the
+   * engine's own default TTL.
+   */
+  cacheTtl?: string;
 }
+
+/** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
+export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 export interface ClaudeSessionHandle {
   /** Short daemon id — used to attach/steer/stop. */
@@ -185,7 +198,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // and user settings, declared keys winning collisions, so the file
     // carries only this run's declarations and never touches the operator's
     // own settings.
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules);
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
     try {
@@ -248,8 +261,16 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * in its own mkdtemp directory (0o700 by construction, unguessable name)
    * and the file itself is 0o600.
    */
-  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[]): Promise<string> {
-    const env = { ...this.#workerEnv, [WORKER_MARKER_VARIABLE]: dispatchName };
+  async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[], cacheTtl?: string): Promise<string> {
+    // Spread order is the precedence: the TTL is a harness default the
+    // dispatch asks for, so a machine-declared worker_environment value for
+    // the same variable (spread after it) wins, and the ownership tag —
+    // harness bookkeeping, not configuration — always lands last.
+    const env = {
+      ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
+      ...this.#workerEnv,
+      [WORKER_MARKER_VARIABLE]: dispatchName
+    };
     // The deny block joins the same single-purpose file rather than a second
     // artefact. The measured additive layering (2026-08-07) covered the
     // env block; that deny rules likewise union across layers and beat

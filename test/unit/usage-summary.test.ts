@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { addUsageSummary, summariseUsage } from "../../src/usage-summary.js";
+import { addUsageSummary, subtractUsage, summariseUsage } from "../../src/usage-summary.js";
 
 import type { TokenUsageBreakdown, TokenUsageEvent } from "../../src/types.js";
 
@@ -11,6 +11,27 @@ function event(last: TokenUsageBreakdown): TokenUsageEvent {
 
 test("no events yields null, never a zero-spend summary", () => {
   assert.equal(summariseUsage("codex", []), null);
+});
+
+test("usage subtraction distinguishes absent reasoning from a reported zero", () => {
+  const previous = {
+    cachedInputTokens: 4,
+    inputTokens: 10,
+    outputTokens: 3,
+    reasoningOutputTokens: 2,
+    totalTokens: 17
+  };
+  assert.deepEqual(
+    subtractUsage({ cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, totalTokens: 33 }, previous),
+    { cachedInputTokens: 4, inputTokens: 10, outputTokens: 2, totalTokens: 16 }
+  );
+  assert.equal(
+    subtractUsage(
+      { cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 33 },
+      previous
+    ).reasoningOutputTokens,
+    0
+  );
 });
 
 test("codex spend maps by subtraction: cached out of input, reasoning out of output", () => {
@@ -27,6 +48,15 @@ test("codex spend maps by subtraction: cached out of input, reasoning out of out
   });
 });
 
+test("codex reported reasoning zero survives as zero", () => {
+  const summary = summariseUsage("codex", [
+    event({ cachedInputTokens: 8, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 25 })
+  ]);
+  assert.equal(summary?.reasoningOutputTokens, 0);
+  assert.equal(summary?.outputTokens, 5);
+  assert.equal(summary?.totalTokens, 25);
+});
+
 test("claude spend keeps reasoning unknowable (null) and splits cache where reported", () => {
   const summary = summariseUsage("claude", [
     event({
@@ -34,7 +64,6 @@ test("claude spend keeps reasoning unknowable (null) and splits cache where repo
       cacheCreationInputTokens: 3,
       inputTokens: 220,
       outputTokens: 40,
-      reasoningOutputTokens: 0,
       totalTokens: 270
     })
   ]);
@@ -97,12 +126,11 @@ test("merging drops a split that not every contributor carries", () => {
       cacheCreationInputTokens: 3,
       inputTokens: 1,
       outputTokens: 1,
-      reasoningOutputTokens: 0,
       totalTokens: 12
     })
   ]);
   const combinedOnly = summariseUsage("claude", [
-    event({ cachedInputTokens: 5, inputTokens: 1, outputTokens: 1, reasoningOutputTokens: 0, totalTokens: 7 })
+    event({ cachedInputTokens: 5, inputTokens: 1, outputTokens: 1, totalTokens: 7 })
   ]);
   assert.ok(separable !== null && combinedOnly !== null);
   const merged = addUsageSummary(separable, combinedOnly);
@@ -124,7 +152,7 @@ test("merging folds separable reasoning into output when a contributor cannot se
     event({ cachedInputTokens: 0, inputTokens: 4, outputTokens: 5, reasoningOutputTokens: 2, totalTokens: 9 })
   ]);
   const claude = summariseUsage("claude", [
-    event({ cachedInputTokens: 0, inputTokens: 4, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 9 })
+    event({ cachedInputTokens: 0, inputTokens: 4, outputTokens: 5, totalTokens: 9 })
   ]);
   assert.ok(codex !== null && claude !== null);
   const merged = addUsageSummary(codex, claude);

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
+import { subtractUsage } from "./usage-summary.js";
 
 import type {
   EngineAttemptContext,
@@ -38,6 +39,8 @@ export interface OpenCodeRunOptions {
   signal?: AbortSignal;
   /** Called once, on the run's first stdout chunk — the earliest observable sign of worker output. */
   onFirstData?: () => void;
+  /** Receives each stdout chunk so live accounting can advance before exit. */
+  onData?: (chunk: string) => void;
 }
 
 export interface OpenCodeRunResult {
@@ -136,7 +139,8 @@ export class OpenCodeCliRunner implements OpenCodeRunner {
       options.timeoutMs,
       this.#killGraceMs,
       options.signal,
-      options.onFirstData
+      options.onFirstData,
+      options.onData
     );
   }
 
@@ -162,6 +166,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   #options: EngineTurnOptions;
   #runner: OpenCodeRunner;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #reportedUsage: TokenUsageBreakdown | null = null;
   #budgetEventCounter = 0;
   #abortController = new AbortController();
   #closePromise: Promise<void> | null = null;
@@ -192,6 +197,24 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
   }
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
+    this.#reportedUsage = null;
+    let streamBuffer = "";
+    const streamEvents: unknown[] = [];
+    let streamSessionId: string | null = null;
+    const onData = (chunk: string): void => {
+      streamBuffer += chunk;
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const parsed = parseRunEvents(line);
+        streamEvents.push(...parsed.events);
+        streamSessionId ??= parsed.sessionId;
+      }
+      const usage = usageFromStream(streamEvents);
+      if (usage.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+      }
+    };
     const run = await this.#runner.run({
       prompt: this.#buildPrompt(context.previousFailure),
       cwd: this.#cwd,
@@ -199,6 +222,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.effort !== undefined ? { variant: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstData: context.onLiveEvidence } : {}),
+      onData,
       signal: this.#abortController.signal
     });
     const parsedRun = parseRunEvents(run.stdout);
@@ -277,7 +301,10 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     const usageEvent =
       usage.breakdown === null
         ? null
-        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+        : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.breakdown, usage.cost);
+    if (usage.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage.breakdown, usage.cost);
+    }
     const transcripts = [
       {
         filename: "transcript.opencode.jsonl",
@@ -359,8 +386,30 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     return `opencode-no-session-${randomUUID()}`;
   }
 
-  #usageEvent(sessionId: string, breakdown: TokenUsageBreakdown, cost: unknown): TokenUsageEvent | null {
-    if (breakdown.totalTokens === 0) {
+  #reportUsage(sessionId: string, total: TokenUsageBreakdown, cost: unknown): void {
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
+    }
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(sessionId, last, total, cost);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+
+  #usageEvent(
+    sessionId: string,
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown,
+    cost: unknown
+  ): TokenUsageEvent | null {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
@@ -368,22 +417,17 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     const event = {
       threadId: sessionId,
       turnId,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: sessionId,
         turnId,
         model: this.#modelKey,
         providerModel: this.#providerModel,
-        tokenUsage: { last: breakdown, total: breakdown },
+        tokenUsage: { last, total },
         cost
       }
     };
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
 
@@ -418,7 +462,8 @@ function runProcess(
   timeoutMs: number | undefined,
   killGraceMs = 5_000,
   abortSignal?: AbortSignal,
-  onFirstData?: () => void
+  onFirstData?: () => void,
+  onData?: (chunk: string) => void
 ): Promise<OpenCodeRunResult> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -463,6 +508,11 @@ function runProcess(
         } catch {
           // Swallowed deliberately.
         }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
+        // Live accounting is observability; it must never affect the worker.
       }
       stdout.push(chunk);
     });

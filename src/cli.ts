@@ -5,13 +5,19 @@ import { parseArgs } from "node:util";
 import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
+import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { PreSpawnAuthorError } from "./errors.js";
+import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
+import { defaultHoldsDirectory, enumerateHolds } from "./holds.js";
+import { presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
-import { listSavedWorkflows } from "./workflow-registry.js";
+
+import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
+import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
+import { harnessVersion } from "./harness-version.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
@@ -21,6 +27,27 @@ import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineN
 import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
+
+const AGENT_INVOCATION_OPTIONS = {
+  engine: { type: "string" },
+  model: { type: "string" },
+  effort: { type: "string" },
+  label: { type: "string" },
+  phase: { type: "string" },
+  "fallback-model": { type: "string" },
+  cwd: { type: "string" },
+  isolation: { type: "string" },
+  identity: { type: "boolean" },
+  schema: { type: "string" },
+  "max-attempts": { type: "string" },
+  strip: { type: "string", multiple: true },
+  task: { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  "caller-identity": { type: "string" }
+} as const;
 
 export interface EnsembleCliOptions {
   cwd?: string;
@@ -51,18 +78,94 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
 
+  // Discovery gestures for a cold arrival: help and version answer before
+  // any invocation parsing, and each subcommand's --help prints its own
+  // usage at exit 0 rather than a usage *error* at exit 2.
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    stdout.write(usage());
+    return 0;
+  }
+  if (argv[0] === "--version") {
+    stdout.write(`${harnessVersion()}\n`);
+    return 0;
+  }
+
   if (argv[0] === "workflows") {
+    if (argv[1] === "--help" || argv[1] === "-h") {
+      stdout.write("Usage: ensemble workflows\nLists saved workflows from the project and user registries.\n");
+      return 0;
+    }
     if (argv.length > 1) {
       stderr.write("Usage: ensemble workflows\n");
       return 2;
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
+    if (listing.entries.length === 0) {
+      // An empty catalogue speaks: what was found (nothing) and where the
+      // CLI looked, so a cold user learns the registry locations instead
+      // of staring at silent exit 0.
+      const dirs = defaultWorkflowRegistryDirs(cwd, env);
+      stdout.write(`No saved workflows found. Looked in:\n  ${dirs.project}\n  ${dirs.user}\n`);
+    }
     for (const entry of listing.entries) {
       const scope = entry.shadowed ? "user (shadowed by project)" : entry.scope;
       stdout.write(`${entry.name}\t${entry.description}\t${scope}\t${entry.scriptPath}\n`);
     }
     for (const note of listing.notes) {
       stderr.write(`[workflows] skipped ${note.scriptPath}: ${note.message}\n`);
+    }
+    return 0;
+  }
+
+  if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
+    stdout.write(usage());
+    return 0;
+  }
+
+  if (argv[0] === "holds") {
+    if (argv[1] === "--help" || argv[1] === "-h") {
+      stdout.write("Usage: ensemble holds [--json]\nLists open holds across runs; --json emits the full records.\n");
+      return 0;
+    }
+    // The cross-run inbox: every open hold on this machine, with the
+    // content, accepted verdicts, and decision path a decider needs — so one
+    // watcher can wake one orchestrator instead of a resident session per
+    // run. `--json` is the machine-readable form; the answer is a JSON file
+    // at `decision_path` carrying the hold's nonce and a listed verdict.
+    const json = argv.includes("--json");
+    if (argv.length > (json ? 2 : 1)) {
+      stderr.write("Usage: ensemble holds [--json]\n");
+      return 2;
+    }
+    let holds;
+    try {
+      holds = await enumerateHolds(defaultHoldsDirectory(env));
+    } catch (error) {
+      // An unreadable holds directory is not an empty one: say so, exit 1.
+      stderr.write(
+        `cannot enumerate holds under ${defaultHoldsDirectory(env)}: ${error instanceof Error ? error.message : String(error)}\n`
+      );
+      return 1;
+    }
+    if (json) {
+      stdout.write(`${JSON.stringify(holds.map((hold) => ({ ...hold.record, live: hold.live })))}\n`);
+      return 0;
+    }
+    if (holds.length === 0) {
+      stdout.write(`No open holds under ${defaultHoldsDirectory(env)}\n`);
+      return 0;
+    }
+    for (const hold of holds) {
+      const { record } = hold;
+      stdout.write(
+        `${record.hold_id}\t${hold.live ? "live" : "orphaned"}\traised ${record.raised_at}` +
+          `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
+      );
+      stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
+      stdout.write(`  answer:   write {"nonce":"${record.nonce}","verdict":"…"} to ${record.decision_path}\n`);
+      for (const line of record.content.split("\n")) {
+        stdout.write(`  | ${line}\n`);
+      }
     }
     return 0;
   }
@@ -98,9 +201,15 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let statusWriter: StatusFileWriter | null = null;
   let runRecordWriter: RunRecordWriter | null = null;
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
+  // What ended the run. The diagnostic exists on stderr already; a consumer
+  // holding only the archive has no way to reconstruct it, so it is
+  // resolved here — the one site that sees the terminal error — and carried
+  // onto every durable surface (manifest, result envelope, sentinel).
+  let terminalError: { kind: string; message: string } | null = null;
   // The launcher owns the sentinel: written on every terminal transition this
   // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
+  let interrupt: ReturnType<typeof watchWorkflowInterrupts> | null = null;
   const reportSentinelError = (error: unknown): void => {
     stderr.write(`[sentinel] ${formatError(error)}\n`);
   };
@@ -143,6 +252,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         reportSentinelError
       );
       if (sentinelPath !== null) {
+        // Once this path is published, the launcher promises to honour it on
+        // every signal it can handle. Arm before the synchronous stderr write
+        // so no announced-path startup window remains.
+        interrupt = watchWorkflowInterrupts();
+        void interrupt.promise.catch(() => undefined);
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends\n`);
       }
     }
@@ -156,7 +270,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         args: prepared.recordArgs,
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
-        concurrency: recordConcurrency(ambientSettings, progress)
+        concurrency: recordConcurrency(ambientSettings, progress),
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -177,7 +292,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
-        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model: set, the ambient default applies\n`);
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — no model pinned; the ambient default applies\n`);
+        return;
+      }
+      if (event.method === "claude/unpinnedModelResolved") {
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const model = typeof event.params.model === "string" ? event.params.model : "unknown";
+        stderr.write(`[claude] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}\n`);
         return;
       }
       if (event.method === "codex/unpinnedModelResolved") {
@@ -243,7 +365,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
       }
     };
-    const interrupt = watchWorkflowInterrupts();
+    interrupt ??= watchWorkflowInterrupts();
+    void interrupt.promise.catch(() => undefined);
     try {
       const { result } = await Promise.race([
         runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
@@ -279,10 +402,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}\n`);
     finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
-    stderr.write(`${formatError(error)}\n`);
+    terminalError = describeError(error);
+    // Operational failures present a cause-first operator diagnosis;
+    // author errors keep their clean line, and only a genuinely unknown
+    // error falls through to its stack — internals as evidence, never as
+    // the default surface.
+    const diagnosis = presentTerminalError(error, {
+      archiveDir: runRecordWriter?.archiveDir ?? null,
+      lastAgentRecord:
+        (runtime as { lastAgentRecord?: () => RuntimeAgentRecord | null } | null)?.lastAgentRecord?.() ?? null
+    });
+    stderr.write(`${diagnosis ?? formatError(error)}\n`);
     return 1;
   } finally {
     try {
+      interrupt?.dispose();
       // Tear workers down while the archive is still open so their terminal
       // status can replace the dispatch-time snapshot before the run is sealed.
       progress?.finish();
@@ -294,7 +428,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         await runtime.close(terminalStatus === "complete" || terminalStatus === undefined ? "failed" : terminalStatus);
       }
       if (runRecordWriter !== null) {
-        await runRecordWriter.finish(finalRecord ?? { status: "failed", exitCode: 1, result: null });
+        await runRecordWriter.finish({
+          ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
+          error: terminalError
+        });
       }
     } finally {
       // Last, so a supervisor woken by the sentinel finds the archive already
@@ -304,7 +441,14 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // interruption, salvage — and a missing finalRecord is itself a
       // failure outcome.
       const terminal = finalRecord ?? { status: "failed" as const, exitCode: 1 };
-      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError);
+      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
+        workers: workerOutcomes(progress),
+        error: terminalError,
+        // The sealed manifest's own digest, attested from outside the file
+        // it covers. Absent recording, or a seal that never landed, says so
+        // rather than omitting the field.
+        manifest: manifestAttestation(runRecordWriter)
+      });
     }
   }
 }
@@ -327,6 +471,19 @@ function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["r
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
+}
+
+/**
+ * The run's worker tally as the launcher observed it, or null when there was
+ * no progress model to read (an injected test runtime). `unsettled` counts
+ * workers still queued or running when the run ended.
+ */
+function workerOutcomes(progress: RunProgress | undefined): SentinelWorkerOutcomes | null {
+  if (progress === undefined) {
+    return null;
+  }
+  const totals = progress.snapshot().totals;
+  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
 }
 
 function completedDirectAgentWithNull(runtime: EnsembleRuntime): boolean {
@@ -472,6 +629,31 @@ function recordConcurrency(
   return { agentCeiling: settings.agentCeiling, engines };
 }
 
+/**
+ * Effective budget ceilings and whole-run timeout with their winning
+ * layers, the shape `recordConcurrency` established. Both settings resolve
+ * from the flag alone today, so absence is honestly `default` — never an
+ * inferred env or config attribution. A programmatically injected timeout
+ * (a library caller's `timeoutMs`) records under `default` too: it is the
+ * baseline this run started from, not a layer the operator chose.
+ */
+function recordEffectiveSettings(
+  invocation: ParsedInvocation,
+  injectedTimeoutMs: number | undefined
+): EffectiveRunSettingsRecord {
+  const budgetCeilings: EffectiveRunSettingsRecord["budgetCeilings"] = {};
+  for (const engine of ["codex", "claude", "opencode"] as const) {
+    const flagged = invocation.budgetCeilings?.[engine];
+    budgetCeilings[engine] =
+      flagged !== undefined ? { value: flagged, layer: "flag" } : { value: null, layer: "default" };
+  }
+  const timeoutMs = invocation.timeoutMs ?? injectedTimeoutMs ?? null;
+  return {
+    budgetCeilings,
+    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== undefined ? "flag" : "default" }
+  };
+}
+
 class CliUsageError extends Error {
   constructor(message: string) {
     super(message);
@@ -531,6 +713,7 @@ async function parseInvocation(argv: string[], cwd: string, stdin: Readable): Pr
 
 async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv);
+  rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
   try {
     parsed = parseArgs({
@@ -579,30 +762,13 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
 }
 
 async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+  rejectMisplacedAgentTuningFlags(argv);
+  rejectDuplicateScalarFlags(argv);
   let parsed;
   try {
     parsed = parseArgs({
       args: argv,
-      options: {
-        engine: { type: "string" },
-        model: { type: "string" },
-        effort: { type: "string" },
-        label: { type: "string" },
-        phase: { type: "string" },
-        "fallback-model": { type: "string" },
-        cwd: { type: "string" },
-        isolation: { type: "string" },
-        identity: { type: "boolean" },
-        schema: { type: "string" },
-        "max-attempts": { type: "string" },
-        strip: { type: "string", multiple: true },
-        task: { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        "caller-identity": { type: "string" }
-      },
+      options: AGENT_INVOCATION_OPTIONS,
       strict: true,
       allowPositionals: true
     });
@@ -615,7 +781,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
   }
   const prompt = parsed.positionals[0] ?? (await readPrompt(stdin));
-  if (prompt.length === 0) {
+  if (prompt.trim().length === 0) {
     throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
   }
 
@@ -715,6 +881,10 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
       };
     }
 
+    if (value === "agent" && tuningArgs.length > 0) {
+      throw new CliUsageError("Tuning flags must appear after ensemble agent, not before it");
+    }
+
     if (isKnownInlineOption(value)) {
       tuningArgs.push(value);
       continue;
@@ -746,6 +916,62 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
   }
 
   return { tuningArgs, scriptArg: undefined, scriptArgs: [] };
+}
+
+function rejectMisplacedAgentTuningFlags(argv: string[]): void {
+  let promptSeen = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === undefined) {
+      continue;
+    }
+    if (value === "--") {
+      return;
+    }
+    if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
+      throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
+    }
+    if (isKnownInlineOption(value) || value === "--identity") {
+      continue;
+    }
+    if (isKnownAgentOption(value) || isKnownOption(value)) {
+      index += 1;
+      continue;
+    }
+    if (!value.startsWith("-")) {
+      promptSeen = true;
+    }
+  }
+}
+
+function rejectDuplicateScalarFlags(argv: string[]): void {
+  const repeated = new Set<string>();
+  for (const value of argv) {
+    const flag = optionName(value);
+    if (flag === undefined || isRepeatableOption(flag)) {
+      continue;
+    }
+    if (repeated.has(flag)) {
+      throw new CliUsageError(`Option ${flag} may only be specified once`);
+    }
+    repeated.add(flag);
+  }
+}
+
+function optionName(value: string): string | undefined {
+  if (!value.startsWith("--") || value === "--") {
+    return undefined;
+  }
+  const equalsIndex = value.indexOf("=");
+  return equalsIndex === -1 ? value : value.slice(0, equalsIndex);
+}
+
+function isRepeatableOption(flag: string): boolean {
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+}
+
+function isKnownAgentOption(value: string): boolean {
+  return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
 }
 
 function isKnownOption(value: string): boolean {
@@ -912,6 +1138,21 @@ function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv)
   return inherited !== undefined && inherited.trim().length > 0 ? inherited : undefined;
 }
 
+/**
+ * What the sentinel can say about the run manifest: its self-digest where
+ * the archive sealed, and otherwise the reason there is none. A writer that
+ * exists but has no digest never reached its first manifest write, so the
+ * manifest a consumer might find beside the sentinel is not one this run
+ * vouches for.
+ */
+function manifestAttestation(writer: RunRecordWriter | null): SentinelManifestAttestation {
+  if (writer === null) {
+    return { unavailable: "recording-disabled" };
+  }
+  const digest = writer.manifestDigest();
+  return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };
+}
+
 function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   try {
     stderr.write(`[run-record-archive] ${JSON.stringify({ run_id: writer.manifest.run_id, archive_path: writer.archiveDir })}\n`);
@@ -929,6 +1170,7 @@ function usage(): string {
     "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
+    "       ensemble holds [--json]",
     ""
   ].join("\n");
 }
@@ -956,7 +1198,7 @@ function formatError(error: unknown): string {
   // (WorkflowScriptError is a member) — is the author's to fix: one clean
   // line, no stack. A breached deadline is not an authoring mistake but
   // gets the same operator-facing surface.
-  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError) {
+  if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
     return `${error.name}: ${error.message}`;
   }
   if (isError(error)) {

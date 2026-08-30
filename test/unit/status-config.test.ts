@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveStatusDir } from "../../src/ambient-settings.js";
+import { AmbientConfigError, resolveStatusDir } from "../../src/ambient-settings.js";
 
 test("resolveStatusDir uses the cwd .claude directory only when it already exists", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
@@ -26,7 +26,19 @@ test("resolveStatusDir keeps the environment controls", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-status-config-"));
   const explicit = path.join(cwd, "custom-status");
 
-  assert.equal(resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd), null);
+  // An explicitly named directory that does not exist fails loud — the
+  // operator asked for observability, so publishing nothing at exit 0 is
+  // the failure to avoid, not a fallback. Only the *default* .claude location
+  // opts out by absence (the tests above).
+  assert.throws(
+    () => resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd),
+    (error: unknown) => {
+      assert.ok(error instanceof AmbientConfigError);
+      assert.match(error.message, /custom-status/);
+      assert.match(error.message, /ENSEMBLE_STATUS_DIR/);
+      return true;
+    }
+  );
   await mkdir(explicit);
   assert.equal(resolveStatusDir({ ENSEMBLE_STATUS_DIR: explicit }, cwd), explicit);
   assert.equal(resolveStatusDir({ ENSEMBLE_STATUS: "off", ENSEMBLE_STATUS_DIR: explicit }, cwd), null);

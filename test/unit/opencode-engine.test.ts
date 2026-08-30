@@ -15,10 +15,12 @@ import {
   EmptyAgentOutputError,
   EngineShutdownError,
   FallbackModelUnsupportedError,
+  InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
 } from "../../src/errors.js";
 import { RunRecordWriter } from "../../src/run-record.js";
+import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
@@ -40,6 +42,8 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
   /** Per-attempt overrides, consumed in dispatch order; the base result serves any attempt beyond the list. */
   #runResults: Array<Partial<OpenCodeRunResult>>;
   #exportResult: OpenCodeSessionExportResult;
+  #onDataChunks: string[];
+  #beforeResolve: (() => Promise<void>) | undefined;
 
   constructor(
     options: {
@@ -47,6 +51,10 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       runResults?: Array<Partial<OpenCodeRunResult>>;
       exportText?: string | null;
       exportResult?: OpenCodeSessionExportResult;
+      /** Chunks emitted while the runner is still active, before it resolves. */
+      onDataChunks?: string[];
+      /** Test-only barrier after live chunks have been delivered. */
+      beforeResolve?: () => Promise<void>;
     } = {}
   ) {
     this.#runResult = {
@@ -58,6 +66,8 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
       ...options.runResult
     };
     this.#runResults = [...(options.runResults ?? [])];
+    this.#onDataChunks = options.onDataChunks ?? [];
+    this.#beforeResolve = options.beforeResolve;
     this.#exportResult =
       options.exportResult ??
       (options.exportText === null
@@ -67,6 +77,10 @@ class FakeOpenCodeRunner implements OpenCodeRunner {
 
   async run(options: OpenCodeRunOptions): Promise<OpenCodeRunResult> {
     this.runs.push(options);
+    for (const chunk of this.#onDataChunks) {
+      options.onData?.(chunk);
+    }
+    await this.#beforeResolve?.();
     return { ...this.#runResult, ...this.#runResults.shift() };
   }
 
@@ -347,6 +361,64 @@ test("opencode requires a registered curated model before spawning", () => {
   assert.equal(runner.runs.length, 0);
 });
 
+test("opencode rejects an effort outside the registry entry's declared variants before spawning", () => {
+  const runner = new FakeOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ runner });
+
+  // Every curated entry currently declares no served variants, so any
+  // effort request is out of domain and must be rejected, not forwarded
+  // silently to a provider that would run the worker at exit 0.
+  assert.throws(
+    () => adapter.createInvocation("variant", { model: "glm-5.2", effort: "definitely-invalid" }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionValueError);
+      assert.match(error.message, /declares no served variants/);
+      return true;
+    }
+  );
+  assert.equal(runner.runs.length, 0);
+
+  // An entry that does declare variants accepts exactly those.
+  const registry = {
+    get: (model: string) =>
+      model === "variant-model"
+        ? {
+            key: "variant-model",
+            providerModel: "prov/variant-model",
+            displayName: "Variant Model",
+            provider: "prov",
+            family: "variant",
+            capabilities: { vision: false },
+            billing: { mode: "pay-as-you-go" as const },
+            variants: ["fast", "thorough"]
+          }
+        : undefined,
+    names: () => ["variant-model"]
+  };
+  const variantAdapter = new OpenCodeEngineAdapter({ runner, modelRegistry: registry });
+  assert.doesNotThrow(() => variantAdapter.createInvocation("ok", { model: "variant-model", effort: "thorough" }));
+  assert.throws(
+    () => variantAdapter.createInvocation("bad", { model: "variant-model", effort: "leisurely" }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionValueError);
+      assert.match(error.message, /fast \| thorough/);
+      return true;
+    }
+  );
+  assert.equal(runner.runs.length, 0);
+});
+
+test("a statically declared opencode effort outside the model's variants fails before the body runs", () => {
+  // Judged only when the declaration names the model whose registry
+  // entry owns the domain; an effort defaulted without a model waits for
+  // the call that names one.
+  assert.throws(
+    () => validateEngineDefaults("opencode", { model: "glm-5.2", effort: "definitely-invalid" }),
+    InvalidAgentOptionValueError
+  );
+  assert.doesNotThrow(() => validateEngineDefaults("opencode", { effort: "unjudgeable-without-a-model" }));
+});
+
 test("opencode rejects fallbackModel before spawning", () => {
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ runner });
@@ -396,8 +468,28 @@ test("opencode refuses unproven capability strips before the runner starts", asy
 test("opencode run parses final text, usage, transcript, and effort variant", async () => {
   const runner = new FakeOpenCodeRunner();
   const events: string[] = [];
+  // The variant must be one the registry entry declares (the registry owns
+  // the domain); the curated entries declare none, so this test injects an
+  // entry that does.
+  const registry = {
+    get: (model: string) =>
+      model === "glm-5.2"
+        ? {
+            key: "glm-5.2",
+            providerModel: "openrouter/z-ai/glm-5.2",
+            displayName: "GLM 5.2",
+            provider: "openrouter",
+            family: "glm",
+            capabilities: { vision: false },
+            billing: { mode: "pay-as-you-go" as const },
+            variants: ["minimal"]
+          }
+        : undefined,
+    names: () => ["glm-5.2"]
+  };
   const adapter = new OpenCodeEngineAdapter({
     runner,
+    modelRegistry: registry,
     onEvent: (event) => events.push(event.method)
   });
   const invocation = adapter.createInvocation("answer shortly", {
@@ -420,7 +512,66 @@ test("opencode run parses final text, usage, transcript, and effort variant", as
   assert.match(result.transcripts?.[0]?.content ?? "", /session\/export/);
 });
 
+test("opencode publishes streamed usage while its worker is still running", async () => {
+  let releaseRunner: () => void;
+  const runnerHeld = new Promise<void>((resolve) => {
+    releaseRunner = resolve;
+  });
+  let liveChunksDelivered: () => void;
+  const liveChunksDeliveredPromise = new Promise<void>((resolve) => {
+    liveChunksDelivered = resolve;
+  });
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_live_usage" }),
+    JSON.stringify({
+      type: "step_finish",
+      sessionID: "ses_live_usage",
+      part: {
+        type: "step-finish",
+        tokens: { input: 5, output: 3, reasoning: 2, cache: { read: 0, write: 0 } }
+      }
+    })
+  ].join("\n");
+  const runner = new FakeOpenCodeRunner({
+    runResult: { stdout: `${stream}\n` },
+    onDataChunks: [`${stream}\n`],
+    beforeResolve: async () => {
+      liveChunksDelivered();
+      await runnerHeld;
+    }
+  });
+  let runtime: EnsembleRuntime | null = null;
+  const adapter = new OpenCodeEngineAdapter({
+    runner,
+    onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
+  });
+  runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([adapter]),
+    defaultMaxAttempts: 1
+  });
+  let settled = false;
+  const result = runtime.agent("report live usage", { engine: "opencode", model: "glm-5.2" }).then((value) => {
+    settled = true;
+    return value;
+  });
+
+  try {
+    await liveChunksDeliveredPromise;
+    const snapshot = runtime.progress.snapshot();
+    assert.equal(settled, false);
+    assert.equal(snapshot.state, "running");
+    assert.equal(snapshot.engines.opencode?.active, 1);
+    assert.equal(snapshot.engines.opencode?.done, 0);
+    assert.equal(snapshot.engines.opencode?.spent, 10);
+  } finally {
+    releaseRunner!();
+    await result;
+    await runtime.close();
+  }
+});
+
 test("a per-call cwd reaches opencode run and overrides the adapter cwd", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-per-call-cwd-"));
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ cwd: "/adapter/cwd", runner });
   const runtime = new EnsembleRuntime({
@@ -432,11 +583,12 @@ test("a per-call cwd reaches opencode run and overrides the adapter cwd", async 
     await runtime.agent("read", {
       engine: "opencode",
       model: "glm-5.2",
-      cwd: "/per-call/cwd"
+      cwd: directory
     });
-    assert.equal(runner.runs[0]?.cwd, "/per-call/cwd");
+    assert.equal(runner.runs[0]?.cwd, directory);
   } finally {
     await runtime.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

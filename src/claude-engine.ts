@@ -2,17 +2,27 @@ import { randomUUID } from "node:crypto";
 
 import {
   ClaudeBlockedError,
+  InvalidAgentOptionValueError,
   ClaudeCollectionError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
   ClaudeTranscriptError,
   ClaudeValveError,
+  ClaudeWorkerDiagnosticError,
   ClaudeWorkerError,
   EngineShutdownError,
   attachPartialWorkerText,
   partialWorkerTextOf
 } from "./errors.js";
-import { finalAssistantText, readTranscriptFile, resolvedModelSince, turnComplete, usageSince } from "./claude-transcript.js";
+import {
+  endsInSyntheticReply,
+  finalAssistantText,
+  readTranscriptFile,
+  resolvedModelSince,
+  turnComplete,
+  usageSince
+} from "./claude-transcript.js";
+import { subtractUsage } from "./usage-summary.js";
 
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
@@ -21,10 +31,12 @@ import type {
   EngineAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
-  EngineTurnOptions
+  EngineSessionTurn,
+  EngineTurnOptions,
+  EngineWorkerSession
 } from "./engines.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { RuntimeEvent, TurnResult } from "./types.js";
+import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
@@ -73,10 +85,73 @@ export interface ClaudeEngineInvocationOptions {
   cwd: string;
   options: EngineTurnOptions;
   controlPlane: ClaudeControlPlane;
+  /**
+   * Session mode: the invocation outlives its first turn, `beginTurn`
+   * queues follow-up prompts through the valve into the *same* session, and
+   * a correction that cannot ride the valve fails the turn rather than
+   * degrade to a fresh dispatch — a redispatch would answer a follow-up
+   * from a different session than the one created, a continuity failure.
+   * Also rides the dispatch with the 1-hour prompt-cache TTL: a loitering
+   * worker is the one case the write premium pays back.
+   */
+  multiTurn?: boolean;
   onEvent?: (event: RuntimeEvent) => void;
   config?: ClaudeEngineConfig;
   /** Adapter deregistration: called exactly once, when close() completes. */
   onClose?: (invocation: ClaudeEngineInvocation) => void;
+}
+
+/**
+ * The prompt-cache TTL a multi-turn Claude worker is dispatched with,
+ * in the value format Claude Code's settings accept. One-shot workers keep
+ * the engine's 5-minute default — the premium is spent only where loitering
+ * pays it back — and a machine-declared `worker_environment` value for the
+ * same variable still wins (the operator's word outranks the harness
+ * default; see the control plane's settings-file spread order).
+ */
+export const CLAUDE_MULTITURN_CACHE_TTL = "1h";
+
+/**
+ * Parse a Claude Code cache-TTL settings value ("30s", "5m", "1h", or bare
+ * seconds) to milliseconds; null for anything unrecognised. Used to keep
+ * the staleness cliff on the *effective* TTL when a machine-declared
+ * worker-environment value overrides the injected default — two settings
+ * that would otherwise silently desynchronise.
+ */
+export function claudeCacheTtlToMs(value: string): number | null {
+  const match = /^(\d+)([smh]?)$/.exec(value.trim());
+  if (match === null) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return null;
+  }
+  const unit = match[2];
+  return amount * (unit === "h" ? 3_600_000 : unit === "m" ? 60_000 : 1_000);
+}
+
+/**
+ * The effort levels the Claude engine accepts (honoured or loudly
+ * rejected). This is the engine adapter speaking for its own CLI's domain
+ * — measured against Claude Code 2.1.x, which silently accepts an unknown
+ * `--effort` value and runs at its default (witnessed 2026-08-30:
+ * `--effort definitely-invalid` reached a healthy worker at exit 0), so a
+ * pass-through here would let an author believe an unenforced policy was
+ * enforced. The live tests re-check this measurement per release; if
+ * the CLI grows a level, the failure mode is a *loud* rejection of a valid
+ * value — correct the list — never a silent drop.
+ */
+export const CLAUDE_EFFORT_DOMAIN: readonly string[] = ["low", "medium", "high"];
+
+export function assertClaudeEffortSupported(effort: string | undefined): void {
+  if (effort !== undefined && !CLAUDE_EFFORT_DOMAIN.includes(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CLAUDE_EFFORT_DOMAIN.join(" | ")} (the Claude engine's accepted levels)`
+    );
+  }
 }
 
 let dispatchCounter = 0;
@@ -115,12 +190,25 @@ const SETTLED_CONFIRMATION_POLLS = 5;
  *
  * `close()` (called by the shared loop in `finally`) stops and removes the session.
  */
-export class ClaudeEngineInvocation implements EngineInvocation {
-  #prompt: string;
+export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSession {
   #cwd: string;
   #options: EngineTurnOptions;
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
+  #reportedUsage: TokenUsageBreakdown | null = null;
+
+  #multiTurn: boolean;
+  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
+  #turnPrompt: string;
+  /** The current turn's schema — the one thing a session varies per turn. */
+  #turnSchema: JsonSchema | undefined;
+  /**
+   * Whether the current turn's prompt has reached the worker. A follow-up
+   * turn is delivered by the valve, and a retry after a failed delivery
+   * must re-send the prompt itself — a correction message would ask the
+   * worker to fix an answer it was never asked for.
+   */
+  #turnDelivered = false;
 
   #pollIntervalMs: number;
   #receiptTimeoutMs: number;
@@ -137,7 +225,9 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #onClose: ((invocation: ClaudeEngineInvocation) => void) | undefined;
 
   constructor(options: ClaudeEngineInvocationOptions) {
-    this.#prompt = options.prompt;
+    this.#turnPrompt = options.prompt;
+    this.#turnSchema = options.options.schema;
+    this.#multiTurn = options.multiTurn ?? false;
     this.#cwd = options.cwd;
     this.#options = options.options;
     this.#controlPlane = options.controlPlane;
@@ -150,6 +240,22 @@ export class ClaudeEngineInvocation implements EngineInvocation {
     this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 60_000;
     this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
     this.#namePrefix = config.namePrefix ?? "ensemble";
+  }
+
+  /**
+   * Session mode's turn boundary: the next `runAttempt` delivers this
+   * prompt to the *held* session — by dispatch for the first turn, through
+   * the valve thereafter — with this turn's schema governing validation and
+   * correction. The returned invocation deliberately carries no `close`:
+   * a turn ending must never tear down the session it rode.
+   */
+  beginTurn(prompt: string, turn: EngineSessionTurn): EngineInvocation {
+    this.#turnPrompt = prompt;
+    this.#turnSchema = turn.schema;
+    this.#turnDelivered = false;
+    return {
+      runAttempt: (context) => this.runAttempt(context)
+    };
   }
 
   runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
@@ -166,15 +272,34 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
+    this.#reportedUsage = null;
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
-      const correcting = previousFailure !== undefined && this.#handle !== null;
 
+      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
+        // A follow-up turn (or a retry whose delivery never landed): the
+        // prompt itself rides the valve into the held session. A correction
+        // branch would be wrong here — the worker has not seen this turn.
+        // The high-water mark is read first so a failure past this point
+        // attaches only *this* turn's text, never the previous turn's.
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        this.#requireValve(await this.#controlPlane.tmuxAvailable());
+        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
+      }
+
+      const correcting = previousFailure !== undefined && this.#handle !== null;
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
         const handle = this.#handle as ClaudeSessionHandle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
+      }
+      if (correcting && this.#multiTurn) {
+        // No valve, no degraded redispatch: a fresh session answering a held
+        // worker's turn is a continuity failure, so the turn fails loudly
+        // instead.
+        this.#requireValve(false);
       }
 
       // First attempt, or a correction we cannot do in-session: (re)dispatch.
@@ -194,7 +319,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
         // result-less failure must not un-learn it (failures carry their
         // evidence), so it is read before the session is torn down.
         const resolvedModel = await this.#tryResolveModel(fromIndex);
-        await this.#teardown();
+        if (!this.#multiTurn) {
+          // One-shot only: a held session survives its turn's operational
+          // failure — tearing it down would leave the retry with no handle
+          // and a silent fresh dispatch as the only path, a continuity
+          // failure. Session teardown belongs to close().
+          await this.#teardown();
+        }
         return failedTurnResult(error, resolvedModel);
       }
       throw error;
@@ -227,9 +358,13 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
       ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {}),
-      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {})
+      ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}),
+      // Loiter pricing: only a session meant to be resumed pays the
+      // 1-hour cache-write premium; one-shot workers keep the 5m default.
+      ...(this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {})
     });
     this.#handle = handle;
+    this.#turnDelivered = true;
     if (this.#closed) {
       // close() ran while dispatch was in flight: its teardown saw no
       // handle, so the session just created is ours to stop — otherwise a
@@ -240,6 +375,36 @@ export class ClaudeEngineInvocation implements EngineInvocation {
 
     const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
     return this.#buildResult(handle, transcript, 0);
+  }
+
+  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  async #sendTurnInSession(
+    handle: ClaudeSessionHandle,
+    fromIndex: number,
+    onLiveEvidence: (() => void) | undefined
+  ): Promise<TurnResult> {
+    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
+    }
+
+    await this.#awaitReceipt(handle, fromIndex);
+    this.#turnDelivered = true;
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+
+  /**
+   * Session mode has no degraded path: the valve is what keeps a follow-up
+   * (or a correction) inside the created session, so its absence fails the
+   * turn loudly instead of silently substituting a fresh worker.
+   */
+  #requireValve(available: boolean): void {
+    if (!available) {
+      throw new ClaudeValveError(
+        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
+      );
+    }
   }
 
   async #correctInSession(
@@ -326,6 +491,7 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       const transcript = await this.#tryReadTranscript(handle);
       if (transcript !== null) {
         sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
         // Evidence means output *the worker produced this turn*: only an
         // assistant entry beyond the high-water mark counts. The transcript's
         // first entry is routinely the persisted user prompt (and a steer
@@ -418,8 +584,20 @@ export class ClaudeEngineInvocation implements EngineInvocation {
   #buildResult(handle: ClaudeSessionHandle, transcript: TranscriptFile, fromIndex: number): TurnResult {
     const entries = transcript.entries;
     const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      // Claude Code answered in place of a model (an unknown model id, a
+      // rejected request): the transcript satisfies `turnComplete`, but the
+      // text is the client's diagnostic. Collecting it would archive the
+      // error string as the worker's output under a placeholder model —
+      // this is a failed turn, and the diagnostic is its cause.
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usageEvent = this.#feedBudget(handle, entries, fromIndex);
+    const usage = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
@@ -476,7 +654,14 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       return;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    const text = transcript === null ? null : finalAssistantText(transcript.entries, fromIndex);
+    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+      // Claude Code composed the last reply itself, so the text on the
+      // transcript is its diagnostic and not the worker's. It reaches the
+      // record as the failure's message; carrying it here as well would put
+      // an error string in the slot a consumer reads as model output.
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
     if (text !== null) {
       attachPartialWorkerText(error, text);
     }
@@ -487,31 +672,44 @@ export class ClaudeEngineInvocation implements EngineInvocation {
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    */
-  #feedBudget(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): TurnResult["tokenUsageEvents"][number] | null {
-    if (this.#onEvent === undefined) {
-      return null;
+  #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
     }
-    const breakdown = usageSince(entries, fromIndex);
-    if (breakdown.totalTokens === 0) {
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+
+  #usageEvent(
+    handle: ClaudeSessionHandle,
+    last: TokenUsageBreakdown,
+    total: TokenUsageBreakdown
+  ): TokenUsageEvent | null {
+    if (total.totalTokens === 0) {
       return null;
     }
     this.#budgetEventCounter += 1;
     const event = {
       threadId: handle.sessionId,
       turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last: breakdown,
-      total: breakdown,
+      last,
+      total,
       raw: {
         threadId: handle.sessionId,
         turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last: breakdown, total: breakdown }
+        tokenUsage: { last, total }
       }
     };
-    this.#onEvent({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
     return event;
   }
 
@@ -533,16 +731,34 @@ export class ClaudeEngineInvocation implements EngineInvocation {
       "You are an automated worker dispatched by the Ensemble orchestration harness.",
       "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
     ];
-    if (this.#options.schema !== undefined) {
+    if (this.#turnSchema !== undefined) {
       lines.push(
         "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#options.schema)
+        JSON.stringify(this.#turnSchema)
       );
     }
     if (previousFailure !== undefined) {
       lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
     }
-    lines.push("", "Task:", this.#prompt);
+    lines.push("", "Task:", this.#turnPrompt);
+    return lines.join("\n");
+  }
+
+  /**
+   * A follow-up turn's valve message: the session already holds the
+   * autonomy preamble from its dispatch, so the message carries only what
+   * this turn adds — its schema contract, when it has one, and its task.
+   */
+  #buildTurnMessage(): string {
+    const lines: string[] = [];
+    if (this.#turnSchema !== undefined) {
+      lines.push(
+        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema),
+        ""
+      );
+    }
+    lines.push(this.#turnPrompt);
     return lines.join("\n");
   }
 
@@ -610,6 +826,9 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   }
   if (error instanceof ClaudeCollectionError) {
     return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
   }
   return { kind: "claude-dispatch-error", message: error.message };
 }

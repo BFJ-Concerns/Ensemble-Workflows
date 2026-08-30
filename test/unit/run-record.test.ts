@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -19,6 +20,87 @@ import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
 import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
+
+test("the run id and the archive directory carry one identifier, verbatim", async () => {
+  const cwd = await gitRepo("ensemble-record-identifier-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-identifier-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-ident",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  // A user carries the startup line's run id straight to the filesystem:
+  // `cwd:<hash24>:<uuid>` names `runs/cwd/<hash24>/<uuid>` with no
+  // transformation (the pre-fix tree used the full hash in the path and
+  // the truncated one in the id).
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    run_id: string;
+  };
+  const match = /^cwd:([0-9a-f]{24}):run-ident$/.exec(manifest.run_id);
+  assert.ok(match, `unexpected run_id shape: ${manifest.run_id}`);
+  assert.ok(
+    writer.archiveDir.endsWith(path.join("runs", "cwd", match![1]!, "run-ident")),
+    `archive dir ${writer.archiveDir} does not carry the run id's namespace component`
+  );
+});
+
+test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
+  const cwd = await gitRepo("ensemble-record-effective-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-effective",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false, budget: { codex: 50_000 }, timeoutMs: 90_000 },
+    effectiveSettings: {
+      budgetCeilings: {
+        codex: { value: 50_000, layer: "flag" },
+        claude: { value: null, layer: "default" },
+        opencode: { value: null, layer: "default" }
+      },
+      runTimeoutMs: { value: 90_000, layer: "flag" }
+    }
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  // The auditor's read: which layer won each run-shaping number, without
+  // product knowledge — the shape the concurrency block established.
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    budget_ceilings: Record<string, { value: number | null; layer: string }>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(manifest.budget_ceilings.codex, { value: 50_000, layer: "flag" });
+  assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
+  assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
+
+  // A writer given no effective settings still publishes the honest default
+  // shape rather than omitting the keys.
+  const bare = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-effective-bare",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await bare.finish({ status: "complete", exitCode: 0, result: null });
+  const bareManifest = JSON.parse(await readFile(path.join(bare.archiveDir, "manifest.json"), "utf8")) as {
+    budget_ceilings: Record<string, unknown>;
+    run_timeout_ms: { value: number | null; layer: string };
+  };
+  assert.deepEqual(bareManifest.budget_ceilings, {});
+  assert.deepEqual(bareManifest.run_timeout_ms, { value: null, layer: "default" });
+});
 
 test("run record manifest and agent schemas are fixture-locked", async () => {
   const cwd = await gitRepo("ensemble-record-schema-");
@@ -264,6 +346,9 @@ test("files table hashes artefacts and cost roll-up stays per engine and per mod
   assert.equal(manifest.cost_rollup.opencode?.["glm-5.2"], undefined);
   assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.amount, 0.002);
   assert.equal(manifest.cost_rollup.opencode?.["zai/glm-5.2"]?.cost.source, "provider-reported");
+  // No engine reported money for the codex bucket, so the record says that
+  // rather than an amount-less "estimate" a consumer cannot tell from zero.
+  assert.deepEqual(manifest.cost_rollup.codex?.unresolved?.cost, { unavailable: "no-provider-cost-reported" });
   assert.equal("total" in manifest.cost_rollup, false);
 });
 
@@ -279,8 +364,8 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     args: [],
     cliFlags: { jsonArgs: false }
   });
-  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 2, 25)));
-  await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, 0, 25)));
+  await writer.recordAgent(agentRecordWithUsage(1, "codex", usage(20, 8, 5, 0, 25)));
+  await writer.recordAgent(agentRecordWithUsage(2, "claude", usage(12, 8, 5, undefined, 25)));
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
@@ -292,13 +377,14 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
   assert.ok(claude);
   // Codex reports cached within input and reasoning within output: both are
   // subtracted out, so the declared classes are disjoint and sum to the
-  // total (12 + 8 + 3 + 2 = 25). The engine-native 20/5/27 figures stay in
+  // total (12 + 8 + 5 + 0 = 25). Its reported zero survives as zero. The
+  // engine-native 20/5/25 figures stay in
   // the attempt events beneath, untouched.
   assert.deepEqual(codex, {
     freshInputTokens: 12,
     cachedInputTokens: 8,
-    outputTokens: 3,
-    reasoningOutputTokens: 2,
+    outputTokens: 5,
+    reasoningOutputTokens: 0,
     unclassifiedTokens: 0,
     totalTokens: 25
   });
@@ -313,6 +399,17 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
     unclassifiedTokens: 0,
     totalTokens: 25
   });
+
+  const agentJson = async (id: string) => JSON.parse(
+    await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")
+  ) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  // Each agent and its manifest roll-up are cold-read consumers of the same
+  // summary boundary: Codex's reported zero stays zero at both levels, while
+  // Claude's absent measurement stays null at both levels.
+  assert.deepEqual((await agentJson("000001")).usage.summary, codex);
+  assert.deepEqual((await agentJson("000002")).usage.summary, claude);
 });
 
 test("cache creation is accounted apart from cache reads when the engine separates them", async () => {
@@ -330,7 +427,7 @@ test("cache creation is accounted apart from cache reads when the engine separat
   // A Claude-shaped breakdown: 10 cached in total, of which 3 were cache
   // writes — so only 7 were input actually served from cache.
   await writer.recordAgent(
-    agentRecordWithUsage(1, "claude", { ...usage(220, 10, 40, 0, 270), cacheCreationInputTokens: 3 })
+    agentRecordWithUsage(1, "claude", { ...usage(220, 10, 40, undefined, 270), cacheCreationInputTokens: 3 })
   );
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
@@ -345,6 +442,11 @@ test("cache creation is accounted apart from cache reads when the engine separat
   assert.equal(tokens.cachedInputTokens, 10);
   assert.equal(tokens.cacheReadTokens, 7);
   assert.equal(tokens.cacheCreationTokens, 3);
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8")) as {
+    usage: { summary?: Record<string, unknown> };
+  };
+  assert.deepEqual(agent.usage.summary, tokens);
 });
 
 test("each agent record carries its usage in the declared vocabulary, or the reason it has none", async () => {
@@ -586,14 +688,14 @@ test("cost roll-up degrades to token-only accounting on unlike currencies", asyn
   await writer.finish({ status: "complete", exitCode: 0, result: true });
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
-    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: { amount: number | null; currency: string | null; source: string } }>>;
+    cost_rollup: Record<string, Record<string, { tokens: TokenUsageBreakdown; cost: Record<string, unknown> }>>;
   };
   const bucket = manifest.cost_rollup.opencode?.unresolved;
   assert.ok(bucket);
   assert.equal(bucket.tokens.totalTokens, 7);
-  assert.equal(bucket.cost.amount, null);
-  assert.equal(bucket.cost.currency, null);
-  assert.equal(bucket.cost.source, "estimated");
+  // Token-only accounting, said out loud: the bucket saw money it could not
+  // sum, which is a different statement from "no engine reported any".
+  assert.deepEqual(bucket.cost, { unavailable: "unlike-currencies" });
 });
 
 test("CLI timeout leaves a usable partial archive with meta.task", async () => {
@@ -803,16 +905,19 @@ function agentRecord(
     engine,
     prompt: "fixture prompt",
     options: { timeoutMs: null, maxAttempts: 3 },
+    session: null,
     model,
     effort: null,
     fallbackModel: null,
     resolvedModel: null,
+    resolvedEffort: null,
     resolvedCwd: "/fixture/repo",
     isolation: null,
     worktree: null,
     label: null,
     phase: null,
     status: "complete" as const,
+    terminationCause: null,
     creationOrder: id,
     concurrencyGroup: engine,
     schema: null,
@@ -828,11 +933,13 @@ function agentRecord(
         attempt: 1,
         status: "complete" as const,
         failure: null,
+        observedFailure: null,
         workerExit: null,
         appServerDiagnostic: null,
         rawOutput: "ok",
         validatedOutput: "ok",
         resolvedModel: null,
+        resolvedEffort: null,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,
@@ -929,10 +1036,16 @@ function usage(
   inputTokens: number,
   cachedInputTokens: number,
   outputTokens: number,
-  reasoningOutputTokens: number,
+  reasoningOutputTokens: number | undefined,
   totalTokens: number
 ): TokenUsageBreakdown {
-  return { cachedInputTokens, inputTokens, outputTokens, reasoningOutputTokens, totalTokens };
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    totalTokens
+  };
 }
 
 function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: number, currency?: string) {
@@ -947,6 +1060,149 @@ function tokenUsageEventFromBreakdown(tokenUsage: TokenUsageBreakdown, cost?: nu
     }
   };
 }
+
+test("the manifest attests itself, and an edited field breaks the attestation", async () => {
+  const cwd = await gitRepo("ensemble-record-integrity-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-integrity",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: { item: "one" },
+    cliFlags: { jsonArgs: true }
+  });
+  await writer.recordAgent(agentRecord(1, "codex", null, 3));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifestPath = path.join(writer.archiveDir, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown> & {
+    integrity: { algorithm: string; manifest_sha256: string; files_lost: unknown[] };
+  };
+  assert.equal(manifest.integrity.algorithm, "sha256");
+  assert.deepEqual(manifest.integrity.files_lost, []);
+  assert.equal(manifest.status, "complete");
+  assert.equal(manifestSelfDigest(manifest), manifest.integrity.manifest_sha256);
+  assert.equal(writer.manifestDigest(), manifest.integrity.manifest_sha256);
+
+  // The tamper the archive-consumer session made and every hash check
+  // passed: an edited manifest field, with the files table untouched.
+  const tampered = JSON.parse(await readFile(manifestPath, "utf8")) as typeof manifest;
+  tampered.schema_version = 999;
+  assert.notEqual(manifestSelfDigest(tampered), tampered.integrity.manifest_sha256);
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("a run whose archive is deleted mid-flight cannot seal a complete manifest", async () => {
+  const cwd = await gitRepo("ensemble-record-lost-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-lost",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: { item: "one" },
+    cliFlags: { jsonArgs: true }
+  });
+  await writer.recordAgent(agentRecord(1, "codex", null, 3));
+  // The two shapes the reconciliation must catch: a file the manifest
+  // promises that is gone, and one replaced beneath the writer.
+  await rm(path.join(writer.archiveDir, "workflow.js"));
+  await writeFile(path.join(writer.archiveDir, "args.canonical.json"), "{}");
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    status: string;
+    files: Array<{ path: string }>;
+    integrity: { manifest_sha256: string; files_lost: Array<{ path: string; reason: string }> };
+  };
+  assert.equal(manifest.status, "incomplete");
+  assert.deepEqual(manifest.integrity.files_lost, [
+    { path: "args.canonical.json", reason: "size-mismatch" },
+    { path: "workflow.js", reason: "missing" }
+  ]);
+  // The file table still declares them: the record loses nothing it knew,
+  // it just stops claiming the archive is whole.
+  assert.ok(manifest.files.some((entry) => entry.path === "workflow.js"));
+  assert.equal(manifestSelfDigest(manifest), manifest.integrity.manifest_sha256);
+
+  // The run itself ended cleanly and its own envelope still says so —
+  // losing files is a recording failure, never a run failure.
+  const result = JSON.parse(await readFile(path.join(writer.archiveDir, "result.json"), "utf8")) as {
+    status: string;
+    exit_code: number;
+  };
+  assert.equal(result.status, "complete");
+  assert.equal(result.exit_code, 0);
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+/**
+ * The reading belongs to the consumer, not the harness: the archive exports
+ * no liveness API, so a cold reader applies the owner-block check itself.
+ * This pins that copy against the same conservative terms the reaper holds
+ * to, case for case, so the two cannot drift apart unnoticed.
+ */
+const { judgeArchivedRunLiveness } = (await import(
+  pathToFileURL(path.resolve("test/consumers/archive-liveness.mjs")).href
+)) as {
+  judgeArchivedRunLiveness: (
+    manifest: unknown,
+    options: { procDir: string; host: string }
+  ) => Promise<{ verdict: string; reason: string | null }>;
+};
+
+test("an archived run's liveness is judged from its own owner block", async () => {
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-liveness-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    await writeProcStat(proc, 54321, "2222");
+    const host = hostname();
+
+    const dead = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999999, start_ticks: "3333", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(dead, { verdict: "dead", reason: "owner-process-gone" });
+
+    const reusedPid = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 54321, start_ticks: "9999", host } },
+      { procDir: proc, host }
+    );
+    assert.equal(reusedPid.verdict, "dead");
+
+    const live = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 54321, start_ticks: "2222", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(live, { verdict: "live", reason: null });
+
+    // Everything the reaper refuses to judge, the consumer refuses too.
+    const foreign = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999998, start_ticks: "4", host: "elsewhere.invalid" } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(foreign, { verdict: "undecidable", reason: null });
+
+    const noEvidence = await judgeArchivedRunLiveness(
+      { status: "in-progress", owner: { pid: 999997, start_ticks: null, host } },
+      { procDir: proc, host }
+    );
+    assert.equal(noEvidence.verdict, "undecidable");
+
+    const settled = await judgeArchivedRunLiveness(
+      { status: "complete", owner: { pid: 999999, start_ticks: "3333", host } },
+      { procDir: proc, host }
+    );
+    assert.deepEqual(settled, { verdict: "settled", reason: null });
+  } finally {
+    await rm(proc, { recursive: true, force: true });
+  }
+});
 
 test("the reaper flips provably-dead in-progress runs and leaves every judged-live one", async () => {
   const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-ns-"));
@@ -1099,4 +1355,99 @@ async function findManifests(store: string): Promise<string[]> {
 
 function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+test("an interrupted worker's archive names its termination cause and why no transcript is there", async () => {
+  const cwd = await gitRepo("ensemble-record-termination-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-termination",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const interrupted = agentRecord(1, "claude", null, 0);
+  interrupted.status = "interrupted";
+  interrupted.terminationCause = {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  };
+  interrupted.attempts[0]!.status = "failed";
+  interrupted.attempts[0]!.transcripts = [];
+  interrupted.attempts[0]!.failure = {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  };
+  interrupted.attempts[0]!.observedFailure = {
+    kind: "AppServerExitedError",
+    message: "codex app-server closed"
+  };
+  await writer.recordAgent(interrupted);
+
+  const completed = agentRecord(2, "codex", null, 0);
+  await writer.recordAgent(completed);
+
+  const read = async (id: string) =>
+    JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      termination_cause: { kind: string; message: string } | null;
+      transcripts: unknown;
+      attempts: Array<{
+        failure: { kind: string; message: string } | null;
+        observed_failure: { kind: string; message: string } | null;
+      }>;
+    };
+
+  const interruptedAgent = await read("000001");
+  assert.deepEqual(interruptedAgent.termination_cause, {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  });
+  // No transcript survives an interruption, so the archive says why rather
+  // than showing an empty list a consumer would read as "the engine was silent".
+  assert.deepEqual(interruptedAgent.transcripts, { unavailable: "worker-interrupted" });
+  // The attempt reads the same cause as the agent above it, and the symptom
+  // its transport reported survives beside it rather than as the reason.
+  assert.deepEqual(interruptedAgent.attempts[0]?.failure, {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) while this worker's turn was in flight"
+  });
+  assert.deepEqual(interruptedAgent.attempts[0]?.observed_failure, {
+    kind: "AppServerExitedError",
+    message: "codex app-server closed"
+  });
+
+  // A worker that finished carries neither an invented cause nor an excuse.
+  const completedAgent = await read("000002");
+  assert.equal(completedAgent.termination_cause, null);
+  assert.equal(completedAgent.attempts[0]?.observed_failure, null);
+  assert.ok(Array.isArray(completedAgent.transcripts));
+});
+
+/**
+ * The consumer's verification recipe for the manifest's self-attestation:
+ * null the digest field, re-canonicalise in the writer's own form, hash.
+ */
+function manifestSelfDigest(manifest: Record<string, unknown>): string {
+  const copy = JSON.parse(JSON.stringify(manifest)) as { integrity: { manifest_sha256: string | null } };
+  copy.integrity.manifest_sha256 = null;
+  return createHash("sha256").update(canonicalJson(copy)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
 }

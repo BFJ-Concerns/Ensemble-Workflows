@@ -53,9 +53,20 @@ export {
   SENTINEL_FILENAME,
   SENTINEL_SCHEMA_VERSION
 } from "./completion-sentinel.js";
-export type { CompletionSentinelOptions, SentinelOutcome } from "./completion-sentinel.js";
+export type {
+  CompletionSentinelOptions,
+  SentinelManifestAttestation,
+  SentinelOutcome
+} from "./completion-sentinel.js";
+export { HoldManager, defaultHoldsDirectory, enumerateHolds } from "./holds.js";
+export type { EnumeratedHold, HoldDecision, HoldFileRecord, RaiseHoldOptions } from "./holds.js";
 export {
+  HoldRejectedError,
+  HoldTimeoutError,
+  MultiTurnUnsupportedError,
   PreSpawnAuthorError,
+  SessionBusyError,
+  SessionClosedError,
   WorkflowScriptReadError,
   attachPartialWorkerText,
   partialWorkerTextOf,
@@ -74,7 +85,8 @@ export {
   resolveRunRecordDir,
   resolveStatusDir
 } from "./ambient-settings.js";
-export { StatusFileWriter, STATUS_FILENAME } from "./status-file.js";
+export { StatusFileWriter, STATUS_FILENAME, snapshotOwnerGone } from "./status-file.js";
+export type { SnapshotOwnerEvidence } from "./status-file.js";
 export {
   NestedWorkflowError,
   WorkflowResolutionError,
@@ -110,20 +122,25 @@ export type {
   RuntimeEvent,
   RuntimeOptions,
   RuntimeTransport,
+  SessionTurnOptions,
   ThreadStartOptions,
   TokenAccountingMode,
   TokenUsageBreakdown,
   TokenUsageEvent,
   TurnResult,
-  TurnStartOptions
+  TurnStartOptions,
+  WorkerSessionOptions
 } from "./types.js";
+export { WorkerSession } from "./runtime.js";
 export type {
   EngineAdapter,
   EngineAttemptContext,
   EngineAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
-  EngineTurnOptions
+  EngineSessionTurn,
+  EngineTurnOptions,
+  EngineWorkerSession
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";

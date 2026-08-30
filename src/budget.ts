@@ -78,7 +78,7 @@ function breakdownFromUnknown(value: unknown): TokenUsageEvent["last"] | null {
   const cachedInputTokens = numericField(value, "cachedInputTokens");
   const inputTokens = numericField(value, "inputTokens");
   const outputTokens = numericField(value, "outputTokens");
-  const reasoningOutputTokens = numericField(value, "reasoningOutputTokens");
+  const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
   const totalTokens = numericField(value, "totalTokens");
 
   if (
@@ -91,12 +91,22 @@ function breakdownFromUnknown(value: unknown): TokenUsageEvent["last"] | null {
     return null;
   }
 
-  return { cachedInputTokens, inputTokens, outputTokens, reasoningOutputTokens, totalTokens };
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
+    totalTokens
+  };
 }
 
 function numericField(source: JsonObject, key: string): number | null {
   const value = source[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function optionalNumericField(source: JsonObject, key: string): number | null | undefined {
+  return source[key] === undefined ? undefined : numericField(source, key);
 }
 
 function isJsonObject(value: unknown): value is JsonObject {

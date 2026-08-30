@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
+import { assertCompilableSchema, parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
+import { InvalidAgentSchemaError } from "../../src/errors.js";
 
 const nestedSchema = {
   type: "object",
@@ -19,6 +20,55 @@ const nestedSchema = {
     }
   }
 };
+
+test("the standard draft 2020-12 declaration is accepted and enforced under its own dialect", () => {
+  // The discriminating shape: under 2020-12, `items: false` constrains only
+  // positions beyond `prefixItems`, so ["a", 1] validates; a draft-07
+  // reading (where prefixItems is an unknown keyword and `items: false`
+  // forbids every element) would reject it — passing this pair proves the
+  // schema ran under its own dialect, not by coincidence.
+  const schema = {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "array",
+    prefixItems: [{ type: "string" }, { type: "number" }],
+    items: false
+  };
+  assert.doesNotThrow(() => assertCompilableSchema(schema));
+  assert.equal(validateJsonSchema(["a", 1], schema).ok, true);
+  assert.equal(validateJsonSchema(["a", 1, "extra"], schema).ok, false);
+  assert.equal(validateJsonSchema(["a", "not-a-number"], schema).ok, false);
+});
+
+test("an explicit draft-07 declaration keeps the default dialect", () => {
+  const schema = {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    type: "object",
+    required: ["ok"],
+    properties: { ok: { type: "boolean" } }
+  };
+  assert.doesNotThrow(() => assertCompilableSchema(schema));
+  assert.equal(validateJsonSchema({ ok: true }, schema).ok, true);
+});
+
+test("an unimplemented dialect is rejected pre-spawn, naming the supported dialects and the remedy", () => {
+  const schema = {
+    $schema: "https://json-schema.org/draft/2019-09/schema",
+    type: "object"
+  };
+  assert.throws(
+    () => assertCompilableSchema(schema),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentSchemaError);
+      // The pre-fix rejection was Ajv's bare "no schema with key or ref
+      // <uri>" — a message naming only the URI the author already wrote.
+      assert.match(error.message, /unsupported JSON Schema dialect/);
+      assert.match(error.message, /2020-12/);
+      assert.match(error.message, /draft-07/);
+      assert.match(error.message, /omit \$schema/);
+      return true;
+    }
+  );
+});
 
 test("parseJsonFromText extracts direct and wrapped JSON", () => {
   assert.deepEqual(parseJsonFromText("{\"x\":1}"), { value: { x: 1 }, source: "direct" });

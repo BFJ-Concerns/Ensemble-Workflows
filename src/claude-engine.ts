@@ -40,14 +40,23 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
- * rules that remove it from the worker's tool surface. `agents` denies both
- * spellings the subagent tool has shipped under — one capability, either
- * name — and deny rules outrank every allow layer and permission mode, so
- * the operator's own settings cannot quietly re-enable a stripped tool.
+ * rules that remove it from the worker's tool surface. `agents` denies the
+ * measured native spawn, discovery, and messaging tools: `Task`, `Agent`,
+ * `ListAgents`, and `SendMessage`. Worker tool surface measured 2026-08-28 on
+ * Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair
+ * showed the bare `Skill` deny working (`Skill` absent under a skills strip,
+ * present in the baseline). The agents deny set was witnessed 2026-08-30 on
+ * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
+ * stripped worker, while the unstripped control demonstrated discovery and
+ * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
+ * which the exact-set regression proves. Deny rules outrank every allow
+ * layer and permission mode, so the operator's own settings cannot quietly
+ * re-enable a stripped tool.
  */
 const CAPABILITY_DENY_RULES: Record<StrippableCapability, readonly string[]> = {
   skills: ["Skill"],
-  agents: ["Task", "Agent"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
 };
 
 export function permissionDenyRulesFor(strip: readonly StrippableCapability[] | undefined): string[] {

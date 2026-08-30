@@ -219,6 +219,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     runtime: options.runtime,
     args: options.args ?? [],
     log: options.log,
+    presentError: presentAuthorFrames,
     ...(defaults !== undefined ? { defaults } : {}),
     workflow:
       workflowDepth === 0

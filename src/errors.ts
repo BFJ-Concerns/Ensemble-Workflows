@@ -191,6 +191,9 @@ export class AppServerOverloadedError extends AppServerRequestError {}
 
 export class AppServerRetryPromiseBrokenError extends AppServerRequestError {}
 
+/** A terminal app-server status with no protocol-level retryability signal. */
+export class AppServerSystemError extends AppServerRequestError {}
+
 /** A started turn that produced no output-bearing frame before its transport deadline. */
 export class AppServerFirstOutputTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {

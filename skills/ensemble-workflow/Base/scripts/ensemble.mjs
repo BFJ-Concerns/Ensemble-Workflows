@@ -24404,10 +24404,6 @@ var LazyCodexAppServerTransport = class {
     const transport = await this.#transport();
     return transport.openThread(options);
   }
-  async listSkills(cwd) {
-    const transport = await this.#transport();
-    return transport.listSkills(cwd);
-  }
   async runTurn(threadId, prompt, options) {
     const transport = await this.#transport();
     return transport.runTurn(threadId, prompt, options);
@@ -24525,39 +24521,6 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
-  }
-  async listSkills(cwd = this.cwd) {
-    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
-    const entries = result?.data;
-    if (!Array.isArray(entries)) {
-      throw new AppServerRequestError("skills/list", {
-        code: "invalid_response",
-        message: "response omitted the discovered skill entries"
-      });
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      const entryObject = asJsonObject(entry);
-      const errors = entryObject?.errors;
-      const skills = entryObject?.skills;
-      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
-        throw new AppServerRequestError("skills/list", {
-          code: "incomplete_discovery",
-          message: "could not establish the complete discovered skill set"
-        });
-      }
-      for (const skill of skills) {
-        const name = asJsonObject(skill)?.name;
-        if (typeof name !== "string" || name.length === 0) {
-          throw new AppServerRequestError("skills/list", {
-            code: "invalid_response",
-            message: "response included a skill without a name"
-          });
-        }
-        names.add(name);
-      }
-    }
-    return [...names].sort();
   }
   async runTurn(threadId, prompt, options) {
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
@@ -26270,31 +26233,12 @@ var EngineRegistry = class {
     await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 };
-async function codexThreadConfig(strip, transport, cwd) {
+function codexThreadConfig(strip) {
   const strippedAgents = strip?.includes("agents") === true;
-  const strippedSkills = strip?.includes("skills") === true;
-  if (!strippedAgents && !strippedSkills) {
+  if (!strippedAgents) {
     return void 0;
   }
-  return {
-    ...strippedAgents ? { agents: { enabled: false } } : {},
-    ...strippedSkills ? {
-      skills: {
-        bundled: { enabled: false },
-        config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
-      }
-    } : {}
-  };
-}
-async function discoveredCodexSkillNames(transport, cwd) {
-  if (transport.listSkills === void 0) {
-    throw new CapabilityStripUnsupportedError(
-      "codex",
-      "skills",
-      "the transport cannot retrieve the app-server's discovered skill set"
-    );
-  }
-  return transport.listSkills(cwd);
+  return { agents: { enabled: false } };
 }
 var CodexEngineAdapter = class {
   name = "codex";
@@ -26310,16 +26254,18 @@ var CodexEngineAdapter = class {
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — the
    *   live proof is what re-arms this judgement per release.
-   * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: `skills.bundled.enabled=false` turns
-   *   off bundled skills and `skills.config=[{ name, enabled=false }]` denies
-   *   every name the app-server discovers for the worker cwd when the thread
-   *   opens.
+   * - `skills` cannot be stripped completely, measured 2026-08-30 on
+   *   codex-cli 0.151.0: a plugin-qualified `skills.config` name is denied
+   *   when supplied explicitly, but `skills/list` has no plugin-discovery
+   *   parameter and omits a plugin skill present on the worker's surface.
+   *   Without a complete source for the per-name denies, a strip request
+   *   fails loud before dispatch rather than opening a partially stripped
+   *   worker.
    */
   capabilities = {
     skills: {
-      route: "config",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start config overlay skills.bundled.enabled=false plus skills.config per-name denies the app-server's complete discovered skill set"
+      route: "unsupported",
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: plugin-qualified skills.config denies work, but skills/list cannot establish the complete plugin skill set"
     },
     agents: {
       route: "config",
@@ -26390,7 +26336,7 @@ var CodexWorkerSession = class {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
+        const threadConfig = codexThreadConfig(this.#options.strip);
         const threadId = await this.#transport.openThread({
           ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
           ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
@@ -26422,7 +26368,7 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
+    const threadConfig = codexThreadConfig(this.#options.strip);
     const threadId = await this.#transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},

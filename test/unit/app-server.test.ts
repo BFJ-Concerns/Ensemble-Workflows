@@ -12,7 +12,6 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
-  AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   AppServerSystemError,
@@ -85,15 +84,18 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
 
 test("concurrent first Codex uses share a single app-server handshake", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-"));
-  const capturePath = path.join(directory, "methods.txt");
+  const capturePath = path.join(directory, "requests.jsonl");
   const codexBin = await fakeCodexTurnServer({ capturePath });
   const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
 
   try {
     const threadIds = await Promise.all([transport.openThread({}), transport.openThread({})]);
     assert.equal(new Set(threadIds).size, 2);
-    const methods = (await readFile(capturePath, "utf8")).trim().split("\n");
-    assert.equal(methods.filter((method) => method === "initialize").length, 1);
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params?: unknown });
+    assert.equal(requests.filter((request) => request.method === "initialize").length, 1);
   } finally {
     await transport.close();
   }
@@ -973,63 +975,13 @@ test("Codex app-server sends a thread config overlay only when one is given", as
   }
 });
 
-test("Codex app-server lists the fresh discovered skills for the requested worker cwd", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-list-"));
-  const requestCapturePath = path.join(directory, "requests.jsonl");
-  const codexBin = await fakeCodexTurnServer({
-    requestCapturePath,
-    skills: ["repo-skill", "plugin-management:plugin-management", "repo-skill"]
-  });
-  const transport = await CodexAppServerTransport.start({
-    cwd: process.cwd(),
-    codexBin,
-    requestTimeoutMs: 2_000,
-    startupHandshakeTimeoutMs: 2_000,
-    clientName: "ensemble-test",
-    clientVersion: "0.0.0"
-  });
-  try {
-    assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), ["plugin-management:plugin-management", "repo-skill"]);
-    const requests = (await readFile(requestCapturePath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { method: string; params?: unknown });
-    assert.deepEqual(requests.find((request) => request.method === "skills/list"), {
-      method: "skills/list",
-      params: { cwds: ["/fake/worker-cwd"], forceReload: true }
-    });
-  } finally {
-    await transport.close();
-  }
-});
-
-test("Codex app-server rejects an incomplete skill discovery result", async () => {
-  const codexBin = await fakeCodexTurnServer({ skillErrors: true });
-  const transport = await CodexAppServerTransport.start({
-    cwd: process.cwd(),
-    codexBin,
-    requestTimeoutMs: 2_000,
-    startupHandshakeTimeoutMs: 2_000,
-    clientName: "ensemble-test",
-    clientVersion: "0.0.0"
-  });
-  try {
-    await assert.rejects(() => transport.listSkills(), AppServerRequestError);
-  } finally {
-    await transport.close();
-  }
-});
-
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
   options: {
     returnPromptBase64?: boolean;
     capturePath?: string;
-    requestCapturePath?: string;
     envCapturePath?: string;
     servedModel?: string | null;
-    skills?: readonly string[];
-    skillErrors?: boolean;
   } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
@@ -1047,11 +999,8 @@ if (process.argv[2] !== "app-server") {
 let threadCounter = 0;
 const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)};
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
-const requestCapturePath = ${JSON.stringify(options.requestCapturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
-const skills = ${JSON.stringify(options.skills ?? [])};
-const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
 }
@@ -1061,10 +1010,7 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (capturePath !== null) {
-    appendFileSync(capturePath, message.method + "\\n");
-  }
-  if (requestCapturePath !== null) {
-    appendFileSync(requestCapturePath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
+    appendFileSync(capturePath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
   }
   if (message.method === "initialize") {
     send({ id: message.id, result: {} });
@@ -1078,20 +1024,6 @@ reader.on("line", (line) => {
         thread: { id: "thread-" + threadCounter },
         ...(servedModel === null ? {} : { model: servedModel }),
         reasoningEffort: "medium"
-      }
-    });
-    return;
-  }
-  if (message.method === "skills/list") {
-    const cwd = message.params.cwds?.[0] ?? process.cwd();
-    send({
-      id: message.id,
-      result: {
-        data: [{
-          cwd,
-          errors: skillErrors ? [{ path: "/fake/broken-skill", message: "broken skill" }] : [],
-          skills: skills.map((name) => ({ name }))
-        }]
       }
     });
     return;

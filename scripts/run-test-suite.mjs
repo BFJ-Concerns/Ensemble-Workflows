@@ -6,7 +6,10 @@ import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
-const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
+// A descendant can retain the test process's output pipe after that process
+// exits. Keep accepting its final output, but do not let that inherited pipe
+// hold the gate open indefinitely.
+const childCloseGraceMilliseconds = 1_000;
 // A suite should complete in minutes, not hours. Keep an unstamped hand-off
 // root for two hours so a recovery never races its owner, while ensuring a
 // wrapper killed between hand-off and stamping cannot leak the directory forever.
@@ -28,7 +31,13 @@ const suiteDirectory = path.join(temporaryRoot, handoffSuiteName(path.basename(p
 await rename(pendingSuiteDirectory, suiteDirectory);
 const schemaCacheDirectory = path.join(suiteDirectory, "schema-cache");
 const recordStoreDirectory = path.join(suiteDirectory, "run-records");
-const child = spawn(process.execPath, ["--test", "--test-reporter=tap", testGlob], {
+// Test-only: estates that need to coordinate a real runner child can install
+// a direct child without changing the runner they exercise.
+const suiteTestChildProgram = process.env.ENSEMBLE_SUITE_TEST_CHILD_PROGRAM;
+const child = spawn(
+  process.execPath,
+  suiteTestChildProgram === undefined ? ["--test", "--test-reporter=tap", testGlob] : [suiteTestChildProgram],
+  {
   env: {
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,
@@ -39,8 +48,9 @@ const child = spawn(process.execPath, ["--test", "--test-reporter=tap", testGlob
   // A killed suite parent can leave its test process behind. Giving that
   // process group a durable identity lets a later suite distinguish a live
   // cache owner from abandoned state before it removes anything.
-  detached: true
-});
+    detached: true
+  }
+);
 let childOutput = "";
 child.stdout.setEncoding("utf8");
 child.stderr.setEncoding("utf8");
@@ -52,9 +62,13 @@ child.stderr.on("data", (chunk) => {
   childOutput += chunk;
   process.stderr.write(chunk);
 });
-const childExit = new Promise((resolve, reject) => {
+const childClosed = new Promise((resolve, reject) => {
   child.once("error", reject);
   child.once("close", (...result) => resolve(result));
+});
+const childExited = new Promise((resolve, reject) => {
+  child.once("error", reject);
+  child.once("exit", (...result) => resolve(result));
 });
 let completeSetup;
 const setupComplete = new Promise((resolve) => {
@@ -74,7 +88,7 @@ async function finish(code, signal) {
     }
   }
   if (child.exitCode === null && child.signalCode === null) {
-    await childExit.catch(() => undefined);
+    await childClosed.catch(() => undefined);
   }
   await rm(suiteDirectory, { recursive: true, force: true });
   if (signal !== null) {
@@ -83,9 +97,14 @@ async function finish(code, signal) {
   process.exitCode = code ?? 1;
 }
 
-childExit.then(([code, signal]) => {
-  const tapOutput = childOutput.replace(ansiSgrSequence, "");
-  if (code === 0 && /(?:^|\n)# tests 0(?:\n|$)/.test(tapOutput)) {
+childExited.then(async ([code, signal]) => {
+  const streamsClosed = await Promise.race([childClosed.then(() => true), delay(childCloseGraceMilliseconds).then(() => false)]);
+  if (!streamsClosed) {
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+  }
+  if (code === 0 && /(?:^|\n)# tests 0(?:\n|$)/.test(childOutput)) {
     process.stderr.write("Test suite matched no tests\n");
     return finish(1, signal);
   }

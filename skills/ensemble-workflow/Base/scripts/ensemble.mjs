@@ -13600,8 +13600,27 @@ function resolveStripEnforcement(engine, table, strip) {
 import { mkdir as mkdir2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import path4 from "node:path";
 
-// src/run-record.ts
+// src/canonical-document.ts
 import { createHash } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+// src/run-record.ts
+import { createHash as createHash2 } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path3 from "node:path";
@@ -13895,7 +13914,12 @@ var RunRecordWriter = class _RunRecordWriter {
         }
       ],
       cost_rollup: {},
-      files: []
+      files: [],
+      integrity: {
+        algorithm: "sha256",
+        manifest_sha256: null,
+        files_lost: []
+      }
     });
     await writer.#writeText("workflow.js", options.workflowSource);
     await writer.#writeJson("args.json", {
@@ -14018,6 +14042,7 @@ var RunRecordWriter = class _RunRecordWriter {
       effort: record.effort,
       fallback_model: record.fallbackModel,
       resolved_model: record.resolvedModel,
+      resolved_effort: record.resolvedEffort,
       resolved_cwd: record.resolvedCwd,
       isolation: record.isolation,
       worktree: record.worktree === null ? null : {
@@ -14062,6 +14087,7 @@ var RunRecordWriter = class _RunRecordWriter {
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,
+        resolved_effort: attempt.resolvedEffort,
         started_at: attempt.startedAt,
         ended_at: attempt.endedAt,
         duration_ms: attempt.durationMs,
@@ -14096,11 +14122,19 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#writeJson("result.json", {
         schema_version: SCHEMA_VERSION,
         kind: "run_result",
+        // The run's own outcome as the launcher reported it. Where the
+        // manifest later degrades to `incomplete`, the two are answering
+        // different questions: this envelope says how the run ended, the
+        // manifest says whether the archive recording it is whole.
         status: options.status,
         exit_code: options.exitCode,
         error: options.error ?? null,
         value: options.result
       });
+      this.manifest.integrity.files_lost = await this.#reconcileFiles();
+      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
+        this.manifest.status = "incomplete";
+      }
       await this.#writeManifest();
       this.#sealed = true;
     });
@@ -14118,6 +14152,8 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    this.manifest.integrity.manifest_sha256 = null;
+    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path3.join(this.archiveDir, MANIFEST_PATH);
     const temporary = path3.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
     await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
@@ -14128,6 +14164,32 @@ var RunRecordWriter = class _RunRecordWriter {
   #tmpSuffix() {
     this.#tmpSeq += 1;
     return `.${process.pid}.${this.#tmpSeq}.tmp`;
+  }
+  /**
+   * Checks every file the manifest declares against the archive directory,
+   * returning what is no longer accountable. Presence and size only: the
+   * recorded digest is what a consumer walks, and re-hashing the whole
+   * archive at seal would repeat that walk for no extra evidence.
+   */
+  async #reconcileFiles() {
+    const lost = [];
+    for (const entry of [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+      const metadata = await stat(path3.join(this.archiveDir, entry.path)).catch(() => null);
+      if (metadata === null) {
+        lost.push({ path: entry.path, reason: "missing" });
+      } else if (metadata.size !== entry.size) {
+        lost.push({ path: entry.path, reason: "size-mismatch" });
+      }
+    }
+    return lost;
+  }
+  /**
+   * The sealed manifest's self-digest, for a consumer of this writer that
+   * publishes an attestation elsewhere (the completion sentinel). Null
+   * before the first manifest write.
+   */
+  manifestDigest() {
+    return this.manifest.integrity.manifest_sha256;
   }
   async #trackFile(relativePath) {
     const absolute = path3.join(this.archiveDir, relativePath);
@@ -14161,7 +14223,7 @@ function agentUsage(record) {
 }
 function buildCostRollup(records) {
   const rollup = {};
-  const unlikeCurrencies = /* @__PURE__ */ new Set();
+  const accumulators = /* @__PURE__ */ new Map();
   for (const record of records) {
     const engine = record.engine;
     for (const attempt of record.attempts) {
@@ -14172,17 +14234,31 @@ function buildCostRollup(records) {
       const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
-      rollup[engine][model] = existing === void 0 ? { tokens: summary, cost: { amount: null, currency: null, source: "estimated" } } : { tokens: addUsageSummary(existing.tokens, summary), cost: existing.cost };
-      const bucket = rollup[engine][model];
+      const key = `${engine}\0${model}`;
+      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
+      accumulators.set(key, accumulator);
       for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(bucket.cost, event, unlikeCurrencies);
+        addProviderCost(accumulator, event);
       }
+      rollup[engine][model] = {
+        tokens: existing === void 0 ? summary : addUsageSummary(existing.tokens, summary),
+        cost: publishedCost(accumulator)
+      };
     }
   }
   return rollup;
 }
-function addProviderCost(target, event, unlikeCurrencies) {
-  if (unlikeCurrencies.has(target)) {
+function publishedCost(accumulator) {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+function addProviderCost(target, event) {
+  if (target.unlike) {
     return;
   }
   const cost = event.raw.cost;
@@ -14191,14 +14267,11 @@ function addProviderCost(target, event, unlikeCurrencies) {
   }
   const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
   if (target.currency !== null && currency !== null && currency !== target.currency) {
-    unlikeCurrencies.add(target);
-    target.amount = null;
-    target.currency = null;
-    target.source = "estimated";
+    target.unlike = true;
     return;
   }
-  target.amount = (target.amount ?? 0) + cost;
-  target.source = "provider-reported";
+  target.amount += cost;
+  target.reported = true;
   if (currency !== null && target.currency === null) {
     target.currency = currency;
   }
@@ -14368,25 +14441,9 @@ function extractTask(meta) {
   }
   return meta.task ?? null;
 }
-function canonicalJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-function sortJson(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
 async function hashFile(filePath) {
   const text = await readFile(filePath);
-  return createHash("sha256").update(text).digest("hex");
+  return createHash2("sha256").update(text).digest("hex");
 }
 async function writeStandaloneText(destination, content) {
   await mkdir(path3.dirname(destination), { recursive: true });
@@ -14415,7 +14472,7 @@ function safeName(filename, suffix) {
 
 // src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
-var SENTINEL_SCHEMA_VERSION = 2;
+var SENTINEL_SCHEMA_VERSION = 3;
 var CompletionSentinel = class {
   #path = null;
   #written = false;
@@ -14455,13 +14512,21 @@ var CompletionSentinel = class {
       // being off must degrade nothing here.
       workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
       error: detail.error ?? null,
-      ended_at: (/* @__PURE__ */ new Date()).toISOString()
+      manifest: detail.manifest ?? { unavailable: "recording-disabled" },
+      ended_at: (/* @__PURE__ */ new Date()).toISOString(),
+      // Self-attestation, computed last over everything above it: the
+      // digest of this payload with `integrity.sentinel_sha256` null, in
+      // the same canonical form (sorted keys, two-space indent) the run
+      // manifest uses, so one verification recipe covers both files. Like
+      // the manifest's, it catches an edited field, not a forger.
+      integrity: { algorithm: "sha256", sentinel_sha256: null }
     };
+    payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
       await mkdir2(path4.dirname(this.#path), { recursive: true });
       const temporary = `${this.#path}.${process.pid}.tmp`;
       try {
-        await writeFile2(temporary, `${JSON.stringify(payload, null, 2)}
+        await writeFile2(temporary, `${canonicalJson(payload)}
 `, "utf8");
         await rename2(temporary, this.#path);
       } catch (error) {
@@ -18909,6 +18974,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      resolvedEffort: null,
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
       isolation: options.isolation ?? null,
       worktree: null,
@@ -18959,6 +19025,7 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
     // resolve differently, so each attempt keeps its own answer rather than
     // inheriting the agent-level last-write-wins field.
     resolvedModel: result?.resolvedModel ?? null,
+    resolvedEffort: result?.resolvedEffort ?? null,
     // Engines that time their own turn say so; for the rest the attempt
     // already holds both endpoints, and a null beside them would be the
     // record discarding a figure it holds.
@@ -18972,6 +19039,9 @@ function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, sta
 function recordTurnMetadata(record, result) {
   if (result.resolvedModel !== void 0) {
     record.resolvedModel = result.resolvedModel;
+  }
+  if (result.resolvedEffort !== void 0) {
+    record.resolvedEffort = result.resolvedEffort;
   }
 }
 function recordOperationalFailure(record, attempt, startedAtMs, result) {
@@ -19111,7 +19181,7 @@ function formatError(error) {
 
 // src/script-runner.ts
 import vm from "node:vm";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path9 from "node:path";
@@ -25317,7 +25387,7 @@ function ensureWorkflowModuleLoader() {
 }
 async function importWrappedModule(wrappedSource, filename, workflow) {
   ensureWorkflowModuleLoader();
-  const digest = createHash2("sha256").update(wrappedSource).digest("hex");
+  const digest = createHash3("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
   const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
@@ -26148,7 +26218,11 @@ async function runEnsembleCli(argv, options = {}) {
       const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
         workers: workerOutcomes(progress),
-        error: terminalError
+        error: terminalError,
+        // The sealed manifest's own digest, attested from outside the file
+        // it covers. Absent recording, or a seal that never landed, says so
+        // rather than omitting the field.
+        manifest: manifestAttestation(runRecordWriter)
       });
     }
   }
@@ -26652,6 +26726,13 @@ function resolveCallerIdentity(flag, env) {
   }
   const inherited = env[CALLER_IDENTITY_ENV];
   return inherited !== void 0 && inherited.trim().length > 0 ? inherited : void 0;
+}
+function manifestAttestation(writer) {
+  if (writer === null) {
+    return { unavailable: "recording-disabled" };
+  }
+  const digest = writer.manifestDigest();
+  return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };
 }
 function announceRunRecord(writer, stderr) {
   try {

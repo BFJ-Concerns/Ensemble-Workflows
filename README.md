@@ -248,8 +248,26 @@ from the workflow meta block when present.
 The archive is written incrementally. `manifest.json` starts as
 `status: "in-progress"`, each completed agent flushes its own directory with
 atomic temp-then-rename writes, and the final manifest records `complete`,
-`failed`, `timed-out`, or `interrupted`. A stopped run therefore leaves a usable
-partial archive.
+`failed`, `timed-out`, `interrupted`, or `incomplete`. A stopped run therefore
+leaves a usable partial archive.
+
+At the seal the writer re-reads every file its integrity table declares. A
+file that has gone missing, or whose size no longer matches what was hashed,
+is recorded in `integrity.files_lost` rather than passed over, and a run that
+would otherwise have sealed `complete` seals `incomplete` instead: the
+manifest may not assert a whole archive over files a reader cannot read. The
+run's own outcome is unaffected — `result.json` still says how the run ended,
+because how the run ended and whether its archive survived are two different
+questions.
+
+Every manifest write ends by attesting itself: `integrity.manifest_sha256` is
+the SHA-256 of the manifest's own canonical form (keys sorted recursively,
+two-space indent) with that field set to `null`. `completion-sentinel.json`
+carries the same self-attestation and, being written after the seal, also
+carries the sealed manifest's digest — so the manifest is checkable against a
+second file rather than only against itself. Both are self-attestations, not
+signatures: no key material lives in the archive, so they catch an edited
+field or a truncated write, not a forger who rewrites the digest too.
 
 A run that dies with its launcher — a kill the process cannot handle — never
 writes its own terminal status, so the manifest records liveness evidence
@@ -260,9 +278,15 @@ from the process table, or start ticks that no longer match (pid reuse) —
 rewriting `status` to the terminal `"abandoned"` with an `abandonment` block
 naming what was observed, when, and by which run. Judgement is same-host and
 evidence-only: an owner on another machine, or one recorded without a
-readable proc filesystem, is left as written, and a consumer can apply the
-same check itself from the `owner` block without waiting for a reap. Agent
-records under a reaped run are preserved untouched.
+readable proc filesystem, is left as written. A consumer need not wait for a
+reap: the `owner` block is the evidence, so a cold reader applies the same
+check itself — a terminal manifest is settled; an owner on this host whose pid
+is absent, or whose start ticks no longer match, is dead; one present with
+matching start ticks is live; and everything else, including a pid the reader
+has no readable proc filesystem to check, is undecidable. That reading is a
+consumer's to make, not an API the harness exports, and it lets a supervisor
+tell a killed run from a running one at read time, on an archive nobody has
+rewritten. Agent records under a reaped run are preserved untouched.
 
 ### Run record schema
 
@@ -283,7 +307,8 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `caller_identity`: opaque identity of the invoking session, or `null`.
 - `namespace`: namespace strategy, id, hash, and local material.
 - `status`: `"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
-  `"interrupted"`, or `"abandoned"` (reaper-written only, see above).
+  `"interrupted"`, `"incomplete"` (the run ended but files it archived were
+  gone at the seal, see above), or `"abandoned"` (reaper-written only).
 - `owner`: the writing process's liveness evidence — `pid`, `start_ticks`
   (`null` where no readable proc filesystem exists), and `host`.
 - `abandonment`: present only on reaped manifests — `observed_at`, `reason`
@@ -304,14 +329,18 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *served* model — the literal `"unresolved"` when
   no served model was ever learned, never the requested pin. Cost entries carry
-  `amount`, `currency`, and source (`provider-reported` or `estimated`); when the
-  runtime only has token data, amount/currency are `null` and source is
-  `estimated`. Each `tokens` object uses one declared vocabulary:
-  `freshInputTokens` (uncached input), `cachedInputTokens` (the combined cache
-  figure for admission and total reconciliation, not a pricing class when it
-  combines reads and writes; use the optional `cacheReadTokens` /
-  `cacheCreationTokens` split where the engine separates them), `outputTokens`
-  (excluding reasoning where separable),
+  `amount`, `currency`, and `source: "provider-reported"` — the only source
+  there is, because the harness never estimates money. A bucket with no
+  provider figure carries no amount at all: it reads
+  `{ "unavailable": "no-provider-cost-reported" }`, or
+  `{ "unavailable": "unlike-currencies" }` where the attempts under one served
+  model reported spend in currencies that cannot be added. The reason is stated
+  rather than an amount-less entry a consumer cannot tell from zero. Each
+  `tokens` object uses one declared vocabulary: `freshInputTokens` (uncached
+  input), `cachedInputTokens` (the combined cache figure for admission and
+  total reconciliation, not a pricing class when it combines reads and writes;
+  use the optional `cacheReadTokens` / `cacheCreationTokens` split where the
+  engine separates them), `outputTokens` (excluding reasoning where separable),
   `reasoningOutputTokens` (`null` when the engine does not separate reasoning,
   never zero — `null` means "not knowable", zero means "no reasoning spend"),
   and `unclassifiedTokens` (spend the engine's total covers but no declared
@@ -322,15 +351,22 @@ The manifest is `manifest.json`. Its top-level fields are:
   separable (`null`). The engine-native usage events remain per attempt beneath
   the summaries, untouched. Figures are never summed across engines.
 - `files`: integrity table for archived artefacts, each with `path`, `size`, and
-  `sha256`. `manifest.json` is excluded to avoid self-hashing recursion.
+  `sha256`. `manifest.json` is excluded to avoid self-hashing recursion; it
+  attests itself instead (see above).
+- `integrity`: `algorithm` (`"sha256"`), `manifest_sha256` (the manifest's own
+  self-digest), and `files_lost` — one `{ path, reason }` entry, sorted by
+  path, for each declared file that was `missing` or a `size-mismatch` at the
+  seal. Empty on a whole archive.
 
 Agent records live at `agents/<zero-padded-id>/agent.json`:
 
 - `schema_version`: `3`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
-- `engine`, `model`, `effort`, `fallback_model`, and `resolved_model` (`null`
-  when unknown).
+- `engine`, `model`, `effort` (what was asked for), `fallback_model`, and
+  `resolved_model` / `resolved_effort` — what the engine reported it actually
+  served, `null` when it never said. Attempts carry `resolved_effort` too,
+  since a retry may be served differently from the attempt before it.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
@@ -354,8 +390,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `queued_ms`, `execution_ms`.
 - `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
-  `resolved_model`, `failure` (`{ kind, message }` or `null`),
-  `observed_failure`, `diagnostics`, `app_server_diagnostic`,
+  `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
+  `null`), `observed_failure`, `diagnostics`, `app_server_diagnostic`,
   `token_usage_events`, `worker_exit`. Where the run's own settlement ended
   the turn, the attempt's `failure` names that settlement and
   `observed_failure` keeps the transport symptom the turn saw (a closed

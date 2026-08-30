@@ -53,7 +53,11 @@ export {
   SENTINEL_FILENAME,
   SENTINEL_SCHEMA_VERSION
 } from "./completion-sentinel.js";
-export type { CompletionSentinelOptions, SentinelOutcome } from "./completion-sentinel.js";
+export type {
+  CompletionSentinelOptions,
+  SentinelManifestAttestation,
+  SentinelOutcome
+} from "./completion-sentinel.js";
 export {
   PreSpawnAuthorError,
   WorkflowScriptReadError,

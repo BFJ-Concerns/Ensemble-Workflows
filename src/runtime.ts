@@ -950,6 +950,7 @@ export class EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
       resolvedModel: null,
+      resolvedEffort: null,
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
       isolation: options.isolation ?? null,
       worktree: null,
@@ -1009,7 +1010,13 @@ function attemptRecord(
   startedAtMs: number,
   result: Pick<
     TurnResult,
-    "durationMs" | "firstDeltaMs" | "tokenUsageEvents" | "transcripts" | "diagnostics" | "resolvedModel"
+    | "durationMs"
+    | "firstDeltaMs"
+    | "tokenUsageEvents"
+    | "transcripts"
+    | "diagnostics"
+    | "resolvedModel"
+    | "resolvedEffort"
   > | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
@@ -1031,6 +1038,7 @@ function attemptRecord(
     // resolve differently, so each attempt keeps its own answer rather than
     // inheriting the agent-level last-write-wins field.
     resolvedModel: result?.resolvedModel ?? null,
+    resolvedEffort: result?.resolvedEffort ?? null,
     // Engines that time their own turn say so; for the rest the attempt
     // already holds both endpoints, and a null beside them would be the
     // record discarding a figure it holds.
@@ -1045,6 +1053,9 @@ function attemptRecord(
 function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {
   if (result.resolvedModel !== undefined) {
     record.resolvedModel = result.resolvedModel;
+  }
+  if (result.resolvedEffort !== undefined) {
+    record.resolvedEffort = result.resolvedEffort;
   }
 }
 

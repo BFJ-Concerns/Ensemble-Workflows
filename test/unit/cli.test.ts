@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, glob, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -195,11 +196,45 @@ test("the launcher announces the sentinel path before workers spawn and writes i
     outcome: string;
     exit_code: number;
     ended_at: string;
+    manifest: { sha256?: string; unavailable?: string };
+    integrity: { algorithm: string; sentinel_sha256: string };
   };
   assert.equal(sentinel.outcome, "complete");
   assert.equal(sentinel.exit_code, 0);
   assert.ok(sentinel.ended_at.length > 0);
+
+  // The sentinel attests the sealed manifest from outside it, so the
+  // manifest's own digest is checkable against a second file.
+  const manifest = JSON.parse(
+    await readFile(path.join(path.dirname(sentinelPath), "manifest.json"), "utf8")
+  ) as { integrity: { manifest_sha256: string } };
+  assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256);
+  // Both files verify under one recipe: the digest of the payload with its
+  // own digest field null, canonicalised.
+  assert.equal(manifest.integrity.manifest_sha256, selfDigest(manifest, "integrity", "manifest_sha256"));
+  assert.equal(sentinel.integrity.sentinel_sha256, selfDigest(sentinel, "integrity", "sentinel_sha256"));
 });
+
+function selfDigest(document: unknown, block: string, field: string): string {
+  const copy = JSON.parse(JSON.stringify(document)) as Record<string, Record<string, unknown>>;
+  copy[block]![field] = null;
+  return createHash("sha256").update(canonicalJson(copy)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
 
 test("a SIGINT delivered as the sentinel path is announced still writes the interrupted envelope", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-startup-interrupt-"));
@@ -265,9 +300,14 @@ test("the sentinel is written even when durable recording is disabled ambiently"
   assert.ok(announced, "recording off must not remove the supervisor's wake signal");
   const sentinelPath = announced[1]!;
   assert.ok(sentinelPath.startsWith(path.join(dataHome, "ensemble")));
-  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as { outcome: string };
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    manifest: { unavailable?: string };
+  };
   assert.equal(sentinel.outcome, "complete");
-  // No archive: the run directory exists for the sentinel alone.
+  // No archive: the run directory exists for the sentinel alone, and the
+  // attestation says why there is no digest rather than omitting it.
+  assert.deepEqual(sentinel.manifest, { unavailable: "recording-disabled" });
   await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
 });
 
@@ -638,10 +678,15 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     exit_code: number;
     workers: unknown;
     error: { kind: string; message: string } | null;
+    manifest: unknown;
+    integrity: { algorithm: string; sentinel_sha256: string };
     ended_at: string;
   };
+  const sealed = JSON.parse(
+    await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")
+  ) as { integrity: { manifest_sha256: string } };
   assert.deepEqual(sentinel, {
-    schema_version: 2,
+    schema_version: 3,
     kind: "completion_sentinel",
     outcome: "failed",
     exit_code: 1,
@@ -653,8 +698,12 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
       kind: "SingleAgentFailedError",
       message: "Agent exhausted its attempts without producing a result"
     },
+    // A failed run still seals its archive, so the sentinel can attest it.
+    manifest: { sha256: sealed.integrity.manifest_sha256 },
+    integrity: { algorithm: "sha256", sentinel_sha256: sentinel.integrity.sentinel_sha256 },
     ended_at: sentinel.ended_at
   });
+  assert.equal(sentinel.integrity.sentinel_sha256, selfDigest(sentinel, "integrity", "sentinel_sha256"));
 });
 
 test("ensemble agent turns schema retry exhaustion into a failed-run envelope", async () => {
@@ -864,6 +913,38 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
   assert.equal(record.label, "reviewer-a");
   assert.equal(record.phase, "verification");
   assert.equal(record.fallback_model, "claude-sonnet-fallback");
+});
+
+test("the archive records the effort the engine actually served, beside the effort that was asked for", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-effort-"));
+  const runRecordDir = path.join(directory, "records");
+  // The request and the service can disagree; the archive must not let the
+  // request stand in for what ran.
+  const engine = new FixedResponseEngine("codex", "done", { model: "gpt-5.6-terra", effort: "medium" });
+  const stderr = new CaptureStream();
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--effort=low", "think"], {
+    cwd: directory,
+    stdout: new CaptureStream(),
+    stderr,
+    runRecordDir,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  const records = [];
+  for await (const record of glob(path.join(runRecordDir, "runs/**/agents/000001/agent.json"))) {
+    records.push(record);
+  }
+  assert.equal(records.length, 1);
+  const record = JSON.parse(await readFile(records[0]!, "utf8")) as {
+    effort: string | null;
+    resolved_effort: string | null;
+    attempts: Array<{ resolved_effort: string | null }>;
+  };
+  assert.equal(record.effort, "low");
+  assert.equal(record.resolved_effort, "medium");
+  assert.equal(record.attempts[0]?.resolved_effort, "medium");
 });
 
 test("ensemble agent leaves fallback-model support to the engine and rejects malformed flag syntax before runtime", async () => {
@@ -2027,7 +2108,8 @@ class FixedResponseEngine implements EngineAdapter {
 
   constructor(
     readonly name: EngineName,
-    private readonly response: string
+    private readonly response: string,
+    private readonly resolvedDefault?: { model: string; effort?: string }
   ) {}
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -2040,7 +2122,7 @@ class FixedResponseEngine implements EngineAdapter {
     return {
       runAttempt: async () => {
         this.attempts += 1;
-        return turn(this.response);
+        return turn(this.response, this.resolvedDefault);
       }
     };
   }

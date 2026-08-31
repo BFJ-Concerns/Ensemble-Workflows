@@ -64,6 +64,28 @@ test("an exhausted direct agent surfaces each worker diagnosis beside its harnes
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
+test("every diagnosis-less raw-output route omits the worker-diagnosis label", () => {
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const record = {
+    id: 3,
+    attempts: [
+      { attempt: 1, failure: { kind: "empty-output", message: "no text" }, rawOutput: null },
+      { attempt: 2, failure: { kind: "empty-output", message: "no text" }, rawOutput: "" },
+      { attempt: 3, failure: { kind: "empty-output", message: "no text" }, rawOutput: "  \n\t  " }
+    ]
+  } as unknown as RuntimeAgentRecord;
+
+  const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  assert.equal(lines.length, 4);
+  for (const [index, line] of lines.slice(1).entries()) {
+    assert.match(line, new RegExp(`attempt ${index + 1} \\(empty-output\\): no text$`));
+    assert.equal(line.includes("worker diagnosis"), false);
+  }
+});
+
 test("an oversized worker diagnosis is bounded with the full evidence behind the record pointer", () => {
   const failed = new Error("Agent exhausted its attempts without producing a result");
   failed.name = "SingleAgentFailedError";

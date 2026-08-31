@@ -452,8 +452,8 @@ pipelines used to hand-roll per script.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
-  Write to a temp file beside that path and rename it into place: this is the
-  required write shape. The runtime polls, and though an unparseable read is
+  Write-then-rename is the required write shape: write to a temp file beside
+  that path and rename it into place. The runtime polls, and though an unparseable read is
   given a poll's grace before it is judged, rename removes the mid-write
   window entirely. A stale nonce, an unlisted verdict, or a malformed file is
   rejected: the bad file is consumed, the still-published hold record gains

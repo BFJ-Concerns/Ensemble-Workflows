@@ -31,14 +31,22 @@ test("a whole-run timeout renders cause-first with the salvage pointers", () => 
   assert.equal(line.includes("\n"), false);
 });
 
-test("an exhausted direct agent surfaces its archived per-attempt diagnoses", () => {
+test("an exhausted direct agent surfaces each worker diagnosis beside its harness failure without a stack", () => {
   const failed = new Error("Agent exhausted its attempts without producing a result");
   failed.name = "SingleAgentFailedError";
   const record = {
     id: 1,
     attempts: [
-      { attempt: 1, failure: { kind: "schema-validation", message: '[{"instancePath":"/ok","message":"must be boolean"}]' } },
-      { attempt: 2, failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" } }
+      {
+        attempt: 1,
+        failure: { kind: "invalid-json", message: "agent output did not contain parseable JSON" },
+        rawOutput: "The schema's minLength 2 and maxLength 1 are contradictory."
+      },
+      {
+        attempt: 2,
+        failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" },
+        rawOutput: ""
+      }
     ]
   } as unknown as RuntimeAgentRecord;
 
@@ -46,11 +54,70 @@ test("an exhausted direct agent surfaces its archived per-attempt diagnoses", ()
   assert.ok(rendered !== null);
   const lines = rendered.split("\n");
   assert.equal(lines[0], "Agent exhausted its attempts without producing a result");
-  assert.match(lines[1] ?? "", /attempt 1 \(schema-validation\): .*must be boolean/);
-  assert.match(lines[2] ?? "", /attempt 2 \(empty-output\)/);
+  assert.match(lines[1] ?? "", /attempt 1 \(invalid-json\): agent output did not contain parseable JSON/);
+  assert.match(lines[1] ?? "", /worker diagnosis: The schema's minLength 2 and maxLength 1 are contradictory\./);
+  assert.equal(lines[2], "  attempt 2 (empty-output): agent returned empty text on attempt 2");
   assert.match(lines[3] ?? "", /agents\/000001\/agent\.json$/);
   // Detail lines are indented beneath the cause, never a stack.
+  assert.equal(lines.length, 4);
   assert.ok(lines.slice(1).every((line) => line.startsWith("  ")));
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
+});
+
+test("every diagnosis-less raw-output route omits the worker-diagnosis label", () => {
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const record = {
+    id: 3,
+    attempts: [
+      { attempt: 1, failure: { kind: "empty-output", message: "no text" }, rawOutput: null },
+      { attempt: 2, failure: { kind: "empty-output", message: "no text" }, rawOutput: "" },
+      { attempt: 3, failure: { kind: "empty-output", message: "no text" }, rawOutput: "  \n\t  " }
+    ]
+  } as unknown as RuntimeAgentRecord;
+
+  const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  assert.equal(lines.length, 4);
+  for (const [index, line] of lines.slice(1).entries()) {
+    assert.match(line, new RegExp(`attempt ${index + 1} \\(empty-output\\): no text$`));
+    assert.equal(line.includes("worker diagnosis"), false);
+  }
+});
+
+test("an oversized worker diagnosis is bounded with the full evidence behind the record pointer", () => {
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const atLimit = "a".repeat(400);
+  const oversized = `${"b".repeat(400)}TAIL-BEYOND-THE-BOUND`;
+  const record = {
+    id: 7,
+    attempts: [
+      {
+        attempt: 1,
+        failure: { kind: "invalid-json", message: "agent output did not contain parseable JSON" },
+        rawOutput: oversized
+      },
+      {
+        attempt: 2,
+        failure: { kind: "invalid-json", message: "agent output did not contain parseable JSON" },
+        rawOutput: atLimit
+      }
+    ]
+  } as unknown as RuntimeAgentRecord;
+
+  const rendered = presentTerminalError(failed, { archiveDir: "/data/runs/x", lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  // Beyond the bound the slice keeps exactly the limit then marks the cut;
+  // the tail never reaches stderr.
+  assert.ok(lines[1]?.endsWith(`worker diagnosis: ${"b".repeat(400)}…`), lines[1]);
+  assert.equal(rendered.includes("TAIL-BEYOND-THE-BOUND"), false);
+  // At the bound nothing is cut and no marker is invented.
+  assert.ok(lines[2]?.endsWith(`worker diagnosis: ${atLimit}`), lines[2]);
+  // The complete evidence stays reachable through the archived record alone.
+  assert.match(lines[3] ?? "", /agents\/000007\/agent\.json$/);
 });
 
 test("an oversized prompt renders as the named platform limit, not raw spawn E2BIG frames", () => {

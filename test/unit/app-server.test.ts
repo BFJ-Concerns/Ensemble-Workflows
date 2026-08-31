@@ -198,6 +198,26 @@ test("a systemError followed by Codex's schema diagnostic keeps its classified c
   }
 });
 
+test("a schema diagnostic disarms its systemError grace before a follow-up turn", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error-follow-up");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "reject with the schema diagnostic", {}),
+      (error: unknown) => error instanceof CodexSchemaSubsetUnsupportedError
+    );
+
+    // The fake completes this turn 120ms after it starts, well beyond the
+    // 50ms grace armed by the first turn. A stale grace would delete this
+    // turn and interrupt the already-rejected first turn instead.
+    const result = await transport.runTurn(threadId, "complete after the first grace would expire", { timeoutMs: 300 });
+    assert.equal(result.text, "the intact follow-up answer");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a systemError makes a retry-promised schema diagnostic terminal and classified", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-retrying-schema-error");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -1176,6 +1196,7 @@ async function fakeCodexFailingTurnServer(
     | "system-error"
     | "system-error-then-completed"
     | "system-error-then-schema-error"
+    | "system-error-then-schema-error-follow-up"
     | "system-error-then-retrying-schema-error"
     | "system-error-then-error"
     | "system-error-then-delayed-schema-error"
@@ -1211,6 +1232,7 @@ if (process.argv[2] !== "app-server") {
 
 const mode = ${JSON.stringify(mode)};
 let threadCounter = 0;
+let turnCounter = 0;
 const reader = createInterface({ input: process.stdin });
 const send = (message, afterWrite) => process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
 
@@ -1227,6 +1249,7 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    turnCounter += 1;
     if (mode === "turn-start-error") {
       send({ id: message.id, error: { code: -32001, message: "request cause", data: { detail: "request payload" } } });
       return;
@@ -1247,6 +1270,22 @@ reader.on("line", (line) => {
     }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (mode === "system-error-then-schema-error-follow-up") {
+      if (turnCounter === 1) {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
+        send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      } else {
+        // This lands after the first turn's 50ms diagnostic grace. If the
+        // first rejection leaves that timer armed, it terminalises this
+        // follow-up turn before the answer can arrive.
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the intact follow-up answer" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
+        }, 120);
+      }
+      return;
+    }
     if (mode === "no-first-delta") {
       // The accepted turn stays alive but never produces output: only the
       // client's first-output deadline can free the worker slot.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,7 +22,8 @@ import type {
   ClaudeSessionHandle,
   ClaudeSessionStatus
 } from "../../src/claude-control-plane.js";
-import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
+import { RunRecordWriter } from "../../src/run-record.js";
+import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
@@ -53,6 +54,23 @@ function spendEvent(threadId: string, tokens: number): TurnResult["tokenUsageEve
     last: breakdown,
     total: breakdown,
     raw: { threadId, turnId: `${threadId}:turn`, tokenUsage: { last: breakdown, total: breakdown } }
+  };
+}
+
+/** A Codex report whose cumulative total advances by the per-turn `last` delta. */
+function cumulativeSpendEvent(
+  threadId: string,
+  lastTokens: number,
+  cumulativeTokens: number
+): TurnResult["tokenUsageEvents"][number] {
+  const last = { cachedInputTokens: 0, inputTokens: lastTokens, outputTokens: 0, totalTokens: lastTokens };
+  const total = { cachedInputTokens: 0, inputTokens: cumulativeTokens, outputTokens: 0, totalTokens: cumulativeTokens };
+  return {
+    threadId,
+    turnId: `${threadId}:turn`,
+    last,
+    total,
+    raw: { threadId, turnId: `${threadId}:turn`, tokenUsage: { last, total } }
   };
 }
 
@@ -181,6 +199,89 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
   assert.deepEqual(secondSettled?.session, { id: 1, turn: 2 });
   assert.equal(secondSettled?.label, "builder");
   await runtime.close();
+});
+
+test("a Codex follow-up record retains session identity, per-call usage, and honest transcript absence", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-session-archive-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd: process.cwd(),
+    runUuid: "session-archive",
+    workflowPath: path.join(process.cwd(), "session-workflow.js"),
+    workflowSource: "export const meta = { task: 'session archive regression' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const transport = new ScriptedTransport([
+    turnResult("first", {
+      resolvedModel: "gpt-5.6-terra-2026-08-30",
+      resolvedEffort: "low",
+      tokenUsageEvents: [cumulativeSpendEvent("thread-1", 10, 10)],
+      transcripts: [
+        {
+          filename: "first-turn.jsonl",
+          format: "jsonl",
+          source: "scripted-codex",
+          threadId: "thread-1",
+          content: '{"turn":1}\n'
+        }
+      ]
+    }),
+    turnResult("second", {
+      // Codex reports a cumulative thread total as well as this turn's
+      // delta. The archive summary must retain the latter's per-call shape.
+      tokenUsageEvents: [cumulativeSpendEvent("thread-1", 20, 30)],
+      transcripts: [
+        {
+          filename: "empty-follow-up.jsonl",
+          format: "jsonl",
+          source: "scripted-codex",
+          threadId: "thread-1",
+          content: ""
+        }
+      ]
+    })
+  ]);
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder(writer);
+  const session = runtime.createWorkerSession({ engine: "codex", model: "gpt-5.6-terra", effort: "low" });
+
+  try {
+    await session.send("first prompt");
+    await session.send("second prompt");
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+    const readAgent = async (id: string) =>
+      JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+        resolved_model: string | null;
+        resolved_effort: string | null;
+        transcripts: Array<{ path: string }>;
+        transcripts_unavailable: string | null;
+        usage: { summary?: { totalTokens: number } };
+      };
+    const first = await readAgent("000001");
+    const second = await readAgent("000002");
+    const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+      cost_rollup: { [engine: string]: { [model: string]: { tokens: { totalTokens: number } } } };
+    };
+
+    assert.equal(second.resolved_model, "gpt-5.6-terra-2026-08-30");
+    assert.equal(second.resolved_effort, "low");
+    assert.equal(first.usage.summary?.totalTokens, 10);
+    assert.equal(second.usage.summary?.totalTokens, 20);
+    assert.equal(manifest.cost_rollup.codex?.["gpt-5.6-terra-2026-08-30"]?.tokens.totalTokens, 30);
+    assert.equal(first.transcripts.length, 1);
+    assert.equal(first.transcripts_unavailable, null);
+    assert.ok(
+      (await readFile(path.join(writer.archiveDir, first.transcripts[0]!.path), "utf8")).length > 0,
+      "a manifested transcript must name non-empty archived content"
+    );
+    assert.deepEqual(second.transcripts, []);
+    assert.equal(second.transcripts_unavailable, "engine-produced-no-transcript");
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
 });
 
 test("an idle session holds no engine-cap slot between turns", async () => {

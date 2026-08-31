@@ -14933,6 +14933,9 @@ var RunRecordWriter = class _RunRecordWriter {
     for (const attempt of record.attempts) {
       let index = 0;
       for (const transcript of attempt.transcripts) {
+        if (transcript.content.length === 0) {
+          continue;
+        }
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
@@ -27224,6 +27227,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       id: this.#sessionCounter,
       options: sessionOptions,
       engine,
+      resolvedModel: null,
+      resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its configured (injected) cache TTL, Codex's the measured coin-flip
@@ -27302,6 +27307,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
       const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      agentRecord.resolvedModel = state.resolvedModel;
+      agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
       this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
       try {
@@ -27312,7 +27319,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         }
         let started = false;
         try {
-          return await this.#admission.admit(
+          const output = await this.#admission.admit(
             engine.name,
             agentId,
             () => engine.schedule(async () => {
@@ -27327,7 +27334,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
               );
             })
           );
+          state.resolvedModel ??= agentRecord.resolvedModel;
+          state.resolvedEffort ??= agentRecord.resolvedEffort;
+          return output;
         } catch (error) {
+          state.resolvedModel ??= agentRecord.resolvedModel;
+          state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (!started) {
             this.progress.settleAgent(agentId, "failed");
             this.#settleTerminalStatus(agentRecord, error, "queued");

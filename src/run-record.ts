@@ -760,6 +760,13 @@ export class RunRecordWriter {
     for (const attempt of record.attempts) {
       let index = 0;
       for (const transcript of attempt.transcripts) {
+        // A reference is an assertion that a transcript exists. Codex held
+        // sessions can honestly have no new transcript on a follow-up turn;
+        // preserve that absence through transcripts_unavailable instead of
+        // emitting a 0-byte artefact for consumers to discover later.
+        if (transcript.content.length === 0) {
+          continue;
+        }
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;

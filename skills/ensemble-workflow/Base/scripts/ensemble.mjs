@@ -24442,6 +24442,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #retryPromiseSilenceTimeoutMs;
   #firstOutputTimeoutMs;
   #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
@@ -24456,6 +24457,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn2(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -24530,19 +24532,23 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   async listSkills(cwd = this.cwd) {
     let previousNames;
+    let observedExpansion = false;
     for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
       const names = await this.#listSkillsOnce(cwd);
-      if (previousNames !== void 0 && sameStrings(previousNames, names)) {
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
         return names;
+      }
+      if (previousNames !== void 0 && strictlyContainsAll(names, previousNames)) {
+        observedExpansion = true;
       }
       previousNames = names;
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, SKILL_DISCOVERY_STABILITY_INTERVAL_MS));
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
       }
     }
     throw new AppServerRequestError("skills/list", {
       code: "unstable_discovery",
-      message: `skill discovery did not stabilise after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+      message: `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
     });
   }
   async #listSkillsOnce(cwd) {
@@ -25283,6 +25289,9 @@ function asJsonObject(value) {
 }
 function sameStrings(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
 }
 function asRpcError(value) {
   const object = asJsonObject(value);
@@ -26333,15 +26342,16 @@ var CodexEngineAdapter = class {
    *   and its failure mode on a Codex rename would be silent — the
    *   live proof is what re-arms this judgement per release.
    * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: repeated fresh `skills/list` calls
-   *   stabilise on filesystem and plugin-scope names after the cold-process
-   *   loader race; bundled skills are disabled and every stabilised name gets
-   *   an exact `skills.config` deny.
+   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
+   *   growing filesystem-and-plugin set and then repeat it. This rejects a
+   *   repeated cold state rather than mistaking it for complete discovery;
+   *   bundled skills are disabled and every accepted name gets an exact
+   *   `skills.config` deny.
    */
   capabilities = {
     skills: {
       route: "config",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name from stabilised app-server discovery, including plugin scope"
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
     },
     agents: {
       route: "config",

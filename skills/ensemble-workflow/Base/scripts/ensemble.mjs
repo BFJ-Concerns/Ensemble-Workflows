@@ -15432,7 +15432,12 @@ var CompletionSentinel = class {
       // Read from the launcher's own progress model, not the archive: the
       // sentinel resolves independently of the record switch, so recording
       // being off must degrade nothing here.
-      workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      workers: workers === null ? null : {
+        done: workers.done,
+        failed: workers.failed,
+        cut_short: workers.cutShort,
+        unsettled: workers.unsettled
+      },
       error: detail.error ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" },
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -26746,6 +26751,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally = null;
   #closed = false;
   #workerSessions = /* @__PURE__ */ new Set();
   #sessionCounter = 0;
@@ -27337,14 +27347,35 @@ var EnsembleRuntime = class _EnsembleRuntime {
   completedOutputs() {
     return this.#completed;
   }
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * Each in-flight leg is counted by the disposition close() itself decides
+   * for it — abandoned where no outcome was ever observed, cut short where
+   * teardown settles it with the run's own shutdown status — so the
+   * sentinel's figures and the archive's records state the same thing.
+   */
+  shutdownTally() {
+    return this.#shutdownTally;
+  }
   async close(status = "interrupted") {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
+      ({ record }) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = {
+      done: totals.done,
+      failed: totals.failed,
+      cutShort: inFlight.length - abandoning.length,
+      unsettled: abandoning.length
+    };
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+      abandoning.map(async (record) => {
         this.#abandonedAgentIds.add(record.id);
         record.status = "abandoned";
         await this.#recordAgentSafely(record);
@@ -28192,6 +28223,7 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(`[sentinel] ${formatError3(error)}
 `);
   };
+  let exitCode = 1;
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -28341,7 +28373,7 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`${serialised}
 `);
       finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      return 0;
+      exitCode = 0;
     } finally {
       interrupt.dispose();
     }
@@ -28359,8 +28391,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     stderr.write(`${diagnosis ?? formatError3(error)}
 `);
-    return 1;
+    exitCode = 1;
   } finally {
+    let teardownError = null;
     try {
       interrupt?.dispose();
       progress?.finish();
@@ -28369,7 +28402,9 @@ async function runEnsembleCli(argv, options = {}) {
       }
       if (runtime !== null) {
         const terminalStatus = finalRecord?.status;
-        await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+        await runtime.close(
+          terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+        );
       }
       if (runRecordWriter !== null) {
         await runRecordWriter.finish({
@@ -28377,11 +28412,17 @@ async function runEnsembleCli(argv, options = {}) {
           error: terminalError
         });
       }
+    } catch (error) {
+      teardownError = describeError(error);
+      stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+`);
     } finally {
-      const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
+      const settled = finalRecord ?? { status: "failed", exitCode: 1 };
+      const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
+      exitCode = terminal.exitCode;
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
-        error: terminalError,
+        workers: workerOutcomes(progress, runtime),
+        error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so
         // rather than omitting the field.
@@ -28389,17 +28430,22 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
   }
+  return exitCode;
 }
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
 }
-function workerOutcomes(progress) {
+function workerOutcomes(progress, runtime) {
+  const tally = runtime?.shutdownTally?.() ?? null;
+  if (tally !== null) {
+    return { done: tally.done, failed: tally.failed, cutShort: tally.cutShort, unsettled: tally.unsettled };
+  }
   if (progress === void 0) {
     return null;
   }
   const totals = progress.snapshot().totals;
-  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
+  return { done: totals.done, failed: totals.failed, cutShort: 0, unsettled: totals.active + totals.queued };
 }
 function completedDirectAgentWithNull(runtime) {
   const completed = runtime.completedOutputs?.() ?? [];

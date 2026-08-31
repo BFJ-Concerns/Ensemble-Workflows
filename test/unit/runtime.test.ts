@@ -1639,25 +1639,38 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   const onWire = runtime.agent("hold the slot", { engine: "codex" });
   await transport.started;
   const queued = runtime.agent("wait in the queue", { engine: "codex" });
-  while (records.length < 2) {
+  // A held session's queued turn takes the same pre-start honesty as a
+  // one-shot's.
+  const session = runtime.createWorkerSession({ engine: "codex" });
+  const queuedTurn = session.send("wait in the session queue");
+  while (records.length < 3) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   await runtime.close("interrupted");
   await assert.rejects(onWire, EngineShutdownError);
   await assert.rejects(queued, EngineShutdownError);
+  await assert.rejects(queuedTurn, EngineShutdownError);
 
-  // The queued leg's turn never reached an engine, and its record says so
-  // instead of claiming an in-flight turn it never had.
-  const queuedSettled = records.filter((record) => record.id === 2).at(-1);
-  assert.equal(queuedSettled?.status, "interrupted");
-  assert.deepEqual(queuedSettled?.terminationCause, {
-    kind: "run-interrupted",
-    message: "the run ended (interrupted) before this worker's queued turn was dispatched"
-  });
-  assert.deepEqual(queuedSettled?.attempts, []);
-  // Both legs were settled by the run ending — on the wire or queued —
-  // so both are cut short, per the tally's own definition.
-  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 2, unsettled: 0 });
+  // The queued legs' turns never reached an engine, and their records say
+  // so instead of claiming an in-flight turn they never had.
+  for (const id of [2, 3]) {
+    const settled = records.filter((record) => record.id === id).at(-1);
+    assert.equal(settled?.status, "interrupted");
+    assert.deepEqual(settled?.terminationCause, {
+      kind: "run-interrupted",
+      message: "the run ended (interrupted) before this worker's queued turn was dispatched"
+    });
+    assert.deepEqual(settled?.attempts, []);
+  }
+  // Every leg was settled by the run ending — on the wire or queued — so
+  // all are cut short, per the tally's own definition.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
+
+  // close() is latched: a second call joins the first and must not rebuild
+  // the tally from post-teardown progress totals, which count run-caused
+  // settlements as failures.
+  await runtime.close("failed");
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 3, unsettled: 0 });
 });
 
 test("a failed engine teardown rejects close() after cleanup completes, never silently", async () => {

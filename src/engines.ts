@@ -140,6 +140,14 @@ export interface EngineAdapter {
    * `beginTurn`.
    */
   createSession?(options: EngineTurnOptions): EngineWorkerSession;
+  /**
+   * Tear the adapter down, cancelling active invocations. Contract: every
+   * active invocation's attempt must settle (resolve or reject) as a
+   * consequence of close — even when close itself rejects — because the
+   * runtime's shutdown accounting waits on those settlements before it
+   * publishes the run's tally. An adapter that rejects without settling
+   * its legs would stall the run's close.
+   */
   close(): Promise<void>;
 }
 
@@ -165,8 +173,10 @@ export class EngineRegistry {
     // caller waiting for — and therefore observing — the others' teardown.
     // The failures are then rethrown together, once every adapter has
     // settled: an engine cancel that failed silently would make the run's
-    // cancellation promise unattributable.
-    const results = await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
+    // cancellation promise unattributable. The async wrapper converts a
+    // synchronously-throwing close into a rejection, so one bad adapter
+    // cannot stop the others from being closed at all.
+    const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0]!.reason;

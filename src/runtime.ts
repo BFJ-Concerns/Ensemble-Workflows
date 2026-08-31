@@ -273,11 +273,13 @@ export class EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
-  // The worker tally as it stood at the instant the run ended, captured
-  // synchronously by close() before any teardown await. A tally read after
-  // close() returns would depend on how far the in-flight legs happened to
-  // get during teardown; this one names one determinate moment.
+  // The worker tally close() publishes once teardown has settled every
+  // classified leg — derived from the records' final dispositions behind
+  // the settlement barrier, so it is determinate without racing whichever
+  // straggler lands first, and it never disagrees with the archive.
   #shutdownTally: ShutdownTally | null = null;
+  /** The first close() call's run, latched so later calls join it. */
+  #closeRun: Promise<void> | null = null;
   #closed = false;
   #workerSessions = new Set<WorkerSession>();
   #sessionCounter = 0;
@@ -748,7 +750,10 @@ export class EnsembleRuntime {
         } catch (error) {
           if (!started) {
             this.progress.settleAgent(agentId, "failed");
-            this.#settleTerminalStatus(agentRecord, error);
+            // Same pre-start honesty as #runAdmitted's: this session turn
+            // was still queued, so its record must not claim an in-flight
+            // turn.
+            this.#settleTerminalStatus(agentRecord, error, "queued");
             agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
             agentRecord.executionMs = 0;
             await this.#recordSettlementSafely(agentId, agentRecord);
@@ -1047,7 +1052,16 @@ export class EnsembleRuntime {
     return this.#shutdownTally;
   }
 
-  async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
+  close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
+    // First close wins, whole: a second call must not re-run teardown or
+    // rebuild the tally from post-teardown progress totals (which count
+    // run-caused settlements as failures — exactly the
+    // indistinguishability the record-derived tally exists to avoid).
+    this.#closeRun ??= this.#closeOnce(status);
+    return this.#closeRun;
+  }
+
+  async #closeOnce(status: "failed" | "timed-out" | "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
     // The in-flight legs are classified here, before the first await, and

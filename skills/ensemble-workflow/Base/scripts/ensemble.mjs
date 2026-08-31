@@ -14998,10 +14998,11 @@ var RunRecordWriter = class _RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      // Absence carries its reason, like `usage` — an empty list must not
-      // leave a consumer unable to tell "this worker produced none" from
-      // "the archive lost them".
-      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();

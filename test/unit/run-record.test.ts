@@ -1322,6 +1322,35 @@ test("the reaper flips provably-dead in-progress runs and leaves every judged-li
   }
 });
 
+test("the reaper abandons a provably-dead manifest with a null integrity block", async () => {
+  const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-null-integrity-ns-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-null-integrity-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    const host = hostname();
+    await writeRunManifest(namespaceDir, "null-integrity-run", {
+      status: "in-progress",
+      owner: { pid: 999999, start_ticks: "3333", host },
+      integrity: null
+    });
+
+    const reaped = await reapAbandonedRuns({
+      namespaceDir,
+      procDir: proc,
+      observer: { pid: process.pid, runUuid: "sweeper-run" }
+    });
+
+    assert.deepEqual(reaped, ["null-integrity-run"]);
+    const manifest = await readRunManifest(namespaceDir, "null-integrity-run");
+    assert.equal(manifest.status, "abandoned");
+    assert.equal((manifest.abandonment as { reason: string }).reason, "owner-process-gone");
+    assert.equal(manifest.integrity, null);
+  } finally {
+    await rm(namespaceDir, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+  }
+});
+
 test("a cold archive reader rejects the old reap shape and verifies every reaper rewrite route", async () => {
   const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-integrity-ns-"));
   const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-integrity-proc-"));

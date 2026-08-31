@@ -22,6 +22,8 @@
  * - `ENSEMBLE_FAKE_CLAUDE_STATE` — the roster's JSON state file (required).
  * - `ENSEMBLE_FAKE_CLAUDE_USAGE` — the assistant entry's usage block, as
  *   JSON; defaults to 120 input / 30 output / 9 cache-read.
+ * - `ENSEMBLE_FAKE_CLAUDE_GENERATING` — leave the worker generating after
+ *   its transcript is written, so the caller can interrupt the real CLI.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -70,6 +72,10 @@ function usageBlock() {
   return JSON.parse(declared);
 }
 
+function isGenerating() {
+  return process.env.ENSEMBLE_FAKE_CLAUDE_GENERATING === "1";
+}
+
 async function dispatch() {
   const name = flagValue("--name") ?? "unnamed";
   const prompt = await readStdin();
@@ -103,8 +109,8 @@ async function dispatch() {
     kind: "background",
     cwd: process.cwd(),
     status: "busy",
-    state: "blocked",
-    waitingFor: "a permission prompt the fixture never answers"
+    state: isGenerating() ? "working" : "blocked",
+    ...(isGenerating() ? {} : { waitingFor: "a permission prompt the fixture never answers" })
   });
   await writeState(state);
   process.stdout.write(`${id}\n`);
@@ -112,6 +118,8 @@ async function dispatch() {
 
 async function roster() {
   const state = await readState();
+  state.polls = (state.polls ?? 0) + 1;
+  await writeState(state);
   process.stdout.write(`${JSON.stringify(state.sessions)}\n`);
 }
 

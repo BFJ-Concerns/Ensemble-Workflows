@@ -349,31 +349,67 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
       }
     ],
     async (controlPlane) => {
+      const store = await mkdtemp(path.join(tmpdir(), "ensemble-claude-interruption-archive-"));
+      const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-claude-interruption-cwd-"));
       const runtime = makeRuntime(controlPlane);
-      const records: RuntimeAgentRecord[] = [];
-      runtime.setRunRecorder({
-        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
-      } as unknown as RunRecordWriter);
-      const agent = runtime.agent("keep working", { engine: "claude" });
-      while (controlPlane.pollCount === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
+      try {
+        const writer = await RunRecordWriter.start({
+          storeDir: store,
+          cwd,
+          runUuid: "run-claude-interruption",
+          workflowPath: path.join(cwd, "workflow.js"),
+          workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+          args: [],
+          cliFlags: { jsonArgs: false }
+        });
+        runtime.setRunRecorder(writer);
+        const agent = runtime.agent("keep working", { engine: "claude" });
+        while (controlPlane.pollCount === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        await runtime.close();
+
+        await assert.rejects(agent, EngineShutdownError);
+        await writer.finish({ status: "interrupted", exitCode: 1, result: null });
+
+        // This is a cold read of the durable record, not the runtime's
+        // in-memory callback argument. An archive consumer must retain every
+        // evidence form the interrupted Claude turn had already produced.
+        const archived = JSON.parse(
+          await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")
+        ) as {
+          status: string;
+          usage: { summary?: { totalTokens: number } };
+          transcripts: Array<{ path: string }>;
+          attempts: Array<{
+            raw_output: string | null;
+            resolved_model: string | null;
+            token_usage_events: Array<{ total: object }>;
+          }>;
+        };
+        const attempt = archived.attempts[0];
+        assert.equal(archived.status, "interrupted");
+        assert.equal(attempt?.raw_output, "partial from Claude");
+        assert.equal(attempt?.resolved_model, "claude-served");
+        assert.equal(archived.transcripts.length, 1);
+        assert.match(
+          await readFile(path.join(writer.archiveDir, archived.transcripts[0]!.path), "utf8"),
+          /partial from Claude/
+        );
+        assert.deepEqual(attempt?.token_usage_events.at(-1)?.total, {
+          inputTokens: 120,
+          outputTokens: 30,
+          cachedInputTokens: 9,
+          cacheCreationInputTokens: 0,
+          totalTokens: 159
+        });
+        assert.equal(archived.usage.summary?.totalTokens, 159);
+      } finally {
+        await runtime.close();
+        await rm(store, { recursive: true, force: true });
+        await rm(cwd, { recursive: true, force: true });
       }
-
-      await runtime.close();
-
-      await assert.rejects(agent, EngineShutdownError);
-      const attempt = records.at(-1)?.attempts[0];
-      assert.equal(attempt?.rawOutput, "partial from Claude");
-      assert.equal(attempt?.resolvedModel, "claude-served");
-      assert.equal(attempt?.transcripts.length, 1);
-      assert.match(attempt?.transcripts[0]?.content ?? "", /partial from Claude/);
-      assert.deepEqual(attempt?.tokenUsageEvents.at(-1)?.total, {
-        inputTokens: 120,
-        outputTokens: 30,
-        cachedInputTokens: 9,
-        cacheCreationInputTokens: 0,
-        totalTokens: 159
-      });
     }
   );
 });

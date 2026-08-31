@@ -8,6 +8,9 @@ const [sentinelPath] = process.argv.slice(2);
 assert.ok(sentinelPath, "usage: read-completion-sentinel.mjs <completion-sentinel.json>");
 
 const sentinel = JSON.parse(await readFile(sentinelPath, "utf8"));
+assert.deepEqual(Object.keys(sentinel).sort(), [
+  "ended_at", "error", "exit_code", "integrity", "kind", "manifest", "outcome", "schema_version", "workers"
+]);
 assert.equal(sentinel.schema_version, 3);
 assert.equal(sentinel.kind, "completion_sentinel");
 assert.ok(["complete", "failed", "timed-out", "interrupted"].includes(sentinel.outcome));

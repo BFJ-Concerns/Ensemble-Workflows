@@ -20,6 +20,13 @@ export interface AgentOptions {
   engine: EngineName;
   schema?: JsonSchema;
   model?: string;
+  /**
+   * Canonical effort level — `minimal | low | medium | high | xhigh` —
+   * validated pre-spawn as a harness-owned domain and converted to the
+   * engine's native form, clamping to the nearest level the engine
+   * offers; the resolved native value lands in the run record. opencode
+   * is exempt: its effort names the registry entry's served variants.
+   */
   effort?: string;
   /** Claude only: declared degradation when the pinned model tier is unavailable. */
   fallbackModel?: string;
@@ -57,6 +64,7 @@ export interface WorkerSessionOptions {
   /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
   engine: EngineName;
   model?: string;
+  /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
   /** Claude only: declared degradation when the pinned model tier is unavailable. */
   fallbackModel?: string;

@@ -8,6 +8,7 @@ import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngine
 import {
   BudgetExceededError,
   EmptyAgentOutputError,
+  InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
   SessionBusyError,
   SessionClosedError,
@@ -259,6 +260,12 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
   assert.throws(
     () => runtime.createWorkerSession({ engine: "codex", identity: true } as never),
     UnrecognisedAgentOptionError
+  );
+  // Effort is fixed at creation and judged there against the canonical
+  // vocabulary, before the held worker spawns.
+  assert.throws(
+    () => runtime.createWorkerSession({ engine: "codex", effort: "warp-speed" }),
+    InvalidAgentOptionValueError
   );
   const session = runtime.createWorkerSession({ engine: "codex" });
   await assert.rejects(session.send("fine", { effort: "high" } as never), UnrecognisedAgentOptionError);

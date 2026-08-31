@@ -23,7 +23,9 @@ import {
   usageSince
 } from "./claude-transcript.js";
 import { subtractUsage } from "./usage-summary.js";
+import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 
+import type { CanonicalEffort } from "./engine-option-validation.js";
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
 import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
@@ -48,7 +50,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but the witness cannot isolate it from
+ * messaging. `Agent` was also absent, but that witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -132,26 +134,48 @@ export function claudeCacheTtlToMs(value: string): number | null {
 }
 
 /**
- * The effort levels the Claude engine accepts (honoured or loudly
- * rejected). This is the engine adapter speaking for its own CLI's domain
- * — measured against Claude Code 2.1.x, which silently accepts an unknown
+ * The clamp from the canonical effort vocabulary to the Claude CLI's
+ * native levels (effort is one canonical vocabulary,
+ * converted per engine, clamping to the nearest level the engine offers).
+ * The native domain — `low | medium | high` — is a dated measured
+ * judgement against Claude Code 2.1.x, which silently accepts an unknown
  * `--effort` value and runs at its default (witnessed 2026-08-30:
- * `--effort definitely-invalid` reached a healthy worker at exit 0), so a
- * pass-through here would let an author believe an unenforced policy was
- * enforced. The live tests re-check this measurement per release; if
- * the CLI grows a level, the failure mode is a *loud* rejection of a valid
- * value — correct the list — never a silent drop.
+ * `--effort definitely-invalid` reached a healthy worker at exit 0), so
+ * conversion is the only loud boundary: nothing non-native may reach the
+ * CLI, and the converted value is what the dispatch carries — and what
+ * the run record reports as `resolved_effort`, so a clamped dispatch is
+ * observable, never silent. If a CLI release grows a native level (say
+ * `xhigh`), re-point that canonical level at itself here; the failure
+ * mode of a stale table is a coarser level served visibly in the record,
+ * never a silent drop.
  */
-export const CLAUDE_EFFORT_DOMAIN: readonly string[] = ["low", "medium", "high"];
+export const CLAUDE_NATIVE_EFFORT: Readonly<Record<CanonicalEffort, string>> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "high"
+};
 
-export function assertClaudeEffortSupported(effort: string | undefined): void {
-  if (effort !== undefined && !CLAUDE_EFFORT_DOMAIN.includes(effort)) {
+/**
+ * Converts a canonical effort level to the value the Claude CLI is
+ * dispatched with. Rejects anything outside the canonical vocabulary with
+ * the same pre-spawn error the harness-side validation throws, so the
+ * adapter stays a loud boundary even for a caller that bypassed it.
+ */
+export function claudeNativeEffort(effort: string | undefined): string | undefined {
+  if (effort === undefined) {
+    return undefined;
+  }
+  const native = (CLAUDE_NATIVE_EFFORT as Record<string, string | undefined>)[effort];
+  if (native === undefined) {
     throw new InvalidAgentOptionValueError(
       "effort",
       effort,
-      `one of ${CLAUDE_EFFORT_DOMAIN.join(" | ")} (the Claude engine's accepted levels)`
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
     );
   }
+  return native;
 }
 
 let dispatchCounter = 0;
@@ -330,7 +354,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           // failure. Session teardown belongs to close().
           await this.#teardown();
         }
-        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence), this.#options.effort);
       }
       throw error;
     }
@@ -605,6 +629,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     return {
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
+      // The CLI reports no served effort, so the resolved value is the
+      // native level this dispatch actually carried after the canonical
+      // clamp — so the record shows the level this dispatch carried.
+      ...(this.#options.effort !== undefined ? { resolvedEffort: this.#options.effort } : {}),
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -847,13 +875,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 function failedTurnResult(
   error: ClaudeWorkerError,
   evidence: FailureEvidence | null,
-  usageEvent: TokenUsageEvent | null
+  usageEvent: TokenUsageEvent | null,
+  dispatchedEffort?: string
 ): EngineAttemptResult {
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;
   return {
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
+    // Static per dispatch, so a failed attempt's record still says which
+    // native level the clamp resolved the turn to.
+    ...(dispatchedEffort !== undefined ? { resolvedEffort: dispatchedEffort } : {}),
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,

@@ -338,6 +338,35 @@ test("a non-boolean identity value is rejected before any worker spawns", async 
   assert.equal(transport.turns.length, 0);
 });
 
+test("an effort outside the canonical vocabulary is rejected before any worker spawns", async () => {
+  // Harness-owned domain: the judgement runs
+  // at agent(), spending nothing — the engine-judged alternative was measured
+  // rejecting only after a live thread was paid for.
+  const transport = new FakeTransport([]);
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+
+  await assert.rejects(
+    () => runtime.agent("go", { engine: "codex", effort: "sol-high" }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionValueError);
+      assert.match(error.message, /minimal \| low \| medium \| high \| xhigh/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("a canonical effort passes through to the Codex turn natively", async () => {
+  // Codex speaks the canonical vocabulary natively, so conversion is the
+  // identity and the turn params carry the requested level unchanged.
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+
+  assert.equal(await runtime.agent("go", { engine: "codex", effort: "xhigh" }), "ok");
+  assert.equal(transport.turns[0]?.options?.effort, "xhigh");
+});
+
 test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {
   const nullableSchema = { type: ["null", "string"] };
   const completedRecords: Array<{ status: string; attempts: Array<{ status: string }> }> = [];

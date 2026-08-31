@@ -240,12 +240,16 @@ async function withControlPlane(
   }
 }
 
-test("a statically declared out-of-domain Claude effort fails before the body runs", () => {
-  // The defaults validator judges the same domain the adapter does —
-  // a bad static declaration must not first fail at the first paid
-  // dispatch, potentially after phases on other engines.
+test("a statically declared out-of-domain effort fails before the body runs", () => {
+  // The defaults validator judges the canonical vocabulary — a bad
+  // static declaration must not first fail at the first paid dispatch,
+  // potentially after phases on other engines. Claude and Codex share the
+  // one canonical set; the whole set is valid on both, clamping aside.
   assert.throws(() => validateEngineDefaults("claude", { effort: "extreme" }), InvalidAgentOptionValueError);
+  assert.throws(() => validateEngineDefaults("codex", { effort: "extreme" }), InvalidAgentOptionValueError);
   assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "medium" }));
+  assert.doesNotThrow(() => validateEngineDefaults("claude", { effort: "xhigh" }));
+  assert.doesNotThrow(() => validateEngineDefaults("codex", { effort: "xhigh" }));
   assert.doesNotThrow(() => validateEngineDefaults("claude", {}));
 });
 
@@ -263,13 +267,13 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
     const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
 
     // The CLI silently runs an unknown effort at its default (measured
-    // 2026-08-30), so the adapter's own domain judgement is the only loud
-    // boundary an author gets.
+    // 2026-08-30), so the adapter's conversion is the only loud boundary
+    // an author gets — nothing outside the canonical vocabulary may pass.
     assert.throws(
       () => adapter.createInvocation("work", { effort: "definitely-invalid" }),
       (error: unknown) => {
         assert.ok(error instanceof InvalidAgentOptionValueError);
-        assert.match(error.message, /low \| medium \| high/);
+        assert.match(error.message, /minimal \| low \| medium \| high \| xhigh/);
         return true;
       }
     );
@@ -279,12 +283,35 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
     );
     assert.equal(controlPlane.dispatchCount, 0);
 
-    // The discriminating positive arm: a listed level still dispatches.
+    // The discriminating positive arm: a canonical level still dispatches.
     const invocation = adapter.createInvocation("work", { effort: "medium" });
     assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "ran at medium");
     assert.equal(controlPlane.dispatched[0]?.effort, "medium");
     await adapter.close();
   });
+});
+
+test("a canonical level outside Claude's native domain clamps to the nearest native level", async () => {
+  await withControlPlane(
+    [{ assistant: { text: "ran clamped" } }, { assistant: { text: "ran clamped low" } }],
+    async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+
+      // xhigh → high: the CLI's native ceiling. The worker is dispatched
+      // with the native value, and the turn result reports it as the
+      // resolved effort — a clamped dispatch is observable, never silent.
+      const invocation = adapter.createInvocation("work", { effort: "xhigh" });
+      const result = await invocation.runAttempt({ attempt: 1 });
+      assert.equal(controlPlane.dispatched[0]?.effort, "high");
+      assert.equal(result.resolvedEffort, "high");
+
+      // minimal → low: the native floor.
+      const floor = adapter.createInvocation("work", { effort: "minimal" });
+      await floor.runAttempt({ attempt: 1 });
+      assert.equal(controlPlane.dispatched[1]?.effort, "low");
+      await adapter.close();
+    }
+  );
 });
 
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {

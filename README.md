@@ -291,13 +291,28 @@ because how the run ended and whether its archive survived are two different
 questions.
 
 Every manifest write ends by attesting itself: `integrity.manifest_sha256` is
-the SHA-256 of the manifest's own canonical form (keys sorted recursively,
-two-space indent) with that field set to `null`. `completion-sentinel.json`
-carries the same self-attestation and, being written after the seal, also
-carries the sealed manifest's digest — so the manifest is checkable against a
+the SHA-256 of the manifest's own canonical form — keys sorted recursively by
+UTF-16 code unit (locale-independent by construction, never a collator's
+ordering), two-space indent, no trailing newline — with that field set to
+`null`. The rule itself rides the archive as `integrity.recipe`, the same
+self-description discipline as the args' canonical artefact, so a cold
+consumer needs nothing from this codebase to verify. (Archives written before
+the `recipe` field sorted with the writer's locale collation; for these
+documents' ASCII keys the orders agree under common locales, but only the
+recipe-bearing form guarantees it.) `completion-sentinel.json`
+carries the same self-attestation and recipe and, being written after the
+seal, also
+carries the sealed manifest's digest — the sentinel publishes that digest
+only when the archive genuinely sealed, and otherwise says
+`manifest-unsealed`, so it never vouches for a manifest a failed seal was
+still going to rewrite. So the manifest is checkable against a
 second file rather than only against itself. Both are self-attestations, not
 signatures: no key material lives in the archive, so they catch an edited
-field or a truncated write, not a forger who rewrites the digest too.
+field or a truncated write, not a forger who rewrites the digest too. A
+reader walking the `files` table should treat it as untrusted input, as the
+reference consumer does: refuse absolute or `..`-traversing paths and
+symlinked entries — the archive attests its own bytes, never bytes a crafted
+entry points at elsewhere.
 
 A run that dies with its launcher — a kill the process cannot handle — never
 writes its own terminal status, so the manifest records liveness evidence
@@ -394,7 +409,8 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `files`: integrity table for archived artefacts, each with `path`, `size`, and
   `sha256`. `manifest.json` is excluded to avoid self-hashing recursion; it
   attests itself instead (see above).
-- `integrity`: `algorithm` (`"sha256"`), `manifest_sha256` (the manifest's own
+- `integrity`: `algorithm` (`"sha256"`), `recipe` (the digest verification
+  rule, stated in the archive itself), `manifest_sha256` (the manifest's own
   self-digest), and `files_lost` — one `{ path, reason }` entry, sorted by
   path, for each declared file that was `missing` or a `size-mismatch` at the
   seal. Empty on a whole archive.
@@ -404,10 +420,12 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `schema_version`: `3`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
-- `engine`, `model`, `effort` (what was asked for), `fallback_model`, and
-  `resolved_model` / `resolved_effort` — what the engine reported it actually
-  served, `null` when it never said. Attempts carry `resolved_effort` too,
-  since a retry may be served differently from the attempt before it.
+- `engine`, `model`, `effort` (what was asked for — the canonical level),
+  `fallback_model`, and `resolved_model` / `resolved_effort` — what was
+  actually served: the engine's own report where it makes one (Codex), or
+  the native value the harness's canonical-effort clamp dispatched
+  (Claude); `null` when neither exists. Attempts carry `resolved_effort`
+  too, since a retry may be served differently from the attempt before it.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).

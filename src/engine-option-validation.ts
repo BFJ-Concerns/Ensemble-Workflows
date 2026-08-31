@@ -6,7 +6,6 @@ import {
   UnrecognisedAgentOptionError
 } from "./errors.js";
 import { assertValidStripOption } from "./capability-stripping.js";
-import { assertClaudeEffortSupported } from "./claude-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
@@ -14,6 +13,31 @@ import type { AgentOptions, EngineName, WorkerSessionOptions } from "./types.js"
 
 /** Node's 32-bit setTimeout ceiling: above it the platform's timer silently misbehaves. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * The one effort vocabulary every `agent()` and `defaults` declaration
+ * speaks: one canonical vocabulary, converted per engine rather than an
+ * engine-owned domain. The harness owns this domain and judges it
+ * pre-spawn; each engine's adapter converts a canonical level to its own
+ * native form, clamping to the nearest level the engine offers, and the
+ * resolved native value lands in the run record so a clamped dispatch is
+ * observable, never silent. opencode is exempt, being held at its existing
+ * surface: its `effort` names the registry entry's served variants and is
+ * judged against them by the adapter.
+ */
+export const CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+export type CanonicalEffort = (typeof CANONICAL_EFFORT_DOMAIN)[number];
+
+export function assertCanonicalEffortSupported(effort: unknown): void {
+  if (effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
+    );
+  }
+}
 
 interface EngineDefaultOptions {
   model?: string;
@@ -52,6 +76,11 @@ export function assertValidAgentOptions(options: object): void {
   const values = options as Record<string, unknown>;
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  // Harness-owned domain, judged before any worker spawns; opencode's
+  // effort is the registry entry's served variants, judged by its adapter.
+  if (values.engine !== "opencode") {
+    assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
@@ -99,6 +128,13 @@ export function assertValidWorkerSessionOptions(options: object): void {
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
+  // Same canonical-effort judgement as agent(): sessions fix effort at
+  // creation, so an out-of-domain level must fail before the held worker
+  // spawns. opencode sessions are refused pre-spawn elsewhere; the
+  // exemption here keeps the two rejections from racing to name the error.
+  if (values.engine !== "opencode") {
+    assertCanonicalEffortSupported(values.effort);
+  }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== undefined && typeof values.stalenessMark !== "boolean") {
@@ -145,10 +181,10 @@ export function validateEngineDefaults(
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
   assertFallbackModelSupported(engine, defaults.fallbackModel);
-  if (engine === "claude") {
+  if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the
-    // first paid Claude dispatch — the same domain the adapter enforces.
-    assertClaudeEffortSupported(defaults.effort);
+    // first paid dispatch — the same canonical domain agent() enforces.
+    assertCanonicalEffortSupported(defaults.effort);
   }
   if (engine === "opencode" && defaults.model !== undefined) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);

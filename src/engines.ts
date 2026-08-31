@@ -1,6 +1,6 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
-import { ClaudeEngineInvocation, assertClaudeEffortSupported } from "./claude-engine.js";
+import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
@@ -472,14 +472,15 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
-    // The engine's own effort domain, judged before any worker spawns: the
-    // CLI silently runs an unknown value at its default, which would let an
-    // author believe an unenforced level was in force.
-    assertClaudeEffortSupported(options.effort);
+    // The canonical level clamps to the CLI's nearest native level here,
+    // pre-spawn: the CLI silently runs an unknown value at its default, so
+    // only the converted native value may reach it, and that value is what
+    // the dispatch (and the run record's resolved_effort) carries.
+    const effort = claudeNativeEffort(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
-      options,
+      options: effort === undefined ? options : { ...options, effort },
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
       ...(this.#config !== undefined ? { config: this.#config } : {}),
@@ -493,14 +494,16 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    assertClaudeEffortSupported(options.effort);
+    // Same canonical clamp as createInvocation: a session fixes effort at
+    // creation, so the conversion happens once, here.
+    const effort = claudeNativeEffort(options.effort);
     // A session is the invocation generalised across turns: same dispatch,
     // valve, and collection machinery, registered for cancellation like any
     // one-shot invocation so adapter close() tears held workers down too.
     const session = new ClaudeEngineInvocation({
       prompt: "",
       cwd: options.cwd ?? this.#cwd,
-      options,
+      options: effort === undefined ? options : { ...options, effort },
       multiTurn: true,
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),

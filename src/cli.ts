@@ -426,33 +426,48 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // end. Surfacing only: nothing is retried.
     let teardownError: { kind: string; message: string } | null = null;
     try {
-      interrupt?.dispose();
-      // Tear workers down while the archive is still open so their terminal
-      // status can replace the dispatch-time snapshot before the run is sealed.
-      progress?.finish();
-      if (statusWriter !== null) {
-        await statusWriter.close();
+      try {
+        interrupt?.dispose();
+        // Tear workers down while the archive is still open so their terminal
+        // status can replace the dispatch-time snapshot before the run is sealed.
+        progress?.finish();
+        if (statusWriter !== null) {
+          await statusWriter.close();
+        }
+        if (runtime !== null) {
+          const terminalStatus = finalRecord?.status;
+          // A run whose body returned cleanly did not fail, so the workers it
+          // tears down here were interrupted by the run ending — not failed
+          // with a `run-failed` cause. The word is chosen here, the one site
+          // that already knows the body's outcome; `abandoned` stays the
+          // reaper's alone.
+          await runtime.close(
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
+          );
+        }
+      } catch (error) {
+        teardownError = describeError(error);
+        stderr.write(`[teardown] the run failed to end cleanly: ${formatError(error)}\n`);
       }
-      if (runtime !== null) {
-        const terminalStatus = finalRecord?.status;
-        // A run whose body returned cleanly did not fail, so the workers it
-        // tears down here were interrupted by the run ending — not failed
-        // with a `run-failed` cause. The word is chosen here, the one site
-        // that already knows the body's outcome; `abandoned` stays the
-        // reaper's alone.
-        await runtime.close(
-          terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
-        );
+      // The seal runs even when worker teardown failed: close() rejects by
+      // design when a cancellation cause must surface, and skipping the seal
+      // for it would strand the archive in-progress — unattestable by the
+      // sentinel and left for the reaper to misread as an abandoned run.
+      try {
+        if (runRecordWriter !== null) {
+          // A teardown failure degrades the sealed status the same way it
+          // degrades the sentinel below: the archive must not read
+          // `complete` under a sentinel saying the run failed to end.
+          await runRecordWriter.finish({
+            ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
+            ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
+            error: terminalError ?? teardownError
+          });
+        }
+      } catch (error) {
+        teardownError ??= describeError(error);
+        stderr.write(`[teardown] the archive failed to seal: ${formatError(error)}\n`);
       }
-      if (runRecordWriter !== null) {
-        await runRecordWriter.finish({
-          ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
-          error: terminalError
-        });
-      }
-    } catch (error) {
-      teardownError = describeError(error);
-      stderr.write(`[teardown] the run failed to end cleanly: ${formatError(error)}\n`);
     } finally {
       // Last, so a supervisor woken by the sentinel finds the archive already
       // sealed — and in its own finally, so a teardown or archive-seal error

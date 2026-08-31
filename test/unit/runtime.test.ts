@@ -1646,6 +1646,10 @@ test("a queued leg the run's end cancels is recorded as queued, and still counts
   while (records.length < 3) {
     await new Promise((resolve) => setImmediate(resolve));
   }
+  // The dispatch write's continuation flips each leg's stage to
+  // "admitting" one microtask after the recorder observed the write; let
+  // it land so close() classifies queued legs, not mid-dispatch ones.
+  await new Promise((resolve) => setImmediate(resolve));
   await runtime.close("interrupted");
   await assert.rejects(onWire, EngineShutdownError);
   await assert.rejects(queued, EngineShutdownError);

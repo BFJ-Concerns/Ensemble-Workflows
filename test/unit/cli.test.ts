@@ -2836,15 +2836,16 @@ test("a teardown that fails after a clean body degrades the sentinel and the exi
   assert.equal(sentinel.exit_code, 1);
   assert.equal(sentinel.error?.kind, "Error");
   assert.match(sentinel.error?.message ?? "", /worker teardown never completed/);
-  // The teardown died before the archive could seal, so the sentinel is the
-  // only surface carrying the failure — and it still attests the manifest it
-  // found, unsealed as that is.
+  // The archive still seals — with the degraded status, so it cannot read
+  // `complete` under a sentinel saying the run failed to end — and the
+  // sentinel attests the sealed manifest (an unsealed one would honestly
+  // read `manifest-unsealed` instead).
   const archive = announcedRunRecord(stderr.text()).archive_path;
   const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
     status: string;
     integrity: { manifest_sha256: string };
   };
-  assert.notEqual(manifest.status, "complete");
+  assert.equal(manifest.status, "failed");
   assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256);
 });
 

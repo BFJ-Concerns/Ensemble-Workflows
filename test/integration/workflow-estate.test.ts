@@ -1106,7 +1106,10 @@ test("parallel and pipeline propagate rejected options before a worker opens", a
 
 test("computed open-domain options reach the final engine invocation unchanged", async () => {
   const model = "gpt-5.6-terra";
-  const effort = "ultra";
+  // model's domain is genuinely open (engine-owned); effort's is the
+  // canonical harness vocabulary, on which Codex is native passthrough —
+  // a computed canonical level must still reach the invocation unchanged.
+  const effort = "xhigh";
   const label = "unusual label: Δ / release-candidate";
   const phaseName = "verify → final consumer";
   const { exitCode, stdout, stderr, codex } = await runScriptWithCliEngines(

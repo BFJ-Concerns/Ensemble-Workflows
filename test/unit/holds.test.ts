@@ -246,7 +246,7 @@ test("a hold with conclusive owner evidence is removed, while a legacy pid-only 
       assert.equal(listed.length, 1);
       assert.equal(listed[0]?.record.hold_id, "run-legacy-1");
       assert.equal(listed[0]?.live, false);
-      await assert.rejects(readdir(path.join(dir, "run-dead-1.json")));
+      assert.deepEqual(await readdir(dir), ["run-legacy-1.json"]);
     } finally {
       await rm(procDir, { recursive: true, force: true });
     }

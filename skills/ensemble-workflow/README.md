@@ -452,16 +452,18 @@ pipelines used to hand-roll per script.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
-  Prefer an atomic write (write a temp file beside it, then rename): the
-  runtime polls, and though an unparseable read is given a poll's grace
-  before it is judged, a rename is what removes the mid-write window
-  entirely. A stale nonce, an unlisted verdict, or a malformed file is
+  Write to a temp file beside that path and rename it into place: this is the
+  required write shape. The runtime polls, and though an unparseable read is
+  given a poll's grace before it is judged, rename removes the mid-write
+  window entirely. A stale nonce, an unlisted verdict, or a malformed file is
   rejected: the bad file is consumed, the still-published hold record gains
   its rejection reason and what verdict was recoverable, and the hold keeps
-  waiting. Confirm a write took effect by reading the listing again: the hold
-  file is gone only when it settled; otherwise read that rejection field and
-  correct the next write. An invalid answer never reaches the script as a
-  decision.
+  waiting. Confirm a write took effect by reading the listing again: a hold
+  that remains open carries rejection feedback to correct the next write; a
+  vanished hold either settled or was removed after its raiser was
+  conclusively found abandoned. Where that distinction matters, read the
+  run's archive or live snapshot rather than treating disappearance alone as
+  acceptance. An invalid answer never reaches the script as a decision.
 - **Enumerating:** `ensemble holds` lists every open hold on the machine —
   id, liveness of the raising process, verdicts, decision path, content —
   and `ensemble holds --json` emits the full records; open holds also
@@ -473,10 +475,10 @@ pipelines used to hand-roll per script.
   a runtime event and land in the archive manifest's `hold_events` list,
   so a consumer holding only the archive can reconstruct what the run
   waited on, including a rejected answer's submitted verdict or why none
-  was recoverable. Settled and abandoned holds remove their files. A later
-  listing removes a hold only when its stamped host, pid, and process-start
-  evidence conclusively prove its raiser died; old records without that
-  evidence remain listed as orphaned rather than guessed dead.
+  was recoverable. A later listing removes an open hold only when its stamped
+  host, pid, and process-start evidence conclusively prove its raiser died;
+  old records without that evidence remain listed as orphaned rather than
+  guessed dead.
 
 ## `agent()` options and per-engine support
 

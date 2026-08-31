@@ -1984,6 +1984,24 @@ test("CLI holds renders real verdict choices, rejection feedback, and an orphan 
       decision_path: path.join(holdsDir, "live-hold.decision.json")
     })
   );
+  await writeFile(
+    path.join(holdsDir, "remote-hold.json"),
+    JSON.stringify({
+      schema_version: 1,
+      kind: "ensemble_hold",
+      run_id: "run-remote",
+      hold_id: "remote-hold",
+      nonce: "remote-nonce",
+      content: "remote question",
+      verdicts: ["approve", "reject"],
+      raised_at: new Date(0).toISOString(),
+      timeout_at: null,
+      cwd: directory,
+      pid: 2 ** 30,
+      owner: { host: "other-host", pid: 2 ** 30, start_ticks: "remote-ticks" },
+      decision_path: path.join(holdsDir, "remote-hold.decision.json")
+    })
+  );
   const stdout = new CaptureStream();
 
   assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout, stderr: new CaptureStream(), env: { XDG_DATA_HOME: dataHome } }), 0);
@@ -1992,6 +2010,8 @@ test("CLI holds renders real verdict choices, rejection feedback, and an orphan 
   assert.match(stdout.text(), /raiser is gone/);
   assert.match(stdout.text(), /rejected: invalid-verdict \("later"\)/);
   assert.match(stdout.text(), /"verdict":"approve".*\(or use "reject"\)/);
+  assert.match(stdout.text(), /owner evidence cannot conclusively establish abandonment; this hold remains answerable/);
+  assert.match(stdout.text(), /"nonce":"remote-nonce","verdict":"approve"/);
   assert.doesNotMatch(stdout.text(), /"verdict":"…"/);
 });
 

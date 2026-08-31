@@ -162,14 +162,17 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
-      if (hold.live) {
+      if (!hold.live && record.owner === undefined) {
+        stdout.write("  status:   raiser is gone; this legacy pid-only record remains unjudgeable and is not answerable\n");
+      } else {
+        if (!hold.live) {
+          stdout.write("  status:   owner evidence cannot conclusively establish abandonment; this hold remains answerable\n");
+        }
         const [firstVerdict, ...otherVerdicts] = record.verdicts;
         stdout.write(
           `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}` +
             `${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`
         );
-      } else {
-        stdout.write("  status:   raiser is gone; this legacy pid-only record remains unjudgeable and is not answerable\n");
       }
       if (record.answer_rejection !== undefined) {
         const attempted =

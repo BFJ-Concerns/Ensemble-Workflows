@@ -28503,14 +28503,17 @@ async function runEnsembleCli(argv, options = {}) {
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
-      if (hold.live) {
+      if (!hold.live && record.owner === void 0) {
+        stdout.write("  status:   raiser is gone; this legacy pid-only record remains unjudgeable and is not answerable\n");
+      } else {
+        if (!hold.live) {
+          stdout.write("  status:   owner evidence cannot conclusively establish abandonment; this hold remains answerable\n");
+        }
         const [firstVerdict, ...otherVerdicts] = record.verdicts;
         stdout.write(
           `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
 `
         );
-      } else {
-        stdout.write("  status:   raiser is gone; this legacy pid-only record remains unjudgeable and is not answerable\n");
       }
       if (record.answer_rejection !== void 0) {
         const attempted = record.answer_rejection.attempted_verdict === null ? record.answer_rejection.attempted_verdict_state : JSON.stringify(record.answer_rejection.attempted_verdict);

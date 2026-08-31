@@ -571,7 +571,7 @@ failure, and `termination_cause` names what settled a worker at that status
 (`{ kind, message }`) whenever the runtime — rather than an individual
 attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
-never contradicts its own attempts. A record whose engine left no transcript
+never contradicts its own attempts. A record with no retained transcript
 keeps `transcripts` as `[]` and carries the reason in
 `transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
 `worker-timed-out`, `session-client-capture-gap`, or

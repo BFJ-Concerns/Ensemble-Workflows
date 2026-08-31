@@ -319,8 +319,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
       if (observedExpansion && previousNames !== undefined && sameStrings(previousNames, names)) {
         return names;
       }
-      if (previousNames !== undefined && strictlyContainsAll(names, previousNames)) {
-        observedExpansion = true;
+      if (previousNames !== undefined) {
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          // A shrink or churn after growth would let the smaller set repeat
+          // and qualify, leaving the vanished skill out of the deny overlay;
+          // only a set still standing since its expansion may qualify.
+          observedExpansion = false;
+        }
       }
       previousNames = names;
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {

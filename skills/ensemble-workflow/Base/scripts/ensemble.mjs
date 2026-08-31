@@ -24611,8 +24611,12 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
         return names;
       }
-      if (previousNames !== void 0 && strictlyContainsAll(names, previousNames)) {
-        observedExpansion = true;
+      if (previousNames !== void 0) {
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
       }
       previousNames = names;
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {

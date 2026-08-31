@@ -1166,6 +1166,49 @@ test("Codex app-server requires a discovered skill-set expansion before acceptin
   }
 });
 
+test("Codex app-server fails closed when discovery contracts after an expansion", async () => {
+  // A shrink after growth must not qualify: the repeated smaller set would
+  // dispatch a deny overlay missing the vanished skill, and a skill that
+  // reappears by thread/start would go unstripped.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-contract-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    skillResponses: [
+      ["repo-skill"],
+      ["repo-skill", "plugin-management:plugin-management"],
+      ["repo-skill"]
+    ]
+  });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    await assert.rejects(
+      () => transport.listSkills("/fake/worker-cwd"),
+      (error: unknown) =>
+        error instanceof AppServerRequestError &&
+        error.code === "unstable_discovery" &&
+        error.message.includes("after 10 calls")
+    );
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((request) => request.method === "skills/list" || request.method === "thread/start");
+    assert.equal(requests.length, 10);
+    assert.ok(requests.every((request) => request.method === "skills/list"));
+  } finally {
+    await transport.close();
+  }
+});
+
 test("Codex app-server fails closed after ten cold skill discoveries", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-unstable-"));
   const capturePath = path.join(directory, "requests.jsonl");

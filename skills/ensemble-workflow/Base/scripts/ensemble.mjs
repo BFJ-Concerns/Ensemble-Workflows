@@ -24460,6 +24460,7 @@ var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
 var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
@@ -24949,25 +24950,24 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = {
-          code: void 0,
-          message: "Codex app-server reported terminal systemError without a diagnostic",
-          data: params
-        };
-        void this.#rejectTurn(
-          threadId,
-          turn,
-          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
-        );
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
       }
       return;
     }
     if (method === "turn/completed") {
       turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
       this.#completeTurn(threadId, turn);
       return;
     }
     if (method === "error") {
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
@@ -25027,6 +25027,29 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       turn.retryPromiseSilenceDeadline = void 0;
     }
   }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
   #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
     const diagnostic = errorPayloadFromNotification(promiseParams);
     turn.retryPromiseSilenceDeadline = setTimeout(() => {
@@ -25085,6 +25108,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== void 0) {
       void this.#sendUnacknowledgedRequest("turn/interrupt", {
@@ -25099,6 +25123,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
@@ -25162,6 +25187,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
       firstOutputDeadline: void 0,
       promise,
       resolve: resolveTurn,
@@ -25222,8 +25249,13 @@ function appServerErrorFromPayload(method, errorPayload) {
 }
 function appServerErrorFromNotification(params) {
   const errorPayload = errorPayloadFromNotification(params);
-  const error = errorPayload.code === "serverOverloaded" ? new AppServerOverloadedError("turn notification", errorPayload) : new AppServerRequestError("turn notification", errorPayload);
-  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
 }
 function appServerDiagnosticFromPayload(payload) {
   return {

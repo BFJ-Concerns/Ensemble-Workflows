@@ -29,7 +29,14 @@ assert.ok(
 assert.equal(typeof sentinel.ended_at, "string");
 assert.ok(Number.isFinite(Date.parse(sentinel.ended_at)));
 assert.equal(sentinel.integrity?.algorithm, "sha256");
-assert.equal(typeof sentinel.integrity?.recipe, "string");
+assert.equal(
+  sentinel.integrity?.recipe,
+  "sha256 hex of the document with this digest field set to null, " +
+    "serialised as ECMA-262 JSON.stringify with two-space indent and no " +
+    "trailing newline, object keys sorted by UTF-16 code unit at every level " +
+    "(integer-index keys first in ascending numeric order, as ECMA-262 " +
+    "property enumeration places them)"
+);
 assert.equal(sentinel.integrity?.sentinel_sha256, selfDigest(sentinel));
 
 process.stdout.write(`${JSON.stringify(sentinel)}\n`);

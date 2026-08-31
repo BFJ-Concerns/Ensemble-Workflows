@@ -32,7 +32,7 @@ test("suite runner ignores an ambient direct-child override outside its test con
 });
 
 test("suite runner rejects an SGR-coloured empty-suite summary from its guarded direct child", async () => {
-  const result = await runNode([runnerPath], {
+  const result = await runNode([runnerPath, colouredEmptySuiteChildPath], {
     ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: colouredEmptySuiteChildPath,
     ENSEMBLE_SUITE_TEST_CONTEXT: "1",
     NODE_TEST_CONTEXT: undefined
@@ -97,7 +97,7 @@ interface PipeHolder {
 }
 
 function startSuite(pipeHolder: PipeHolder) {
-  const child = spawn(process.execPath, [runnerPath], {
+  const child = spawn(process.execPath, [runnerPath, pipeHolderParentPath], {
     env: hermeticEstateEnvironment({
       ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
       ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,

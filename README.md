@@ -387,7 +387,8 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
   answer, timeout) in event order, each entry carrying `hold_id`, `event`,
   `verdict`/`reason` where applicable, and a timestamp.
-- `git`: start/end HEAD, dirty flag, and archived diff path when dirty.
+- `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
+  all-`null` outside a git repository.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
 - `result`: archived `result.json` path and exit code once final.

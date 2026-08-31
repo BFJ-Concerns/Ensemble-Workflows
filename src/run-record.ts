@@ -1183,7 +1183,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
-        integrity?: { manifest_sha256?: string | null };
+        integrity?: { manifest_sha256?: string | null } | null;
       };
       if (fresh.status !== "in-progress") {
         continue;
@@ -1199,7 +1199,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // canonical form, then let the standalone helper atomically replace it.
       // Pre-attestation manifests have no self-digest to renew, but remain
       // eligible for the established reap route.
-      if (fresh.integrity !== undefined && typeof fresh.integrity.manifest_sha256 === "string") {
+      if (fresh.integrity !== undefined && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
         fresh.integrity.manifest_sha256 = null;
         fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
       }

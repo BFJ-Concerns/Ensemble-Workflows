@@ -1,3 +1,5 @@
+import type { EngineAttemptResult } from "./engines.js";
+
 export class EnsembleError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -123,6 +125,30 @@ export function partialWorkerTextOf(error: unknown): string | null {
     if (typeof text === "string" && text.length > 0) {
       return text;
     }
+  }
+  return null;
+}
+
+/**
+ * A thrown terminal interruption keeps the turn result the engine had already
+ * assembled. The shared retry loop still receives the same rejection; the
+ * recorder alone reads these established result fields for its failed attempt.
+ */
+interface FailedTurnResultCarrier {
+  failedTurnResult?: EngineAttemptResult;
+}
+
+export function attachFailedTurnResult<T extends Error>(error: T, result: EngineAttemptResult): T {
+  const carrier = error as T & FailedTurnResultCarrier;
+  if (carrier.failedTurnResult === undefined) {
+    carrier.failedTurnResult = result;
+  }
+  return error;
+}
+
+export function failedTurnResultOf(error: unknown): EngineAttemptResult | null {
+  if (error instanceof Error) {
+    return (error as FailedTurnResultCarrier).failedTurnResult ?? null;
   }
   return null;
 }

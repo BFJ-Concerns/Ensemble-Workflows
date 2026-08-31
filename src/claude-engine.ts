@@ -347,6 +347,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // A served model the transcript already named is evidence too, and so
         // is the usage it recorded: a result-less failure must not un-learn
         // spend the run has already paid for (failures carry their evidence).
+        // resolved_effort is dispatch evidence too, so it is judged before
+        // teardown clears the handle: only a turn whose worker session
+        // actually existed may claim the clamped native level was in
+        // force — a failed dispatch served nothing.
+        const workerDispatched = this.#handle !== null;
         if (!this.#multiTurn) {
           // One-shot only: a held session survives its turn's operational
           // failure — tearing it down would leave the retry with no handle
@@ -354,7 +359,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           // failure. Session teardown belongs to close().
           await this.#teardown();
         }
-        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence), this.#options.effort);
+        return failedTurnResult(
+          error,
+          evidence,
+          this.#failureUsageEvent(evidence),
+          workerDispatched ? this.#options.effort : undefined
+        );
       }
       throw error;
     }

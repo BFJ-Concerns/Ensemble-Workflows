@@ -291,9 +291,11 @@ because how the run ended and whether its archive survived are two different
 questions.
 
 Every manifest write ends by attesting itself: `integrity.manifest_sha256` is
-the SHA-256 of the manifest's own canonical form — keys sorted recursively by
+the SHA-256 of the manifest's own canonical form — ECMA-262 `JSON.stringify`
+with two-space indent and no trailing newline, keys sorted recursively by
 UTF-16 code unit (locale-independent by construction, never a collator's
-ordering), two-space indent, no trailing newline — with that field set to
+ordering; integer-index keys come first in numeric order, as ECMA-262
+property enumeration places them) — with that field set to
 `null`. The rule itself rides the archive as `integrity.recipe`, the same
 self-description discipline as the args' canonical artefact, so a cold
 consumer needs nothing from this codebase to verify. (Archives written before

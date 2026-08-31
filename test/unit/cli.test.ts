@@ -1084,20 +1084,18 @@ test("a pre-terminator flag repeated in a dash-leading prompt is not a duplicate
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
 
-  // --timeout appears once as an option and once as prompt text past the
-  // terminator; the duplicate-scalar scan must stop at `--`.
-  const exitCode = await runEnsembleCli(
-    ["agent", "--engine=codex", "--timeout", "5000", "--", "--timeout is discussed here"],
-    {
-      stdin: Readable.from([]),
-      stdout,
-      stderr,
-      createRuntime: async () => fakeRuntime()
-    }
-  );
+  // The prompt is the exact spelling of the flag used before the
+  // terminator — the case the pre-fix scan false-rejected as a duplicate
+  // option, and the discriminating input for the scan stopping at `--`.
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "--timeout", "5000", "--", "--timeout"], {
+    stdin: Readable.from([]),
+    stdout,
+    stderr,
+    createRuntime: async () => fakeRuntime()
+  });
 
   assert.equal(exitCode, 0, stderr.text());
-  assert.equal(stdout.text(), '"--timeout is discussed here"\n');
+  assert.equal(stdout.text(), '"--timeout"\n');
 });
 
 test("a boolean agent flag is scanned by its declared type, not a literal", async () => {

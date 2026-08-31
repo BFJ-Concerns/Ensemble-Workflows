@@ -21,8 +21,10 @@ export function canonicalJson(value: unknown): string {
  */
 export const DIGEST_RECIPE =
   "sha256 hex of the document with this digest field set to null, " +
-  "serialised as JSON with object keys sorted by UTF-16 code unit at every " +
-  "level, two-space indent, and no trailing newline";
+  "serialised as ECMA-262 JSON.stringify with two-space indent and no " +
+  "trailing newline, object keys sorted by UTF-16 code unit at every level " +
+  "(integer-index keys first in ascending numeric order, as ECMA-262 " +
+  "property enumeration places them)";
 
 /**
  * Key order is by UTF-16 code unit, never `localeCompare`: the digest

@@ -157,6 +157,154 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
   }
 });
 
+test("a systemError followed by completion remains a diagnostic-less terminal failure", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-completed");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by Codex's schema diagnostic keeps its classified cause", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: "invalid_json_schema",
+          message: "invalid_json_schema: Invalid schema for response_format",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
+        });
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a schema diagnostic disarms its systemError grace before a follow-up turn", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error-follow-up");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "reject with the schema diagnostic", {}),
+      (error: unknown) => error instanceof CodexSchemaSubsetUnsupportedError
+    );
+
+    // The fake completes this turn 120ms after it starts, well beyond the
+    // 50ms grace armed by the first turn. A stale grace would delete this
+    // turn and interrupt the already-rejected first turn instead.
+    const result = await transport.runTurn(threadId, "complete after the first grace would expire", { timeoutMs: 300 });
+    assert.equal(result.text, "the intact follow-up answer");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError makes a retry-promised schema diagnostic terminal and classified", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-retrying-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: "invalid_json_schema",
+          message: "invalid_json_schema: Invalid schema for response_format",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":true,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
+        });
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("the diagnostic grace genuinely waits for a delayed schema diagnostic", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-delayed-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a diagnostic arriving after the grace leaves the honest diagnostic-less rejection", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-late-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by another diagnostic keeps that diagnostic attached", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerRequestError);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: null,
+          message: "upstream fell over",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"upstream fell over"}}'
+        });
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a turn ended by process death carries how the process died", async () => {
   // The evidence sibling to the partial-text carrier: an exit-terminalised
   // turn records the exit status or signal, so a killed leg is
@@ -1165,6 +1313,13 @@ async function fakeCodexFailingTurnServer(
   mode:
     | "error-notification"
     | "system-error"
+    | "system-error-then-completed"
+    | "system-error-then-schema-error"
+    | "system-error-then-schema-error-follow-up"
+    | "system-error-then-retrying-schema-error"
+    | "system-error-then-error"
+    | "system-error-then-delayed-schema-error"
+    | "system-error-then-late-error"
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
@@ -1196,6 +1351,7 @@ if (process.argv[2] !== "app-server") {
 
 const mode = ${JSON.stringify(mode)};
 let threadCounter = 0;
+let turnCounter = 0;
 const reader = createInterface({ input: process.stdin });
 const send = (message, afterWrite) => process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
 
@@ -1212,6 +1368,7 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    turnCounter += 1;
     if (mode === "turn-start-error") {
       send({ id: message.id, error: { code: -32001, message: "request cause", data: { detail: "request payload" } } });
       return;
@@ -1232,6 +1389,22 @@ reader.on("line", (line) => {
     }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (mode === "system-error-then-schema-error-follow-up") {
+      if (turnCounter === 1) {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
+        send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      } else {
+        // This lands after the first turn's 50ms diagnostic grace. If the
+        // first rejection leaves that timer armed, it terminalises this
+        // follow-up turn before the answer can arrive.
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the intact follow-up answer" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
+        }, 120);
+      }
+      return;
+    }
     if (mode === "no-first-delta") {
       // The accepted turn stays alive but never produces output: only the
       // client's first-output deadline can free the worker slot.
@@ -1276,6 +1449,33 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "system-error-then-completed") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+    } else if (mode === "system-error-then-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+    } else if (mode === "system-error-then-retrying-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+    } else if (mode === "system-error-then-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "upstream fell over" } } });
+    } else if (mode === "system-error-then-delayed-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // The diagnostic lands asynchronously, inside the client's grace
+      // window: only a grace that genuinely waits can attach it — a zero or
+      // synchronous-only grace rejects before this timer fires.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 10);
+    } else if (mode === "system-error-then-late-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // Well beyond the grace: the client must already have fallen back to
+      // the diagnostic-less rejection rather than waiting indefinitely.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 400);
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all", () => process.exit(7));
     } else if (mode === "terminated-garbage-line") {

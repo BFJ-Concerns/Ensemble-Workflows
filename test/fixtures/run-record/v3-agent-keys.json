@@ -28,6 +28,7 @@
   "strip",
   "termination_cause",
   "transcripts",
+  "transcripts_unavailable",
   "usage",
   "validated_output",
   "worktree"

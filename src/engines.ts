@@ -134,7 +134,8 @@ export interface EngineAdapter {
    * Open a multi-turn worker session. Optional by design: an adapter
    * that does not implement it holds its engine at the one-shot surface,
    * and the runtime fails a session request loud before any worker spawns
-   * (any engine that never considered sessions is safe by construction).
+   * (opencode, which is held at the one-shot surface, and any future engine
+   * that never considered sessions, are safe by construction).
    * `options.schema` is ignored here — schema is per-turn, carried by each
    * `beginTurn`.
    */
@@ -217,8 +218,8 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   tool namespace from the tool schema Codex sends the model, per
    *   thread, without leaking between sibling threads on one app-server
    *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — the
-   *   live proof is what re-arms this judgement per release.
+   *   and its failure mode on a Codex rename would be silent — a live test
+   *   against a real worker is what re-checks this judgement per release.
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
    *   growing filesystem-and-plugin set and then repeat it. This rejects a
@@ -421,15 +422,27 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   readonly concurrency: number;
   /**
    * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane
-   * already writes (the one surface measured to reach the daemon-served
-   * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — a live test
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
+   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
+   * deny working (`Skill` absent under a skills strip, present in the
+   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
+   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
+   * while the unstripped control demonstrated discovery and messaging.
+   * `Agent` was also absent, but the witness cannot isolate it from the
+   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
+   * the exact-set regression proves. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live test
    * asserts that at the worker itself.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+    agents: {
+      route: "config",
+      detail:
+        "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+    }
   };
 
   #scheduler: Scheduler;

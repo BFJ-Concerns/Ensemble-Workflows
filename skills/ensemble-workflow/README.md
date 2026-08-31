@@ -306,6 +306,8 @@ message }` or `null`), `diagnostics`, `app_server_diagnostic`,
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
 `source`, and engine-specific ids (`session_id`, `thread_id`).
+`transcripts_unavailable` is `null` when that array has entries; otherwise it
+names why it is empty.
 
 ## Script shape
 
@@ -557,16 +559,18 @@ failure, and `termination_cause` names what settled a worker at that status
 attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record whose engine left no transcript
-carries `transcripts` as `{ "unavailable": <reason> }` — `no-attempt-ran`,
-`worker-interrupted`, `worker-timed-out`, or `engine-produced-no-transcript` —
-rather than an empty list a reader would take for engine silence.
+keeps `transcripts` as `[]` and carries the reason in
+`transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
+`worker-timed-out`, or `engine-produced-no-transcript` — so consumers can
+distinguish an empty archive from engine silence without changing the array's
+shape.
 Successful schema agents record `parse_route` as `direct`,
 `object-fallback`, or `array-fallback`; it remains `null` until a valid value is
 selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`, `muse-glimmer-30b`.
-The `local/…` entries are served by a self-hosted router and track
+The `local/…` entries are served by a local router and track
 what it actually serves; `src/opencode-model-registry.ts` carries the
 re-survey contract.
 
@@ -615,8 +619,25 @@ the durable-record store) that the launcher process itself writes when the
 run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
-ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
-`null` when the launcher never got far enough to count any). It also carries
+ended the run, or `null`), and `workers` (`{ done, failed, cut_short,
+unsettled }`, or `null` when the launcher never got far enough to count any).
+The worker tally is a partition of the run's workers, fixed at the moment the
+run ended: `done` and `failed` settled on their own account before that
+moment; `cut_short` counts the workers the run's end terminated; `unsettled`
+counts the workers the run abandoned, dispatched but with no outcome ever
+observed. When durable recording is enabled, each worker's record states the
+same thing the tally does — a `cut_short` worker's record names the run's own
+shutdown status (after a run whose script returned cleanly it reads
+`interrupted` with a `run-interrupted` cause, never `failed`), and an
+`unsettled` worker's record says exactly that. With recording disabled the
+sentinel is still written and its tally is the run's only worker-outcome
+surface — self-contained, with no per-worker records behind it. The counts are
+taken from the disposition the run's end decides for each worker, so a
+supervisor's tally never depends on which straggler teardown happened to
+settle first. A teardown that fails after a clean body is itself a failed end —
+the run may leave workers alive or the archive unsealed — so the sentinel
+reports `outcome: "failed"`, the teardown error as its `error`, and the
+process exits non-zero rather than publishing `complete` over it. It also carries
 `manifest` — the sealed manifest's self-digest (`{ sha256 }`), or
 `{ unavailable }` naming why there is none (`recording-disabled`,
 `manifest-unsealed`) — and its own `integrity.sentinel_sha256`, computed by

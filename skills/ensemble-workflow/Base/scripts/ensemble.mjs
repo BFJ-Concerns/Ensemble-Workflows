@@ -14998,10 +14998,11 @@ var RunRecordWriter = class _RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      // Absence carries its reason, like `usage` — an empty list must not
-      // leave a consumer unable to tell "this worker produced none" from
-      // "the archive lost them".
-      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -15431,7 +15432,12 @@ var CompletionSentinel = class {
       // Read from the launcher's own progress model, not the archive: the
       // sentinel resolves independently of the record switch, so recording
       // being off must degrade nothing here.
-      workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      workers: workers === null ? null : {
+        done: workers.done,
+        failed: workers.failed,
+        cut_short: workers.cutShort,
+        unsettled: workers.unsettled
+      },
       error: detail.error ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" },
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -15737,15 +15743,15 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
     } catch (error) {
-      if (error instanceof Error) {
-        await this.#attachLatestWorkerText(error, fromIndex);
+      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
-        const resolvedModel = await this.#tryResolveModel(fromIndex);
         if (!this.#multiTurn) {
           await this.#teardown();
         }
-        return failedTurnResult(error, resolvedModel);
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
       throw error;
     }
@@ -15993,22 +15999,38 @@ var ClaudeEngineInvocation = class {
       throw error;
     }
   }
-  /** The served model the current turn's transcript names, or null when unreadable. */
-  async #tryResolveModel(fromIndex) {
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex) {
     const handle = this.#handle;
     if (handle === null) {
       return null;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    return transcript === null ? null : resolvedModelSince(transcript.entries, fromIndex);
-  }
-  async #attachLatestWorkerText(error, fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return;
+    if (transcript === null) {
+      return null;
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex)
+    };
+  }
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence) {
+    if (evidence === null) {
+      return null;
+    }
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+  #attachWorkerText(error, evidence, fromIndex) {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
       return;
     }
     const text = finalAssistantText(transcript.entries, fromIndex);
@@ -16020,14 +16042,29 @@ var ClaudeEngineInvocation = class {
    * Feed best-effort transcript-derived usage through the same event shape Codex
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
+   *
+   * The derived total is not monotonic: the input side is a snapshot of the
+   * running context, and compaction shrinks it, so a step that generated new
+   * output can still carry a *smaller* total than the step before. Growth is
+   * therefore judged per component, and the reported delta's own total is the
+   * sum of the components that grew — reporting nothing whenever the total
+   * fell would drop that output for good, since the high-water mark would not
+   * advance either and no later report would ever re-carry it. The high-water
+   * mark advances per component for the same reason.
    */
   #reportUsage(handle, entries, fromIndex) {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
-    if (last.totalTokens === 0) {
+    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
+    if (grown === 0) {
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
       return;
     }
-    this.#reportedUsage = total;
+    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      last.cacheCreationInputTokens = last.cachedInputTokens;
+    }
+    last.totalTokens = grown;
+    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
@@ -16121,8 +16158,9 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
 };
-function failedTurnResult(error, resolvedModel = null) {
+function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
   return {
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
@@ -16131,7 +16169,33 @@ function failedTurnResult(error, resolvedModel = null) {
     durationMs: null,
     firstDeltaMs: null,
     items: {},
-    tokenUsageEvents: []
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    ...evidence === null ? {} : {
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: evidence.handle.sessionId,
+          content: evidence.transcript.text
+        }
+      ]
+    }
+  };
+}
+function highWaterUsage(previous, total) {
+  if (previous === null) {
+    return total;
+  }
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
+  return {
+    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
+    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
   };
 }
 function claudeAttemptFailure(error) {
@@ -26254,7 +26318,7 @@ var CodexEngineAdapter = class {
    *   thread, without leaking between sibling threads on one app-server
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
+   *   is what re-arms this judgement per release.
    * - `skills` cannot be stripped mechanically: there is no skills tool in
    *   the app-server surface — skills arrive as prompt text plus
    *   filesystem paths, and the per-thread lever that removes a skill
@@ -26691,6 +26755,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally = null;
   #closed = false;
   #workerSessions = /* @__PURE__ */ new Set();
   #sessionCounter = 0;
@@ -27282,14 +27351,35 @@ var EnsembleRuntime = class _EnsembleRuntime {
   completedOutputs() {
     return this.#completed;
   }
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * Each in-flight leg is counted by the disposition close() itself decides
+   * for it — abandoned where no outcome was ever observed, cut short where
+   * teardown settles it with the run's own shutdown status — so the
+   * sentinel's figures and the archive's records state the same thing.
+   */
+  shutdownTally() {
+    return this.#shutdownTally;
+  }
   async close(status = "interrupted") {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
+      ({ record }) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = {
+      done: totals.done,
+      failed: totals.failed,
+      cutShort: inFlight.length - abandoning.length,
+      unsettled: abandoning.length
+    };
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+      abandoning.map(async (record) => {
         this.#abandonedAgentIds.add(record.id);
         record.status = "abandoned";
         await this.#recordAgentSafely(record);
@@ -28137,6 +28227,7 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(`[sentinel] ${formatError3(error)}
 `);
   };
+  let exitCode = 1;
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -28286,7 +28377,7 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`${serialised}
 `);
       finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      return 0;
+      exitCode = 0;
     } finally {
       interrupt.dispose();
     }
@@ -28304,8 +28395,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     stderr.write(`${diagnosis ?? formatError3(error)}
 `);
-    return 1;
+    exitCode = 1;
   } finally {
+    let teardownError = null;
     try {
       interrupt?.dispose();
       progress?.finish();
@@ -28314,7 +28406,9 @@ async function runEnsembleCli(argv, options = {}) {
       }
       if (runtime !== null) {
         const terminalStatus = finalRecord?.status;
-        await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+        await runtime.close(
+          terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+        );
       }
       if (runRecordWriter !== null) {
         await runRecordWriter.finish({
@@ -28322,11 +28416,17 @@ async function runEnsembleCli(argv, options = {}) {
           error: terminalError
         });
       }
+    } catch (error) {
+      teardownError = describeError(error);
+      stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+`);
     } finally {
-      const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
+      const settled = finalRecord ?? { status: "failed", exitCode: 1 };
+      const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
+      exitCode = terminal.exitCode;
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
-        error: terminalError,
+        workers: workerOutcomes(progress, runtime),
+        error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so
         // rather than omitting the field.
@@ -28334,17 +28434,22 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
   }
+  return exitCode;
 }
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
 }
-function workerOutcomes(progress) {
+function workerOutcomes(progress, runtime) {
+  const tally = runtime?.shutdownTally?.() ?? null;
+  if (tally !== null) {
+    return { done: tally.done, failed: tally.failed, cutShort: tally.cutShort, unsettled: tally.unsettled };
+  }
   if (progress === void 0) {
     return null;
   }
   const totals = progress.snapshot().totals;
-  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
+  return { done: totals.done, failed: totals.failed, cutShort: 0, unsettled: totals.active + totals.queued };
 }
 function completedDirectAgentWithNull(runtime) {
   const completed = runtime.completedOutputs?.() ?? [];

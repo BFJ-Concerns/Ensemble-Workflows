@@ -2649,13 +2649,13 @@ test("the sentinel carries worker outcomes, so `complete` cannot mean every work
   const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
     outcome: string;
     exit_code: number;
-    workers: { done: number; failed: number; unsettled: number } | null;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
   };
   // Outcome and exit code still describe the script, which succeeded.
   assert.equal(sentinel.outcome, "complete");
   assert.equal(sentinel.exit_code, 0);
   // What is added is the tally that stops `complete` reading as "all well".
-  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, unsettled: 0 });
+  assert.deepEqual(sentinel.workers, { done: 0, failed: 2, cut_short: 0, unsettled: 0 });
 });
 
 test("the sentinel's worker tally counts a run's successes as its own observation", async () => {
@@ -2686,9 +2686,125 @@ test("the sentinel's worker tally counts a run's successes as its own observatio
   const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
   assert.ok(sentinelPath);
   const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
-    workers: { done: number; failed: number; unsettled: number } | null;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
   };
-  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, unsettled: 0 });
+  assert.deepEqual(sentinel.workers, { done: 2, failed: 0, cut_short: 0, unsettled: 0 });
+});
+
+test("a successful run's torn-down workers are interrupted by the run ending, never failed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-clean-teardown-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  // The script leaves one worker in flight and returns cleanly anyway — the
+  // ordinary fire-and-forget shape. The run succeeded, so the leg the
+  // launcher tears down was interrupted by the run ending; branding it
+  // `failed` with a `run-failed` cause would tell a supervisor the run's own
+  // work had faulted.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "clean-body-teardown" };
+      const inflight = agent("hang", { engine: "codex", label: "straggler" });
+      inflight.catch(() => null);
+      await agent("done-fast", { engine: "codex", label: "alpha" });
+      return "ok";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const engine = new HangOnPromptEngine("codex", 4);
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => fixedEngineRuntime(engine, 1)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  // The straggler really was live at teardown: the engine cancelled it.
+  assert.equal(engine.cancelCount, 1, "the in-flight worker must have been cancelled by the run ending");
+
+  const archive = announcedRunRecord(stderr.text()).archive_path;
+  const records: Array<{
+    label: string | null;
+    status: string;
+    termination_cause: { kind: string; message: string } | null;
+  }> = [];
+  for await (const file of glob(path.join(archive, "agents", "*", "agent.json"))) {
+    records.push(JSON.parse(await readFile(file, "utf8")));
+  }
+  const straggler = records.find((record) => record.label === "straggler");
+  assert.ok(straggler, `no record for the in-flight worker in ${JSON.stringify(records)}`);
+  assert.equal(straggler.status, "interrupted");
+  assert.equal(straggler.termination_cause?.kind, "run-interrupted");
+  assert.equal(records.find((record) => record.label === "alpha")?.status, "complete");
+
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
+  };
+  assert.equal(sentinel.outcome, "complete");
+  // The tally partitions the run's workers by the disposition the run's end
+  // decided for each: one settled on its own account, one cut short by
+  // teardown and carrying the `interrupted` record asserted above. Nothing
+  // was abandoned, so nothing is `unsettled` — the sentinel's figures and
+  // the archive's records say the same thing.
+  assert.deepEqual(sentinel.workers, { done: 1, failed: 0, cut_short: 1, unsettled: 0 });
+});
+
+test("a teardown that fails after a clean body degrades the sentinel and the exit code", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-teardown-failure-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "teardown-failure" };\nreturn "ok";`);
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const runtime = fakeRuntime();
+  runtime.close = (async () => {
+    throw new Error("worker teardown never completed");
+  }) as unknown as EnsembleRuntime["close"];
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () => runtime
+  });
+
+  // The body returned cleanly, but the run did not end cleanly: a supervisor
+  // reading `complete`/0 here would believe workers were gone that may still
+  // be alive.
+  assert.equal(exitCode, 1, stderr.text());
+  assert.match(stderr.text(), /\[teardown\] the run failed to end cleanly: .*worker teardown never completed/);
+
+  const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+  assert.ok(sentinelPath);
+  const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+    outcome: string;
+    exit_code: number;
+    error: { kind: string; message: string } | null;
+    manifest: { sha256?: string; unavailable?: string };
+  };
+  assert.equal(sentinel.outcome, "failed");
+  assert.equal(sentinel.exit_code, 1);
+  assert.equal(sentinel.error?.kind, "Error");
+  assert.match(sentinel.error?.message ?? "", /worker teardown never completed/);
+  // The teardown died before the archive could seal, so the sentinel is the
+  // only surface carrying the failure — and it still attests the manifest it
+  // found, unsealed as that is.
+  const archive = announcedRunRecord(stderr.text()).archive_path;
+  const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
+    status: string;
+    integrity: { manifest_sha256: string };
+  };
+  assert.notEqual(manifest.status, "complete");
+  assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256);
 });
 
 class AlwaysFailingEngine implements EngineAdapter {

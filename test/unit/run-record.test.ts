@@ -1458,8 +1458,10 @@ test("an interrupted worker's archive names its termination cause and why no tra
 
   const read = async (id: string) =>
     JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      schema_version: number;
       termination_cause: { kind: string; message: string } | null;
-      transcripts: unknown;
+      transcripts: unknown[];
+      transcripts_unavailable: string | null;
       attempts: Array<{
         failure: { kind: string; message: string } | null;
         observed_failure: { kind: string; message: string } | null;
@@ -1471,9 +1473,15 @@ test("an interrupted worker's archive names its termination cause and why no tra
     kind: "run-interrupted",
     message: "the run ended (interrupted) while this worker's turn was in flight"
   });
-  // No transcript survives an interruption, so the archive says why rather
-  // than showing an empty list a consumer would read as "the engine was silent".
-  assert.deepEqual(interruptedAgent.transcripts, { unavailable: "worker-interrupted" });
+  // This is a cold read of the real writer's v3 record. No transcript
+  // survives an interruption, but the array's type remains stable and its
+  // sibling carries the reason a consumer needs to interpret the empty list.
+  assert.equal(interruptedAgent.schema_version, 3);
+  const v3Keys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8")) as string[];
+  assert.deepEqual(Object.keys(interruptedAgent).sort(), v3Keys);
+  assert.ok(Array.isArray(interruptedAgent.transcripts));
+  assert.deepEqual(interruptedAgent.transcripts, []);
+  assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");
   // The attempt reads the same cause as the agent above it, and the symptom
   // its transport reported survives beside it rather than as the reason.
   assert.deepEqual(interruptedAgent.attempts[0]?.failure, {
@@ -1490,6 +1498,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.termination_cause, null);
   assert.equal(completedAgent.attempts[0]?.observed_failure, null);
   assert.ok(Array.isArray(completedAgent.transcripts));
+  assert.equal(completedAgent.transcripts_unavailable, null);
 });
 
 /**

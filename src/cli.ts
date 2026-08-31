@@ -975,7 +975,11 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
       throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
-    if (isKnownInlineOption(value) || value === "--identity") {
+    // Whether a flag consumes the next token is the option map's `type`,
+    // not a hand-kept flag list: a boolean flag declared in
+    // AGENT_INVOCATION_OPTIONS takes no value, so the token after it may
+    // be the prompt.
+    if (isKnownInlineOption(value) || isBooleanAgentFlag(value)) {
       continue;
     }
     if (isKnownAgentOption(value) || isKnownOption(value)) {
@@ -991,6 +995,12 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
 function rejectDuplicateScalarFlags(argv: string[]): void {
   const repeated = new Set<string>();
   for (const value of argv) {
+    if (value === "--") {
+      // Everything past the terminator is positional — a dash-leading
+      // prompt repeating a pre-terminator flag's spelling is not a
+      // duplicate option.
+      return;
+    }
     const flag = optionName(value);
     if (flag === undefined || isRepeatableOption(flag)) {
       continue;
@@ -1016,6 +1026,15 @@ function isRepeatableOption(flag: string): boolean {
 
 function isKnownAgentOption(value: string): boolean {
   return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
+}
+
+/** A declared agent flag that consumes no value token, read off the option map's own `type`. */
+function isBooleanAgentFlag(value: string): boolean {
+  if (!isKnownAgentOption(value)) {
+    return false;
+  }
+  const name = value.slice(2) as keyof typeof AGENT_INVOCATION_OPTIONS;
+  return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 
 function isKnownOption(value: string): boolean {

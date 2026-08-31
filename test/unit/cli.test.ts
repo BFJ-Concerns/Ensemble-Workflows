@@ -231,7 +231,7 @@ function sortJson(value: unknown): unknown {
     return value.map(sortJson);
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
   }
   return value;
@@ -1078,6 +1078,48 @@ test("ensemble agent accepts a dash-leading prompt after --", async () => {
 
   assert.equal(exitCode, 0, stderr.text());
   assert.equal(stdout.text(), '"--timeout"\n');
+});
+
+test("a pre-terminator flag repeated in a dash-leading prompt is not a duplicate", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  // --timeout appears once as an option and once as prompt text past the
+  // terminator; the duplicate-scalar scan must stop at `--`.
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--timeout", "5000", "--", "--timeout is discussed here"],
+    {
+      stdin: Readable.from([]),
+      stdout,
+      stderr,
+      createRuntime: async () => fakeRuntime()
+    }
+  );
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '"--timeout is discussed here"\n');
+});
+
+test("a boolean agent flag is scanned by its declared type, not a literal", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+
+  // --identity consumes no value token, so the prompt right after it is
+  // the prompt — and a tuning flag after that prompt is still misplaced.
+  // The scan reads the option map's `type`, so this holds for any boolean
+  // flag the map declares, present and future.
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=codex", "--identity", "prompt", "--timeout", "1000"],
+    {
+      stdin: Readable.from([]),
+      stdout,
+      stderr,
+      createRuntime: async () => fakeRuntime()
+    }
+  );
+
+  assert.equal(exitCode, 2);
+  assert.equal(stderr.text(), "Tuning flag --timeout appears after the agent prompt; put tuning flags before the prompt\n");
 });
 
 test("workflow invocation rejects duplicate scalar tuning flags before runtime creation", async () => {

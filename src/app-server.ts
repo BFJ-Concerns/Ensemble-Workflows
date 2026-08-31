@@ -110,6 +110,8 @@ const SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
 const MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 const DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+const SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1_000;
+const MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -129,6 +131,8 @@ export interface CodexAppServerTransportOptions {
   clientName: string;
   clientVersion: string;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Test seam for discovery's deliberately time-spaced cold-start sampling. */
+  skillDiscoveryStabilityIntervalMs?: number;
 }
 
 /**
@@ -154,6 +158,11 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   async openThread(options: ThreadStartOptions): Promise<string> {
     const transport = await this.#transport();
     return transport.openThread(options);
+  }
+
+  async listSkills(cwd?: string): Promise<readonly string[]> {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
@@ -197,6 +206,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #retryPromiseSilenceTimeoutMs: number;
   #firstOutputTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
+  #skillDiscoveryStabilityIntervalMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
@@ -213,6 +223,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
+    this.#skillDiscoveryStabilityIntervalMs =
+      options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -297,6 +309,71 @@ export class CodexAppServerTransport implements RuntimeTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+
+  async listSkills(cwd = this.cwd): Promise<readonly string[]> {
+    let previousNames: readonly string[] | undefined;
+    let observedExpansion = false;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== undefined && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== undefined) {
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          // A shrink or churn after growth would let the smaller set repeat
+          // and qualify, leaving the vanished skill out of the deny overlay;
+          // only a set still standing since its expansion may qualify.
+          observedExpansion = false;
+        }
+      }
+      previousNames = names;
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message:
+        `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+
+  async #listSkillsOnce(cwd: string): Promise<readonly string[]> {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+
+    const names = new Set<string>();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
@@ -1230,6 +1307,15 @@ function parseRpcMessage(line: string): RpcMessage | null {
 
 function asJsonObject(value: unknown): JsonObject | null {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : null;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** A repeated cold set is not evidence that asynchronous skill loading finished. */
+function strictlyContainsAll(candidate: readonly string[], baseline: readonly string[]): boolean {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
 }
 
 function asRpcError(value: unknown): RpcErrorPayload {

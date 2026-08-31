@@ -31,7 +31,7 @@ test("terminal sentinel and durable record agree on a handled terminal error", a
   });
 });
 
-test("cold archive reader retains failed-attempt duration and per-attempt retry resolutions", async () => {
+test("cold archive reader retains failed-attempt duration and per-attempt retry resolutions", { timeout: 45_000 }, async () => {
   await withEstate(async (estate) => {
     const workflow = await estate.workflow(`
       export const meta = { name: "retry-resolution-history" };
@@ -42,7 +42,8 @@ test("cold archive reader retains failed-attempt duration and per-attempt retry 
       ENSEMBLE_FAKE_CODEX_THREAD_RESOLUTIONS: JSON.stringify([
         { model: "gpt-first", effort: "low" },
         { model: "gpt-second", effort: "high" }
-      ])
+      ]),
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[], []])
     });
     assert.equal(run.code, 0, run.stderr);
     const archive = await estate.archive();
@@ -153,7 +154,7 @@ async function createEstate() {
   return {
     directory,
     workflow: async (source: string) => { const file = path.join(directory, `workflow-${workflowNumber++}.js`); await writeFile(file, source); return file; },
-    run: (args: string[], overrides: NodeJS.ProcessEnv = {}, lane = "on") => runNode([bundledCliPath, ...args], environment(overrides, lane), 15_000),
+    run: (args: string[], overrides: NodeJS.ProcessEnv = {}, lane = "on") => runNode([bundledCliPath, ...args], environment(overrides, lane), 30_000),
     archive: async () => path.dirname(await findOnlyFile(store, "manifest.json")),
     readSentinel: async (stderr: string) => {
       const read = await runNode([sentinelReaderPath, sentinelPathFrom(stderr)]);

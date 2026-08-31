@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -94,6 +94,63 @@ test("suite runner bounds its close wait when a detached descendant retains its 
   });
 });
 
+test("concurrent suite runners keep their hand-off state in separate namespaces", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-concurrent-"));
+  const childProgram = path.join(directory, "successful-child.mjs");
+  const firstPause = path.join(directory, "first-pause");
+  const secondPause = path.join(directory, "second-pause");
+  await writeFile(childProgram, "");
+  const first = startPausedSuite(directory, firstPause, childProgram);
+  try {
+    await waitForFile(`${firstPause}.child-pid`);
+    const [firstNamespace] = await suiteNamespaces(directory);
+    assert.ok(firstNamespace, "the first suite needs a private namespace before the second recovery scan starts");
+    const firstHandoff = await onlyHandoffDirectory(path.join(directory, firstNamespace));
+
+    // Starting the second runner exercises its real shared-root recovery pass
+    // while the first wrapper is paused after spawning its child but before it
+    // can write owner.json. That pre-stamp hand-off must remain untouched.
+    const second = startPausedSuite(directory, secondPause, childProgram);
+    try {
+      await waitForFile(`${secondPause}.child-pid`);
+      await access(firstHandoff);
+      const namespaces = await suiteNamespaces(directory);
+      assert.equal(namespaces.length, 2);
+      assert.ok(namespaces.includes(firstNamespace));
+      assert.ok(namespaces.every((name) => name.startsWith("ensemble-test-suite-run-")));
+
+      await Promise.all([writeFile(firstPause, "release\n"), writeFile(secondPause, "release\n")]);
+      const [firstResult, secondResult] = await Promise.all([
+        awaitCompletion(first.completed, "first concurrent suite did not finish"),
+        awaitCompletion(second.completed, "second concurrent suite did not finish")
+      ]);
+      assert.equal(firstResult.code, 0, firstResult.output);
+      assert.equal(secondResult.code, 0, secondResult.output);
+      assert.deepEqual(await suiteNamespaces(directory), [], "each completed runner must remove only its own namespace");
+    } finally {
+      await writeFile(secondPause, "release\n");
+      await stopSuite(second);
+    }
+  } finally {
+    await writeFile(firstPause, "release\n");
+    await stopSuite(first);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function suiteNamespaces(directory: string): Promise<string[]> {
+  return (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-run-"))
+    .map((entry) => entry.name);
+}
+
+async function onlyHandoffDirectory(namespace: string): Promise<string> {
+  const handoffs = (await readdir(namespace, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-handoff-"));
+  assert.equal(handoffs.length, 1, "the paused suite must expose exactly one pre-stamp hand-off directory");
+  return path.join(namespace, handoffs[0]!.name);
+}
+
 async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-robustness-"));
   const pipeHolder = {
@@ -122,6 +179,31 @@ function startSuite(pipeHolder: PipeHolder) {
       ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: pipeHolderParentPath,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+      NODE_TEST_CONTEXT: undefined
+    }),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let output = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => (output += chunk));
+  child.stderr.on("data", (chunk: string) => (output += chunk));
+  return {
+    child,
+    completed: new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ code, output }));
+    })
+  };
+}
+
+function startPausedSuite(temporaryDirectory: string, pausePath: string, childProgram: string) {
+  const child = spawn(process.execPath, [runnerPath, childProgram], {
+    env: hermeticEstateEnvironment({
+      TMPDIR: temporaryDirectory,
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
+      ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+      ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH: pausePath,
       NODE_TEST_CONTEXT: undefined
     }),
     stdio: ["ignore", "pipe", "pipe"]

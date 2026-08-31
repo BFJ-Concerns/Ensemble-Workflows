@@ -157,6 +157,27 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
   }
 });
 
+test("the ordinary systemError diagnostic grace expires at the declared 50ms bound with partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-boundary-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    const startedAt = performance.now();
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+    assert.ok(performance.now() - startedAt < 100, "systemError grace exceeded its 50ms bound");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a systemError followed by completion remains a diagnostic-less terminal failure", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-completed");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -1356,6 +1377,7 @@ async function fakeCodexFailingTurnServer(
   mode:
     | "error-notification"
     | "system-error"
+    | "system-error-then-boundary-error"
     | "system-error-then-completed"
     | "system-error-then-schema-error"
     | "system-error-then-schema-error-follow-up"
@@ -1492,6 +1514,13 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "system-error-then-boundary-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // A 75ms diagnostic falls outside the declared 50ms grace but inside a
+      // doubled grace, so this real transport journey rejects a widened bound.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "boundary diagnostic", codexErrorInfo: "invalid_json_schema" } } });
+      }, 75);
     } else if (mode === "system-error-then-completed") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
       send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });

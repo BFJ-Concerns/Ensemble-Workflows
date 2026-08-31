@@ -116,17 +116,26 @@ async function schemaCaches(temporaryRoot: string): Promise<string[]> {
   for (const entry of await ownedEntries(temporaryRoot)) {
     const candidate = path.join(temporaryRoot, entry);
     if (entry.startsWith("ensemble-codex-schema-")) caches.push(candidate);
-    if (entry.startsWith("ensemble-test-suite-")) {
-      const cache = path.join(candidate, "schema-cache");
-      try {
-        await access(cache);
-        caches.push(cache);
-      } catch {
-        // The root may have been removed by a concurrent finished suite.
+    if (entry.startsWith("ensemble-test-suite-run-")) {
+      for (const handoff of await readdir(candidate, { withFileTypes: true })) {
+        if (!handoff.isDirectory() || !handoff.name.startsWith("ensemble-test-suite-")) continue;
+        await collectSchemaCache(path.join(candidate, handoff.name), caches);
       }
+    } else if (entry.startsWith("ensemble-test-suite-")) {
+      await collectSchemaCache(candidate, caches);
     }
   }
   return caches;
+}
+
+async function collectSchemaCache(suiteRoot: string, caches: string[]): Promise<void> {
+  const cache = path.join(suiteRoot, "schema-cache");
+  try {
+    await access(cache);
+    caches.push(cache);
+  } catch {
+    // The root may have been removed by a concurrent finished suite.
+  }
 }
 
 async function waitForFile(file: string): Promise<void> {

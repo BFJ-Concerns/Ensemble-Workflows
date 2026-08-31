@@ -16,8 +16,12 @@ const childCloseGraceMilliseconds = 1_000;
 // root for two hours so a recovery never races its owner, while ensuring a
 // wrapper killed between hand-off and stamping cannot leak the directory forever.
 const unstampedHandoffRetentionMilliseconds = 2 * 60 * 60 * 1_000;
-const temporaryRoot = tmpdir();
-await recoverFinishedSuites(temporaryRoot);
+// A gate invocation owns a private hand-off namespace. Recovery scans the
+// shared temporary root for abandoned namespaces, but its ownership checks
+// retain every live or indeterminate hand-off so concurrent suites cannot
+// reclaim one another's state.
+const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-test-suite-run-"));
+await recoverFinishedSuites(tmpdir());
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
 await mkdir(path.join(pendingSuiteDirectory, "schema-cache"));
 // The whole suite writes run records to a per-run temp store, so a test that
@@ -94,7 +98,7 @@ async function finish(code, signal) {
   if (child.exitCode === null && child.signalCode === null) {
     await childClosed.catch(() => undefined);
   }
-  await rm(suiteDirectory, { recursive: true, force: true });
+  await rm(temporaryRoot, { recursive: true, force: true });
   if (signal !== null) {
     process.kill(process.pid, signal);
   }
@@ -175,6 +179,10 @@ async function recoverFinishedSuites(directory) {
       .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-"))
       .map(async (entry) => {
         const suiteDirectory = path.join(directory, entry.name);
+        if (entry.name.startsWith("ensemble-test-suite-run-")) {
+          await recoverSuiteNamespace(suiteDirectory);
+          return;
+        }
         const pendingParentProcess = pendingParentProcessId(entry.name);
         if (pendingParentProcess !== null) {
           if (await processIsDead(pendingParentProcess)) {
@@ -210,6 +218,27 @@ async function recoverFinishedSuites(directory) {
         await rm(suiteDirectory, { recursive: true, force: true });
       })
   );
+}
+
+async function recoverSuiteNamespace(namespace) {
+  let entries;
+  try {
+    entries = await readdir(namespace, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  // An empty namespace can belong to a wrapper that has just created its
+  // private root. Only remove it after this pass actually saw hand-off state;
+  // that makes cleanup safe across the root-creation window.
+  const sawSuiteState = entries.some((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-"));
+  await recoverFinishedSuites(namespace);
+  if (!sawSuiteState) return;
+  try {
+    if ((await readdir(namespace)).length === 0) await rm(namespace, { recursive: true, force: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 async function directoryAgeMilliseconds(directory) {

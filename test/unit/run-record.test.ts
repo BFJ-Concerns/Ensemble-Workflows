@@ -1578,6 +1578,41 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.transcripts_unavailable, null);
 });
 
+test("only Codex held-session follow-ups declare a client transcript-capture gap", async () => {
+  const cwd = await gitRepo("ensemble-record-session-transcript-reason-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-session-transcript-reason",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  const codexFirstTurn = agentRecord(1, "codex", null, 0);
+  codexFirstTurn.session = { id: 1, turn: 1 };
+  codexFirstTurn.attempts[0]!.transcripts = [];
+  const claudeFollowUp = agentRecord(2, "claude", null, 0);
+  claudeFollowUp.session = { id: 2, turn: 2 };
+  claudeFollowUp.attempts[0]!.transcripts = [];
+  const codexFollowUp = agentRecord(3, "codex", null, 0);
+  codexFollowUp.session = { id: 3, turn: 2 };
+  codexFollowUp.attempts[0]!.transcripts = [];
+  await Promise.all([writer.recordAgent(codexFirstTurn), writer.recordAgent(claudeFollowUp), writer.recordAgent(codexFollowUp)]);
+
+  const reasonOf = async (id: string) =>
+    (
+      JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+        transcripts_unavailable: string | null;
+      }
+    ).transcripts_unavailable;
+  assert.equal(await reasonOf("000001"), "engine-produced-no-transcript");
+  assert.equal(await reasonOf("000002"), "engine-produced-no-transcript");
+  assert.equal(await reasonOf("000003"), "session-client-capture-gap");
+});
+
 /**
  * The consumer's verification recipe for the manifest's self-attestation:
  * null the digest field, re-canonicalise in the writer's own form, hash.

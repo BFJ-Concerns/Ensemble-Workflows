@@ -999,8 +999,8 @@ export class RunRecordWriter {
 /**
  * Why an agent record carries no transcript, in the same vocabulary shape as
  * `usage.unavailable`: the worker never ran, the runtime ended it before a
- * transcript existed, the session client did not retain a follow-up capture,
- * or its engine produced none for the attempts that ran.
+ * transcript existed, the Codex session client did not retain a follow-up
+ * capture, or its engine produced none for the attempts that ran.
  */
 function transcriptAbsenceReason(
   record: RuntimeAgentRecord
@@ -1019,7 +1019,7 @@ function transcriptAbsenceReason(
   if (record.status === "timed-out") {
     return "worker-timed-out";
   }
-  if (record.session !== null) {
+  if (record.engine === "codex" && (record.session?.turn ?? 0) > 1) {
     return "session-client-capture-gap";
   }
   return "engine-produced-no-transcript";

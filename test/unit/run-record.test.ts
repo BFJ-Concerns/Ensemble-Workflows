@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { Writable } from "node:stream";
 
+import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { EngineShutdownError } from "../../src/errors.js";
@@ -22,6 +23,7 @@ import type { EngineAdapter, EngineInvocation } from "../../src/engines.js";
 import type { EngineName, RuntimeOptions, TokenUsageBreakdown, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
+
 
 test("the run id and the archive directory carry one identifier, verbatim", async () => {
   const cwd = await gitRepo("ensemble-record-identifier-");
@@ -1437,11 +1439,6 @@ async function writeAttestedRunManifest(
   await writeRunManifest(namespaceDir, runName, attested);
 }
 
-async function readArchiveIntegrity(archiveDir: string): Promise<{ status: string; manifestVerified: boolean }> {
-  const { stdout } = await execFileAsync(process.execPath, [path.resolve("test/consumers/read-archive-integrity.mjs"), archiveDir]);
-  return JSON.parse(stdout) as { status: string; manifestVerified: boolean };
-}
-
 async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path.join(namespaceDir, runName, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
@@ -1530,8 +1527,6 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
   assert.equal(interruptedAgent.schema_version, 3);
-  const v3Keys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8")) as string[];
-  assert.deepEqual(Object.keys(interruptedAgent).sort(), v3Keys);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");

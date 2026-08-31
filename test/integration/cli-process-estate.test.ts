@@ -559,6 +559,30 @@ test("built CLI terminalises an abandoned parallel sibling in the sealed archive
   }
 });
 
+test("built CLI archive reader validates the complete v3 agent surface and populated transcript references", async () => {
+  const fixture = await createProcessFixture("archived-agent-transcript-reference");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = { name: "archived-agent-transcript-reference" };
+        return await agent("return a durable transcript", { engine: "codex", maxAttempts: 1 });
+      `
+    );
+    const result = await fixture.runArgsWithEnv([fixture.script], { ENSEMBLE_RUN_RECORD: "1" });
+    assert.equal(result.code, 0, result.stderr);
+
+    const agents = await readArchivedAgentsInSeparateProcess(fixture.dataHome);
+    const agent = agents.find((entry) => entry.status === "complete");
+    assert.ok(agent, "expected the cold reader to return the completed agent record");
+    assert.equal(agent.transcripts_unavailable, null);
+    assert.equal(agent.transcripts.length, 1, "expected the cold reader to validate one populated transcript reference");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("built CLI rejects an unrecognised option before opening that worker", async () => {
   const fixture = await createProcessFixture("unknown-option-rejection");
 
@@ -2320,7 +2344,7 @@ async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Ar
   label: string | null;
   status: string;
   attempts: unknown[];
-  transcripts: unknown[];
+  transcripts: Array<{ attempt: number; path: string; format: "jsonl" | "text"; source: string; thread_id: string | null; session_id: string | null }>;
   transcripts_unavailable: string | null;
 }>> {
   const result = await runNode([path.resolve("test/consumers/read-archived-agents.mjs"), dataHome]);
@@ -2329,7 +2353,7 @@ async function readArchivedAgentsInSeparateProcess(dataHome: string): Promise<Ar
     label: string | null;
     status: string;
     attempts: unknown[];
-    transcripts: unknown[];
+    transcripts: Array<{ attempt: number; path: string; format: "jsonl" | "text"; source: string; thread_id: string | null; session_id: string | null }>;
     transcripts_unavailable: string | null;
   }>;
 }

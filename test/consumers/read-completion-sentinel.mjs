@@ -13,9 +13,20 @@ assert.equal(sentinel.kind, "completion_sentinel");
 assert.ok(["complete", "failed", "timed-out", "interrupted"].includes(sentinel.outcome));
 assert.equal(typeof sentinel.exit_code, "number");
 assert.ok(sentinel.error === null || (typeof sentinel.error.kind === "string" && typeof sentinel.error.message === "string"));
-assert.ok(sentinel.workers === null || (Number.isInteger(sentinel.workers.done) && Number.isInteger(sentinel.workers.failed) && Number.isInteger(sentinel.workers.unsettled)));
-assert.ok(sentinel.manifest?.sha256 !== undefined || sentinel.manifest?.unavailable !== undefined);
+assert.ok(sentinel.workers === null || (
+  Number.isInteger(sentinel.workers.done) &&
+  Number.isInteger(sentinel.workers.failed) &&
+  Number.isInteger(sentinel.workers.cut_short) &&
+  Number.isInteger(sentinel.workers.unsettled)
+));
+assert.ok(
+  (typeof sentinel.manifest?.sha256 === "string" && Object.keys(sentinel.manifest).length === 1) ||
+  (["recording-disabled", "manifest-unsealed"].includes(sentinel.manifest?.unavailable) && Object.keys(sentinel.manifest).length === 1)
+);
+assert.equal(typeof sentinel.ended_at, "string");
+assert.ok(Number.isFinite(Date.parse(sentinel.ended_at)));
 assert.equal(sentinel.integrity?.algorithm, "sha256");
+assert.equal(typeof sentinel.integrity?.recipe, "string");
 assert.equal(sentinel.integrity?.sentinel_sha256, selfDigest(sentinel));
 
 process.stdout.write(`${JSON.stringify(sentinel)}\n`);

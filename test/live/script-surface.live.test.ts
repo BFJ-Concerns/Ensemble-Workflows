@@ -97,7 +97,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
 
         const model = "gpt-5.6-terra";
         const metadata = {
-          effort: "ultra",
+          effort: "high",
           label: "release candidate: Δ / unusual",
           phase: "verify → final consumer"
         };

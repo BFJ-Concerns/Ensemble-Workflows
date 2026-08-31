@@ -433,7 +433,9 @@ engine is held at its one-shot surface).
   read back like any one-shot call's, grouped by session id. A transcript
   reference is present only for a non-empty archived transcript; a turn
   without one keeps `transcripts: []` and names the reason in
-  `transcripts_unavailable`. A session
+  `transcripts_unavailable`. A held-session follow-up with no retained client
+  capture declares `session-client-capture-gap`, rather than claiming the
+  engine was silent. A session
   using `isolation: 'worktree'` works one worktree for its whole life,
   finalised at session close.
 - **Claude mechanics worth knowing:** follow-up turns ride the tmux reply
@@ -572,7 +574,8 @@ It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record whose engine left no transcript
 keeps `transcripts` as `[]` and carries the reason in
 `transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
-`worker-timed-out`, or `engine-produced-no-transcript` — so consumers can
+`worker-timed-out`, `session-client-capture-gap`, or
+`engine-produced-no-transcript` — so consumers can
 distinguish an empty archive from engine silence without changing the array's
 shape.
 Successful schema agents record `parse_route` as `direct`,

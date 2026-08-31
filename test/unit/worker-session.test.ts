@@ -46,25 +46,18 @@ function turnResult(text: string, overrides: Partial<TurnResult> = {}): TurnResu
 }
 
 /** A usage event whose totals land in the budget ledger. */
-function spendEvent(threadId: string, tokens: number): TurnResult["tokenUsageEvents"][number] {
-  const breakdown = { cachedInputTokens: 0, inputTokens: tokens, outputTokens: 0, totalTokens: tokens };
-  return {
-    threadId,
-    turnId: `${threadId}:turn`,
-    last: breakdown,
-    total: breakdown,
-    raw: { threadId, turnId: `${threadId}:turn`, tokenUsage: { last: breakdown, total: breakdown } }
-  };
-}
-
-/** A Codex report whose cumulative total advances by the per-turn `last` delta. */
-function cumulativeSpendEvent(
+function spendEvent(
   threadId: string,
-  lastTokens: number,
-  cumulativeTokens: number
+  tokens: number,
+  cumulativeTokens = tokens
 ): TurnResult["tokenUsageEvents"][number] {
-  const last = { cachedInputTokens: 0, inputTokens: lastTokens, outputTokens: 0, totalTokens: lastTokens };
-  const total = { cachedInputTokens: 0, inputTokens: cumulativeTokens, outputTokens: 0, totalTokens: cumulativeTokens };
+  const last = { cachedInputTokens: 0, inputTokens: tokens, outputTokens: 0, totalTokens: tokens };
+  const total = {
+    cachedInputTokens: 0,
+    inputTokens: cumulativeTokens,
+    outputTokens: 0,
+    totalTokens: cumulativeTokens
+  };
   return {
     threadId,
     turnId: `${threadId}:turn`,
@@ -216,7 +209,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
     turnResult("first", {
       resolvedModel: "gpt-5.6-terra-2026-08-30",
       resolvedEffort: "low",
-      tokenUsageEvents: [cumulativeSpendEvent("thread-1", 10, 10)],
+      tokenUsageEvents: [spendEvent("thread-1", 10)],
       transcripts: [
         {
           filename: "first-turn.jsonl",
@@ -230,7 +223,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
     turnResult("second", {
       // Codex reports a cumulative thread total as well as this turn's
       // delta. The archive summary must retain the latter's per-call shape.
-      tokenUsageEvents: [cumulativeSpendEvent("thread-1", 20, 30)],
+      tokenUsageEvents: [spendEvent("thread-1", 20, 30)],
       transcripts: [
         {
           filename: "empty-follow-up.jsonl",
@@ -277,7 +270,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
       "a manifested transcript must name non-empty archived content"
     );
     assert.deepEqual(second.transcripts, []);
-    assert.equal(second.transcripts_unavailable, "engine-produced-no-transcript");
+    assert.equal(second.transcripts_unavailable, "session-client-capture-gap");
   } finally {
     await runtime.close();
     await rm(store, { recursive: true, force: true });

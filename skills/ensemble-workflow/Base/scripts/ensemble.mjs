@@ -15138,6 +15138,9 @@ function transcriptAbsenceReason(record) {
   if (record.status === "timed-out") {
     return "worker-timed-out";
   }
+  if (record.session !== null) {
+    return "session-client-capture-gap";
+  }
   return "engine-produced-no-transcript";
 }
 function agentUsage(record) {

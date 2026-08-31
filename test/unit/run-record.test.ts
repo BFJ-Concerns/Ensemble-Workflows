@@ -1215,28 +1215,28 @@ test("the reaper flips provably-dead in-progress runs and leaves every judged-li
     await writeProcStat(proc, 54321, "2222");
 
     const host = hostname();
-    await writeRunManifest(namespaceDir, "dead-run", {
+    await writeAttestedRunManifest(namespaceDir, "dead-run", {
       status: "in-progress",
       owner: { pid: 999999, start_ticks: "3333", host }
     });
-    await writeRunManifest(namespaceDir, "reused-pid-run", {
+    await writeAttestedRunManifest(namespaceDir, "reused-pid-run", {
       status: "in-progress",
       owner: { pid: 54321, start_ticks: "9999", host }
     });
-    await writeRunManifest(namespaceDir, "live-run", {
+    await writeAttestedRunManifest(namespaceDir, "live-run", {
       status: "in-progress",
       owner: { pid: 54321, start_ticks: "2222", host }
     });
-    await writeRunManifest(namespaceDir, "foreign-host-run", {
+    await writeAttestedRunManifest(namespaceDir, "foreign-host-run", {
       status: "in-progress",
       owner: { pid: 999998, start_ticks: "4", host: "elsewhere.invalid" }
     });
-    await writeRunManifest(namespaceDir, "no-evidence-run", {
+    await writeAttestedRunManifest(namespaceDir, "no-evidence-run", {
       status: "in-progress",
       owner: { pid: 999997, start_ticks: null, host }
     });
     await writeRunManifest(namespaceDir, "legacy-run", { status: "in-progress", run_uuid: "legacy" });
-    await writeRunManifest(namespaceDir, "finished-run", {
+    await writeAttestedRunManifest(namespaceDir, "finished-run", {
       status: "complete",
       owner: { pid: 999999, start_ticks: "3333", host }
     });
@@ -1269,6 +1269,51 @@ test("the reaper flips provably-dead in-progress runs and leaves every judged-li
   }
 });
 
+test("a cold archive reader rejects the old reap shape and verifies every reaper rewrite route", async () => {
+  const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-integrity-ns-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-integrity-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    await writeProcStat(proc, 54321, "2222");
+    const host = hostname();
+    const owner = { pid: 999999, start_ticks: "3333", host };
+
+    // The old standalone rewrite changed these fields but retained the
+    // previous self-digest. A cold reader must observe that breakage.
+    await writeAttestedRunManifest(namespaceDir, "pre-fix", { status: "in-progress", owner });
+    const preFix = await readRunManifest(namespaceDir, "pre-fix");
+    preFix.status = "abandoned";
+    preFix.abandonment = {
+      observed_at: "2026-08-30T00:00:00.000Z",
+      reason: "owner-process-gone",
+      observed_by: { pid: process.pid, run_uuid: "sweeper-run" }
+    };
+    await writeFile(path.join(namespaceDir, "pre-fix", "manifest.json"), `${canonicalJson(preFix)}\n`);
+    assert.equal((await readArchiveIntegrity(path.join(namespaceDir, "pre-fix"))).manifestVerified, false);
+
+    await writeAttestedRunManifest(namespaceDir, "dead-run", { status: "in-progress", owner });
+    await writeAttestedRunManifest(namespaceDir, "live-run", {
+      status: "in-progress",
+      owner: { pid: 54321, start_ticks: "2222", host }
+    });
+    const liveBefore = await readFile(path.join(namespaceDir, "live-run", "manifest.json"), "utf8");
+    const reaped = await reapAbandonedRuns({
+      namespaceDir,
+      procDir: proc,
+      observer: { pid: process.pid, runUuid: "sweeper-run" }
+    });
+
+    assert.deepEqual(reaped, ["dead-run"]);
+    const direct = await readArchiveIntegrity(path.join(namespaceDir, "dead-run"));
+    assert.equal(direct.status, "abandoned");
+    assert.equal(direct.manifestVerified, true);
+    assert.equal(await readFile(path.join(namespaceDir, "live-run", "manifest.json"), "utf8"), liveBefore);
+  } finally {
+    await rm(namespaceDir, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+  }
+});
+
 test("a new writer records its own liveness evidence and reaps its dead siblings at start", async () => {
   const cwd = await gitRepo("ensemble-reap-start-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-reap-store-"));
@@ -1277,10 +1322,10 @@ test("a new writer records its own liveness evidence and reaps its dead siblings
     await writeProcStat(proc, process.pid, "1111");
     const siblingDir = await resolveRunDirectory(store, cwd, "dead-sibling");
     await mkdir(siblingDir, { recursive: true });
-    await writeFile(
-      path.join(siblingDir, "manifest.json"),
-      `${JSON.stringify({ status: "in-progress", owner: { pid: 999999, start_ticks: "3", host: hostname() } })}\n`
-    );
+    await writeAttestedRunManifest(path.dirname(siblingDir), path.basename(siblingDir), {
+      status: "in-progress",
+      owner: { pid: 999999, start_ticks: "3", host: hostname() }
+    });
 
     const writer = await RunRecordWriter.start({
       storeDir: store,
@@ -1295,6 +1340,7 @@ test("a new writer records its own liveness evidence and reaps its dead siblings
 
     const sibling = JSON.parse(await readFile(path.join(siblingDir, "manifest.json"), "utf8")) as Record<string, unknown>;
     assert.equal(sibling.status, "abandoned");
+    assert.equal((await readArchiveIntegrity(siblingDir)).manifestVerified, true);
     const own = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
     const owner = own.owner as { pid: number; start_ticks: string | null; host: string };
     assert.equal(owner.pid, process.pid);
@@ -1322,6 +1368,25 @@ async function writeRunManifest(namespaceDir: string, runName: string, manifest:
   const dir = path.join(namespaceDir, runName);
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, "manifest.json"), `${JSON.stringify(manifest)}\n`);
+}
+
+async function writeAttestedRunManifest(
+  namespaceDir: string,
+  runName: string,
+  manifest: Record<string, unknown>
+): Promise<void> {
+  const attested = {
+    ...manifest,
+    files: [],
+    integrity: { algorithm: "sha256", files_lost: [], manifest_sha256: null as string | null }
+  };
+  attested.integrity.manifest_sha256 = manifestSelfDigest(attested);
+  await writeRunManifest(namespaceDir, runName, attested);
+}
+
+async function readArchiveIntegrity(archiveDir: string): Promise<{ status: string; manifestVerified: boolean }> {
+  const { stdout } = await execFileAsync(process.execPath, [path.resolve("test/consumers/read-archive-integrity.mjs"), archiveDir]);
+  return JSON.parse(stdout) as { status: string; manifestVerified: boolean };
 }
 
 async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
@@ -1393,8 +1458,10 @@ test("an interrupted worker's archive names its termination cause and why no tra
 
   const read = async (id: string) =>
     JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      schema_version: number;
       termination_cause: { kind: string; message: string } | null;
-      transcripts: unknown;
+      transcripts: unknown[];
+      transcripts_unavailable: string | null;
       attempts: Array<{
         failure: { kind: string; message: string } | null;
         observed_failure: { kind: string; message: string } | null;
@@ -1406,9 +1473,15 @@ test("an interrupted worker's archive names its termination cause and why no tra
     kind: "run-interrupted",
     message: "the run ended (interrupted) while this worker's turn was in flight"
   });
-  // No transcript survives an interruption, so the archive says why rather
-  // than showing an empty list a consumer would read as "the engine was silent".
-  assert.deepEqual(interruptedAgent.transcripts, { unavailable: "worker-interrupted" });
+  // This is a cold read of the real writer's v3 record. No transcript
+  // survives an interruption, but the array's type remains stable and its
+  // sibling carries the reason a consumer needs to interpret the empty list.
+  assert.equal(interruptedAgent.schema_version, 3);
+  const v3Keys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8")) as string[];
+  assert.deepEqual(Object.keys(interruptedAgent).sort(), v3Keys);
+  assert.ok(Array.isArray(interruptedAgent.transcripts));
+  assert.deepEqual(interruptedAgent.transcripts, []);
+  assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");
   // The attempt reads the same cause as the agent above it, and the symptom
   // its transport reported survives beside it rather than as the reason.
   assert.deepEqual(interruptedAgent.attempts[0]?.failure, {
@@ -1425,6 +1498,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.termination_cause, null);
   assert.equal(completedAgent.attempts[0]?.observed_failure, null);
   assert.ok(Array.isArray(completedAgent.transcripts));
+  assert.equal(completedAgent.transcripts_unavailable, null);
 });
 
 /**

@@ -847,10 +847,11 @@ export class RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      // Absence carries its reason, like `usage` — an empty list must not
-      // leave a consumer unable to tell "this worker produced none" from
-      // "the archive lost them".
-      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -1169,6 +1170,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        integrity?: { manifest_sha256?: string | null };
       };
       if (fresh.status !== "in-progress") {
         continue;
@@ -1179,6 +1181,15 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      // The reaper changes an attested manifest itself, so renew its
+      // self-attestation just as the writer does: null its field, hash the
+      // canonical form, then let the standalone helper atomically replace it.
+      // Pre-attestation manifests have no self-digest to renew, but remain
+      // eligible for the established reap route.
+      if (fresh.integrity !== undefined && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
       reaped.push(entry.name);
     } catch {

@@ -66,6 +66,9 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
+  systemErrorDiagnosticGraceDeadline: NodeJS.Timeout | undefined;
+  /** The honest terminal rendering if Codex never sends its separate error notification. */
+  systemErrorDiagnosticFallback: Error | undefined;
   firstOutputDeadline: NodeJS.Timeout | undefined;
   promise: Promise<TurnResult>;
   resolve: (result: TurnResult) => void;
@@ -93,6 +96,12 @@ const DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1_000;
  * closed its pipe still fails promptly.
  */
 const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+/**
+ * Codex can announce terminal systemError immediately before its separate
+ * diagnostic-bearing error notification. Retain the turn just long enough to
+ * preserve that diagnostic, while still rejecting an abandoned status promptly.
+ */
+const SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
 /**
  * Upper bound for one newline-delimited app-server frame before parsing. The
  * payload-depth cap protects the parsed shape; this bound protects the
@@ -727,30 +736,32 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        // The installed protocol carries only the terminal status and thread
-        // identity here. Do not manufacture an engine diagnostic from fields
-        // that are not part of that wire contract.
-        const diagnostic = {
-          code: undefined,
-          message: "Codex app-server reported terminal systemError without a diagnostic",
-          data: params
-        };
-        void this.#rejectTurn(
-          threadId,
-          turn,
-          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
-        );
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
       }
       return;
     }
 
     if (method === "turn/completed") {
       turn.completedAt = now;
+      // A systemError has already made this turn terminal. Codex normally
+      // follows it with an error notification carrying the useful diagnostic,
+      // but a completion frame cannot turn that failed turn into success.
+      if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback!);
+        return;
+      }
       this.#completeTurn(threadId, turn);
       return;
     }
 
     if (method === "error") {
+      // systemError is terminal, but Codex 0.151.0 puts its useful diagnostic
+      // in this following notification. It is not a retry promise in this
+      // state: the terminal status has already settled the turn's direction.
+      if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
@@ -817,6 +828,34 @@ export class CodexAppServerTransport implements RuntimeTransport {
       clearTimeout(turn.retryPromiseSilenceDeadline);
       turn.retryPromiseSilenceDeadline = undefined;
     }
+  }
+
+  #disarmSystemErrorDiagnosticGrace(turn: TurnState): void {
+    if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = undefined;
+    }
+  }
+
+  #armSystemErrorDiagnosticGrace(threadId: string, turn: TurnState, method: string, statusParams: JsonObject): void {
+    if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
+      return;
+    }
+    // The status envelope has no diagnostic fields in the installed protocol.
+    // Keep its fallback ready for either grace expiry or a misleading
+    // completion notification during the grace.
+    const diagnostic = {
+      code: undefined,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback!);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
   }
 
   #armRetryPromiseSilenceDeadline(threadId: string, turn: TurnState, promiseParams: JsonObject): void {
@@ -886,6 +925,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== undefined) {
       // #writeLine enters stdin.write synchronously, preserving wire order;
@@ -906,6 +946,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
@@ -982,6 +1023,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
+      systemErrorDiagnosticGraceDeadline: undefined,
+      systemErrorDiagnosticFallback: undefined,
       firstOutputDeadline: undefined,
       promise,
       resolve: resolveTurn,
@@ -1060,11 +1103,13 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
 
 function appServerErrorFromNotification(params: JsonObject): Error {
   const errorPayload = errorPayloadFromNotification(params);
-  const error =
-    errorPayload.code === "serverOverloaded"
-      ? new AppServerOverloadedError("turn notification", errorPayload)
-      : new AppServerRequestError("turn notification", errorPayload);
-  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
 }
 
 function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {

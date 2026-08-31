@@ -270,7 +270,7 @@ Each JSON artefact carries `schema_version` (currently `3`) and `kind`
 Top-level fields: `run_id`, `run_uuid`, `caller_identity` (opaque invoker
 identity or `null`), `namespace` (strategy, id, hash,
 material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
-`"interrupted"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
+`"interrupted"`, `"incomplete"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
 `abandonment` (present on reaped manifests only), `started_at`/`ended_at` (ISO;
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
@@ -278,8 +278,12 @@ and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
 `git` (start/end HEAD, dirty flag, diff path), `environment` (OS arch/platform/
 release, Node version, tool versions for claude/codex/git/opencode), `harness`
 (package name, version, git commit), `result` (archive path, exit code),
+`error` (`{ kind, message }` or `null` — what ended the run; see the
+[root README](../../README.md#run-record-schema) for the full description),
 `cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
-path, size, SHA-256 for each archived artefact; the manifest itself is excluded).
+path, size, SHA-256 for each archived artefact; the manifest itself is excluded),
+`integrity` (`manifest_sha256` self-digest, `files_lost` entries; see the
+[root README](../../README.md#run-record-schema) for canonical semantics).
 
 ### Agent record (`agents/<id>/agent.json`)
 
@@ -302,6 +306,8 @@ message }` or `null`), `diagnostics`, `app_server_diagnostic`,
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
 `source`, and engine-specific ids (`session_id`, `thread_id`).
+`transcripts_unavailable` is `null` when that array has entries; otherwise it
+names why it is empty.
 
 ## Script shape
 
@@ -498,7 +504,7 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. `agents` is enforced mechanically: a per-thread `thread/start` config overlay (`agents.enabled = false`) removes the collaboration tool namespace from the tool schema Codex sends the model (measured 2026-08-28 on codex-cli 0.149.1; the overlay is per-thread and does not leak between siblings). `skills` **throws before the worker spawns**: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`) ride the per-dispatch settings file; deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses) | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. `agents` is enforced mechanically: a per-thread `thread/start` config overlay (`agents.enabled = false`) removes the collaboration tool namespace from the tool schema Codex sends the model (measured 2026-08-28 on codex-cli 0.149.1; the overlay is per-thread and does not leak between siblings). `skills` **throws before the worker spawns**: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement a live worker-boundary test observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -553,16 +559,18 @@ failure, and `termination_cause` names what settled a worker at that status
 attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record whose engine left no transcript
-carries `transcripts` as `{ "unavailable": <reason> }` — `no-attempt-ran`,
-`worker-interrupted`, `worker-timed-out`, or `engine-produced-no-transcript` —
-rather than an empty list a reader would take for engine silence.
+keeps `transcripts` as `[]` and carries the reason in
+`transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
+`worker-timed-out`, or `engine-produced-no-transcript` — so consumers can
+distinguish an empty archive from engine silence without changing the array's
+shape.
 Successful schema agents record `parse_route` as `direct`,
 `object-fallback`, or `array-fallback`; it remains `null` until a valid value is
 selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`, `muse-glimmer-30b`.
-The `local/…` entries are served by a self-hosted router and track
+The `local/…` entries are served by a local router and track
 what it actually serves; `src/opencode-model-registry.ts` carries the
 re-survey contract.
 
@@ -611,8 +619,25 @@ the durable-record store) that the launcher process itself writes when the
 run ends. It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
-ended the run, or `null`), and `workers` (`{ done, failed, unsettled }`, or
-`null` when the launcher never got far enough to count any). It also carries
+ended the run, or `null`), and `workers` (`{ done, failed, cut_short,
+unsettled }`, or `null` when the launcher never got far enough to count any).
+The worker tally is a partition of the run's workers, fixed at the moment the
+run ended: `done` and `failed` settled on their own account before that
+moment; `cut_short` counts the workers the run's end terminated; `unsettled`
+counts the workers the run abandoned, dispatched but with no outcome ever
+observed. When durable recording is enabled, each worker's record states the
+same thing the tally does — a `cut_short` worker's record names the run's own
+shutdown status (after a run whose script returned cleanly it reads
+`interrupted` with a `run-interrupted` cause, never `failed`), and an
+`unsettled` worker's record says exactly that. With recording disabled the
+sentinel is still written and its tally is the run's only worker-outcome
+surface — self-contained, with no per-worker records behind it. The counts are
+taken from the disposition the run's end decides for each worker, so a
+supervisor's tally never depends on which straggler teardown happened to
+settle first. A teardown that fails after a clean body is itself a failed end —
+the run may leave workers alive or the archive unsealed — so the sentinel
+reports `outcome: "failed"`, the teardown error as its `error`, and the
+process exits non-zero rather than publishing `complete` over it. It also carries
 `manifest` — the sealed manifest's self-digest (`{ sha256 }`), or
 `{ unavailable }` naming why there is none (`recording-disabled`,
 `manifest-unsealed`) — and its own `integrity.sentinel_sha256`, computed by
@@ -682,9 +707,10 @@ rejection itself is unchanged, invoking no engine.
   current Codex protocol supplies no diagnostic field on that notification,
   so Ensemble reports that absence rather than inventing request detail;
   retryability remains reserved for explicit transport-level signals.
-- **Budget**: each `agent()` call checks the engine's ceiling once, when it
-  starts (leaves the concurrency queue); once spend reaches the ceiling, a
-  call that has not yet started throws a budget-exhausted error. A call that
+- **Budget**: each `agent()` call checks the engine's ceiling once, at
+  dispatch — synchronously at the `agent()` call site, before the worker
+  enters the concurrency queue. Once spend reaches the ceiling, a
+  call that has not yet dispatched throws a budget-exhausted error. A call that
   starts under the ceiling runs its full retry bound even if spend crosses
   the ceiling mid-call, so a worker's own failure is never rewritten as
   budget exhaustion by concurrent spend; turns already started can

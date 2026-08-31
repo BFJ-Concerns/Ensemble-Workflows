@@ -115,6 +115,26 @@ interface UnsettledAgentRecord {
   stage: "dispatching" | "admitting";
 }
 
+/**
+ * The run's worker tally at shutdown, as a partition: every leg the run ever
+ * dispatched lands in exactly one bucket, and each bucket names what the
+ * leg's durable record says.
+ */
+export interface ShutdownTally {
+  /** Settled on their own account, successfully. */
+  done: number;
+  /** Settled on their own account, with a failure. */
+  failed: number;
+  /**
+   * Cut short by the run ending: their turn was in flight at an engine, so
+   * teardown reaches them and their record carries the run's own shutdown
+   * status (`interrupted` after a clean body, `timed-out`, `failed`).
+   */
+  cutShort: number;
+  /** The records close() abandons: dispatched, with no outcome ever observed. */
+  unsettled: number;
+}
+
 type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionResult }
   | { ok: false; error: unknown };
@@ -248,6 +268,11 @@ export class EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally: ShutdownTally | null = null;
   #closed = false;
   #workerSessions = new Set<WorkerSession>();
   #sessionCounter = 0;
@@ -1002,9 +1027,38 @@ export class EnsembleRuntime {
     return this.#completed;
   }
 
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * Each in-flight leg is counted by the disposition close() itself decides
+   * for it — abandoned where no outcome was ever observed, cut short where
+   * teardown settles it with the run's own shutdown status — so the
+   * sentinel's figures and the archive's records state the same thing.
+   */
+  shutdownTally(): ShutdownTally | null {
+    return this.#shutdownTally;
+  }
+
   async close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    // The in-flight legs are classified here, before the first await, and
+    // the classification is what teardown then acts on: a leg whose turn
+    // never reached an engine has no outcome to observe and is abandoned,
+    // while a leg in flight at an engine is cut short by teardown and
+    // settles with the run's own shutdown status. Deciding both here — and
+    // counting them from the same decision — is what makes the tally
+    // determinate rather than a race with whichever straggler lands first.
+    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
+      ({ record }) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = {
+      done: totals.done,
+      failed: totals.failed,
+      cutShort: inFlight.length - abandoning.length,
+      unsettled: abandoning.length
+    };
     // Held workers start closing now, but the wait for them overlaps the
     // engines' teardown below: a session with a server-held turn in flight
     // settles only when its transport dies, so awaiting sessions strictly
@@ -1016,17 +1070,15 @@ export class EnsembleRuntime {
     this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()]
-        .filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress")
-        .map(async ({ record }) => {
-          // The harness knows only that this leg outlived the run. Keep the
-          // dispatch evidence and name that absence of an observed outcome.
-          this.#abandonedAgentIds.add(record.id);
-          // Keep the dispatch record's evidence (including its empty attempts)
-          // and overwrite that one record through the normal writer path.
-          record.status = "abandoned";
-          await this.#recordAgentSafely(record);
-        })
+      abandoning.map(async (record) => {
+        // The harness knows only that this leg outlived the run. Keep the
+        // dispatch evidence and name that absence of an observed outcome.
+        this.#abandonedAgentIds.add(record.id);
+        // Keep the dispatch record's evidence (including its empty attempts)
+        // and overwrite that one record through the normal writer path.
+        record.status = "abandoned";
+        await this.#recordAgentSafely(record);
+      })
     );
     await this.#engines.close();
     await sessionCloses;

@@ -14907,6 +14907,8 @@ var RunRecordWriter = class _RunRecordWriter {
       event: kind,
       verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
+      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -15377,6 +15379,9 @@ function holdEventKind(method) {
       return null;
   }
 }
+function isAttemptedVerdictState(value) {
+  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
+}
 function extractTask(meta) {
   if (typeof meta !== "object" || meta === null || !("task" in meta)) {
     return null;
@@ -15705,14 +15710,236 @@ function assertPositiveIntegerOption(options, option, maximum) {
 }
 
 // src/holds.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { homedir as homedir2, hostname as hostname2 } from "node:os";
+import path6 from "node:path";
+
+// src/status-file.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
+import { link, readFile as readFile2, readdir as readdir2, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import { hostname } from "node:os";
 import path5 from "node:path";
+var STATUS_FILENAME = "ensemble.local.json";
+var DEFAULT_HEARTBEAT_MS = 1e4;
+var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
+async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
+  if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
+    return false;
+  }
+  if (typeof owner.start_ticks !== "string") {
+    return false;
+  }
+  const liveTicks = await readProcessStartTicks(procDir, owner.pid);
+  if (liveTicks === owner.start_ticks) {
+    return false;
+  }
+  if (liveTicks === null && await readProcessStartTicks(procDir, process.pid) === null) {
+    return false;
+  }
+  return true;
+}
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile2, readdir: readdir2, rename: rename3, unlink, writeFile: writeFile3 };
+var StatusFileWriter = class {
+  #progress;
+  #dir;
+  #onError;
+  #fileOperations;
+  #unsubscribe;
+  #writing = null;
+  #dirty = false;
+  #closed = false;
+  #tmpSeq = 0;
+  #heartbeat;
+  #initialSweep;
+  #ownerEvidence;
+  #procDir;
+  constructor(options) {
+    this.#progress = options.progress;
+    this.#dir = options.dir;
+    this.#onError = options.onError;
+    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    const procDir = options.procDir ?? "/proc";
+    this.#procDir = procDir;
+    this.#ownerEvidence = (async () => ({
+      host: hostname(),
+      pid: process.pid,
+      start_ticks: await readProcessStartTicks(procDir, process.pid)
+    }))();
+    this.#initialSweep = this.#sweepStaleArtifacts();
+    this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+    this.#heartbeat.unref();
+    this.#request();
+  }
+  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
+  async close() {
+    this.#closed = true;
+    clearInterval(this.#heartbeat);
+    this.#unsubscribe();
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
+    await this.#removeSnapshot();
+  }
+  #request() {
+    if (this.#closed) {
+      return;
+    }
+    this.#dirty = true;
+    this.#drain();
+  }
+  #drain() {
+    if (this.#writing !== null || !this.#dirty) {
+      return;
+    }
+    this.#dirty = false;
+    this.#writing = this.#write().finally(() => {
+      this.#writing = null;
+      this.#drain();
+    });
+  }
+  async #write() {
+    try {
+      await this.#writeAtomic(this.#progress.snapshot());
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+    }
+  }
+  async #writeAtomic(snapshot) {
+    await this.#initialSweep;
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
+    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
+`, "utf8");
+    await this.#fileOperations.rename(tmp, target);
+  }
+  async #removeSnapshot() {
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
+    try {
+      await this.#fileOperations.rename(target, claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+      return;
+    }
+    let belongsToAnotherRun = false;
+    try {
+      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      belongsToAnotherRun = typeof current2.runId === "string" && current2.runId !== this.#progress.runId;
+    } catch {
+    }
+    if (belongsToAnotherRun) {
+      try {
+        await this.#fileOperations.link(claim, target);
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "EEXIST") {
+          this.#reportError(error);
+          try {
+            await this.#fileOperations.rename(claim, target);
+          } catch (renameError) {
+            this.#reportError(renameError);
+          }
+          return;
+        }
+      }
+    }
+    try {
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+    }
+  }
+  async #sweepStaleArtifacts() {
+    let entries;
+    try {
+      entries = await this.#fileOperations.readdir(this.#dir);
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+      return;
+    }
+    for (const entry of entries) {
+      const prefix = `${STATUS_FILENAME}.`;
+      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
+      const ownerPid = Number(match?.[1]);
+      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+        continue;
+      }
+      try {
+        await this.#fileOperations.unlink(path5.join(this.#dir, entry));
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "ENOENT") {
+          this.#reportError(error);
+        }
+      }
+    }
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
+    try {
+      await this.#fileOperations.rename(target, claim);
+    } catch {
+      return;
+    }
+    let ownerGone = false;
+    try {
+      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
+    } catch {
+    }
+    if (ownerGone) {
+      await this.#fileOperations.unlink(claim).catch(() => void 0);
+      return;
+    }
+    try {
+      await this.#fileOperations.link(claim, target);
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "EEXIST") {
+        await this.#fileOperations.unlink(claim).catch(() => void 0);
+        return;
+      }
+      try {
+        await this.#fileOperations.rename(claim, target);
+      } catch (renameError) {
+        this.#reportError(renameError);
+      }
+    }
+  }
+  #reportError(error) {
+    try {
+      this.#onError?.(error);
+    } catch {
+    }
+  }
+};
+function isNodeError2(error) {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isNodeError2(error) || error.code !== "ESRCH";
+  }
+}
+
+// src/holds.ts
 var DECISION_SUFFIX = ".decision.json";
 function defaultHoldsDirectory(env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir2(), ".local", "share");
-  return path5.join(dataHome2, "ensemble", "holds");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir2(), ".local", "share");
+  return path6.join(dataHome2, "ensemble", "holds");
 }
 var HoldManager = class {
   #dir;
@@ -15720,6 +15947,8 @@ var HoldManager = class {
   #cwd;
   #pollIntervalMs;
   #now;
+  #procDir;
+  #host;
   #onEvent;
   #onOpen;
   #onSettled;
@@ -15732,6 +15961,8 @@ var HoldManager = class {
     this.#cwd = options.cwd;
     this.#pollIntervalMs = options.pollIntervalMs ?? 500;
     this.#now = options.now ?? (() => Date.now());
+    this.#procDir = options.procDir ?? "/proc";
+    this.#host = options.host ?? hostname2();
     this.#onEvent = options.onEvent;
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
@@ -15743,9 +15974,9 @@ var HoldManager = class {
     }
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
-    const nonce = randomUUID();
-    const holdPath = path5.join(this.#dir, `${holdId}.json`);
-    const decisionPath = path5.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
+    const nonce = randomUUID2();
+    const holdPath = path6.join(this.#dir, `${holdId}.json`);
+    const decisionPath = path6.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
     const deadline = options.timeoutMs === void 0 ? null : raisedAt + options.timeoutMs;
     const record = {
@@ -15760,13 +15991,15 @@ var HoldManager = class {
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
       pid: process.pid,
+      owner: {
+        host: this.#host,
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+      },
       decision_path: decisionPath
     };
     await mkdir3(this.#dir, { recursive: true });
-    const tmp = `${holdPath}.${process.pid}.tmp`;
-    await writeFile3(tmp, `${JSON.stringify(record, null, 2)}
-`, { encoding: "utf8" });
-    await rename3(tmp, holdPath);
+    await publishHoldRecord(holdPath, record);
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
       holdId,
@@ -15790,7 +16023,7 @@ var HoldManager = class {
   async #awaitDecision(record, holdPath, decisionPath, deadline) {
     const grace = { lastUnparseable: null };
     for (; ; ) {
-      const decision = await this.#readDecision(record, decisionPath, grace);
+      const decision = await this.#readDecision(record, holdPath, decisionPath, grace);
       if (decision !== null) {
         this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
         return decision;
@@ -15809,10 +16042,10 @@ var HoldManager = class {
    * script as a decision. An unparseable file is rejected only once the
    * same bytes have survived a full poll (see the grace note above).
    */
-  async #readDecision(record, decisionPath, grace) {
+  async #readDecision(record, holdPath, decisionPath, grace) {
     let raw;
     try {
-      raw = await readFile2(decisionPath, "utf8");
+      raw = await readFile3(decisionPath, "utf8");
     } catch {
       grace.lastUnparseable = null;
       return null;
@@ -15823,9 +16056,9 @@ var HoldManager = class {
       const parsed = JSON.parse(raw);
       grace.lastUnparseable = null;
       if (parsed.nonce !== record.nonce) {
-        rejection = "stale-nonce";
+        rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
-        rejection = "invalid-verdict";
+        rejection = rejectedAnswer("invalid-verdict", parsed.verdict, this.#now());
       } else {
         decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
       }
@@ -15835,13 +16068,25 @@ var HoldManager = class {
         return null;
       }
       grace.lastUnparseable = null;
-      rejection = "malformed";
+      rejection = {
+        reason: "malformed",
+        attempted_verdict: null,
+        attempted_verdict_state: "unparseable",
+        rejected_at: new Date(this.#now()).toISOString()
+      };
     }
     if (decision !== null || rejection !== null) {
       await rm3(decisionPath, { force: true }).catch(() => void 0);
     }
     if (rejection !== null) {
-      this.#emit("hold/answerRejected", { holdId: record.hold_id, reason: rejection });
+      record.answer_rejection = rejection;
+      await publishHoldRecord(holdPath, record);
+      this.#emit("hold/answerRejected", {
+        holdId: record.hold_id,
+        reason: rejection.reason,
+        attemptedVerdict: rejection.attempted_verdict,
+        attemptedVerdictState: rejection.attempted_verdict_state
+      });
       return null;
     }
     return decision;
@@ -15868,10 +16113,10 @@ var HoldManager = class {
     this.#onEvent?.({ method, params, receivedAt: Date.now() });
   }
 };
-async function enumerateHolds(dir) {
+async function enumerateHolds(dir, options = {}) {
   let entries;
   try {
-    entries = await readdir2(dir);
+    entries = await readdir3(dir);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return [];
@@ -15883,19 +16128,37 @@ async function enumerateHolds(dir) {
     if (!entry.endsWith(".json") || entry.endsWith(DECISION_SUFFIX)) {
       continue;
     }
-    const holdPath = path5.join(dir, entry);
+    const holdPath = path6.join(dir, entry);
     try {
-      const record = JSON.parse(await readFile2(holdPath, "utf8"));
+      const record = JSON.parse(await readFile3(holdPath, "utf8"));
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
-      holds.push({ record, live: isProcessAlive(record.pid), path: holdPath });
+      if (await snapshotOwnerGone(record.owner, options.procDir, options.host)) {
+        await rm3(holdPath, { force: true });
+        continue;
+      }
+      holds.push({ record, live: isProcessAlive2(record.pid), path: holdPath });
     } catch {
     }
   }
   return holds;
 }
-function isProcessAlive(pid) {
+async function publishHoldRecord(holdPath, record) {
+  const tmp = `${holdPath}.${process.pid}.tmp`;
+  await writeFile4(tmp, `${JSON.stringify(record, null, 2)}
+`, { encoding: "utf8" });
+  await rename4(tmp, holdPath);
+}
+function rejectedAnswer(reason, verdict, now) {
+  return {
+    reason,
+    attempted_verdict: typeof verdict === "string" ? verdict : null,
+    attempted_verdict_state: typeof verdict === "string" ? "submitted" : "missing-or-non-string",
+    rejected_at: new Date(now).toISOString()
+  };
+}
+function isProcessAlive2(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     return false;
   }
@@ -15934,9 +16197,9 @@ function assertValidRaiseHoldOptions(options) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile4 } from "node:fs/promises";
+import { readFile as readFile5 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path7 from "node:path";
+import path8 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -21759,9 +22022,9 @@ function formatError(error) {
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access, readdir as readdir3, readFile as readFile3 } from "node:fs/promises";
+import { access, readdir as readdir4, readFile as readFile4 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -21770,10 +22033,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir3(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path7.join(homedir3(), ".local", "share");
   return {
-    project: path6.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path6.join(dataHome2, "ensemble", "workflows")
+    project: path7.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path7.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -21783,7 +22046,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path6.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path7.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access(scriptPath, constants.R_OK);
   } catch (error) {
@@ -21837,7 +22100,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir3(dir, { withFileTypes: true });
+    directoryEntries = await readdir4(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -21853,9 +22116,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path6.join(dir, entry.name);
+    const scriptPath = path7.join(dir, entry.name);
     try {
-      const source = await readFile3(scriptPath, "utf8");
+      const source = await readFile4(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -21995,8 +22258,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path7.resolve(options.filename);
-  const cwd = options.cwd ?? path7.dirname(resolvedFilename);
+  const resolvedFilename = path8.resolve(options.filename);
+  const cwd = options.cwd ?? path8.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -22372,7 +22635,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile4(scriptPath, "utf8");
+    return await readFile5(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -22760,17 +23023,17 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/agent-placement.ts
 import { stat as stat2 } from "node:fs/promises";
-import path9 from "node:path";
+import path10 from "node:path";
 
 // src/worktree-isolation.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
 import { mkdir as mkdir4, rmdir } from "node:fs/promises";
-import path8 from "node:path";
+import path9 from "node:path";
 import { promisify as promisify2 } from "node:util";
 var execFileAsync2 = promisify2(execFile2);
 var GitWorktreeIsolationManager = class {
@@ -22781,8 +23044,8 @@ var GitWorktreeIsolationManager = class {
     const repoRoot = await this.#gitRepoRoot(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir4(path8.dirname(worktreePath), { recursive: true });
+    const worktreePath = path9.join(path9.dirname(repoRoot), `${path9.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir4(path9.dirname(worktreePath), { recursive: true });
     await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
     this.#worktreeRoots.set(worktreePath, repoRoot);
@@ -22813,7 +23076,7 @@ var GitWorktreeIsolationManager = class {
     await git2(repoRoot, ["branch", "-D", worktree.branch]);
     this.#worktreeRoots.delete(worktree.path);
     try {
-      await rmdir(path8.dirname(worktree.path));
+      await rmdir(path9.dirname(worktree.path));
     } catch {
     }
     return {
@@ -22824,7 +23087,7 @@ var GitWorktreeIsolationManager = class {
     };
   }
   async #gitRepoRoot(baseCwd) {
-    const resolvedCwd = path8.resolve(baseCwd);
+    const resolvedCwd = path9.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === void 0) {
       repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
@@ -22843,7 +23106,7 @@ var GitWorktreeIsolationManager = class {
   }
   #uniqueName() {
     this.#counter += 1;
-    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
+    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID3().slice(0, 8)}`;
   }
 };
 async function git2(cwd, args) {
@@ -22873,7 +23136,7 @@ var AgentPlacementManager = class {
   baseCwd;
   #worktreeManager;
   constructor(options) {
-    this.baseCwd = path9.resolve(options.baseCwd);
+    this.baseCwd = path10.resolve(options.baseCwd);
     this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
   }
   async assertUsableCwd(options) {
@@ -22905,7 +23168,7 @@ var AgentPlacementManager = class {
   }
 };
 function resolveAgentCwd(baseCwd, requestedCwd) {
-  return path9.resolve(baseCwd, requestedCwd ?? ".");
+  return path10.resolve(baseCwd, requestedCwd ?? ".");
 }
 
 // src/admission.ts
@@ -23122,9 +23385,9 @@ function isJsonObject(value) {
 
 // src/claude-control-plane.ts
 import { execFile as execFile3, spawn } from "node:child_process";
-import { access as access2, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+import { access as access2, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir4, tmpdir } from "node:os";
-import path10 from "node:path";
+import path11 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 var ClaudeCliControlPlane = class {
@@ -23147,7 +23410,7 @@ var ClaudeCliControlPlane = class {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
     this.#env = { ...process.env, ...this.#workerEnv };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir4(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path11.join(homedir4(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -23167,7 +23430,7 @@ var ClaudeCliControlPlane = class {
       args.push("--fallback-model", options.fallbackModel);
     }
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path10.join(settingsDir, "settings.json"));
+    args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
     try {
       const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
@@ -23220,9 +23483,9 @@ var ClaudeCliControlPlane = class {
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
-    const dir = await mkdtemp(path10.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    const dir = await mkdtemp(path11.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
     try {
-      await writeFile4(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -23256,13 +23519,13 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path10.join(this.#projectsDir, dir, filename);
+      const candidate = path11.join(this.#projectsDir, dir, filename);
       try {
         await access2(candidate);
         return candidate;
@@ -23351,7 +23614,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir4(this.#procDir);
+      entries = await readdir5(this.#procDir);
     } catch {
       return [];
     }
@@ -23366,7 +23629,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -23475,10 +23738,10 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -23495,7 +23758,7 @@ function parseTranscriptText(text) {
 async function readTranscriptFile(path14) {
   let text;
   try {
-    text = await readFile6(path14, "utf8");
+    text = await readFile7(path14, "utf8");
   } catch (error) {
     throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
   }
@@ -24187,7 +24450,7 @@ var ClaudeEngineInvocation = class {
   }
   #nextName() {
     dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID4().slice(0, 8)}`;
   }
 };
 function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
@@ -25486,7 +25749,7 @@ function itemTypeFromItem(item) {
 
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -25725,7 +25988,7 @@ var OpenCodeEngineInvocation = class {
    * mistakes it for a real opencode session id.
    */
   #syntheticSessionId() {
-    return `opencode-no-session-${randomUUID4()}`;
+    return `opencode-no-session-${randomUUID5()}`;
   }
   #reportUsage(sessionId, total, cost) {
     const last = subtractUsage(total, this.#reportedUsage);
@@ -26987,7 +27250,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID5(),
+      runId: options.runId ?? randomUUID6(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -28129,226 +28392,6 @@ function decodeFailureDiagnosticFromParams(params) {
   return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
 }
 
-// src/status-file.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
-import { link, readFile as readFile7, readdir as readdir5, rename as rename4, unlink, writeFile as writeFile5 } from "node:fs/promises";
-import { hostname } from "node:os";
-import path11 from "node:path";
-var STATUS_FILENAME = "ensemble.local.json";
-var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
-async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
-  if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
-    return false;
-  }
-  if (typeof owner.start_ticks !== "string") {
-    return false;
-  }
-  const liveTicks = await readProcessStartTicks(procDir, owner.pid);
-  if (liveTicks === owner.start_ticks) {
-    return false;
-  }
-  if (liveTicks === null && await readProcessStartTicks(procDir, process.pid) === null) {
-    return false;
-  }
-  return true;
-}
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile7, readdir: readdir5, rename: rename4, unlink, writeFile: writeFile5 };
-var StatusFileWriter = class {
-  #progress;
-  #dir;
-  #onError;
-  #fileOperations;
-  #unsubscribe;
-  #writing = null;
-  #dirty = false;
-  #closed = false;
-  #tmpSeq = 0;
-  #heartbeat;
-  #initialSweep;
-  #ownerEvidence;
-  #procDir;
-  constructor(options) {
-    this.#progress = options.progress;
-    this.#dir = options.dir;
-    this.#onError = options.onError;
-    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
-    const procDir = options.procDir ?? "/proc";
-    this.#procDir = procDir;
-    this.#ownerEvidence = (async () => ({
-      host: hostname(),
-      pid: process.pid,
-      start_ticks: await readProcessStartTicks(procDir, process.pid)
-    }))();
-    this.#initialSweep = this.#sweepStaleArtifacts();
-    this.#unsubscribe = this.#progress.onChange(() => this.#request());
-    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
-    this.#heartbeat.unref();
-    this.#request();
-  }
-  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
-  async close() {
-    this.#closed = true;
-    clearInterval(this.#heartbeat);
-    this.#unsubscribe();
-    while (this.#writing !== null) {
-      await this.#writing;
-    }
-    await this.#removeSnapshot();
-  }
-  #request() {
-    if (this.#closed) {
-      return;
-    }
-    this.#dirty = true;
-    this.#drain();
-  }
-  #drain() {
-    if (this.#writing !== null || !this.#dirty) {
-      return;
-    }
-    this.#dirty = false;
-    this.#writing = this.#write().finally(() => {
-      this.#writing = null;
-      this.#drain();
-    });
-  }
-  async #write() {
-    try {
-      await this.#writeAtomic(this.#progress.snapshot());
-    } catch (error) {
-      if (!isNodeError2(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
-      }
-    }
-  }
-  async #writeAtomic(snapshot) {
-    await this.#initialSweep;
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
-    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
-`, "utf8");
-    await this.#fileOperations.rename(tmp, target);
-  }
-  async #removeSnapshot() {
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
-    try {
-      await this.#fileOperations.rename(target, claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-      return;
-    }
-    let belongsToAnotherRun = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      belongsToAnotherRun = typeof current2.runId === "string" && current2.runId !== this.#progress.runId;
-    } catch {
-    }
-    if (belongsToAnotherRun) {
-      try {
-        await this.#fileOperations.link(claim, target);
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "EEXIST") {
-          this.#reportError(error);
-          try {
-            await this.#fileOperations.rename(claim, target);
-          } catch (renameError) {
-            this.#reportError(renameError);
-          }
-          return;
-        }
-      }
-    }
-    try {
-      await this.#fileOperations.unlink(claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-    }
-  }
-  async #sweepStaleArtifacts() {
-    let entries;
-    try {
-      entries = await this.#fileOperations.readdir(this.#dir);
-    } catch (error) {
-      if (!isNodeError2(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
-      }
-      return;
-    }
-    for (const entry of entries) {
-      const prefix = `${STATUS_FILENAME}.`;
-      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
-      const ownerPid = Number(match?.[1]);
-      if (!Number.isSafeInteger(ownerPid) || isProcessAlive2(ownerPid)) {
-        continue;
-      }
-      try {
-        await this.#fileOperations.unlink(path11.join(this.#dir, entry));
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "ENOENT") {
-          this.#reportError(error);
-        }
-      }
-    }
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
-    try {
-      await this.#fileOperations.rename(target, claim);
-    } catch {
-      return;
-    }
-    let ownerGone = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
-    } catch {
-    }
-    if (ownerGone) {
-      await this.#fileOperations.unlink(claim).catch(() => void 0);
-      return;
-    }
-    try {
-      await this.#fileOperations.link(claim, target);
-      await this.#fileOperations.unlink(claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "EEXIST") {
-        await this.#fileOperations.unlink(claim).catch(() => void 0);
-        return;
-      }
-      try {
-        await this.#fileOperations.rename(claim, target);
-      } catch (renameError) {
-        this.#reportError(renameError);
-      }
-    }
-  }
-  #reportError(error) {
-    try {
-      this.#onError?.(error);
-    } catch {
-    }
-  }
-};
-function isNodeError2(error) {
-  return typeof error === "object" && error !== null && "code" in error;
-}
-function isProcessAlive2(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isNodeError2(error) || error.code !== "ESRCH";
-  }
-}
-
 // src/index.ts
 async function createRuntime2(options = {}) {
   return createRuntime(options);
@@ -28460,8 +28503,20 @@ async function runEnsembleCli(argv, options = {}) {
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
-      stdout.write(`  answer:   write {"nonce":"${record.nonce}","verdict":"\u2026"} to ${record.decision_path}
+      if (hold.live) {
+        const [firstVerdict, ...otherVerdicts] = record.verdicts;
+        stdout.write(
+          `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
+`
+        );
+      } else {
+        stdout.write("  status:   raiser is gone; this legacy pid-only record remains unjudgeable and is not answerable\n");
+      }
+      if (record.answer_rejection !== void 0) {
+        const attempted = record.answer_rejection.attempted_verdict === null ? record.answer_rejection.attempted_verdict_state : JSON.stringify(record.answer_rejection.attempted_verdict);
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})
 `);
+      }
       for (const line of record.content.split("\n")) {
         stdout.write(`  | ${line}
 `);

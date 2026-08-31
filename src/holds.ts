@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
 
 import { HoldRejectedError, HoldTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { readProcessStartTicks } from "./run-record.js";
+import { snapshotOwnerGone } from "./status-file.js";
 
 import type { RuntimeEvent } from "./types.js";
 
@@ -50,8 +52,25 @@ export interface HoldFileRecord {
   cwd: string;
   /** The raising process — liveness evidence for the cross-run listing. */
   pid: number;
+  /**
+   * Evidence that lets a later reader prove the raiser has gone, rather than
+   * mistaking a reused pid or an unreadable proc filesystem for abandonment.
+   * Older records have no owner block and remain readable but unjudgeable.
+   */
+  owner?: { host: string; pid: number; start_ticks: string | null };
+  /** The latest rejected answer, republished for the decider who made it. */
+  answer_rejection?: HoldAnswerRejection;
   /** Where the decider writes the answer: `{ "nonce", "verdict", "note"? }`. */
   decision_path: string;
+}
+
+export interface HoldAnswerRejection {
+  reason: "stale-nonce" | "invalid-verdict" | "malformed";
+  /** The submitted verdict when the rejected file was parseable enough to carry one. */
+  attempted_verdict: string | null;
+  /** Explains a null attempted verdict instead of silently discarding what was knowable. */
+  attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable";
+  rejected_at: string;
 }
 
 /** One enumerated hold, with the listing's own liveness reading beside it. */
@@ -80,6 +99,10 @@ export interface HoldManagerOptions {
   /** Gap between decision-file polls. Tests inject a tiny value. */
   pollIntervalMs?: number;
   now?: () => number;
+  /** Injectable proc root for liveness evidence; production reads `/proc`. */
+  procDir?: string;
+  /** Injectable host identity for liveness evidence. */
+  host?: string;
   /** Raise/answer/timeout (and rejected-answer) events for the runtime's listeners. */
   onEvent?: (event: RuntimeEvent) => void;
   /** Live-status hooks: the snapshot shows open holds while they wait. */
@@ -93,6 +116,8 @@ export class HoldManager {
   #cwd: string;
   #pollIntervalMs: number;
   #now: () => number;
+  #procDir: string;
+  #host: string;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #onOpen: HoldManagerOptions["onOpen"];
   #onSettled: HoldManagerOptions["onSettled"];
@@ -106,6 +131,8 @@ export class HoldManager {
     this.#cwd = options.cwd;
     this.#pollIntervalMs = options.pollIntervalMs ?? 500;
     this.#now = options.now ?? (() => Date.now());
+    this.#procDir = options.procDir ?? "/proc";
+    this.#host = options.host ?? hostname();
     this.#onEvent = options.onEvent;
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
@@ -135,6 +162,11 @@ export class HoldManager {
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
       pid: process.pid,
+      owner: {
+        host: this.#host,
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+      },
       decision_path: decisionPath
     };
 
@@ -142,9 +174,7 @@ export class HoldManager {
     // the opt-in status directory, there is no configuration to validate.
     await mkdir(this.#dir, { recursive: true });
     // Atomic publish: a decider never reads a half-written hold.
-    const tmp = `${holdPath}.${process.pid}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
-    await rename(tmp, holdPath);
+    await publishHoldRecord(holdPath, record);
 
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
@@ -184,7 +214,7 @@ export class HoldManager {
     // still growing reads differently next poll and is left alone.
     const grace = { lastUnparseable: null as string | null };
     for (;;) {
-      const decision = await this.#readDecision(record, decisionPath, grace);
+      const decision = await this.#readDecision(record, holdPath, decisionPath, grace);
       if (decision !== null) {
         this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
         return decision;
@@ -206,6 +236,7 @@ export class HoldManager {
    */
   async #readDecision(
     record: HoldFileRecord,
+    holdPath: string,
     decisionPath: string,
     grace: { lastUnparseable: string | null }
   ): Promise<HoldDecision | null> {
@@ -216,15 +247,15 @@ export class HoldManager {
       grace.lastUnparseable = null;
       return null;
     }
-    let rejection: string | null = null;
+    let rejection: HoldAnswerRejection | null = null;
     let decision: HoldDecision | null = null;
     try {
       const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown };
       grace.lastUnparseable = null;
       if (parsed.nonce !== record.nonce) {
-        rejection = "stale-nonce";
+        rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
-        rejection = "invalid-verdict";
+        rejection = rejectedAnswer("invalid-verdict", parsed.verdict, this.#now());
       } else {
         decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
       }
@@ -237,7 +268,12 @@ export class HoldManager {
         return null;
       }
       grace.lastUnparseable = null;
-      rejection = "malformed";
+      rejection = {
+        reason: "malformed",
+        attempted_verdict: null,
+        attempted_verdict_state: "unparseable",
+        rejected_at: new Date(this.#now()).toISOString()
+      };
     }
     if (decision !== null || rejection !== null) {
       // Consumed on any judgement: a rejected file left in place would be
@@ -246,7 +282,14 @@ export class HoldManager {
       await rm(decisionPath, { force: true }).catch(() => undefined);
     }
     if (rejection !== null) {
-      this.#emit("hold/answerRejected", { holdId: record.hold_id, reason: rejection });
+      record.answer_rejection = rejection;
+      await publishHoldRecord(holdPath, record);
+      this.#emit("hold/answerRejected", {
+        holdId: record.hold_id,
+        reason: rejection.reason,
+        attemptedVerdict: rejection.attempted_verdict,
+        attemptedVerdictState: rejection.attempted_verdict_state
+      });
       return null;
     }
     return decision;
@@ -281,7 +324,10 @@ export class HoldManager {
  * a liveness reading of its raising process so a watcher can tell a waiting
  * run from an orphaned file a killed run left behind.
  */
-export async function enumerateHolds(dir: string): Promise<EnumeratedHold[]> {
+export async function enumerateHolds(
+  dir: string,
+  options: { procDir?: string; host?: string } = {}
+): Promise<EnumeratedHold[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -306,12 +352,37 @@ export async function enumerateHolds(dir: string): Promise<EnumeratedHold[]> {
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
+      if (await snapshotOwnerGone(record.owner, options.procDir, options.host)) {
+        // Only a record that carries matching host/pid/start-ticks evidence
+        // is ours to remove. Old, foreign, and unparseable records remain.
+        await rm(holdPath, { force: true });
+        continue;
+      }
       holds.push({ record, live: isProcessAlive(record.pid), path: holdPath });
     } catch {
       // A half-removed or foreign file is not a hold; the listing skips it.
     }
   }
   return holds;
+}
+
+async function publishHoldRecord(holdPath: string, record: HoldFileRecord): Promise<void> {
+  const tmp = `${holdPath}.${process.pid}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
+  await rename(tmp, holdPath);
+}
+
+function rejectedAnswer(
+  reason: "stale-nonce" | "invalid-verdict",
+  verdict: unknown,
+  now: number
+): HoldAnswerRejection {
+  return {
+    reason,
+    attempted_verdict: typeof verdict === "string" ? verdict : null,
+    attempted_verdict_state: typeof verdict === "string" ? "submitted" : "missing-or-non-string",
+    rejected_at: new Date(now).toISOString()
+  };
 }
 
 function isProcessAlive(pid: number): boolean {

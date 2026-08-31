@@ -429,6 +429,10 @@ interface HoldEventEntry {
   verdict: string | null;
   /** The rejection reason on `answer-rejected`; null elsewhere. */
   reason: string | null;
+  /** The rejected file's submitted verdict; null only when the state explains why. */
+  attempted_verdict: string | null;
+  /** The evidence quality for `attempted_verdict`; null outside rejected answers. */
+  attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable" | null;
   at: string;
 }
 
@@ -726,6 +730,14 @@ export class RunRecordWriter {
       event: kind,
       verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      attempted_verdict:
+        kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string"
+          ? event.params.attemptedVerdict
+          : null,
+      attempted_verdict_state:
+        kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState)
+          ? event.params.attemptedVerdictState
+          : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -1376,6 +1388,10 @@ function holdEventKind(method: string): HoldEventEntry["event"] | null {
     default:
       return null;
   }
+}
+
+function isAttemptedVerdictState(value: unknown): value is NonNullable<HoldEventEntry["attempted_verdict_state"]> {
+  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
 }
 
 function extractTask(meta: unknown): unknown {

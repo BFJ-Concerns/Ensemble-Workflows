@@ -1938,6 +1938,63 @@ test("an empty workflows catalogue says what it found and where it looked", asyn
   assert.ok(stdout.text().includes(path.join(dataHome, "ensemble", "workflows")));
 });
 
+test("CLI holds renders real verdict choices, rejection feedback, and an orphan distinctly", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-"));
+  const dataHome = path.join(directory, "data-home");
+  const holdsDir = path.join(dataHome, "ensemble", "holds");
+  await mkdir(holdsDir, { recursive: true });
+  await writeFile(
+    path.join(holdsDir, "dead-hold.json"),
+    JSON.stringify({
+      schema_version: 1,
+      kind: "ensemble_hold",
+      run_id: "run-dead",
+      hold_id: "dead-hold",
+      nonce: "dead-nonce",
+      content: "abandoned question",
+      verdicts: ["approve", "reject"],
+      raised_at: new Date(0).toISOString(),
+      timeout_at: null,
+      cwd: directory,
+      pid: 2 ** 30,
+      decision_path: path.join(holdsDir, "dead-hold.decision.json"),
+      answer_rejection: {
+        reason: "invalid-verdict",
+        attempted_verdict: "later",
+        attempted_verdict_state: "submitted",
+        rejected_at: new Date(1).toISOString()
+      }
+    })
+  );
+  await writeFile(
+    path.join(holdsDir, "live-hold.json"),
+    JSON.stringify({
+      schema_version: 1,
+      kind: "ensemble_hold",
+      run_id: "run-live",
+      hold_id: "live-hold",
+      nonce: "live-nonce",
+      content: "live question",
+      verdicts: ["approve", "reject"],
+      raised_at: new Date(0).toISOString(),
+      timeout_at: null,
+      cwd: directory,
+      pid: process.pid,
+      owner: { host: "other-host", pid: process.pid, start_ticks: null },
+      decision_path: path.join(holdsDir, "live-hold.decision.json")
+    })
+  );
+  const stdout = new CaptureStream();
+
+  assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout, stderr: new CaptureStream(), env: { XDG_DATA_HOME: dataHome } }), 0);
+  assert.match(stdout.text(), /verdicts: approve \| reject/);
+  assert.match(stdout.text(), /orphaned/);
+  assert.match(stdout.text(), /raiser is gone/);
+  assert.match(stdout.text(), /rejected: invalid-verdict \("later"\)/);
+  assert.match(stdout.text(), /"verdict":"approve".*\(or use "reject"\)/);
+  assert.doesNotMatch(stdout.text(), /"verdict":"…"/);
+});
+
 test("an unpinned Claude worker's resolution notice names the served model, like the Codex line", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-claude-resolved-"));
   const engine = new FixedResponseEngine("claude", "done", { model: "claude-opus-5" });

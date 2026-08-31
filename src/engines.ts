@@ -220,16 +220,17 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   and its failure mode on a Codex rename would be silent — the
    *   live proof is what re-arms this judgement per release.
    * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: repeated fresh `skills/list` calls
-   *   stabilise on filesystem and plugin-scope names after the cold-process
-   *   loader race; bundled skills are disabled and every stabilised name gets
-   *   an exact `skills.config` deny.
+   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
+   *   growing filesystem-and-plugin set and then repeat it. This rejects a
+   *   repeated cold state rather than mistaking it for complete discovery;
+   *   bundled skills are disabled and every accepted name gets an exact
+   *   `skills.config` deny.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
       route: "config",
       detail:
-        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name from stabilised app-server discovery, including plugin scope"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
     },
     agents: {
       route: "config",

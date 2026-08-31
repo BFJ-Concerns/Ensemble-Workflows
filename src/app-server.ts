@@ -122,6 +122,8 @@ export interface CodexAppServerTransportOptions {
   clientName: string;
   clientVersion: string;
   onEvent?: (event: RuntimeEvent) => void;
+  /** Test seam for discovery's deliberately time-spaced cold-start sampling. */
+  skillDiscoveryStabilityIntervalMs?: number;
 }
 
 /**
@@ -195,6 +197,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #retryPromiseSilenceTimeoutMs: number;
   #firstOutputTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
+  #skillDiscoveryStabilityIntervalMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
@@ -211,6 +214,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
+    this.#skillDiscoveryStabilityIntervalMs =
+      options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -299,19 +304,24 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {
     let previousNames: readonly string[] | undefined;
+    let observedExpansion = false;
     for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
       const names = await this.#listSkillsOnce(cwd);
-      if (previousNames !== undefined && sameStrings(previousNames, names)) {
+      if (observedExpansion && previousNames !== undefined && sameStrings(previousNames, names)) {
         return names;
+      }
+      if (previousNames !== undefined && strictlyContainsAll(names, previousNames)) {
+        observedExpansion = true;
       }
       previousNames = names;
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, SKILL_DISCOVERY_STABILITY_INTERVAL_MS));
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
       }
     }
     throw new AppServerRequestError("skills/list", {
       code: "unstable_discovery",
-      message: `skill discovery did not stabilise after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+      message:
+        `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
     });
   }
 
@@ -1249,6 +1259,11 @@ function asJsonObject(value: unknown): JsonObject | null {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/** A repeated cold set is not evidence that asynchronous skill loading finished. */
+function strictlyContainsAll(candidate: readonly string[], baseline: readonly string[]): boolean {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
 }
 
 function asRpcError(value: unknown): RpcErrorPayload {

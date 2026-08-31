@@ -976,12 +976,13 @@ test("Codex app-server sends a thread config overlay only when one is given", as
   }
 });
 
-test("Codex app-server waits for two matching fresh skill discoveries for the requested worker cwd", async () => {
+test("Codex app-server requires a discovered skill-set expansion before accepting a matching fresh result", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-list-"));
   const capturePath = path.join(directory, "requests.jsonl");
   const codexBin = await fakeCodexTurnServer({
     capturePath,
     skillResponses: [
+      ["repo-skill"],
       ["repo-skill"],
       ["plugin-management:plugin-management", "repo-skill"],
       ["repo-skill", "plugin-management:plugin-management"]
@@ -993,7 +994,8 @@ test("Codex app-server waits for two matching fresh skill discoveries for the re
     requestTimeoutMs: 2_000,
     startupHandshakeTimeoutMs: 2_000,
     clientName: "ensemble-test",
-    clientVersion: "0.0.0"
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
   });
   try {
     assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), [
@@ -1008,8 +1010,41 @@ test("Codex app-server waits for two matching fresh skill discoveries for the re
     assert.deepEqual(requests, [
       { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
       { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
+      { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
       { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } }
     ]);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server fails closed after ten cold skill discoveries", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-unstable-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({ capturePath, skillResponses: [["repo-skill"]] });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    await assert.rejects(
+      () => transport.listSkills("/fake/worker-cwd"),
+      (error: unknown) =>
+        error instanceof AppServerRequestError &&
+        error.code === "unstable_discovery" &&
+        error.message.includes("after 10 calls")
+    );
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((request) => request.method === "skills/list");
+    assert.equal(requests.length, 10);
   } finally {
     await transport.close();
   }

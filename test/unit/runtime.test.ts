@@ -1836,7 +1836,7 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name from stabilised app-server discovery, including plugin scope"
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
         }
       }
     });
@@ -1863,15 +1863,31 @@ test("a Codex skills strip fails loud before a thread opens when discovery is un
 
 test("a Codex agents-only strip keeps skills untouched", async () => {
   const transport = new FakeTransport([turn("restricted")], ["should-not-be-read"]);
+  const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({
     transport,
     concurrencyCaps: { codex: 1 },
     defaultMaxAttempts: 1
   });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
   try {
     await runtime.agent("restricted work", { engine: "codex", strip: ["agents"] });
     assert.deepEqual(transport.discoveredSkillCwds, []);
     assert.deepEqual(transport.openedThreads, [{ cwd: process.cwd(), threadConfig: { agents: { enabled: false } } }]);
+    assert.deepEqual(records[0]?.strip, {
+      requested: ["agents"],
+      enforcement: {
+        agents: {
+          route: "config",
+          detail:
+            "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+        }
+      }
+    });
   } finally {
     await runtime.close();
   }

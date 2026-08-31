@@ -622,13 +622,16 @@ handle — success, failure, timeout, interruption, salvage — carrying
 ended the run, or `null`), and `workers` (`{ done, failed, cut_short,
 unsettled }`, or `null` when the launcher never got far enough to count any).
 The worker tally is a partition of the run's workers, fixed at the moment the
-run ended and stating the same thing their durable records do: `done` and
-`failed` settled on their own account before that moment; `cut_short` counts
-the workers the run's end terminated, each of which carries a record naming
-the run's own shutdown status — after a run whose script returned cleanly
-those records read `interrupted` with a `run-interrupted` cause, never
-`failed`; `unsettled` counts the workers the run abandoned, dispatched but
-with no outcome ever observed, whose records say exactly that. The counts are
+run ended: `done` and `failed` settled on their own account before that
+moment; `cut_short` counts the workers the run's end terminated; `unsettled`
+counts the workers the run abandoned, dispatched but with no outcome ever
+observed. When durable recording is enabled, each worker's record states the
+same thing the tally does — a `cut_short` worker's record names the run's own
+shutdown status (after a run whose script returned cleanly it reads
+`interrupted` with a `run-interrupted` cause, never `failed`), and an
+`unsettled` worker's record says exactly that. With recording disabled the
+sentinel is still written and its tally is the run's only worker-outcome
+surface — self-contained, with no per-worker records behind it. The counts are
 taken from the disposition the run's end decides for each worker, so a
 supervisor's tally never depends on which straggler teardown happened to
 settle first. A teardown that fails after a clean body is itself a failed end —

@@ -339,8 +339,8 @@ test("a non-boolean identity value is rejected before any worker spawns", async 
 });
 
 test("an effort outside the canonical vocabulary is rejected before any worker spawns", async () => {
-  // Harness-owned domain: the judgement runs
-  // at agent(), spending nothing — the engine-judged alternative was measured
+  // Harness-owned domain: the judgement runs at
+  // agent(), spending nothing — the engine-judged alternative was measured
   // rejecting only after a live thread was paid for.
   const transport = new FakeTransport([]);
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
@@ -1589,6 +1589,94 @@ test("the shutdown tally is fixed at the moment the run ended, not at the moment
   // record carries the run's shutdown status: it is cut short, not
   // abandoned, and the tally says the same thing the record does.
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
+});
+
+test("a leg that settles on its own account during teardown is tallied by its record", async () => {
+  // The close-time classification decides teardown's actions, but the
+  // tally follows the records: a worker whose turn completes while
+  // teardown runs is done — a cut_short figure over a record reading
+  // complete would make the sentinel disagree with the archive.
+  let releaseTurn: ((result: TurnResult) => void) | null = null;
+  let markStarted: (() => void) | null = null;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: () =>
+        new Promise<TurnResult>((resolve) => {
+          releaseTurn = resolve;
+          markStarted?.();
+        })
+    }),
+    close: async () => {
+      releaseTurn?.(turn("finished anyway"));
+    }
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+
+  const agent = runtime.agent("outrace teardown", { engine: "codex" });
+  await started;
+  await runtime.close("interrupted");
+
+  assert.equal(await agent, "finished anyway");
+  assert.deepEqual(runtime.shutdownTally(), { done: 1, failed: 0, cutShort: 0, unsettled: 0 });
+});
+
+test("a queued leg the run's end cancels is recorded as queued, and still counts cut short", async () => {
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const onWire = runtime.agent("hold the slot", { engine: "codex" });
+  await transport.started;
+  const queued = runtime.agent("wait in the queue", { engine: "codex" });
+  while (records.length < 2) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  await runtime.close("interrupted");
+  await assert.rejects(onWire, EngineShutdownError);
+  await assert.rejects(queued, EngineShutdownError);
+
+  // The queued leg's turn never reached an engine, and its record says so
+  // instead of claiming an in-flight turn it never had.
+  const queuedSettled = records.filter((record) => record.id === 2).at(-1);
+  assert.equal(queuedSettled?.status, "interrupted");
+  assert.deepEqual(queuedSettled?.terminationCause, {
+    kind: "run-interrupted",
+    message: "the run ended (interrupted) before this worker's queued turn was dispatched"
+  });
+  assert.deepEqual(queuedSettled?.attempts, []);
+  // Both legs were settled by the run ending — on the wire or queued —
+  // so both are cut short, per the tally's own definition.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 2, unsettled: 0 });
+});
+
+test("a failed engine teardown rejects close() after cleanup completes, never silently", async () => {
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({ runAttempt: async () => turn("unused") }),
+    close: async () => {
+      throw new Error("engine cancel failed");
+    }
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+
+  // The failure is not swallowed (the cancellation promise stays
+  // attributable) — and it does not abort cleanup: the tally is still
+  // published behind the rejection.
+  await assert.rejects(() => runtime.close("interrupted"), /engine cancel failed/);
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 0, unsettled: 0 });
 });
 
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {

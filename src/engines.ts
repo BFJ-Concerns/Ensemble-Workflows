@@ -161,9 +161,22 @@ export class EngineRegistry {
   }
 
   async close(): Promise<void> {
-    // allSettled: one adapter's close failure must not stop the caller
-    // waiting for — and therefore observing — the others' teardown.
-    await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
+    // allSettled first: one adapter's close failure must not stop the
+    // caller waiting for — and therefore observing — the others' teardown.
+    // The failures are then rethrown together, once every adapter has
+    // settled: an engine cancel that failed silently would make the run's
+    // cancellation promise unattributable.
+    const results = await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failures.length === 1) {
+      throw failures[0]!.reason;
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        "engine teardown failed"
+      );
+    }
   }
 }
 

@@ -126,9 +126,12 @@ export interface ShutdownTally {
   /** Settled on their own account, with a failure. */
   failed: number;
   /**
-   * Cut short by the run ending: their turn was in flight at an engine, so
-   * teardown reaches them and their record carries the run's own shutdown
-   * status (`interrupted` after a clean body, `timed-out`, `failed`).
+   * Cut short by the run ending: teardown settled them with the run's own
+   * shutdown status (`interrupted` after a clean body, `timed-out`,
+   * `failed`) — whether their turn was on the wire at an engine or still
+   * queued at admission when the run ended. A leg that outraces teardown
+   * and settles on its own account while it runs lands in `done`/`failed`
+   * instead: every bucket says what the leg's durable record says.
    */
   cutShort: number;
   /** The records close() abandons: dispatched, with no outcome ever observed. */
@@ -264,6 +267,8 @@ export class EnsembleRuntime {
   // close() uses this to terminalise work a run ended before
   // the normal per-agent settlement path could run.
   #unsettledAgentRecords = new Map<number, UnsettledAgentRecord>();
+  /** close()'s settlement barrier: per-leg waiters resolved by #noteAgentSettled. */
+  #settlementWaiters = new Map<number, Array<() => void>>();
   // Once close() has made the only honest terminal transition for a record,
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = new Set<number>();
@@ -559,7 +564,7 @@ export class EnsembleRuntime {
       }
       throw error;
     } finally {
-      this.#unsettledAgentRecords.delete(agentId);
+      this.#noteAgentSettled(agentId);
     }
   }
 
@@ -751,7 +756,7 @@ export class EnsembleRuntime {
           throw error;
         }
       } finally {
-        this.#unsettledAgentRecords.delete(agentId);
+        this.#noteAgentSettled(agentId);
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
@@ -914,7 +919,9 @@ export class EnsembleRuntime {
       // counted as queued for ever.
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        this.#settleTerminalStatus(agentRecord, error);
+        // The task never started, so this leg was still queued — its
+        // termination record must not claim an in-flight turn.
+        this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -1028,11 +1035,13 @@ export class EnsembleRuntime {
   }
 
   /**
-   * The worker tally at the moment the run ended, or null before close().
-   * Each in-flight leg is counted by the disposition close() itself decides
-   * for it — abandoned where no outcome was ever observed, cut short where
-   * teardown settles it with the run's own shutdown status — so the
-   * sentinel's figures and the archive's records state the same thing.
+   * The worker tally for the run's end, or null before close() completes
+   * it. Legs close() abandons (no outcome ever observed) count `unsettled`
+   * by its own decision; every other leg is counted from what its durable
+   * record settled to during teardown — cut short where the run's ending
+   * is the recorded cause, done/failed where the leg settled on its own
+   * account — so the sentinel's figures and the archive's records state
+   * the same thing, including for a leg that outraced teardown.
    */
   shutdownTally(): ShutdownTally | null {
     return this.#shutdownTally;
@@ -1042,23 +1051,23 @@ export class EnsembleRuntime {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
     // The in-flight legs are classified here, before the first await, and
-    // the classification is what teardown then acts on: a leg whose turn
-    // never reached an engine has no outcome to observe and is abandoned,
-    // while a leg in flight at an engine is cut short by teardown and
-    // settles with the run's own shutdown status. Deciding both here — and
-    // counting them from the same decision — is what makes the tally
-    // determinate rather than a race with whichever straggler lands first.
-    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
-      ({ record }) => record.status === "in-progress"
+    // the classification decides what teardown *does*: a leg whose
+    // dispatch-time record write is still in flight has no outcome to
+    // observe and is abandoned, while a leg past dispatch — queued at
+    // admission or on the wire — is settled by teardown. The tally is not
+    // taken from this classification: it is derived after teardown from
+    // what each leg's record actually says, so a leg that settles on its
+    // own account while teardown runs is counted as its record reads
+    // (done, or failed) rather than as cut short.
+    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
+      ([, { record }]) => record.status === "in-progress"
     );
-    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
-    const totals = this.progress.snapshot().totals;
-    this.#shutdownTally = {
-      done: totals.done,
-      failed: totals.failed,
-      cutShort: inFlight.length - abandoning.length,
-      unsettled: abandoning.length
-    };
+    const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
+    const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
+    // Armed before any teardown so no settlement can slip between the
+    // classification and the wait.
+    const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
+    const totalsAtClose = this.progress.snapshot().totals;
     // Held workers start closing now, but the wait for them overlaps the
     // engines' teardown below: a session with a server-held turn in flight
     // settles only when its transport dies, so awaiting sessions strictly
@@ -1080,9 +1089,74 @@ export class EnsembleRuntime {
         await this.#recordAgentSafely(record);
       })
     );
-    await this.#engines.close();
-    await sessionCloses;
+    // Teardown failures are collected, never thrown mid-cleanup: cleanup
+    // runs to completion first, then close() rejects carrying every cause —
+    // a silently discarded engine or session teardown failure would leave
+    // a cancelled run's failure unattributable.
+    const teardownFailures: unknown[] = [];
+    try {
+      await this.#engines.close();
+    } catch (error) {
+      teardownFailures.push(error);
+    }
+    for (const result of await sessionCloses) {
+      if (result.status === "rejected") {
+        teardownFailures.push(result.reason);
+      }
+    }
     this.#workerSessions.clear();
+    // Teardown has now reached every classified leg (engine close cancels
+    // active invocations; admission and scheduler close reject queued
+    // ones), so this wait is bounded by the cancellation contract — and
+    // once it resolves, each leg's record holds its final disposition.
+    await settlementBarrier;
+    let done = totalsAtClose.done;
+    let failed = totalsAtClose.failed;
+    let cutShort = 0;
+    for (const [, { record }] of closing) {
+      if (record.status === "complete") {
+        done += 1;
+      } else if (record.terminationCause?.kind === `run-${status}`) {
+        cutShort += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    if (teardownFailures.length === 1) {
+      throw teardownFailures[0];
+    }
+    if (teardownFailures.length > 1) {
+      throw new AggregateError(teardownFailures, "run teardown failed to end cleanly");
+    }
+  }
+
+  /**
+   * Resolves when the identified leg's settlement bookkeeping has finished —
+   * its record status, cause, and settlement write are all final. Already
+   * settled resolves immediately.
+   */
+  #settledSignal(agentId: number): Promise<void> {
+    if (!this.#unsettledAgentRecords.has(agentId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters = this.#settlementWaiters.get(agentId) ?? [];
+      waiters.push(resolve);
+      this.#settlementWaiters.set(agentId, waiters);
+    });
+  }
+
+  /** The one place a leg leaves the unsettled set; wakes any close() waiting on it. */
+  #noteAgentSettled(agentId: number): void {
+    this.#unsettledAgentRecords.delete(agentId);
+    const waiters = this.#settlementWaiters.get(agentId);
+    if (waiters !== undefined) {
+      this.#settlementWaiters.delete(agentId);
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
   }
 
   /**
@@ -1093,11 +1167,16 @@ export class EnsembleRuntime {
    * run's exit rather than the turn's cause. Agent and attempt both read
    * their cause from here, so a record cannot disagree with its own attempts.
    */
-  #runSettlementCause(error: unknown): TerminalErrorRecord | null {
+  #runSettlementCause(error: unknown, dispatch: "in-flight" | "queued" = "in-flight"): TerminalErrorRecord | null {
     if (error instanceof EngineShutdownError || (error instanceof AppServerExitedError && this.#closed)) {
       return {
         kind: `run-${this.#shutdownAgentStatus}`,
-        message: `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+        // A queued leg's turn never reached an engine; saying it was in
+        // flight would claim a dispatch that never happened.
+        message:
+          dispatch === "queued"
+            ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched`
+            : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
       };
     }
     return null;
@@ -1107,8 +1186,8 @@ export class EnsembleRuntime {
    * Settles a record's terminal status *and* the cause that produced it, so
    * the two can never disagree.
    */
-  #settleTerminalStatus(record: RuntimeAgentRecord, error: unknown): void {
-    const settlement = this.#runSettlementCause(error);
+  #settleTerminalStatus(record: RuntimeAgentRecord, error: unknown, dispatch: "in-flight" | "queued" = "in-flight"): void {
+    const settlement = this.#runSettlementCause(error, dispatch);
     if (settlement !== null) {
       record.status = this.#shutdownAgentStatus;
       record.terminationCause = settlement;

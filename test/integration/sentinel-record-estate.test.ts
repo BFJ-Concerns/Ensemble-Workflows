@@ -43,11 +43,7 @@ test("cold archive reader retains failed-attempt duration and per-attempt retry 
         { model: "gpt-first", effort: "low" },
         { model: "gpt-second", effort: "high" }
       ]),
-      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[], []]),
-      // The measured loaded journey has taken 13.2 s.  Keep this deliberately
-      // slower retry journey below the 30 s estate cap while proving the cap
-      // has real headroom rather than only a few seconds of luck.
-      ENSEMBLE_FAKE_CODEX_COMPLETION_DELAY_MS: "8000"
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[], []])
     });
     assert.equal(run.code, 0, run.stderr);
     const archive = await estate.archive();

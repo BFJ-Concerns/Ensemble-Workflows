@@ -82,27 +82,55 @@ test("concurrent suite runners keep their hand-off state in separate namespaces"
   const secondPause = path.join(directory, "second-pause");
   await writeFile(childProgram, "");
   const first = startPausedSuite(directory, firstPause, childProgram);
-  const second = startPausedSuite(directory, secondPause, childProgram);
   try {
-    await Promise.all([waitForFile(`${firstPause}.child-pid`), waitForFile(`${secondPause}.child-pid`)]);
-    const namespaces = await readdir(directory, { withFileTypes: true });
-    const namespaceDirectories = namespaces.filter((entry) => entry.isDirectory());
-    assert.equal(namespaceDirectories.length, 2);
-    assert.ok(namespaceDirectories.every((entry) => entry.name.startsWith("ensemble-test-suite-run-")));
-    await Promise.all([writeFile(firstPause, "release\n"), writeFile(secondPause, "release\n")]);
-    const [firstResult, secondResult] = await Promise.all([
-      awaitCompletion(first.completed, "first concurrent suite did not finish"),
-      awaitCompletion(second.completed, "second concurrent suite did not finish")
-    ]);
-    assert.equal(firstResult.code, 0, firstResult.output);
-    assert.equal(secondResult.code, 0, secondResult.output);
+    await waitForFile(`${firstPause}.child-pid`);
+    const [firstNamespace] = await suiteNamespaces(directory);
+    assert.ok(firstNamespace, "the first suite needs a private namespace before the second recovery scan starts");
+    const firstHandoff = await onlyHandoffDirectory(path.join(directory, firstNamespace));
+
+    // Starting the second runner exercises its real shared-root recovery pass
+    // while the first wrapper is paused after spawning its child but before it
+    // can write owner.json. That pre-stamp hand-off must remain untouched.
+    const second = startPausedSuite(directory, secondPause, childProgram);
+    try {
+      await waitForFile(`${secondPause}.child-pid`);
+      await access(firstHandoff);
+      const namespaces = await suiteNamespaces(directory);
+      assert.equal(namespaces.length, 2);
+      assert.ok(namespaces.includes(firstNamespace));
+      assert.ok(namespaces.every((name) => name.startsWith("ensemble-test-suite-run-")));
+
+      await Promise.all([writeFile(firstPause, "release\n"), writeFile(secondPause, "release\n")]);
+      const [firstResult, secondResult] = await Promise.all([
+        awaitCompletion(first.completed, "first concurrent suite did not finish"),
+        awaitCompletion(second.completed, "second concurrent suite did not finish")
+      ]);
+      assert.equal(firstResult.code, 0, firstResult.output);
+      assert.equal(secondResult.code, 0, secondResult.output);
+      assert.deepEqual(await suiteNamespaces(directory), [], "each completed runner must remove only its own namespace");
+    } finally {
+      await writeFile(secondPause, "release\n");
+      await stopSuite(second);
+    }
   } finally {
     await writeFile(firstPause, "release\n");
-    await writeFile(secondPause, "release\n");
-    await Promise.all([stopSuite(first), stopSuite(second)]);
+    await stopSuite(first);
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+async function suiteNamespaces(directory: string): Promise<string[]> {
+  return (await readdir(directory, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-run-"))
+    .map((entry) => entry.name);
+}
+
+async function onlyHandoffDirectory(namespace: string): Promise<string> {
+  const handoffs = (await readdir(namespace, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("ensemble-test-suite-handoff-"));
+  assert.equal(handoffs.length, 1, "the paused suite must expose exactly one pre-stamp hand-off directory");
+  return path.join(namespace, handoffs[0]!.name);
+}
 
 async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-robustness-"));

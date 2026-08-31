@@ -61,7 +61,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json]
 - Workflow tuning flags must precede the script path. To pass a script argument
   that has the same spelling as a tuning flag, put `--` before the script path:
   `-- <script.js> --json-args`.
-- `--budget engine=N` sets a per-engine token ceiling; `--concurrency engine=N`
+- `--budget engine=N` sets a per-engine token-spend threshold checked at
+  dispatch; `--concurrency engine=N`
   caps that engine's parallel workers. Both repeatable, one engine each.
 - `--agent-ceiling N` caps all workers in the run across every engine. It is
   unset and unbounded by default; `--agent-ceiling null` explicitly lifts a

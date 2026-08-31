@@ -11,6 +11,7 @@ import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
+import { EngineShutdownError } from "../../src/errors.js";
 import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
@@ -981,6 +982,7 @@ class CaptureStream extends Writable {
 class HangOnPromptEngine implements EngineAdapter {
   readonly concurrency: number;
   readonly scheduler: Scheduler;
+  #activeInvocations = new Set<EngineInvocation>();
 
   constructor(
     readonly name: EngineName,
@@ -995,18 +997,31 @@ class HangOnPromptEngine implements EngineAdapter {
   }
 
   createInvocation(prompt: string): EngineInvocation {
-    return {
+    let rejectHang: ((error: Error) => void) | undefined;
+    const invocation: EngineInvocation = {
       runAttempt: async () => {
         if (prompt === "hang") {
-          await new Promise<never>(() => {});
+          await new Promise<never>((_resolve, reject) => {
+            rejectHang = reject;
+          });
         }
         return turn(`${this.name}:${prompt}`, 5);
+      },
+      // The adapter contract: close settles active invocations — the
+      // runtime's shutdown accounting waits on those settlements.
+      close: async () => {
+        this.#activeInvocations.delete(invocation);
+        rejectHang?.(new EngineShutdownError(this.name));
+        rejectHang = undefined;
       }
     };
+    this.#activeInvocations.add(invocation);
+    return invocation;
   }
 
   async close(): Promise<void> {
-    return Promise.resolve();
+    this.scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close?.()));
   }
 }
 

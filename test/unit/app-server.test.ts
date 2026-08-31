@@ -157,6 +157,28 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
   }
 });
 
+test("the ordinary systemError diagnostic grace expires at the declared 50ms bound with partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    const startedAt = performance.now();
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+    // This is a bound, not a scheduler-precision claim: 50ms is the declared
+    // grace and 150ms leaves one event-loop turn of contention tolerance.
+    assert.ok(performance.now() - startedAt < 150, "systemError grace exceeded its 50ms bound");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a systemError followed by completion remains a diagnostic-less terminal failure", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-completed");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));

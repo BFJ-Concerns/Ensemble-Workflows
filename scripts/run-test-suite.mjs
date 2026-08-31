@@ -16,7 +16,10 @@ const childCloseGraceMilliseconds = 1_000;
 // root for two hours so a recovery never races its owner, while ensuring a
 // wrapper killed between hand-off and stamping cannot leak the directory forever.
 const unstampedHandoffRetentionMilliseconds = 2 * 60 * 60 * 1_000;
-const temporaryRoot = tmpdir();
+// A gate invocation owns a private hand-off namespace.  Recovery state is
+// deliberately not shared between checkouts: a concurrent suite can neither
+// enumerate nor reclaim another suite's pre-stamp hand-off window.
+const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-test-suite-run-"));
 await recoverFinishedSuites(temporaryRoot);
 const pendingSuiteDirectory = await mkdtemp(path.join(temporaryRoot, pendingSuitePrefix(process.pid)));
 await mkdir(path.join(pendingSuiteDirectory, "schema-cache"));
@@ -94,7 +97,7 @@ async function finish(code, signal) {
   if (child.exitCode === null && child.signalCode === null) {
     await childClosed.catch(() => undefined);
   }
-  await rm(suiteDirectory, { recursive: true, force: true });
+  await rm(temporaryRoot, { recursive: true, force: true });
   if (signal !== null) {
     process.kill(process.pid, signal);
   }

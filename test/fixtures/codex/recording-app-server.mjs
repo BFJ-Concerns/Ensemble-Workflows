@@ -27,7 +27,9 @@ const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayloa
 
 const capturePath = process.env.ENSEMBLE_FAKE_CODEX_CAPTURE;
 const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
+const responseTexts = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_RESPONSES ?? "[]");
 const servedModel = process.env.ENSEMBLE_FAKE_CODEX_SERVED_MODEL ?? "gpt-estate-recorder";
+const threadResolutions = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_THREAD_RESOLUTIONS ?? "[]");
 const requiredThreadModel = process.env.ENSEMBLE_FAKE_CODEX_REQUIRE_THREAD_MODEL;
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
@@ -61,11 +63,11 @@ const send = (message, schemaPath, payload = message, options) => {
   validateCodexFixturePayload(schemaPath, payload, options);
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
-const finishTurn = (threadId, turnId) => {
+const finishTurn = (threadId, turnId, turnIndex) => {
   const item = {
     id: `agent-message-${turnId}`,
     type: "agentMessage",
-    text: responseText
+    text: responseTexts[turnIndex] ?? responseText
   };
   send({
     method: "item/completed",
@@ -174,7 +176,7 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
       if (completionDelayMs > 0) {
         await wait(completionDelayMs);
       }
-      finishTurn(threadId, turnId);
+      finishTurn(threadId, turnId, turnIndex);
     }
     return;
   }
@@ -190,11 +192,11 @@ const completeTurn = async ({ threadId, turnId, turnIndex }) => {
       }
     }, "ServerNotification.json");
     if (errorNotification.willRetry === true) {
-      finishTurn(threadId, turnId);
+      finishTurn(threadId, turnId, turnIndex);
     }
     return;
   }
-  finishTurn(threadId, turnId);
+  finishTurn(threadId, turnId, turnIndex);
 };
 
 const handleLine = (line) => {
@@ -224,6 +226,7 @@ const handleLine = (line) => {
       throw new Error(`thread/start model was ${JSON.stringify(message.params.model)}, expected ${JSON.stringify(requiredThreadModel)}`);
     }
     threadCounter += 1;
+    const resolution = threadResolutions[threadCounter - 1] ?? {};
     const response = {
       id: message.id,
       result: {
@@ -247,9 +250,9 @@ const handleLine = (line) => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         cwd: process.cwd(),
-        model: servedModel,
+        model: resolution.model ?? servedModel,
         modelProvider: "openai",
-        reasoningEffort: "medium",
+        reasoningEffort: resolution.effort ?? "medium",
         sandbox: { type: "dangerFullAccess" }
       }
     };

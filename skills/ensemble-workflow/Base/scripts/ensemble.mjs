@@ -14477,12 +14477,16 @@ import { createHash } from "node:crypto";
 function canonicalJson(value) {
   return JSON.stringify(sortJson(value), null, 2);
 }
+var DIGEST_RECIPE = "sha256 hex of the document with this digest field set to null, serialised as ECMA-262 JSON.stringify with two-space indent and no trailing newline, object keys sorted by UTF-16 code unit at every level (integer-index keys first in ascending numeric order, as ECMA-262 property enumeration places them)";
+function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 function sortJson(value) {
   if (Array.isArray(value)) {
     return value.map(sortJson);
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+    const entries = Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b));
     return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
   }
   return value;
@@ -14792,6 +14796,7 @@ var RunRecordWriter = class _RunRecordWriter {
       files: [],
       integrity: {
         algorithm: "sha256",
+        recipe: DIGEST_RECIPE,
         manifest_sha256: null,
         files_lost: []
       }
@@ -15055,7 +15060,7 @@ var RunRecordWriter = class _RunRecordWriter {
     await this.#trackFile(relativePath);
   }
   async #writeManifest() {
-    this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
     this.manifest.integrity.manifest_sha256 = null;
     this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path3.join(this.archiveDir, MANIFEST_PATH);
@@ -15077,7 +15082,7 @@ var RunRecordWriter = class _RunRecordWriter {
    */
   async #reconcileFiles() {
     const lost = [];
-    for (const entry of [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
       const metadata = await stat(path3.join(this.archiveDir, entry.path)).catch(() => null);
       if (metadata === null) {
         lost.push({ path: entry.path, reason: "missing" });
@@ -15090,10 +15095,12 @@ var RunRecordWriter = class _RunRecordWriter {
   /**
    * The sealed manifest's self-digest, for a consumer of this writer that
    * publishes an attestation elsewhere (the completion sentinel). Null
-   * before the first manifest write.
+   * until the archive seals: a mid-run digest is real but perishable —
+   * `finish()` rewrites the manifest — so publishing it outside the file
+   * it covers would attest bytes the seal then replaces.
    */
-  manifestDigest() {
-    return this.manifest.integrity.manifest_sha256;
+  sealedManifestDigest() {
+    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
   }
   async #trackFile(relativePath) {
     const absolute = path3.join(this.archiveDir, relativePath);
@@ -15443,10 +15450,11 @@ var CompletionSentinel = class {
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
       // Self-attestation, computed last over everything above it: the
       // digest of this payload with `integrity.sentinel_sha256` null, in
-      // the same canonical form (sorted keys, two-space indent) the run
-      // manifest uses, so one verification recipe covers both files. Like
-      // the manifest's, it catches an edited field, not a forger.
-      integrity: { algorithm: "sha256", sentinel_sha256: null }
+      // the same canonical form the run manifest uses, so one verification
+      // recipe covers both files — and the recipe rides the file itself,
+      // as the manifest's does. Like the manifest's, it catches an edited
+      // field, not a forger.
+      integrity: { algorithm: "sha256", recipe: DIGEST_RECIPE, sentinel_sha256: null }
     };
     payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {
@@ -15465,788 +15473,6 @@ var CompletionSentinel = class {
     }
   }
 };
-
-// src/claude-engine.ts
-import { randomUUID } from "node:crypto";
-
-// src/claude-transcript.ts
-import { readFile as readFile2 } from "node:fs/promises";
-function parseTranscriptText(text) {
-  const entries = [];
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const entry = parseLine(line);
-    if (entry !== null) {
-      entries.push(entry);
-    }
-  }
-  return entries;
-}
-async function readTranscriptFile(path14) {
-  let text;
-  try {
-    text = await readFile2(path14, "utf8");
-  } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
-  }
-  return { path: path14, text, entries: parseTranscriptText(text) };
-}
-function finalAssistantText(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const text = textFromContent(entry.message?.content);
-    if (text !== null && text.length > 0) {
-      return text;
-    }
-  }
-  return null;
-}
-var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
-function endsInSyntheticReply(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
-  }
-  return false;
-}
-function resolvedModelSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
-      return model;
-    }
-  }
-  return null;
-}
-function turnComplete(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use";
-  }
-  return false;
-}
-function usageSince(entries, fromIndex = 0) {
-  let outputTokens = 0;
-  let lastInput = 0;
-  let lastCacheRead = 0;
-  let lastCacheCreation = 0;
-  let sawUsage = false;
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const usage2 = asRecord(entry.message?.usage);
-    if (usage2 === null) {
-      continue;
-    }
-    sawUsage = true;
-    outputTokens += numeric(usage2.output_tokens);
-    lastInput = numeric(usage2.input_tokens);
-    lastCacheRead = numeric(usage2.cache_read_input_tokens);
-    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
-  }
-  if (!sawUsage) {
-    return zeroUsage();
-  }
-  const lastCached = lastCacheRead + lastCacheCreation;
-  return {
-    cachedInputTokens: lastCached,
-    cacheCreationInputTokens: lastCacheCreation,
-    inputTokens: lastInput,
-    outputTokens,
-    totalTokens: lastInput + lastCached + outputTokens
-  };
-}
-function parseLine(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asRecord(parsed) === null ? null : parsed;
-  } catch {
-    return null;
-  }
-}
-function textFromContent(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  const parts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      parts.push(record.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("") : null;
-}
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function numeric(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function zeroUsage() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0
-  };
-}
-
-// src/claude-engine.ts
-var CAPABILITY_DENY_RULES = {
-  skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
-};
-function permissionDenyRulesFor(strip) {
-  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
-}
-var CLAUDE_MULTITURN_CACHE_TTL = "1h";
-function claudeCacheTtlToMs(value) {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
-}
-var CLAUDE_EFFORT_DOMAIN = ["low", "medium", "high"];
-function assertClaudeEffortSupported(effort) {
-  if (effort !== void 0 && !CLAUDE_EFFORT_DOMAIN.includes(effort)) {
-    throw new InvalidAgentOptionValueError(
-      "effort",
-      effort,
-      `one of ${CLAUDE_EFFORT_DOMAIN.join(" | ")} (the Claude engine's accepted levels)`
-    );
-  }
-}
-var dispatchCounter = 0;
-var MAX_CONSECUTIVE_ABSENCES = 3;
-var SETTLED_CONFIRMATION_POLLS = 5;
-var ClaudeEngineInvocation = class {
-  #cwd;
-  #options;
-  #controlPlane;
-  #onEvent;
-  #reportedUsage = null;
-  #multiTurn;
-  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
-  #turnPrompt;
-  /** The current turn's schema — the one thing a session varies per turn. */
-  #turnSchema;
-  /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
-   */
-  #turnDelivered = false;
-  #pollIntervalMs;
-  #receiptTimeoutMs;
-  #firstLifeTimeoutMs;
-  #blockedRecoveryBound;
-  #namePrefix;
-  #handle = null;
-  #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closed = false;
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
-  constructor(options) {
-    this.#turnPrompt = options.prompt;
-    this.#turnSchema = options.options.schema;
-    this.#multiTurn = options.multiTurn ?? false;
-    this.#cwd = options.cwd;
-    this.#options = options.options;
-    this.#controlPlane = options.controlPlane;
-    this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
-    const config = options.config ?? {};
-    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
-    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
-    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
-    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
-    this.#namePrefix = config.namePrefix ?? "ensemble";
-  }
-  /**
-   * Session mode's turn boundary: the next `runAttempt` delivers this
-   * prompt to the *held* session — by dispatch for the first turn, through
-   * the valve thereafter — with this turn's schema governing validation and
-   * correction. The returned invocation deliberately carries no `close`:
-   * a turn ending must never tear down the session it rode.
-   */
-  beginTurn(prompt, turn) {
-    this.#turnPrompt = prompt;
-    this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
-    return {
-      runAttempt: (context) => this.runAttempt(context)
-    };
-  }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  async #runAttempt(context) {
-    this.#assertOpen();
-    this.#reportedUsage = null;
-    let fromIndex = 0;
-    try {
-      const previousFailure = context.previousFailure;
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
-      }
-      const correcting = previousFailure !== void 0 && this.#handle !== null;
-      if (correcting && await this.#controlPlane.tmuxAvailable()) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
-      }
-      if (correcting && this.#multiTurn) {
-        this.#requireValve(false);
-      }
-      if (this.#handle !== null) {
-        await this.#teardown();
-      }
-      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
-    } catch (error) {
-      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
-      if (error instanceof Error && evidence !== null) {
-        this.#attachWorkerText(error, evidence, fromIndex);
-      }
-      if (error instanceof ClaudeWorkerError) {
-        if (!this.#multiTurn) {
-          await this.#teardown();
-        }
-        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
-      }
-      throw error;
-    }
-  }
-  async close() {
-    this.#closePromise ??= (async () => {
-      this.#closed = true;
-      this.#abortController.abort();
-      try {
-        await this.#settlement?.catch(() => void 0);
-        await this.#teardown();
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
-  async #dispatchAndCollect(previousFailure, onLiveEvidence) {
-    const denyRules = permissionDenyRulesFor(this.#options.strip);
-    const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
-      name: this.#nextName(),
-      cwd: this.#cwd,
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
-    });
-    this.#handle = handle;
-    this.#turnDelivered = true;
-    if (this.#closed) {
-      await this.#teardown();
-      throw new EngineShutdownError("claude");
-    }
-    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
-    return this.#buildResult(handle, transcript, 0);
-  }
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
-  async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
-    }
-    await this.#awaitReceipt(handle, fromIndex);
-    this.#turnDelivered = true;
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /**
-   * Session mode has no degraded path: the valve is what keeps a follow-up
-   * (or a correction) inside the created session, so its absence fails the
-   * turn loudly instead of silently substituting a fresh worker.
-   */
-  #requireValve(available) {
-    if (!available) {
-      throw new ClaudeValveError(
-        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
-      );
-    }
-  }
-  async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the correction");
-    }
-    await this.#awaitReceipt(handle, fromIndex);
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark) {
-    const deadline = Date.now() + this.#receiptTimeoutMs;
-    for (; ; ) {
-      this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
-      const transcript = await this.#tryReadTranscript(handle);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /**
-   * Poll until the worker's turn is complete, returning the transcript at that
-   * point. The transcript is the authoritative completion signal and is
-   * checked on **every** poll, before the roster state is interpreted: the
-   * daemon's `state` is unreliable, and a live process the worker itself
-   * spawned can hold the roster at `busy` long after the answer is on disk —
-   * gating the transcript read on "not busy" left a finished, schema-valid
-   * answer uncollected for 22+ minutes behind a worker-spawned child.
-   *
-   * Two ways out, and no silent third:
-   * - the transcript proves the turn complete (`turnComplete`) → collect;
-   * - the daemon stably reports the session settled while the transcript
-   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
-   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
-   *   *not* a collect-on-best-evidence path: a settled daemon beside an
-   *   unproven transcript is exactly what a killed worker's partial answer
-   *   looks like, and promoting that to a success would hand downstream
-   *   stages a truncated answer as if it were the real one. The partial text
-   *   rides the failure (the shared catch attaches it), and the bounded
-   *   retry re-asks.
-   *
-   * `state: blocked` still drives bounded valve recovery, and a transient
-   * roster-query failure reports `present: false` only after
-   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
-   * live worker.
-   */
-  async #runToCompletion(handle, fromIndex, onLiveEvidence) {
-    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
-    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
-    let sawLife = fromIndex > 0;
-    let nudges = 0;
-    let absences = 0;
-    let settledPolls = 0;
-    let evidenceReported = false;
-    for (; ; ) {
-      this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
-      if (transcript !== null) {
-        sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
-        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
-          evidenceReported = true;
-          try {
-            onLiveEvidence?.();
-          } catch {
-          }
-        }
-        if (turnComplete(transcript.entries, fromIndex)) {
-          return transcript;
-        }
-      }
-      if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
-        );
-      }
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (!status.present) {
-        absences += 1;
-        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
-          throw new ClaudePollTimeoutError("worker left the roster before completing");
-        }
-        await this.#pollDelay();
-        continue;
-      }
-      absences = 0;
-      if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
-        if (!canNudge) {
-          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
-        }
-        nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
-        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!steered) {
-          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
-        }
-        await this.#awaitReceipt(handle, mark);
-        continue;
-      }
-      if (sawLife && (status.state === "done" || status.status === "idle")) {
-        settledPolls += 1;
-        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
-          throw new ClaudeCollectionError(
-            "session settled but its transcript never proved the turn complete"
-          );
-        }
-      } else {
-        settledPolls = 0;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
-  #pollDelay() {
-    return delay(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
-  }
-  #assertOpen() {
-    if (this.#closed) {
-      throw new EngineShutdownError("claude");
-    }
-  }
-  #buildResult(handle, transcript, fromIndex) {
-    const entries = transcript.entries;
-    const text = finalAssistantText(entries, fromIndex) ?? "";
-    if (endsInSyntheticReply(entries, fromIndex)) {
-      throw new ClaudeWorkerDiagnosticError(
-        text.length > 0 ? text : "the session produced no model reply"
-      );
-    }
-    const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
-    const usageEvent = this.#usageEvent(handle, usage2, usage2);
-    return {
-      text,
-      ...resolvedModel !== null ? { resolvedModel } : {},
-      deltaText: text,
-      durationMs: null,
-      firstDeltaMs: null,
-      items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: handle.sessionId,
-          content: transcript.text
-        }
-      ]
-    };
-  }
-  async #readTranscript(handle) {
-    const path14 = await this.#controlPlane.transcriptPath(handle);
-    if (path14 === null) {
-      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
-    }
-    return readTranscriptFile(path14);
-  }
-  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle) {
-    try {
-      return await this.#readTranscript(handle);
-    } catch (error) {
-      if (error instanceof ClaudeTranscriptError) {
-        return null;
-      }
-      throw error;
-    }
-  }
-  /**
-   * Everything a dying turn can still learn from the transcript the engine
-   * already has, in one read: the served model, the usage accumulated up to
-   * the failure, and the transcript itself. Best-effort — an unreadable or
-   * absent transcript is `null`, and nothing here polls or retries.
-   */
-  async #tryFailureEvidence(fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
-    }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
-    return {
-      handle,
-      transcript,
-      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex)
-    };
-  }
-  /** The failed turn's spend, as the same event shape the success path emits. */
-  #failureUsageEvent(evidence) {
-    if (evidence === null) {
-      return null;
-    }
-    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
-  }
-  #attachWorkerText(error, evidence, fromIndex) {
-    const transcript = evidence.transcript;
-    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
-      return;
-    }
-    const text = finalAssistantText(transcript.entries, fromIndex);
-    if (text !== null) {
-      attachPartialWorkerText(error, text);
-    }
-  }
-  /**
-   * Feed best-effort transcript-derived usage through the same event shape Codex
-   * emits. The adapter registration labels it as Claude before the runtime records
-   * it, so budget accounting never has to infer engine from the payload.
-   *
-   * The derived total is not monotonic: the input side is a snapshot of the
-   * running context, and compaction shrinks it, so a step that generated new
-   * output can still carry a *smaller* total than the step before. Growth is
-   * therefore judged per component, and the reported delta's own total is the
-   * sum of the components that grew — reporting nothing whenever the total
-   * fell would drop that output for good, since the high-water mark would not
-   * advance either and no later report would ever re-carry it. The high-water
-   * mark advances per component for the same reason.
-   */
-  #reportUsage(handle, entries, fromIndex) {
-    const total = usageSince(entries, fromIndex);
-    const last = subtractUsage(total, this.#reportedUsage);
-    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
-    if (grown === 0) {
-      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
-      return;
-    }
-    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
-      last.cacheCreationInputTokens = last.cachedInputTokens;
-    }
-    last.totalTokens = grown;
-    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
-    const event = this.#usageEvent(handle, last, total);
-    if (event === null) {
-      return;
-    }
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
-  }
-  #usageEvent(handle, last, total) {
-    if (total.totalTokens === 0) {
-      return null;
-    }
-    this.#budgetEventCounter += 1;
-    const event = {
-      threadId: handle.sessionId,
-      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last,
-      total,
-      raw: {
-        threadId: handle.sessionId,
-        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last, total }
-      }
-    };
-    return event;
-  }
-  async #teardown() {
-    const handle = this.#handle;
-    this.#handle = null;
-    if (handle === null) {
-      return;
-    }
-    try {
-      await this.#controlPlane.stop(handle);
-    } catch {
-    }
-  }
-  #buildDispatchPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-    ];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#turnPrompt);
-    return lines.join("\n");
-  }
-  /**
-   * A follow-up turn's valve message: the session already holds the
-   * autonomy preamble from its dispatch, so the message carries only what
-   * this turn adds — its schema contract, when it has one, and its task.
-   */
-  #buildTurnMessage() {
-    const lines = [];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
-    lines.push(this.#turnPrompt);
-    return lines.join("\n");
-  }
-  #correctionMessage(previousFailure) {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
-      case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
-      case "empty-output":
-      default:
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-    }
-  }
-  #blockedNudge(waitingFor) {
-    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
-    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
-  }
-  #nextName() {
-    dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
-  }
-};
-function failedTurnResult(error, evidence, usageEvent) {
-  const text = partialWorkerTextOf(error) ?? "";
-  const resolvedModel = evidence?.resolvedModel ?? null;
-  return {
-    text,
-    ...resolvedModel !== null ? { resolvedModel } : {},
-    attemptFailure: claudeAttemptFailure(error),
-    deltaText: text,
-    durationMs: null,
-    firstDeltaMs: null,
-    items: {},
-    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-    ...evidence === null ? {} : {
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: evidence.handle.sessionId,
-          content: evidence.transcript.text
-        }
-      ]
-    }
-  };
-}
-function highWaterUsage(previous, total) {
-  if (previous === null) {
-    return total;
-  }
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
-  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
-  return {
-    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
-    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
-  };
-}
-function claudeAttemptFailure(error) {
-  if (error instanceof ClaudeFirstLifeTimeoutError) {
-    return { kind: "claude-first-life-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeBlockedError) {
-    return { kind: "claude-blocked", message: error.message };
-  }
-  if (error instanceof ClaudeValveError) {
-    return { kind: "claude-valve-error", message: error.message };
-  }
-  if (error instanceof ClaudePollTimeoutError) {
-    return { kind: "claude-poll-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeTranscriptError) {
-    return { kind: "claude-transcript-error", message: error.message };
-  }
-  if (error instanceof ClaudeCollectionError) {
-    return { kind: "claude-collection-error", message: error.message };
-  }
-  if (error instanceof ClaudeWorkerDiagnosticError) {
-    return { kind: "claude-worker-diagnostic", message: error.message };
-  }
-  return { kind: "claude-dispatch-error", message: error.message };
-}
-function hasAssistantEntrySince(entries, fromIndex) {
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    if (entries[index]?.type === "assistant") {
-      return true;
-    }
-  }
-  return false;
-}
-function delay(ms, signal, abortError) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(abortError());
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
 
 // src/opencode-model-registry.ts
 var MODELS = [
@@ -16328,6 +15554,16 @@ var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
 
 // src/engine-option-validation.ts
 var MAX_TIMER_DELAY_MS = 2147483647;
+var CANONICAL_EFFORT_DOMAIN = ["minimal", "low", "medium", "high", "xhigh"];
+function assertCanonicalEffortSupported(effort) {
+  if (effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
+    );
+  }
+}
 var AGENT_OPTION_KEYS = Object.keys({
   engine: true,
   schema: true,
@@ -16357,6 +15593,9 @@ function assertValidAgentOptions(options) {
   const values = options;
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+  }
+  if (values.engine !== "opencode") {
+    assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
@@ -16395,6 +15634,9 @@ function assertValidWorkerSessionOptions(options) {
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
+  if (values.engine !== "opencode") {
+    assertCanonicalEffortSupported(values.effort);
+  }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== void 0 && typeof values.stalenessMark !== "boolean") {
@@ -16427,8 +15669,8 @@ function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRe
 }
 function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
   assertFallbackModelSupported(engine, defaults.fallbackModel);
-  if (engine === "claude") {
-    assertClaudeEffortSupported(defaults.effort);
+  if (engine !== "opencode") {
+    assertCanonicalEffortSupported(defaults.effort);
   }
   if (engine === "opencode" && defaults.model !== void 0) {
     const model = requireRegisteredOpenCodeModel(defaults.model, openCodeModelRegistry);
@@ -16450,8 +15692,8 @@ function assertPositiveIntegerOption(options, option, maximum) {
 }
 
 // src/holds.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { mkdir as mkdir3, readFile as readFile3, readdir as readdir2, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
 import path5 from "node:path";
 var DECISION_SUFFIX = ".decision.json";
@@ -16488,7 +15730,7 @@ var HoldManager = class {
     }
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
-    const nonce = randomUUID2();
+    const nonce = randomUUID();
     const holdPath = path5.join(this.#dir, `${holdId}.json`);
     const decisionPath = path5.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
@@ -16557,7 +15799,7 @@ var HoldManager = class {
   async #readDecision(record, decisionPath, grace) {
     let raw;
     try {
-      raw = await readFile3(decisionPath, "utf8");
+      raw = await readFile2(decisionPath, "utf8");
     } catch {
       grace.lastUnparseable = null;
       return null;
@@ -16630,7 +15872,7 @@ async function enumerateHolds(dir) {
     }
     const holdPath = path5.join(dir, entry);
     try {
-      const record = JSON.parse(await readFile3(holdPath, "utf8"));
+      const record = JSON.parse(await readFile2(holdPath, "utf8"));
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
@@ -16679,7 +15921,7 @@ function assertValidRaiseHoldOptions(options) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile5 } from "node:fs/promises";
+import { readFile as readFile4 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path7 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
@@ -22504,7 +21746,7 @@ function formatError(error) {
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access, readdir as readdir3, readFile as readFile4 } from "node:fs/promises";
+import { access, readdir as readdir3, readFile as readFile3 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
 import path6 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
@@ -22600,7 +21842,7 @@ async function listRegistryDir(dir, scope, readMeta) {
     }
     const scriptPath = path6.join(dir, entry.name);
     try {
-      const source = await readFile4(scriptPath, "utf8");
+      const source = await readFile3(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -23117,7 +22359,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile5(scriptPath, "utf8");
+    return await readFile4(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -23512,7 +22754,7 @@ import { stat as stat2 } from "node:fs/promises";
 import path9 from "node:path";
 
 // src/worktree-isolation.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
 import { mkdir as mkdir4, rmdir } from "node:fs/promises";
 import path8 from "node:path";
@@ -23588,7 +22830,7 @@ var GitWorktreeIsolationManager = class {
   }
   #uniqueName() {
     this.#counter += 1;
-    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID3().slice(0, 8)}`;
+    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
   }
 };
 async function git2(cwd, args) {
@@ -23867,7 +23109,7 @@ function isJsonObject(value) {
 
 // src/claude-control-plane.ts
 import { execFile as execFile3, spawn } from "node:child_process";
-import { access as access2, mkdtemp, readFile as readFile6, readdir as readdir4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+import { access as access2, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir4, tmpdir } from "node:os";
 import path10 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -23933,7 +23175,7 @@ var ClaudeCliControlPlane = class {
             `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
           );
         }
-        await delay2(500);
+        await delay(500);
       }
     } finally {
       if (registered === null) {
@@ -24038,17 +23280,17 @@ var ClaudeCliControlPlane = class {
       if (!created.ok) {
         return false;
       }
-      await delay2(this.#valveAttachSettleMs);
+      await delay(this.#valveAttachSettleMs);
       const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
       if (!typed.ok) {
         return false;
       }
-      await delay2(this.#valveSubmitSettleMs);
+      await delay(this.#valveSubmitSettleMs);
       const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) {
         return false;
       }
-      await delay2(this.#valveKillSettleMs);
+      await delay(this.#valveKillSettleMs);
       return true;
     } finally {
       await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
@@ -24083,7 +23325,7 @@ var ClaudeCliControlPlane = class {
       } catch {
       }
     }
-    await delay2(this.#reapGraceMs);
+    await delay(this.#reapGraceMs);
     for (const pid of await this.#findTaggedProcesses(dispatchName)) {
       try {
         process.kill(pid, "SIGKILL");
@@ -24111,7 +23353,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile6(path10.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -24213,9 +23455,815 @@ function normaliseState(state) {
   }
   return "unknown";
 }
-function delay2(ms) {
+function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+// src/claude-engine.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/claude-transcript.ts
+import { readFile as readFile6 } from "node:fs/promises";
+function parseTranscriptText(text) {
+  const entries = [];
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const entry = parseLine(line);
+    if (entry !== null) {
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+async function readTranscriptFile(path14) {
+  let text;
+  try {
+    text = await readFile6(path14, "utf8");
+  } catch (error) {
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
+  }
+  return { path: path14, text, entries: parseTranscriptText(text) };
+}
+function finalAssistantText(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const text = textFromContent(entry.message?.content);
+    if (text !== null && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
+var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+function endsInSyntheticReply(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
+}
+function resolvedModelSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
+      return model;
+    }
+  }
+  return null;
+}
+function turnComplete(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const stopReason = entry.message?.stop_reason;
+    return typeof stopReason === "string" && stopReason !== "tool_use";
+  }
+  return false;
+}
+function usageSince(entries, fromIndex = 0) {
+  let outputTokens = 0;
+  let lastInput = 0;
+  let lastCacheRead = 0;
+  let lastCacheCreation = 0;
+  let sawUsage = false;
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const usage2 = asRecord(entry.message?.usage);
+    if (usage2 === null) {
+      continue;
+    }
+    sawUsage = true;
+    outputTokens += numeric(usage2.output_tokens);
+    lastInput = numeric(usage2.input_tokens);
+    lastCacheRead = numeric(usage2.cache_read_input_tokens);
+    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
+  }
+  if (!sawUsage) {
+    return zeroUsage();
+  }
+  const lastCached = lastCacheRead + lastCacheCreation;
+  return {
+    cachedInputTokens: lastCached,
+    cacheCreationInputTokens: lastCacheCreation,
+    inputTokens: lastInput,
+    outputTokens,
+    totalTokens: lastInput + lastCached + outputTokens
+  };
+}
+function parseLine(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asRecord(parsed) === null ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+function textFromContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      parts.push(record.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("") : null;
+}
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function zeroUsage() {
+  return {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0
+  };
+}
+
+// src/claude-engine.ts
+var CAPABILITY_DENY_RULES = {
+  skills: ["Skill"],
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
+};
+function permissionDenyRulesFor(strip) {
+  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+}
+var CLAUDE_MULTITURN_CACHE_TTL = "1h";
+function claudeCacheTtlToMs(value) {
+  const match = /^(\d+)([smh]?)$/.exec(value.trim());
+  if (match === null) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return null;
+  }
+  const unit = match[2];
+  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
+}
+var CLAUDE_NATIVE_EFFORT = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "high"
+};
+function claudeNativeEffort(effort) {
+  if (effort === void 0) {
+    return void 0;
+  }
+  const native = CLAUDE_NATIVE_EFFORT[effort];
+  if (native === void 0) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
+    );
+  }
+  return native;
+}
+var dispatchCounter = 0;
+var MAX_CONSECUTIVE_ABSENCES = 3;
+var SETTLED_CONFIRMATION_POLLS = 5;
+var ClaudeEngineInvocation = class {
+  #cwd;
+  #options;
+  #controlPlane;
+  #onEvent;
+  #reportedUsage = null;
+  #multiTurn;
+  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
+  #turnPrompt;
+  /** The current turn's schema — the one thing a session varies per turn. */
+  #turnSchema;
+  /**
+   * Whether the current turn's prompt has reached the worker. A follow-up
+   * turn is delivered by the valve, and a retry after a failed delivery
+   * must re-send the prompt itself — a correction message would ask the
+   * worker to fix an answer it was never asked for.
+   */
+  #turnDelivered = false;
+  #pollIntervalMs;
+  #receiptTimeoutMs;
+  #firstLifeTimeoutMs;
+  #blockedRecoveryBound;
+  #namePrefix;
+  #handle = null;
+  #budgetEventCounter = 0;
+  #abortController = new AbortController();
+  #closed = false;
+  #closePromise = null;
+  #settlement = null;
+  #onClose;
+  constructor(options) {
+    this.#turnPrompt = options.prompt;
+    this.#turnSchema = options.options.schema;
+    this.#multiTurn = options.multiTurn ?? false;
+    this.#cwd = options.cwd;
+    this.#options = options.options;
+    this.#controlPlane = options.controlPlane;
+    this.#onEvent = options.onEvent;
+    this.#onClose = options.onClose;
+    const config = options.config ?? {};
+    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
+    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
+    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
+    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
+    this.#namePrefix = config.namePrefix ?? "ensemble";
+  }
+  /**
+   * Session mode's turn boundary: the next `runAttempt` delivers this
+   * prompt to the *held* session — by dispatch for the first turn, through
+   * the valve thereafter — with this turn's schema governing validation and
+   * correction. The returned invocation deliberately carries no `close`:
+   * a turn ending must never tear down the session it rode.
+   */
+  beginTurn(prompt, turn) {
+    this.#turnPrompt = prompt;
+    this.#turnSchema = turn.schema;
+    this.#turnDelivered = false;
+    return {
+      runAttempt: (context) => this.runAttempt(context)
+    };
+  }
+  runAttempt(context) {
+    const settlement = this.#runAttempt(context);
+    this.#settlement = settlement;
+    return settlement.finally(() => {
+      if (this.#settlement === settlement) {
+        this.#settlement = null;
+      }
+    });
+  }
+  async #runAttempt(context) {
+    this.#assertOpen();
+    this.#reportedUsage = null;
+    let fromIndex = 0;
+    try {
+      const previousFailure = context.previousFailure;
+      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        this.#requireValve(await this.#controlPlane.tmuxAvailable());
+        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
+      }
+      const correcting = previousFailure !== void 0 && this.#handle !== null;
+      if (correcting && await this.#controlPlane.tmuxAvailable()) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
+      }
+      if (correcting && this.#multiTurn) {
+        this.#requireValve(false);
+      }
+      if (this.#handle !== null) {
+        await this.#teardown();
+      }
+      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
+    } catch (error) {
+      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
+      }
+      if (error instanceof ClaudeWorkerError) {
+        const workerDispatched = this.#handle !== null;
+        if (!this.#multiTurn) {
+          await this.#teardown();
+        }
+        return failedTurnResult(
+          error,
+          evidence,
+          this.#failureUsageEvent(evidence),
+          workerDispatched ? this.#options.effort : void 0
+        );
+      }
+      throw error;
+    }
+  }
+  async close() {
+    this.#closePromise ??= (async () => {
+      this.#closed = true;
+      this.#abortController.abort();
+      try {
+        await this.#settlement?.catch(() => void 0);
+        await this.#teardown();
+      } finally {
+        this.#onClose?.(this);
+      }
+    })();
+    await this.#closePromise;
+  }
+  async #dispatchAndCollect(previousFailure, onLiveEvidence) {
+    const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const handle = await this.#controlPlane.dispatch({
+      prompt: this.#buildDispatchPrompt(previousFailure),
+      name: this.#nextName(),
+      cwd: this.#cwd,
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
+      // Loiter pricing: only a session meant to be resumed pays the
+      // 1-hour cache-write premium; one-shot workers keep the 5m default.
+      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
+    });
+    this.#handle = handle;
+    this.#turnDelivered = true;
+    if (this.#closed) {
+      await this.#teardown();
+      throw new EngineShutdownError("claude");
+    }
+    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
+    return this.#buildResult(handle, transcript, 0);
+  }
+  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
+    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
+    }
+    await this.#awaitReceipt(handle, fromIndex);
+    this.#turnDelivered = true;
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /**
+   * Session mode has no degraded path: the valve is what keeps a follow-up
+   * (or a correction) inside the created session, so its absence fails the
+   * turn loudly instead of silently substituting a fresh worker.
+   */
+  #requireValve(available) {
+    if (!available) {
+      throw new ClaudeValveError(
+        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
+      );
+    }
+  }
+  async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
+    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the correction");
+    }
+    await this.#awaitReceipt(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
+  async #awaitReceipt(handle, mark) {
+    const deadline = Date.now() + this.#receiptTimeoutMs;
+    for (; ; ) {
+      this.#assertOpen();
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (status.status === "busy") {
+        return;
+      }
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null && transcript.entries.length > mark) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /**
+   * Poll until the worker's turn is complete, returning the transcript at that
+   * point. The transcript is the authoritative completion signal and is
+   * checked on **every** poll, before the roster state is interpreted: the
+   * daemon's `state` is unreliable, and a live process the worker itself
+   * spawned can hold the roster at `busy` long after the answer is on disk —
+   * gating the transcript read on "not busy" left a finished, schema-valid
+   * answer uncollected for 22+ minutes behind a worker-spawned child.
+   *
+   * Two ways out, and no silent third:
+   * - the transcript proves the turn complete (`turnComplete`) → collect;
+   * - the daemon stably reports the session settled while the transcript
+   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
+   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
+   *   *not* a collect-on-best-evidence path: a settled daemon beside an
+   *   unproven transcript is exactly what a killed worker's partial answer
+   *   looks like, and promoting that to a success would hand downstream
+   *   stages a truncated answer as if it were the real one. The partial text
+   *   rides the failure (the shared catch attaches it), and the bounded
+   *   retry re-asks.
+   *
+   * `state: blocked` still drives bounded valve recovery, and a transient
+   * roster-query failure reports `present: false` only after
+   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * live worker.
+   */
+  async #runToCompletion(handle, fromIndex, onLiveEvidence) {
+    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
+    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    let sawLife = fromIndex > 0;
+    let nudges = 0;
+    let absences = 0;
+    let settledPolls = 0;
+    let evidenceReported = false;
+    for (; ; ) {
+      this.#assertOpen();
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null) {
+        sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
+        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+          evidenceReported = true;
+          try {
+            onLiveEvidence?.();
+          } catch {
+          }
+        }
+        if (turnComplete(transcript.entries, fromIndex)) {
+          return transcript;
+        }
+      }
+      if (!sawLife && Date.now() >= firstLifeDeadline) {
+        throw new ClaudeFirstLifeTimeoutError(
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+        );
+      }
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (!status.present) {
+        absences += 1;
+        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          throw new ClaudePollTimeoutError("worker left the roster before completing");
+        }
+        await this.#pollDelay();
+        continue;
+      }
+      absences = 0;
+      if (status.state === "blocked") {
+        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        if (!canNudge) {
+          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
+        }
+        nudges += 1;
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!steered) {
+          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        }
+        await this.#awaitReceipt(handle, mark);
+        continue;
+      }
+      if (sawLife && (status.state === "done" || status.status === "idle")) {
+        settledPolls += 1;
+        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
+          throw new ClaudeCollectionError(
+            "session settled but its transcript never proved the turn complete"
+          );
+        }
+      } else {
+        settledPolls = 0;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
+  #pollDelay() {
+    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+  }
+  #assertOpen() {
+    if (this.#closed) {
+      throw new EngineShutdownError("claude");
+    }
+  }
+  #buildResult(handle, transcript, fromIndex) {
+    const entries = transcript.entries;
+    const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
+    const resolvedModel = resolvedModelSince(entries, fromIndex);
+    const usage2 = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage2, usage2);
+    return {
+      text,
+      ...resolvedModel !== null ? { resolvedModel } : {},
+      // The CLI reports no served effort, so the resolved value is the
+      // native level this dispatch actually carried after the canonical
+      // clamp — so the record shows the level this dispatch carried.
+      ...this.#options.effort !== void 0 ? { resolvedEffort: this.#options.effort } : {},
+      deltaText: text,
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: handle.sessionId,
+          content: transcript.text
+        }
+      ]
+    };
+  }
+  async #readTranscript(handle) {
+    const path14 = await this.#controlPlane.transcriptPath(handle);
+    if (path14 === null) {
+      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
+    }
+    return readTranscriptFile(path14);
+  }
+  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
+  async #tryReadTranscript(handle) {
+    try {
+      return await this.#readTranscript(handle);
+    } catch (error) {
+      if (error instanceof ClaudeTranscriptError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex) {
+    const handle = this.#handle;
+    if (handle === null) {
+      return null;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    if (transcript === null) {
+      return null;
+    }
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex)
+    };
+  }
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence) {
+    if (evidence === null) {
+      return null;
+    }
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+  #attachWorkerText(error, evidence, fromIndex) {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
+    if (text !== null) {
+      attachPartialWorkerText(error, text);
+    }
+  }
+  /**
+   * Feed best-effort transcript-derived usage through the same event shape Codex
+   * emits. The adapter registration labels it as Claude before the runtime records
+   * it, so budget accounting never has to infer engine from the payload.
+   *
+   * The derived total is not monotonic: the input side is a snapshot of the
+   * running context, and compaction shrinks it, so a step that generated new
+   * output can still carry a *smaller* total than the step before. Growth is
+   * therefore judged per component, and the reported delta's own total is the
+   * sum of the components that grew — reporting nothing whenever the total
+   * fell would drop that output for good, since the high-water mark would not
+   * advance either and no later report would ever re-carry it. The high-water
+   * mark advances per component for the same reason.
+   */
+  #reportUsage(handle, entries, fromIndex) {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
+    if (grown === 0) {
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+      return;
+    }
+    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      last.cacheCreationInputTokens = last.cachedInputTokens;
+    }
+    last.totalTokens = grown;
+    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(handle, last, total) {
+    if (total.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const event = {
+      threadId: handle.sessionId,
+      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+      last,
+      total,
+      raw: {
+        threadId: handle.sessionId,
+        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+        tokenUsage: { last, total }
+      }
+    };
+    return event;
+  }
+  async #teardown() {
+    const handle = this.#handle;
+    this.#handle = null;
+    if (handle === null) {
+      return;
+    }
+    try {
+      await this.#controlPlane.stop(handle);
+    } catch {
+    }
+  }
+  #buildDispatchPrompt(previousFailure) {
+    const lines = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+    ];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema)
+      );
+    }
+    if (previousFailure !== void 0) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#turnPrompt);
+    return lines.join("\n");
+  }
+  /**
+   * A follow-up turn's valve message: the session already holds the
+   * autonomy preamble from its dispatch, so the message carries only what
+   * this turn adds — its schema contract, when it has one, and its task.
+   */
+  #buildTurnMessage() {
+    const lines = [];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema),
+        ""
+      );
+    }
+    lines.push(this.#turnPrompt);
+    return lines.join("\n");
+  }
+  #correctionMessage(previousFailure) {
+    switch (previousFailure.kind) {
+      case "schema-validation":
+        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
+      case "invalid-json":
+        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
+      case "empty-output":
+      default:
+        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+    }
+  }
+  #blockedNudge(waitingFor) {
+    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
+    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
+  }
+  #nextName() {
+    dispatchCounter += 1;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
+  }
+};
+function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
+  const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
+  return {
+    text,
+    ...resolvedModel !== null ? { resolvedModel } : {},
+    // Static per dispatch, so a failed attempt's record still says which
+    // native level the clamp resolved the turn to.
+    ...dispatchedEffort !== void 0 ? { resolvedEffort: dispatchedEffort } : {},
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    ...evidence === null ? {} : {
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: evidence.handle.sessionId,
+          content: evidence.transcript.text
+        }
+      ]
+    }
+  };
+}
+function highWaterUsage(previous, total) {
+  if (previous === null) {
+    return total;
+  }
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
+  return {
+    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
+    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
+  };
+}
+function claudeAttemptFailure(error) {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  if (error instanceof ClaudeCollectionError) {
+    return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
+  }
+  return { kind: "claude-dispatch-error", message: error.message };
+}
+function hasAssistantEntrySince(entries, fromIndex) {
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    if (entries[index]?.type === "assistant") {
+      return true;
+    }
+  }
+  return false;
+}
+function delay2(ms, signal, abortError) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -26406,7 +26454,17 @@ var EngineRegistry = class {
     return [...this.#engines.keys()];
   }
   async close() {
-    await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
+    const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length === 1) {
+      throw failures[0].reason;
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        "engine teardown failed"
+      );
+    }
   }
 };
 async function codexThreadConfig(strip, transport, cwd) {
@@ -26625,11 +26683,11 @@ var ClaudeEngineAdapter = class {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    assertClaudeEffortSupported(options.effort);
+    const effort = claudeNativeEffort(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
-      options,
+      options: effort === void 0 ? options : { ...options, effort },
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
       ...this.#config !== void 0 ? { config: this.#config } : {},
@@ -26642,11 +26700,11 @@ var ClaudeEngineAdapter = class {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    assertClaudeEffortSupported(options.effort);
+    const effort = claudeNativeEffort(options.effort);
     const session = new ClaudeEngineInvocation({
       prompt: "",
       cwd: options.cwd ?? this.#cwd,
-      options,
+      options: effort === void 0 ? options : { ...options, effort },
       multiTurn: true,
       controlPlane: this.#controlPlane,
       ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
@@ -26881,15 +26939,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // close() uses this to terminalise work a run ended before
   // the normal per-agent settlement path could run.
   #unsettledAgentRecords = /* @__PURE__ */ new Map();
+  /** close()'s settlement barrier: per-leg waiters resolved by #noteAgentSettled. */
+  #settlementWaiters = /* @__PURE__ */ new Map();
   // Once close() has made the only honest terminal transition for a record,
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
-  // The worker tally as it stood at the instant the run ended, captured
-  // synchronously by close() before any teardown await. A tally read after
-  // close() returns would depend on how far the in-flight legs happened to
-  // get during teardown; this one names one determinate moment.
+  // The worker tally close() publishes once teardown has settled every
+  // classified leg — derived from the records' final dispositions behind
+  // the settlement barrier, so it is determinate without racing whichever
+  // straggler lands first, and it never disagrees with the archive.
   #shutdownTally = null;
+  /** The first close() call's run, latched so later calls join it. */
+  #closeRun = null;
   #closed = false;
   #workerSessions = /* @__PURE__ */ new Set();
   #sessionCounter = 0;
@@ -27079,7 +27141,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       throw error;
     } finally {
-      this.#unsettledAgentRecords.delete(agentId);
+      this.#noteAgentSettled(agentId);
     }
   }
   /**
@@ -27252,7 +27314,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         } catch (error) {
           if (!started) {
             this.progress.settleAgent(agentId, "failed");
-            this.#settleTerminalStatus(agentRecord, error);
+            this.#settleTerminalStatus(agentRecord, error, "queued");
             agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
             agentRecord.executionMs = 0;
             await this.#recordSettlementSafely(agentId, agentRecord);
@@ -27260,7 +27322,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           throw error;
         }
       } finally {
-        this.#unsettledAgentRecords.delete(agentId);
+        this.#noteAgentSettled(agentId);
         state.turnCount = turnNumber;
         state.lastTurnEndedAt = this.#now();
       }
@@ -27387,7 +27449,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     } catch (error) {
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
-        this.#settleTerminalStatus(agentRecord, error);
+        this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
         agentRecord.executionMs = 0;
         await this.#recordSettlementSafely(agentId, agentRecord);
@@ -27482,29 +27544,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#completed;
   }
   /**
-   * The worker tally at the moment the run ended, or null before close().
-   * Each in-flight leg is counted by the disposition close() itself decides
-   * for it — abandoned where no outcome was ever observed, cut short where
-   * teardown settles it with the run's own shutdown status — so the
-   * sentinel's figures and the archive's records state the same thing.
+   * The worker tally for the run's end, or null before close() completes
+   * it. Legs close() abandons (no outcome ever observed) count `unsettled`
+   * by its own decision; every other leg is counted from what its durable
+   * record settled to during teardown — cut short where the run's ending
+   * is the recorded cause, done/failed where the leg settled on its own
+   * account — so the sentinel's figures and the archive's records state
+   * the same thing, including for a leg that outraced teardown.
    */
   shutdownTally() {
     return this.#shutdownTally;
   }
-  async close(status = "interrupted") {
+  close(status = "interrupted") {
+    this.#closeRun ??= this.#closeOnce(status);
+    return this.#closeRun;
+  }
+  async #closeOnce(status) {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
-    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
-      ({ record }) => record.status === "in-progress"
+    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
+      ([, { record }]) => record.status === "in-progress"
     );
-    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
-    const totals = this.progress.snapshot().totals;
-    this.#shutdownTally = {
-      done: totals.done,
-      failed: totals.failed,
-      cutShort: inFlight.length - abandoning.length,
-      unsettled: abandoning.length
-    };
+    const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
+    const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
+    const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
+    const totalsAtClose = this.progress.snapshot().totals;
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
@@ -27515,9 +27579,64 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(record);
       })
     );
-    await this.#engines.close();
-    await sessionCloses;
+    const teardownFailures = [];
+    try {
+      await this.#engines.close();
+    } catch (error) {
+      teardownFailures.push(error);
+    }
+    for (const result of await sessionCloses) {
+      if (result.status === "rejected") {
+        teardownFailures.push(result.reason);
+      }
+    }
     this.#workerSessions.clear();
+    await settlementBarrier;
+    let done = totalsAtClose.done;
+    let failed = totalsAtClose.failed;
+    let cutShort = 0;
+    for (const [, { record }] of closing) {
+      if (record.status === "complete") {
+        done += 1;
+      } else if (record.terminationCause?.kind === `run-${status}`) {
+        cutShort += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    if (teardownFailures.length === 1) {
+      throw teardownFailures[0];
+    }
+    if (teardownFailures.length > 1) {
+      throw new AggregateError(teardownFailures, "run teardown failed to end cleanly");
+    }
+  }
+  /**
+   * Resolves when the identified leg's settlement bookkeeping has finished —
+   * its record status, cause, and settlement write are all final. Already
+   * settled resolves immediately.
+   */
+  #settledSignal(agentId) {
+    if (!this.#unsettledAgentRecords.has(agentId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters = this.#settlementWaiters.get(agentId) ?? [];
+      waiters.push(resolve);
+      this.#settlementWaiters.set(agentId, waiters);
+    });
+  }
+  /** The one place a leg leaves the unsettled set; wakes any close() waiting on it. */
+  #noteAgentSettled(agentId) {
+    this.#unsettledAgentRecords.delete(agentId);
+    const waiters = this.#settlementWaiters.get(agentId);
+    if (waiters !== void 0) {
+      this.#settlementWaiters.delete(agentId);
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
   }
   /**
    * The run's own settlement, seen from inside a worker's turn, or null when
@@ -27527,11 +27646,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * run's exit rather than the turn's cause. Agent and attempt both read
    * their cause from here, so a record cannot disagree with its own attempts.
    */
-  #runSettlementCause(error) {
+  #runSettlementCause(error, dispatch = "in-flight") {
     if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
       return {
         kind: `run-${this.#shutdownAgentStatus}`,
-        message: `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+        // A queued leg's turn never reached an engine; saying it was in
+        // flight would claim a dispatch that never happened.
+        message: dispatch === "queued" ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched` : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
       };
     }
     return null;
@@ -27540,8 +27661,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * Settles a record's terminal status *and* the cause that produced it, so
    * the two can never disagree.
    */
-  #settleTerminalStatus(record, error) {
-    const settlement = this.#runSettlementCause(error);
+  #settleTerminalStatus(record, error, dispatch = "in-flight") {
+    const settlement = this.#runSettlementCause(error, dispatch);
     if (settlement !== null) {
       record.status = this.#shutdownAgentStatus;
       record.terminationCause = settlement;
@@ -28529,27 +28650,36 @@ async function runEnsembleCli(argv, options = {}) {
   } finally {
     let teardownError = null;
     try {
-      interrupt?.dispose();
-      progress?.finish();
-      if (statusWriter !== null) {
-        await statusWriter.close();
-      }
-      if (runtime !== null) {
-        const terminalStatus = finalRecord?.status;
-        await runtime.close(
-          terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
-        );
-      }
-      if (runRecordWriter !== null) {
-        await runRecordWriter.finish({
-          ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
-          error: terminalError
-        });
-      }
-    } catch (error) {
-      teardownError = describeError(error);
-      stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+      try {
+        interrupt?.dispose();
+        progress?.finish();
+        if (statusWriter !== null) {
+          await statusWriter.close();
+        }
+        if (runtime !== null) {
+          const terminalStatus = finalRecord?.status;
+          await runtime.close(
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+          );
+        }
+      } catch (error) {
+        teardownError = describeError(error);
+        stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
 `);
+      }
+      try {
+        if (runRecordWriter !== null) {
+          await runRecordWriter.finish({
+            ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
+            ...teardownError !== null ? { status: "failed", exitCode: 1 } : {},
+            error: terminalError ?? teardownError
+          });
+        }
+      } catch (error) {
+        teardownError ??= describeError(error);
+        stderr.write(`[teardown] the archive failed to seal: ${formatError3(error)}
+`);
+      }
     } finally {
       const settled = finalRecord ?? { status: "failed", exitCode: 1 };
       const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
@@ -28921,7 +29051,7 @@ function rejectMisplacedAgentTuningFlags(argv) {
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
       throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
-    if (isKnownInlineOption(value) || value === "--identity") {
+    if (isKnownInlineOption(value) || isBooleanAgentFlag(value)) {
       continue;
     }
     if (isKnownAgentOption(value) || isKnownOption(value)) {
@@ -28936,6 +29066,9 @@ function rejectMisplacedAgentTuningFlags(argv) {
 function rejectDuplicateScalarFlags(argv) {
   const repeated = /* @__PURE__ */ new Set();
   for (const value of argv) {
+    if (value === "--") {
+      return;
+    }
     const flag = optionName(value);
     if (flag === void 0 || isRepeatableOption(flag)) {
       continue;
@@ -28958,6 +29091,13 @@ function isRepeatableOption(flag) {
 }
 function isKnownAgentOption(value) {
   return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
+}
+function isBooleanAgentFlag(value) {
+  if (!isKnownAgentOption(value)) {
+    return false;
+  }
+  const name = value.slice(2);
+  return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
   return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity";
@@ -29086,7 +29226,7 @@ function manifestAttestation(writer) {
   if (writer === null) {
     return { unavailable: "recording-disabled" };
   }
-  const digest = writer.manifestDigest();
+  const digest = writer.sealedManifestDigest();
   return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };
 }
 function announceRunRecord(writer, stderr) {

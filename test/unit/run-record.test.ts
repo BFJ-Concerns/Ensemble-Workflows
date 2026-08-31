@@ -10,6 +10,7 @@ import test from "node:test";
 import { Writable } from "node:stream";
 
 import { EngineRegistry } from "../../src/engines.js";
+import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
@@ -1084,13 +1085,50 @@ test("the manifest attests itself, and an edited field breaks the attestation", 
   assert.deepEqual(manifest.integrity.files_lost, []);
   assert.equal(manifest.status, "complete");
   assert.equal(manifestSelfDigest(manifest), manifest.integrity.manifest_sha256);
-  assert.equal(writer.manifestDigest(), manifest.integrity.manifest_sha256);
+  assert.equal(writer.sealedManifestDigest(), manifest.integrity.manifest_sha256);
+  // The archive states its own verification rule beside the digest.
+  assert.equal((manifest.integrity as { recipe?: string }).recipe, DIGEST_RECIPE);
 
   // The tamper the archive-consumer session made and every hash check
   // passed: an edited manifest field, with the files table untouched.
   const tampered = JSON.parse(await readFile(manifestPath, "utf8")) as typeof manifest;
   tampered.schema_version = 999;
   assert.notEqual(manifestSelfDigest(tampered), tampered.integrity.manifest_sha256);
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("the sealed digest is published only after the seal", async () => {
+  // The sentinel's attestation reads this accessor. A mid-run manifest
+  // carries a real self-digest, but finish() rewrites the file — so until
+  // the seal lands, publishing that digest outside the archive would vouch
+  // for bytes the seal then replaces. `manifest-unsealed` must mean what it
+  // says: no digest until the archive is final.
+  const cwd = await gitRepo("ensemble-record-seal-gate-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-seal-gate",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: null,
+    cliFlags: { jsonArgs: false }
+  });
+  // The start() write has already produced a manifest with a self-digest…
+  const manifestPath = path.join(writer.archiveDir, "manifest.json");
+  const midRun = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    integrity: { manifest_sha256: string | null };
+  };
+  assert.equal(typeof midRun.integrity.manifest_sha256, "string");
+  // …but the accessor publishes nothing until the seal.
+  assert.equal(writer.sealedManifestDigest(), null);
+
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+  const sealed = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    integrity: { manifest_sha256: string | null };
+  };
+  assert.equal(writer.sealedManifestDigest(), sealed.integrity.manifest_sha256);
   await rm(store, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });
@@ -1520,7 +1558,7 @@ function sortJson(value: unknown): unknown {
     return value.map(sortJson);
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
   }
   return value;

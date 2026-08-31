@@ -9,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
@@ -700,7 +701,7 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
     },
     // A failed run still seals its archive, so the sentinel can attest it.
     manifest: { sha256: sealed.integrity.manifest_sha256 },
-    integrity: { algorithm: "sha256", sentinel_sha256: sentinel.integrity.sentinel_sha256 },
+    integrity: { algorithm: "sha256", recipe: DIGEST_RECIPE, sentinel_sha256: sentinel.integrity.sentinel_sha256 },
     ended_at: sentinel.ended_at
   });
   assert.equal(sentinel.integrity.sentinel_sha256, selfDigest(sentinel, "integrity", "sentinel_sha256"));

@@ -12,12 +12,34 @@ export function canonicalJson(value: unknown): string {
   return JSON.stringify(sortJson(value), null, 2);
 }
 
+/**
+ * The digest recipe, stated in the archive itself (`integrity.recipe`) so a
+ * cold consumer needs no access to this codebase to verify: parse the
+ * document, set the named digest field to null, re-serialise in the
+ * canonical form, and hash. The wording is contract — consumers may pin it —
+ * so changes to it are schema changes, not copy-edits.
+ */
+export const DIGEST_RECIPE =
+  "sha256 hex of the document with this digest field set to null, " +
+  "serialised as JSON with object keys sorted by UTF-16 code unit at every " +
+  "level, two-space indent, and no trailing newline";
+
+/**
+ * Key order is by UTF-16 code unit, never `localeCompare`: the digest
+ * recipe requires the writer and any later consumer — on any machine, under
+ * any locale — to sort identically, and ICU collation varies with the
+ * environment's locale tailoring (punctuation such as `_` especially).
+ */
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortJson);
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => compareCodeUnits(a, b));
     return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
   }
   return value;

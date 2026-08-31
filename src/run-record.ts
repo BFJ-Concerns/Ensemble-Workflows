@@ -13,7 +13,7 @@ import type {
   JsonSchema,
   TokenUsageEvent
 } from "./types.js";
-import { canonicalJson, sha256 } from "./canonical-document.js";
+import { DIGEST_RECIPE, canonicalJson, compareCodeUnits, sha256 } from "./canonical-document.js";
 import { harnessVersion } from "./harness-version.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
@@ -285,6 +285,14 @@ interface FileLossRecord {
  */
 interface ManifestIntegrity {
   algorithm: "sha256";
+  /**
+   * The verification rule for `manifest_sha256`, stated in the archive so
+   * a cold consumer needs nothing from this codebase — the same
+   * self-description discipline as the args' `canonical_archive_path`.
+   * Always {@link DIGEST_RECIPE}; the sentinel's integrity block carries
+   * the same rule for its own digest field.
+   */
+  recipe: string;
   manifest_sha256: string | null;
   files_lost: FileLossRecord[];
 }
@@ -607,6 +615,7 @@ export class RunRecordWriter {
       files: [],
       integrity: {
         algorithm: "sha256",
+        recipe: DIGEST_RECIPE,
         manifest_sha256: null,
         files_lost: []
       }
@@ -919,7 +928,9 @@ export class RunRecordWriter {
   }
 
   async #writeManifest(): Promise<void> {
-    this.manifest.files = [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+    // Code-unit order: the table's order feeds the digested bytes, so it
+    // must be locale-independent like the canonical form's key order.
+    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
     // Self-attestation last, over everything above it: null the field, hash
     // the canonical form, then write. Computed on every manifest write, not
     // only at seal, so a manifest read mid-run is verifiable too.
@@ -945,7 +956,7 @@ export class RunRecordWriter {
    */
   async #reconcileFiles(): Promise<FileLossRecord[]> {
     const lost: FileLossRecord[] = [];
-    for (const entry of [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
+    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
       const metadata = await stat(path.join(this.archiveDir, entry.path)).catch(() => null);
       if (metadata === null) {
         lost.push({ path: entry.path, reason: "missing" });
@@ -959,10 +970,12 @@ export class RunRecordWriter {
   /**
    * The sealed manifest's self-digest, for a consumer of this writer that
    * publishes an attestation elsewhere (the completion sentinel). Null
-   * before the first manifest write.
+   * until the archive seals: a mid-run digest is real but perishable —
+   * `finish()` rewrites the manifest — so publishing it outside the file
+   * it covers would attest bytes the seal then replaces.
    */
-  manifestDigest(): string | null {
-    return this.manifest.integrity.manifest_sha256;
+  sealedManifestDigest(): string | null {
+    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
   }
 
   async #trackFile(relativePath: string): Promise<void> {

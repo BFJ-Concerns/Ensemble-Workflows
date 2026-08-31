@@ -1184,16 +1184,19 @@ function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv)
 
 /**
  * What the sentinel can say about the run manifest: its self-digest where
- * the archive sealed, and otherwise the reason there is none. A writer that
- * exists but has no digest never reached its first manifest write, so the
- * manifest a consumer might find beside the sentinel is not one this run
- * vouches for.
+ * the archive sealed, and otherwise the reason there is none. The digest
+ * is gated on sealing — a writer whose `finish()` never completed (or
+ * threw) may hold a real mid-run digest, but the seal would rewrite the
+ * manifest, so attesting it would vouch for bytes the archive no longer
+ * claims are final. `manifest-unsealed` therefore means exactly that: the
+ * manifest beside this sentinel, whatever its own self-digest says, is
+ * not one this run sealed.
  */
 function manifestAttestation(writer: RunRecordWriter | null): SentinelManifestAttestation {
   if (writer === null) {
     return { unavailable: "recording-disabled" };
   }
-  const digest = writer.manifestDigest();
+  const digest = writer.sealedManifestDigest();
   return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };
 }
 

@@ -1,7 +1,7 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { canonicalJson, sha256 } from "./canonical-document.js";
+import { DIGEST_RECIPE, canonicalJson, sha256 } from "./canonical-document.js";
 import { resolveRunDirectory } from "./run-record.js";
 
 /** Fixed name under the run's directory in the durable-record store. */
@@ -137,10 +137,11 @@ export class CompletionSentinel {
       ended_at: new Date().toISOString(),
       // Self-attestation, computed last over everything above it: the
       // digest of this payload with `integrity.sentinel_sha256` null, in
-      // the same canonical form (sorted keys, two-space indent) the run
-      // manifest uses, so one verification recipe covers both files. Like
-      // the manifest's, it catches an edited field, not a forger.
-      integrity: { algorithm: "sha256" as const, sentinel_sha256: null as string | null }
+      // the same canonical form the run manifest uses, so one verification
+      // recipe covers both files — and the recipe rides the file itself,
+      // as the manifest's does. Like the manifest's, it catches an edited
+      // field, not a forger.
+      integrity: { algorithm: "sha256" as const, recipe: DIGEST_RECIPE, sentinel_sha256: null as string | null }
     };
     payload.integrity.sentinel_sha256 = sha256(canonicalJson(payload));
     try {

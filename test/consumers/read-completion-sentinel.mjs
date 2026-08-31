@@ -29,7 +29,7 @@ function selfDigest(document) {
 function sortJson(value) {
   if (Array.isArray(value)) return value.map(sortJson);
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, sortJson(entry)]));
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, entry]) => [key, sortJson(entry)]));
   }
   return value;
 }

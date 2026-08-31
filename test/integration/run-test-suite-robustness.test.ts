@@ -11,7 +11,6 @@ import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const colouredEmptySuiteChildPath = path.resolve("test/fixtures/suite-runner/coloured-empty-suite-child.mjs");
 const pipeHolderParentPath = path.resolve("test/fixtures/suite-runner/pipe-holder-parent.mjs");
-const sgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`);
 const completionGuardMilliseconds = 5_000;
 const promptExitMilliseconds = 500;
 
@@ -38,8 +37,28 @@ test("suite runner rejects an SGR-coloured empty-suite summary from its guarded 
     NODE_TEST_CONTEXT: undefined
   });
   assert.equal(result.code, 1, result.stderr);
-  assert.match(result.stdout, sgrSequence, "expected the runner to receive the coloured summary");
+  const payload = "\u001B[32m# tests 0\u001B[39m\n";
+  assert.equal(result.stdout, payload, "expected the runner to preserve the coloured empty-suite payload byte-for-byte");
   assert.match(result.stderr, /Test suite matched no tests/);
+});
+
+test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite summary", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-non-sgr-"));
+  try {
+    const childProgram = path.join(directory, "non-sgr-empty-suite-child.mjs");
+    const payload = "\u001B[2J# tests 0\n";
+    await writeFile(childProgram, `import process from "node:process"; process.stdout.write(${JSON.stringify(payload)});`);
+    const result = await runNode([runnerPath, childProgram], {
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
+      ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+      NODE_TEST_CONTEXT: undefined
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, payload);
+    assert.doesNotMatch(result.stderr, /Test suite matched no tests/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("suite runner delivers a descendant's trailing marker after its test child exits", async () => {

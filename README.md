@@ -369,11 +369,21 @@ The manifest is `manifest.json`. Its top-level fields are:
   it is not the hash of the envelope bytes.
 - `meta`: raw workflow meta and `task` copied verbatim, or `null`.
 - `cli_flags`: parsed run-tuning flags.
+- `concurrency`: the effective agent ceiling and per-engine caps —
+  `agent_ceiling` as `Resolved<number | null>`, `engines` as a partial map of
+  engine name to `Resolved<number>` — each recording the value and the layer
+  that supplied it (`flag`, `env`, `config-file`, or `default`).
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }` naming the
   layer that won — the same auditable shape as `concurrency` (both settings
   resolve from the flag alone today, so their layers are `flag` or
   `default`).
+- `workflow_invocations`: the root workflow and every composed child it
+  invoked, in call order. Each entry carries an ordinal (0 for the root),
+  a parent link (`null` for the root, the invoking entry's ordinal for a
+  child), the original path, the archived source with its SHA-256, and the
+  archived args with their canonical path and SHA-256 — recorded before the
+  child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
   answer, timeout) in event order, each entry carrying `hold_id`, `event`,
   `verdict`/`reason` where applicable, and a timestamp.

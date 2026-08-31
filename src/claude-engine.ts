@@ -11,6 +11,7 @@ import {
   ClaudeWorkerDiagnosticError,
   ClaudeWorkerError,
   EngineShutdownError,
+  attachFailedTurnResult,
   attachPartialWorkerText,
   partialWorkerTextOf
 } from "./errors.js";
@@ -50,7 +51,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -340,6 +341,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
+      }
+      if (error instanceof EngineShutdownError && evidence !== null) {
+        // Interruption remains a rejection — it must neither settle as an
+        // operational failure nor enter the retry loop — but its record must
+        // retain the same fields an already-built failed result would carry.
+        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
       }
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed

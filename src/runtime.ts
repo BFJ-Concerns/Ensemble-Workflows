@@ -28,6 +28,7 @@ import {
   appServerDiagnosticOf,
   attachAgentIdentity,
   describeError,
+  failedTurnResultOf,
   partialWorkerTextOf,
   TurnTimeoutError,
   UnknownEngineError,
@@ -1376,6 +1377,10 @@ export class EnsembleRuntime {
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
         // Terminalisation invariant: a failed turn's attempt record carries
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
@@ -1394,7 +1399,7 @@ export class EnsembleRuntime {
             partialWorkerTextOf(error),
             null,
             startedAt,
-            null,
+            failedResult,
             workerExitStatusOf(error),
             appServerDiagnosticOf(error),
             settlement === null ? null : observed
@@ -1472,6 +1477,10 @@ export class EnsembleRuntime {
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
         const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
         // Terminalisation invariant: a failed turn's attempt record carries
         // whatever the worker had said before it died, not a bare null —
         // and how the process died, when the engine observed it.
@@ -1490,7 +1499,7 @@ export class EnsembleRuntime {
             partialWorkerTextOf(error),
             null,
             startedAt,
-            null,
+            failedResult,
             workerExitStatusOf(error),
             appServerDiagnosticOf(error),
             settlement === null ? null : observed

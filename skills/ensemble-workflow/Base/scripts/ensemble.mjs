@@ -14204,6 +14204,19 @@ function partialWorkerTextOf(error) {
   }
   return null;
 }
+function attachFailedTurnResult(error, result) {
+  const carrier = error;
+  if (carrier.failedTurnResult === void 0) {
+    carrier.failedTurnResult = result;
+  }
+  return error;
+}
+function failedTurnResultOf(error) {
+  if (error instanceof Error) {
+    return error.failedTurnResult ?? null;
+  }
+  return null;
+}
 function attachAppServerDiagnostic(error, diagnostic) {
   const carrier = error;
   if (carrier.appServerDiagnostic === void 0) {
@@ -23753,6 +23766,9 @@ var ClaudeEngineInvocation = class {
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
+      if (error instanceof EngineShutdownError && evidence !== null) {
+        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      }
       if (error instanceof ClaudeWorkerError) {
         const workerDispatched = this.#handle !== null;
         if (!this.#multiTurn) {
@@ -27813,6 +27829,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
         const settlement = this.#runSettlementCause(error);
         agentRecord.attempts.push(
           attemptRecord(
@@ -27822,7 +27842,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             partialWorkerTextOf(error),
             null,
             startedAt,
-            null,
+            failedResult,
             workerExitStatusOf(error),
             appServerDiagnosticOf(error),
             settlement === null ? null : observed
@@ -27889,6 +27909,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
       } catch (error) {
         const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
         const settlement = this.#runSettlementCause(error);
         agentRecord.attempts.push(
           attemptRecord(
@@ -27898,7 +27922,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             partialWorkerTextOf(error),
             null,
             startedAt,
-            null,
+            failedResult,
             workerExitStatusOf(error),
             appServerDiagnosticOf(error),
             settlement === null ? null : observed

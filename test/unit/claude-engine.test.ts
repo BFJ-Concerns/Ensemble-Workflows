@@ -340,6 +340,44 @@ test("Claude adapter close stops an active session and winds down its poll loop"
   });
 });
 
+test("Claude interruption retains transcript-proved turn evidence in the archive", async () => {
+  await withControlPlane(
+    [
+      {
+        busyPolls: Number.MAX_SAFE_INTEGER,
+        assistant: { text: "partial from Claude", stop: "tool_use", model: "claude-served", input: 120, output: 30, cached: 9 }
+      }
+    ],
+    async (controlPlane) => {
+      const runtime = makeRuntime(controlPlane);
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+      } as unknown as RunRecordWriter);
+      const agent = runtime.agent("keep working", { engine: "claude" });
+      while (controlPlane.pollCount === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      await runtime.close();
+
+      await assert.rejects(agent, EngineShutdownError);
+      const attempt = records.at(-1)?.attempts[0];
+      assert.equal(attempt?.rawOutput, "partial from Claude");
+      assert.equal(attempt?.resolvedModel, "claude-served");
+      assert.equal(attempt?.transcripts.length, 1);
+      assert.match(attempt?.transcripts[0]?.content ?? "", /partial from Claude/);
+      assert.deepEqual(attempt?.tokenUsageEvents.at(-1)?.total, {
+        inputTokens: 120,
+        outputTokens: 30,
+        cachedInputTokens: 9,
+        cacheCreationInputTokens: 0,
+        totalTokens: 159
+      });
+    }
+  );
+});
+
 test("Claude adapter forgets an invocation once its own close completes", async () => {
   await withControlPlane([{ assistant: { text: "done" } }], async (controlPlane) => {
     const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });

@@ -46,7 +46,11 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     const lines = [error.message];
     for (const attempt of context.lastAgentRecord?.attempts ?? []) {
       if (attempt.failure !== null) {
-        lines.push(`attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}`);
+        const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
+        const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
+        lines.push(
+          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
+        );
       }
     }
     const record = context.lastAgentRecord;

@@ -5,7 +5,12 @@ import {
   assertFallbackModelSupported,
   requireRegisteredOpenCodeModel
 } from "./engine-option-validation.js";
-import { EngineShutdownError, InvalidAgentOptionValueError, OpenCodeModelRequiredError } from "./errors.js";
+import {
+  CapabilityStripUnsupportedError,
+  EngineShutdownError,
+  InvalidAgentOptionValueError,
+  OpenCodeModelRequiredError
+} from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
@@ -167,6 +172,40 @@ export interface CodexEngineAdapterOptions {
   concurrency: number;
 }
 
+async function codexThreadConfig(
+  strip: readonly StrippableCapability[] | undefined,
+  transport: RuntimeTransport,
+  cwd: string | undefined
+): Promise<Record<string, unknown> | undefined> {
+  const strippedAgents = strip?.includes("agents") === true;
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
+    return undefined;
+  }
+  return {
+    ...(strippedAgents ? { agents: { enabled: false } } : {}),
+    ...(strippedSkills
+      ? {
+          skills: {
+            bundled: { enabled: false },
+            config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
+          }
+        }
+      : {})
+  };
+}
+
+async function discoveredCodexSkillNames(transport: RuntimeTransport, cwd: string | undefined): Promise<readonly string[]> {
+  if (transport.listSkills === undefined) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's stabilised skill discovery result"
+    );
+  }
+  return transport.listSkills(cwd);
+}
+
 export class CodexEngineAdapter implements EngineAdapter {
   readonly name = "codex" satisfies EngineName;
   readonly concurrency: number;
@@ -181,18 +220,18 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — a live test
    *   against a real worker is what re-checks this judgement per release.
-   * - `skills` cannot be stripped mechanically: there is no skills tool in
-   *   the app-server surface — skills arrive as prompt text plus
-   *   filesystem paths, and the per-thread lever that removes a skill
-   *   from the listing leaves its files shell-readable. A strip request
-   *   therefore fails loud rather than claiming a satisfaction the engine
-   *   cannot deliver.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
+   *   growing filesystem-and-plugin set and then repeat it. This rejects a
+   *   repeated cold state rather than mistaking it for complete discovery;
+   *   bundled skills are disabled and every accepted name gets an exact
+   *   `skills.config` deny.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
-      route: "unsupported",
+      route: "config",
       detail:
-        "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
     },
     agents: {
       route: "config",
@@ -292,11 +331,11 @@ class CodexWorkerSession implements EngineWorkerSession {
     }
     this.#opening ??= (async () => {
       try {
-        const strippedAgents = this.#options.strip?.includes("agents") === true;
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
         const threadId = await this.#transport.openThread({
           ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
           ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-          ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
+          ...(threadConfig !== undefined ? { threadConfig } : {})
         });
         this.#threadId = threadId;
         return threadId;
@@ -348,11 +387,11 @@ class CodexEngineInvocation implements EngineInvocation {
     // tool surface the machine's own config.toml gives it (stripping is opt-in
     // in both directions — a strip removes nothing unasked, and its
     // absence grants nothing the machine had turned off).
-    const strippedAgents = this.#options.strip?.includes("agents") === true;
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
     const threadId = await this.#transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {})
+      ...(threadConfig !== undefined ? { threadConfig } : {})
     });
 
     return this.#transport.runTurn(threadId, prompt, {
@@ -383,15 +422,27 @@ export class ClaudeEngineAdapter implements EngineAdapter {
   readonly concurrency: number;
   /**
    * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane
-   * already writes (the one surface measured to reach the daemon-served
-   * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
+   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
+   * deny working (`Skill` absent under a skills strip, present in the
+   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
+   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
+   * while the unstripped control demonstrated discovery and messaging.
+   * `Agent` was also absent, but the witness cannot isolate it from the
+   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
+   * the exact-set regression proves. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+    agents: {
+      route: "config",
+      detail:
+        "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+    }
   };
 
   #scheduler: Scheduler;

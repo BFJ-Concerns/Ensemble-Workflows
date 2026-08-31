@@ -364,6 +364,9 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
+- `error`: the `{ kind, message }` of whatever ended the run — a script fault,
+  an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
+  run ended cleanly. Present on both the manifest and `result.json`.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *served* model — the literal `"unresolved"` when
   no served model was ever learned, never the requested pin. Cost entries carry
@@ -436,7 +439,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   app-server, an aborted poll); `observed_failure` is `null` when the
   engine's own failure is the cause.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
-  `session_id`, `thread_id`.
+  `session_id`, `thread_id`; empty when none were archived.
+- `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
+  the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
+  `"worker-timed-out"`, or `"engine-produced-no-transcript"`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every

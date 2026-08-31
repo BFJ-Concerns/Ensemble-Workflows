@@ -47,11 +47,18 @@ class FakeTransport implements RuntimeTransport {
   readonly cwd = "/fake/repo";
   openedThreads: ThreadStartOptions[] = [];
   turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
-
+  discoveredSkillCwds: Array<string | undefined> = [];
   #responses: TurnResult[];
+  #skills: readonly string[];
 
-  constructor(responses: TurnResult[]) {
+  constructor(responses: TurnResult[], skills: readonly string[] = []) {
     this.#responses = responses;
+    this.#skills = skills;
+  }
+
+  async listSkills(cwd?: string): Promise<readonly string[]> {
+    this.discoveredSkillCwds.push(cwd);
+    return this.#skills;
   }
 
   async openThread(options: ThreadStartOptions): Promise<string> {
@@ -1532,6 +1539,29 @@ test("a returned retry-exhaustion failure retains failed status while the runtim
   assert.equal(records[1]?.attempts.at(-1)?.failure?.kind, "invalid-json");
 });
 
+test("the shutdown tally is fixed at the moment the run ended, not at the moment it is read", async () => {
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+
+  const agent = runtime.agent("hang until the run ends", { engine: "codex" });
+  await transport.started;
+  await runtime.close("interrupted");
+  await assert.rejects(agent, EngineShutdownError);
+
+  // Teardown has now settled the leg, so the live progress model no longer
+  // shows it in flight — which is exactly why a supervisor's tally cannot be
+  // read from there after the fact.
+  assert.equal(runtime.progress.snapshot().totals.active, 0);
+  // The leg was in flight at the engine, so teardown reached it and its
+  // record carries the run's shutdown status: it is cut short, not
+  // abandoned, and the tally says the same thing the record does.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
+});
+
 test("genuine shutdown errors inherit the runtime shutdown status", async () => {
   for (const error of [new EngineShutdownError("codex"), new AppServerExitedError("transport closed")]) {
     for (const status of ["timed-out", "interrupted"] as const) {
@@ -1637,6 +1667,10 @@ test("runtime close terminalises an unsettled dispatch record", async () => {
   assert.equal(recorder.records[0]?.status, "in-progress");
   assert.equal(recorder.records[1]?.status, "abandoned");
   assert.deepEqual(recorder.records[1]?.attempts, []);
+  // A leg whose turn never reached an engine is the one close() abandons —
+  // no outcome was ever observed for it — and that is what `unsettled`
+  // counts, distinct from a leg teardown cut short with a record.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 0, unsettled: 1 });
   recorder.releaseDispatch();
   await assert.rejects(agent, EngineShutdownError);
 });
@@ -1788,12 +1822,15 @@ test("an absent capability is satisfied by construction and recorded as absent",
   await runtime.close();
 });
 
-test("a codex agents strip rides the thread config overlay; an unstripped call sends none", async () => {
+test("a codex skills strip denies the stabilised discovery set; an unstripped call sends none", async () => {
   // The Codex enforcement route end-to-end through the real adapter: the
-  // strip becomes thread/start's per-thread config overlay, and a dispatch
-  // that asked for nothing carries no overlay at all — the machine's own
-  // default tool surface is neither restricted nor re-enabled unasked.
-  const transport = new FakeTransport([turn("restricted"), turn("unrestricted")]);
+  // strip becomes thread/start's per-thread config overlay. The stabilised
+  // discovery result carries filesystem and plugin-scope names. A dispatch
+  // that asks for nothing carries no overlay or discovery request at all.
+  const transport = new FakeTransport(
+    [turn("restricted"), turn("unrestricted")],
+    ["plugin-management:plugin-management", "repo-skill"]
+  );
   const records: RuntimeAgentRecord[] = [];
   const runtime = new EnsembleRuntime({
     transport,
@@ -1805,30 +1842,39 @@ test("a codex agents strip rides the thread config overlay; an unstripped call s
       records.push(structuredClone(record));
     }
   } as RunRecordWriter);
+  try {
+    await runtime.agent("restricted work", { engine: "codex", strip: ["skills"] });
+    await runtime.agent("unrestricted work", { engine: "codex" });
 
-  await runtime.agent("restricted work", { engine: "codex", strip: ["agents"] });
-  await runtime.agent("unrestricted work", { engine: "codex" });
-
-  assert.deepEqual(transport.openedThreads[0]?.threadConfig, { agents: { enabled: false } });
-  assert.ok(!("threadConfig" in (transport.openedThreads[1] ?? {})));
-  assert.deepEqual(records[0]?.strip, {
-    requested: ["agents"],
-    enforcement: {
-      agents: {
-        route: "config",
-        detail:
-          "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+    assert.deepEqual(transport.discoveredSkillCwds, [process.cwd()]);
+    assert.deepEqual(transport.openedThreads[0]?.threadConfig, {
+      skills: {
+        bundled: { enabled: false },
+        config: [
+          { name: "plugin-management:plugin-management", enabled: false },
+          { name: "repo-skill", enabled: false }
+        ]
       }
-    }
-  });
-  await runtime.close();
+    });
+    assert.ok(!("threadConfig" in (transport.openedThreads[1] ?? {})));
+    assert.deepEqual(records[0]?.strip, {
+      requested: ["skills"],
+      enforcement: {
+        skills: {
+          route: "config",
+          detail:
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
+        }
+      }
+    });
+  } finally {
+    await runtime.close();
+  }
 });
 
-test("a codex skills strip fails loud before any thread opens", async () => {
-  // No mechanical route exists (skills reach a Codex worker as prompt text
-  // plus shell-readable files), so the request must fail pre-spawn rather
-  // than dispatch a worker the author believes restricted.
+test("a Codex skills strip fails loud before a thread opens when discovery is unavailable", async () => {
   const transport = new FakeTransport([]);
+  Object.defineProperty(transport, "listSkills", { value: undefined });
   const runtime = new EnsembleRuntime({
     transport,
     concurrencyCaps: { codex: 1 },
@@ -1840,6 +1886,38 @@ test("a codex skills strip fails loud before any thread opens", async () => {
   );
   assert.deepEqual(transport.openedThreads, []);
   await runtime.close();
+});
+
+test("a Codex agents-only strip keeps skills untouched", async () => {
+  const transport = new FakeTransport([turn("restricted")], ["should-not-be-read"]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  try {
+    await runtime.agent("restricted work", { engine: "codex", strip: ["agents"] });
+    assert.deepEqual(transport.discoveredSkillCwds, []);
+    assert.deepEqual(transport.openedThreads, [{ cwd: process.cwd(), threadConfig: { agents: { enabled: false } } }]);
+    assert.deepEqual(records[0]?.strip, {
+      requested: ["agents"],
+      enforcement: {
+        agents: {
+          route: "config",
+          detail:
+            "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+        }
+      }
+    });
+  } finally {
+    await runtime.close();
+  }
 });
 
 test("a malformed strip value is rejected before dispatch", async () => {

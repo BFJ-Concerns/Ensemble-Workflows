@@ -12,6 +12,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
+  AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
   AppServerSystemError,
@@ -84,15 +85,18 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
 
 test("concurrent first Codex uses share a single app-server handshake", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-"));
-  const capturePath = path.join(directory, "methods.txt");
+  const capturePath = path.join(directory, "requests.jsonl");
   const codexBin = await fakeCodexTurnServer({ capturePath });
   const transport = new LazyCodexAppServerTransport(defaultTransportOptions(codexBin));
 
   try {
     const threadIds = await Promise.all([transport.openThread({}), transport.openThread({})]);
     assert.equal(new Set(threadIds).size, 2);
-    const methods = (await readFile(capturePath, "utf8")).trim().split("\n");
-    assert.equal(methods.filter((method) => method === "initialize").length, 1);
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params?: unknown });
+    assert.equal(requests.filter((request) => request.method === "initialize").length, 1);
   } finally {
     await transport.close();
   }
@@ -144,6 +148,154 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
           code: null,
           message: "Codex app-server reported terminal systemError without a diagnostic",
           payload: '{"threadId":"thread-1","status":{"type":"systemError"}}'
+        });
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by completion remains a diagnostic-less terminal failure", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-completed");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by Codex's schema diagnostic keeps its classified cause", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: "invalid_json_schema",
+          message: "invalid_json_schema: Invalid schema for response_format",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
+        });
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a schema diagnostic disarms its systemError grace before a follow-up turn", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error-follow-up");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "reject with the schema diagnostic", {}),
+      (error: unknown) => error instanceof CodexSchemaSubsetUnsupportedError
+    );
+
+    // The fake completes this turn 120ms after it starts, well beyond the
+    // 50ms grace armed by the first turn. A stale grace would delete this
+    // turn and interrupt the already-rejected first turn instead.
+    const result = await transport.runTurn(threadId, "complete after the first grace would expire", { timeoutMs: 300 });
+    assert.equal(result.text, "the intact follow-up answer");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError makes a retry-promised schema diagnostic terminal and classified", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-retrying-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: "invalid_json_schema",
+          message: "invalid_json_schema: Invalid schema for response_format",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":true,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
+        });
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("the diagnostic grace genuinely waits for a delayed schema diagnostic", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-delayed-schema-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
+        assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
+        assert.equal(partialWorkerTextOf(error), "nine tenths of an answer");
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a diagnostic arriving after the grace leaves the honest diagnostic-less rejection", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-late-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerSystemError);
+        assert.match(error.message, /systemError without a diagnostic/);
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a systemError followed by another diagnostic keeps that diagnostic attached", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("system-error-then-error");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "report the terminal status", {}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerRequestError);
+        assert.deepEqual(appServerDiagnosticOf(error), {
+          code: null,
+          message: "upstream fell over",
+          payload:
+            '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"upstream fell over"}}'
         });
         return true;
       }
@@ -972,9 +1124,150 @@ test("Codex app-server sends a thread config overlay only when one is given", as
   }
 });
 
+test("Codex app-server requires a discovered skill-set expansion before accepting a matching fresh result", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-list-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    skillResponses: [
+      ["repo-skill"],
+      ["repo-skill"],
+      ["plugin-management:plugin-management", "repo-skill"],
+      ["repo-skill", "plugin-management:plugin-management"]
+    ]
+  });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), [
+      "plugin-management:plugin-management",
+      "repo-skill"
+    ]);
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params?: unknown })
+      .filter((request) => request.method === "skills/list");
+    assert.deepEqual(requests, [
+      { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
+      { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
+      { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } },
+      { method: "skills/list", params: { cwds: ["/fake/worker-cwd"], forceReload: true } }
+    ]);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server fails closed when discovery contracts after an expansion", async () => {
+  // A shrink after growth must not qualify: the repeated smaller set would
+  // dispatch a deny overlay missing the vanished skill, and a skill that
+  // reappears by thread/start would go unstripped.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-contract-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    skillResponses: [
+      ["repo-skill"],
+      ["repo-skill", "plugin-management:plugin-management"],
+      ["repo-skill"]
+    ]
+  });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    await assert.rejects(
+      () => transport.listSkills("/fake/worker-cwd"),
+      (error: unknown) =>
+        error instanceof AppServerRequestError &&
+        error.code === "unstable_discovery" &&
+        error.message.includes("after 10 calls")
+    );
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((request) => request.method === "skills/list" || request.method === "thread/start");
+    assert.equal(requests.length, 10);
+    assert.ok(requests.every((request) => request.method === "skills/list"));
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server fails closed after ten cold skill discoveries", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-unstable-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({ capturePath, skillResponses: [["repo-skill"]] });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    await assert.rejects(
+      () => transport.listSkills("/fake/worker-cwd"),
+      (error: unknown) =>
+        error instanceof AppServerRequestError &&
+        error.code === "unstable_discovery" &&
+        error.message.includes("after 10 calls")
+    );
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((request) => request.method === "skills/list");
+    assert.equal(requests.length, 10);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server rejects an error-bearing skill discovery result", async () => {
+  const codexBin = await fakeCodexTurnServer({ skillErrors: true });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0"
+  });
+  try {
+    await assert.rejects(() => transport.listSkills("/fake/worker-cwd"), AppServerRequestError);
+  } finally {
+    await transport.close();
+  }
+});
+
 /** A fake app-server that answers the handshake, opens threads, and completes one text turn per thread. */
 async function fakeCodexTurnServer(
-  options: { returnPromptBase64?: boolean; capturePath?: string; envCapturePath?: string; servedModel?: string | null } = {}
+  options: {
+    returnPromptBase64?: boolean;
+    capturePath?: string;
+    envCapturePath?: string;
+    servedModel?: string | null;
+    skillResponses?: string[][];
+    skillErrors?: boolean;
+  } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
   const bin = path.join(directory, "codex");
@@ -993,6 +1286,9 @@ const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
+const skillResponses = ${JSON.stringify(options.skillResponses ?? [[]])};
+const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
+let skillResponseIndex = 0;
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
 }
@@ -1002,7 +1298,7 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (capturePath !== null) {
-    appendFileSync(capturePath, message.method + "\\n");
+    appendFileSync(capturePath, JSON.stringify({ method: message.method, params: message.params }) + "\\n");
   }
   if (message.method === "initialize") {
     send({ id: message.id, result: {} });
@@ -1016,6 +1312,21 @@ reader.on("line", (line) => {
         thread: { id: "thread-" + threadCounter },
         ...(servedModel === null ? {} : { model: servedModel }),
         reasoningEffort: "medium"
+      }
+    });
+    return;
+  }
+  if (message.method === "skills/list") {
+    const names = skillResponses[Math.min(skillResponseIndex, skillResponses.length - 1)];
+    skillResponseIndex += 1;
+    send({
+      id: message.id,
+      result: {
+        data: [{
+          cwd: message.params.cwds[0],
+          errors: skillErrors ? [{ path: "/fake/broken-skill", message: "broken skill" }] : [],
+          skills: names.map((name) => ({ name }))
+        }]
       }
     });
     return;
@@ -1045,6 +1356,13 @@ async function fakeCodexFailingTurnServer(
   mode:
     | "error-notification"
     | "system-error"
+    | "system-error-then-completed"
+    | "system-error-then-schema-error"
+    | "system-error-then-schema-error-follow-up"
+    | "system-error-then-retrying-schema-error"
+    | "system-error-then-error"
+    | "system-error-then-delayed-schema-error"
+    | "system-error-then-late-error"
     | "exit-mid-turn"
     | "hang-after-delta"
     | "garbage-line"
@@ -1076,6 +1394,7 @@ if (process.argv[2] !== "app-server") {
 
 const mode = ${JSON.stringify(mode)};
 let threadCounter = 0;
+let turnCounter = 0;
 const reader = createInterface({ input: process.stdin });
 const send = (message, afterWrite) => process.stdout.write(JSON.stringify(message) + "\\n", afterWrite);
 
@@ -1092,6 +1411,7 @@ reader.on("line", (line) => {
   }
   if (message.method === "turn/start") {
     const threadId = message.params.threadId;
+    turnCounter += 1;
     if (mode === "turn-start-error") {
       send({ id: message.id, error: { code: -32001, message: "request cause", data: { detail: "request payload" } } });
       return;
@@ -1112,6 +1432,22 @@ reader.on("line", (line) => {
     }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
+    if (mode === "system-error-then-schema-error-follow-up") {
+      if (turnCounter === 1) {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
+        send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      } else {
+        // This lands after the first turn's 50ms diagnostic grace. If the
+        // first rejection leaves that timer armed, it terminalises this
+        // follow-up turn before the answer can arrive.
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the intact follow-up answer" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
+        }, 120);
+      }
+      return;
+    }
     if (mode === "no-first-delta") {
       // The accepted turn stays alive but never produces output: only the
       // client's first-output deadline can free the worker slot.
@@ -1156,6 +1492,33 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
     } else if (mode === "system-error") {
       send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+    } else if (mode === "system-error-then-completed") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+    } else if (mode === "system-error-then-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+    } else if (mode === "system-error-then-retrying-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: true, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+    } else if (mode === "system-error-then-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "upstream fell over" } } });
+    } else if (mode === "system-error-then-delayed-schema-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // The diagnostic lands asynchronously, inside the client's grace
+      // window: only a grace that genuinely waits can attach it — a zero or
+      // synchronous-only grace rejects before this timer fires.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 10);
+    } else if (mode === "system-error-then-late-error") {
+      send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+      // Well beyond the grace: the client must already have fallen back to
+      // the diagnostic-less rejection rather than waiting indefinitely.
+      setTimeout(() => {
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      }, 400);
     } else if (mode === "garbage-line") {
       process.stdout.write("this is not JSON at all", () => process.exit(7));
     } else if (mode === "terminated-garbage-line") {

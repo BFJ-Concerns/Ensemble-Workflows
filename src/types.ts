@@ -271,15 +271,18 @@ export interface ThreadStartOptions {
    * unaffected, and the overlay wins over process-level config in both
    * directions. The Codex capability-stripping route rides this
    * (`{ agents: { enabled: false } }` removes the collaboration tool
-   * namespace from what Codex sends the model); it is sent only when a
-   * dispatch asks for it, so an unstripped worker's thread/start stays
-   * byte-identical and keeps the machine's own default tool surface.
+   * namespace; skills disable bundled skills and deny every name from the
+   * app-server's stabilised discovery result); it is sent only when a dispatch
+   * asks for it, so an unstripped worker's thread/start stays byte-identical
+   * and keeps the machine's own default tool surface.
    */
   threadConfig?: Record<string, unknown>;
 }
 
 export interface RuntimeTransport {
   readonly cwd: string;
+  /** The Codex app-server's stabilised skill discovery result for a worker cwd. */
+  listSkills?(cwd?: string): Promise<readonly string[]>;
   openThread(options: ThreadStartOptions): Promise<string>;
   runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult>;
   close(): Promise<void>;

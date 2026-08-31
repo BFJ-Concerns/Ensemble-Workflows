@@ -14998,10 +14998,11 @@ var RunRecordWriter = class _RunRecordWriter {
         token_usage_events: attempt.tokenUsageEvents,
         diagnostics: attempt.diagnostics ?? {}
       })),
-      // Absence carries its reason, like `usage` — an empty list must not
-      // leave a consumer unable to tell "this worker produced none" from
-      // "the archive lost them".
-      transcripts: transcriptRefs.length > 0 ? transcriptRefs : { unavailable: transcriptAbsenceReason(record) }
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
     });
     this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
     await this.#writeManifest();
@@ -15214,6 +15215,10 @@ async function reapAbandonedRuns(options) {
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      if (fresh.integrity !== void 0 && typeof fresh.integrity.manifest_sha256 === "string") {
+        fresh.integrity.manifest_sha256 = null;
+        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
+      }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
 `);
       reaped.push(entry.name);
@@ -15427,7 +15432,12 @@ var CompletionSentinel = class {
       // Read from the launcher's own progress model, not the archive: the
       // sentinel resolves independently of the record switch, so recording
       // being off must degrade nothing here.
-      workers: workers === null ? null : { done: workers.done, failed: workers.failed, unsettled: workers.unsettled },
+      workers: workers === null ? null : {
+        done: workers.done,
+        failed: workers.failed,
+        cut_short: workers.cutShort,
+        unsettled: workers.unsettled
+      },
       error: detail.error ?? null,
       manifest: detail.manifest ?? { unavailable: "recording-disabled" },
       ended_at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -15606,7 +15616,7 @@ function zeroUsage() {
 // src/claude-engine.ts
 var CAPABILITY_DENY_RULES = {
   skills: ["Skill"],
-  agents: ["Task", "Agent"]
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
 };
 function permissionDenyRulesFor(strip) {
   return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
@@ -15733,15 +15743,15 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
     } catch (error) {
-      if (error instanceof Error) {
-        await this.#attachLatestWorkerText(error, fromIndex);
+      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
       }
       if (error instanceof ClaudeWorkerError) {
-        const resolvedModel = await this.#tryResolveModel(fromIndex);
         if (!this.#multiTurn) {
           await this.#teardown();
         }
-        return failedTurnResult(error, resolvedModel);
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
       throw error;
     }
@@ -15989,22 +15999,38 @@ var ClaudeEngineInvocation = class {
       throw error;
     }
   }
-  /** The served model the current turn's transcript names, or null when unreadable. */
-  async #tryResolveModel(fromIndex) {
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex) {
     const handle = this.#handle;
     if (handle === null) {
       return null;
     }
     const transcript = await this.#tryReadTranscript(handle);
-    return transcript === null ? null : resolvedModelSince(transcript.entries, fromIndex);
-  }
-  async #attachLatestWorkerText(error, fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return;
+    if (transcript === null) {
+      return null;
     }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null || endsInSyntheticReply(transcript.entries, fromIndex)) {
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex)
+    };
+  }
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence) {
+    if (evidence === null) {
+      return null;
+    }
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+  #attachWorkerText(error, evidence, fromIndex) {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
       return;
     }
     const text = finalAssistantText(transcript.entries, fromIndex);
@@ -16016,14 +16042,29 @@ var ClaudeEngineInvocation = class {
    * Feed best-effort transcript-derived usage through the same event shape Codex
    * emits. The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
+   *
+   * The derived total is not monotonic: the input side is a snapshot of the
+   * running context, and compaction shrinks it, so a step that generated new
+   * output can still carry a *smaller* total than the step before. Growth is
+   * therefore judged per component, and the reported delta's own total is the
+   * sum of the components that grew — reporting nothing whenever the total
+   * fell would drop that output for good, since the high-water mark would not
+   * advance either and no later report would ever re-carry it. The high-water
+   * mark advances per component for the same reason.
    */
   #reportUsage(handle, entries, fromIndex) {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
-    if (last.totalTokens === 0) {
+    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
+    if (grown === 0) {
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
       return;
     }
-    this.#reportedUsage = total;
+    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      last.cacheCreationInputTokens = last.cachedInputTokens;
+    }
+    last.totalTokens = grown;
+    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
@@ -16117,8 +16158,9 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID().slice(0, 8)}`;
   }
 };
-function failedTurnResult(error, resolvedModel = null) {
+function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
   return {
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
@@ -16127,7 +16169,33 @@ function failedTurnResult(error, resolvedModel = null) {
     durationMs: null,
     firstDeltaMs: null,
     items: {},
-    tokenUsageEvents: []
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    ...evidence === null ? {} : {
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: evidence.handle.sessionId,
+          content: evidence.transcript.text
+        }
+      ]
+    }
+  };
+}
+function highWaterUsage(previous, total) {
+  if (previous === null) {
+    return total;
+  }
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
+  return {
+    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
+    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
   };
 }
 function claudeAttemptFailure(error) {
@@ -23381,7 +23449,11 @@ function diagnose(error, context) {
     const lines = [error.message];
     for (const attempt of context.lastAgentRecord?.attempts ?? []) {
       if (attempt.failure !== null) {
-        lines.push(`attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}`);
+        const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
+        const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
+        lines.push(
+          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
+        );
       }
     }
     const record = context.lastAgentRecord;
@@ -24388,9 +24460,12 @@ var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
 var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -24403,6 +24478,10 @@ var LazyCodexAppServerTransport = class {
   async openThread(options) {
     const transport = await this.#transport();
     return transport.openThread(options);
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
   }
   async runTurn(threadId, prompt, options) {
     const transport = await this.#transport();
@@ -24436,6 +24515,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #retryPromiseSilenceTimeoutMs;
   #firstOutputTimeoutMs;
   #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
   #nextId = 0;
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
@@ -24450,6 +24530,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn2(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -24521,6 +24602,64 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+  async listSkills(cwd = this.cwd) {
+    let previousNames;
+    let observedExpansion = false;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== void 0) {
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
+      }
+      previousNames = names;
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
   }
   async runTurn(threadId, prompt, options) {
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
@@ -24877,25 +25016,24 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (method === "thread/status/changed") {
       const status = asJsonObject(params.status);
       if (status?.type === "systemError") {
-        const diagnostic = {
-          code: void 0,
-          message: "Codex app-server reported terminal systemError without a diagnostic",
-          data: params
-        };
-        void this.#rejectTurn(
-          threadId,
-          turn,
-          attachAppServerDiagnostic(new AppServerSystemError(method, diagnostic), appServerDiagnosticFromPayload(diagnostic))
-        );
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
       }
       return;
     }
     if (method === "turn/completed") {
       turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
       this.#completeTurn(threadId, turn);
       return;
     }
     if (method === "error") {
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
       if (params.willRetry === true) {
         turn.consecutiveRetryPromises += 1;
         if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
@@ -24955,6 +25093,29 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       turn.retryPromiseSilenceDeadline = void 0;
     }
   }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
   #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
     const diagnostic = errorPayloadFromNotification(promiseParams);
     turn.retryPromiseSilenceDeadline = setTimeout(() => {
@@ -25013,6 +25174,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#transcripts.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== void 0) {
       void this.#sendUnacknowledgedRequest("turn/interrupt", {
@@ -25027,6 +25189,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#turns.delete(threadId);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
     const transcript = this.#transcripts.get(threadId);
@@ -25090,6 +25253,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
       firstOutputDeadline: void 0,
       promise,
       resolve: resolveTurn,
@@ -25150,8 +25315,13 @@ function appServerErrorFromPayload(method, errorPayload) {
 }
 function appServerErrorFromNotification(params) {
   const errorPayload = errorPayloadFromNotification(params);
-  const error = errorPayload.code === "serverOverloaded" ? new AppServerOverloadedError("turn notification", errorPayload) : new AppServerRequestError("turn notification", errorPayload);
-  return attachAppServerDiagnostic(error, appServerDiagnosticFromPayload(errorPayload));
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
 }
 function appServerDiagnosticFromPayload(payload) {
   return {
@@ -25224,6 +25394,12 @@ function parseRpcMessage(line) {
 }
 function asJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
 }
 function asRpcError(value) {
   const object = asJsonObject(value);
@@ -26233,6 +26409,32 @@ var EngineRegistry = class {
     await Promise.allSettled([...this.#engines.values()].map((engine) => engine.close()));
   }
 };
+async function codexThreadConfig(strip, transport, cwd) {
+  const strippedAgents = strip?.includes("agents") === true;
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
+    return void 0;
+  }
+  return {
+    ...strippedAgents ? { agents: { enabled: false } } : {},
+    ...strippedSkills ? {
+      skills: {
+        bundled: { enabled: false },
+        config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
+      }
+    } : {}
+  };
+}
+async function discoveredCodexSkillNames(transport, cwd) {
+  if (transport.listSkills === void 0) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's stabilised skill discovery result"
+    );
+  }
+  return transport.listSkills(cwd);
+}
 var CodexEngineAdapter = class {
   name = "codex";
   concurrency;
@@ -26247,17 +26449,17 @@ var CodexEngineAdapter = class {
    *   process. The key is `--strict-config`-validated but undocumented,
    *   and its failure mode on a Codex rename would be silent — a live test
    *   against a real worker is what re-checks this judgement per release.
-   * - `skills` cannot be stripped mechanically: there is no skills tool in
-   *   the app-server surface — skills arrive as prompt text plus
-   *   filesystem paths, and the per-thread lever that removes a skill
-   *   from the listing leaves its files shell-readable. A strip request
-   *   therefore fails loud rather than claiming a satisfaction the engine
-   *   cannot deliver.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
+   *   growing filesystem-and-plugin set and then repeat it. This rejects a
+   *   repeated cold state rather than mistaking it for complete discovery;
+   *   bundled skills are disabled and every accepted name gets an exact
+   *   `skills.config` deny.
    */
   capabilities = {
     skills: {
-      route: "unsupported",
-      detail: "measured 2026-08-28 on codex-cli 0.149.1: skills reach a Codex worker as prompt text plus shell-readable files, so no configuration surface can strip the capability"
+      route: "config",
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
     },
     agents: {
       route: "config",
@@ -26328,11 +26530,11 @@ var CodexWorkerSession = class {
     }
     this.#opening ??= (async () => {
       try {
-        const strippedAgents = this.#options.strip?.includes("agents") === true;
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
         const threadId = await this.#transport.openThread({
           ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
           ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-          ...strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {}
+          ...threadConfig !== void 0 ? { threadConfig } : {}
         });
         this.#threadId = threadId;
         return threadId;
@@ -26360,11 +26562,11 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const strippedAgents = this.#options.strip?.includes("agents") === true;
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
     const threadId = await this.#transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...strippedAgents ? { threadConfig: { agents: { enabled: false } } } : {}
+      ...threadConfig !== void 0 ? { threadConfig } : {}
     });
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
@@ -26380,15 +26582,26 @@ var ClaudeEngineAdapter = class {
   concurrency;
   /**
    * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane
-   * already writes (the one surface measured to reach the daemon-served
-   * session), and deny rules outrank every allow layer and permission
-   * mode, `--dangerously-skip-permissions` included — the live tests
-   * assert that at the worker itself.
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
+   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
+   * deny working (`Skill` absent under a skills strip, present in the
+   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
+   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
+   * while the unstripped control demonstrated discovery and messaging.
+   * `Agent` was also absent, but the witness cannot isolate it from the
+   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
+   * the exact-set regression proves. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
    */
   capabilities = {
     skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" }
+    agents: {
+      route: "config",
+      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+    }
   };
   #scheduler;
   #cwd;
@@ -26672,6 +26885,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
+  // The worker tally as it stood at the instant the run ended, captured
+  // synchronously by close() before any teardown await. A tally read after
+  // close() returns would depend on how far the in-flight legs happened to
+  // get during teardown; this one names one determinate moment.
+  #shutdownTally = null;
   #closed = false;
   #workerSessions = /* @__PURE__ */ new Set();
   #sessionCounter = 0;
@@ -27263,14 +27481,35 @@ var EnsembleRuntime = class _EnsembleRuntime {
   completedOutputs() {
     return this.#completed;
   }
+  /**
+   * The worker tally at the moment the run ended, or null before close().
+   * Each in-flight leg is counted by the disposition close() itself decides
+   * for it — abandoned where no outcome was ever observed, cut short where
+   * teardown settles it with the run's own shutdown status — so the
+   * sentinel's figures and the archive's records state the same thing.
+   */
+  shutdownTally() {
+    return this.#shutdownTally;
+  }
   async close(status = "interrupted") {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    const inFlight = [...this.#unsettledAgentRecords.values()].filter(
+      ({ record }) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(({ stage }) => stage === "dispatching").map(({ record }) => record);
+    const totals = this.progress.snapshot().totals;
+    this.#shutdownTally = {
+      done: totals.done,
+      failed: totals.failed,
+      cutShort: inFlight.length - abandoning.length,
+      unsettled: abandoning.length
+    };
     const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
     this.#holdManager?.close();
     this.#admission.close();
     await Promise.all(
-      [...this.#unsettledAgentRecords.values()].filter(({ record, stage }) => stage === "dispatching" && record.status === "in-progress").map(async ({ record }) => {
+      abandoning.map(async (record) => {
         this.#abandonedAgentIds.add(record.id);
         record.status = "abandoned";
         await this.#recordAgentSafely(record);
@@ -28118,6 +28357,7 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(`[sentinel] ${formatError3(error)}
 `);
   };
+  let exitCode = 1;
   try {
     const prepared = await prepareRun(invocation, cwd);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -28267,7 +28507,7 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`${serialised}
 `);
       finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      return 0;
+      exitCode = 0;
     } finally {
       interrupt.dispose();
     }
@@ -28285,8 +28525,9 @@ async function runEnsembleCli(argv, options = {}) {
     });
     stderr.write(`${diagnosis ?? formatError3(error)}
 `);
-    return 1;
+    exitCode = 1;
   } finally {
+    let teardownError = null;
     try {
       interrupt?.dispose();
       progress?.finish();
@@ -28295,7 +28536,9 @@ async function runEnsembleCli(argv, options = {}) {
       }
       if (runtime !== null) {
         const terminalStatus = finalRecord?.status;
-        await runtime.close(terminalStatus === "complete" || terminalStatus === void 0 ? "failed" : terminalStatus);
+        await runtime.close(
+          terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+        );
       }
       if (runRecordWriter !== null) {
         await runRecordWriter.finish({
@@ -28303,11 +28546,17 @@ async function runEnsembleCli(argv, options = {}) {
           error: terminalError
         });
       }
+    } catch (error) {
+      teardownError = describeError(error);
+      stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+`);
     } finally {
-      const terminal = finalRecord ?? { status: "failed", exitCode: 1 };
+      const settled = finalRecord ?? { status: "failed", exitCode: 1 };
+      const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
+      exitCode = terminal.exitCode;
       await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress),
-        error: terminalError,
+        workers: workerOutcomes(progress, runtime),
+        error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
         // it covers. Absent recording, or a seal that never landed, says so
         // rather than omitting the field.
@@ -28315,17 +28564,22 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
   }
+  return exitCode;
 }
 function partialResult(runtime, reason) {
   const completed = runtime?.completedOutputs?.() ?? [];
   return { partial: true, reason, completed };
 }
-function workerOutcomes(progress) {
+function workerOutcomes(progress, runtime) {
+  const tally = runtime?.shutdownTally?.() ?? null;
+  if (tally !== null) {
+    return { done: tally.done, failed: tally.failed, cutShort: tally.cutShort, unsettled: tally.unsettled };
+  }
   if (progress === void 0) {
     return null;
   }
   const totals = progress.snapshot().totals;
-  return { done: totals.done, failed: totals.failed, unsettled: totals.active + totals.queued };
+  return { done: totals.done, failed: totals.failed, cutShort: 0, unsettled: totals.active + totals.queued };
 }
 function completedDirectAgentWithNull(runtime) {
   const completed = runtime.completedOutputs?.() ?? [];

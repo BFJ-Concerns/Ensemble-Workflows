@@ -6,27 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
-
-interface IntegrityReading {
-  status: string;
-  manifestVerified: boolean;
-  filesLost: Array<{ path: string; reason: string }>;
-  sentinelPresent: boolean;
-  sentinelVerified: boolean | null;
-  sentinelAttestsManifest: boolean | null;
-  liveness: { verdict: string; reason: string | null };
-}
-
-async function readArchive(archiveDir: string): Promise<IntegrityReading> {
-  const reading = await runNode([consumerPath, archiveDir]);
-  assert.equal(reading.code, 0, reading.stderr);
-  return JSON.parse(reading.stdout) as IntegrityReading;
-}
-
 test("a sealed archive attests itself and its sentinel attests it back", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archive-attested-"));
   const store = path.join(directory, "records");
@@ -38,7 +22,7 @@ test("a sealed archive attests itself and its sentinel attests it back", async (
     assert.equal(run.code, 0, run.stderr);
 
     const archiveDir = path.dirname(await findOnlyFile(store, "manifest.json"));
-    const reading = await readArchive(archiveDir);
+    const reading = await readArchiveIntegrity(archiveDir);
     assert.equal(reading.status, "complete");
     assert.equal(reading.manifestVerified, true);
     assert.deepEqual(reading.filesLost, []);
@@ -55,7 +39,7 @@ test("a sealed archive attests itself and its sentinel attests it back", async (
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { status: string };
     manifest.status = "failed";
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-    const tampered = await readArchive(archiveDir);
+    const tampered = await readArchiveIntegrity(archiveDir);
     assert.equal(tampered.manifestVerified, false);
     // Rewriting the digest to match the edit repairs the self-check and is
     // exactly what the sentinel's outside copy is for.
@@ -65,7 +49,7 @@ test("a sealed archive attests itself and its sentinel attests it back", async (
     };
     repaired.integrity.manifest_sha256 = tamperedDigest(repaired);
     await writeFile(manifestPath, JSON.stringify(repaired, null, 2), "utf8");
-    const resealed = await readArchive(archiveDir);
+    const resealed = await readArchiveIntegrity(archiveDir);
     assert.equal(resealed.manifestVerified, true);
     assert.equal(resealed.sentinelAttestsManifest, false);
   } finally {
@@ -99,7 +83,7 @@ test("an archive that lost files mid-run seals as incomplete and names the loss"
     assert.equal(run.code, 0, run.stderr);
 
     const archiveDir = path.dirname(await findOnlyFile(store, "manifest.json"));
-    const reading = await readArchive(archiveDir);
+    const reading = await readArchiveIntegrity(archiveDir);
     // The run itself ended cleanly, and result.json still says so — but the
     // archive is not whole, so the manifest refuses to call itself complete.
     assert.equal(reading.status, "incomplete");
@@ -148,7 +132,7 @@ test("a killed run reads as dead where a running one reads as live, without wait
     const archiveDir = path.dirname(await findOnlyFile(store, "manifest.json"));
     // Same archive, twice, with only the owner process's fate differing:
     // that difference alone must move the reading.
-    const running = await readArchive(archiveDir);
+    const running = await readArchiveIntegrity(archiveDir);
     assert.equal(running.status, "in-progress");
     assert.equal(running.liveness.verdict, "live");
     assert.equal(running.sentinelPresent, false);
@@ -156,7 +140,7 @@ test("a killed run reads as dead where a running one reads as live, without wait
     child.kill("SIGKILL");
     await exited;
 
-    const killed = await readArchive(archiveDir);
+    const killed = await readArchiveIntegrity(archiveDir);
     assert.equal(killed.status, "in-progress");
     assert.equal(killed.liveness.verdict, "dead");
     assert.equal(killed.liveness.reason, "owner-process-gone");
@@ -189,7 +173,7 @@ test("archive canonical order is locale-independent between writer and consumer"
     const archiveDir = path.dirname(await findOnlyFile(store, "manifest.json"));
     const reading = await runNode([consumerPath, archiveDir], { LC_ALL: "C" });
     assert.equal(reading.code, 0, reading.stderr);
-    const parsed = JSON.parse(reading.stdout) as IntegrityReading;
+    const parsed = JSON.parse(reading.stdout) as Awaited<ReturnType<typeof readArchiveIntegrity>>;
     assert.equal(parsed.manifestVerified, true);
     assert.equal(parsed.sentinelVerified, true);
     // The rule a cold consumer needs rides the archive itself.

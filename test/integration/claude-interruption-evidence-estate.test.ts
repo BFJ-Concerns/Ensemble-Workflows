@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { runNode } from "./estate-process.js";
+import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
@@ -61,7 +61,7 @@ async function runInterruptedCli(
   env: NodeJS.ProcessEnv,
   statePath: string
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, args, { env: hermeticEstateEnvironment(env), stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8");

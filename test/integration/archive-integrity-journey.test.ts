@@ -285,6 +285,16 @@ test("an archive whose agent records are gone fails verification, named", async 
     assert.notEqual(removed.code, 0);
     assert.match(removed.stderr, new RegExp(`agent record ${recordPath} is named by the manifest but missing`));
 
+    // Something else standing where the record should be. The manifest names
+    // a record; a directory at that path satisfies a bare presence test and
+    // then faults in the byte walk as a platform read error, which is the
+    // same unnamed ending the check exists to replace.
+    await mkdir(path.join(archiveDir, "agents", "000001", "agent.json"), { recursive: true });
+    const substituted = await runNode([consumerPath, archiveDir]);
+    assert.notEqual(substituted.code, 0);
+    assert.match(substituted.stderr, new RegExp(`agent record ${recordPath} is named by the manifest but is not a file`));
+    await rm(path.join(archiveDir, "agents", "000001"), { recursive: true });
+
     // Declared lost, with the self-digest recomputed over the declaration:
     // every other integrity signal reads sound, and a `files_lost` entry
     // excuses an ordinary file from the byte walk. It cannot excuse an agent

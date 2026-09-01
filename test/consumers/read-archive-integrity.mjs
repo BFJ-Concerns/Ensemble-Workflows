@@ -73,8 +73,13 @@ for (const recordPath of agentRecordPaths) {
     !lost.has(recordPath),
     `agent record ${recordPath} is named by the manifest but recorded lost; an archive cannot attest a run whose agent records are missing`
   );
-  const present = await lstat(await containedArchivePath(recordPath)).catch(() => null);
-  assert.ok(present !== null, `agent record ${recordPath} is named by the manifest but missing from the archive`);
+  const record = await lstat(await containedArchivePath(recordPath)).catch(() => null);
+  assert.ok(record !== null, `agent record ${recordPath} is named by the manifest but missing from the archive`);
+  // A record must be a file to be one. Anything else standing at the path —
+  // a directory, a symlink the containment discipline already refuses to
+  // follow — reaches the byte walk and faults there as whatever the platform
+  // calls that read, naming no verification rule.
+  assert.ok(record.isFile(), `agent record ${recordPath} is named by the manifest but is not a file in the archive`);
 }
 
 for (const file of manifest.files) {

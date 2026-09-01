@@ -504,6 +504,23 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
 }
 
 /**
+ * Thrown when reading an option's value throws — a getter or a Proxy trap
+ * that refuses the read itself, so there is no value to describe. Named as a
+ * rejection rather than left to escape: the read happens inside pre-spawn
+ * validation, so an unnamed throw surfaces as the value's own error with
+ * nothing tying it to the option that carried it, and reaches the operator
+ * and the run record as whatever the author's object chose to raise.
+ */
+export class UnreadableAgentOptionError extends AgentOptionRejectedError {
+  constructor(option: string, expected: string, cause: unknown) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)}: reading its value threw, so it has no value to judge; expected ${expected}`,
+      { cause }
+    );
+  }
+}
+
+/**
  * Thrown by `agent()` before any worker spawns when the requested schema does
  * not compile as JSON Schema. Failing fast here beats paying for a full turn
  * only to discover the schema at validation time.
@@ -544,7 +561,17 @@ function formatAgentOptionValue(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
-    return String(value);
+    // Both routes can be refused by the value itself: `JSON.stringify` runs
+    // the object's own key enumeration and `toJSON`, and `String` runs its
+    // `Symbol.toPrimitive`/`toString`. A value that throws from either would
+    // otherwise replace this rejection with its own opaque throw — the
+    // rejection message exists to say why the option was refused, so it
+    // reports the value as undescribable rather than failing to be written.
+    try {
+      return String(value);
+    } catch {
+      return "[a value that cannot be described]";
+    }
   }
 }
 

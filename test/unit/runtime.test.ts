@@ -1218,6 +1218,297 @@ test("invalid prompts and missing per-call cwd reject before a Codex thread open
   assert.equal(transport.turns.length, 0);
 });
 
+test("a cwd that refuses to describe itself is rejected by name, not by its own throw", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // Every trap throws a plain object, so the value refuses both routes the
+  // rejection message could take to describe it (`JSON.stringify` enumerates
+  // its keys; `String` asks it for a primitive). Untyped, `cwd` reaches
+  // `path.resolve` inside the placement check and this bare object comes back
+  // out of agent() in place of any rejection — undescribable to the operator
+  // and to the archive's terminal error alike.
+  const opaque = { reason: "not an Error and describes nothing" };
+  const undescribableCwd = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw opaque;
+      },
+      getOwnPropertyDescriptor() {
+        throw opaque;
+      },
+      get() {
+        throw opaque;
+      }
+    }
+  );
+
+  await assert.rejects(
+    () => unsafeAgent("never starts", { engine: "codex", cwd: undescribableCwd }),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentOptionRejectedError);
+      assert.match(error.message, /option "cwd"/);
+      assert.match(error.message, /expected a string path/);
+      // The message had to be built over a value that throws from both
+      // description routes; a formatter that let that throw escape would
+      // destroy the very rejection it was describing.
+      assert.match(error.message, /cannot be described/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("a cwd whose property access throws is rejected by name, not by the author's own error", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // The reproduction as it actually occurs: not a hostile *value* but an
+  // options object that refuses the read. Nothing downstream checks `cwd`
+  // before using it, so without a named rejection this error escapes from
+  // inside the placement check as the call's entire outcome — naming no
+  // option, and reaching the operator and the archive's terminal error as
+  // whatever the workflow's object chose to raise.
+  const options: Record<string, unknown> = { engine: "codex" };
+  const refusal = new Error("cwd getter witness");
+  Object.defineProperty(options, "cwd", {
+    enumerable: true,
+    get() {
+      throw refusal;
+    }
+  });
+
+  await assert.rejects(
+    () => unsafeAgent("never starts", options),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentOptionRejectedError);
+      assert.match(error.message, /option "cwd"/);
+      assert.match(error.message, /reading its value threw/);
+      assert.match(error.message, /expected a string path/);
+      assert.equal((error as Error).cause, refusal);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
+test("a cwd is read once, so it cannot answer differently after the call is admitted", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // The harder half of the reported route: an accessor that answers once and
+  // refuses afterwards. A value read afresh at each use is judged on the
+  // first answer and used on a later one, and the later refusal lands
+  // wherever the next read happens to be — the placement check before the
+  // record is written, or the placement that opens after it, so the call
+  // dies with no agent record while the run's manifest still seals cleanly.
+  let reads = 0;
+  const options: Record<string, unknown> = { engine: "codex" };
+  Object.defineProperty(options, "cwd", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      if (reads > 1) {
+        throw new Error("cwd getter witness");
+      }
+      return ".";
+    }
+  });
+
+  const output = await unsafeAgent("runs to completion", options);
+
+  assert.equal(output, "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+  assert.equal(records.at(-1)?.resolvedCwd, path.resolve("."));
+  assert.equal(records.at(-1)?.status, "complete");
+});
+
+test("a cwd snapshot preserves other options supplied by a Proxy get trap", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let cwdReads = 0;
+  const options = new Proxy<Record<string, unknown>>(
+    {},
+    {
+      get(_target, property) {
+        if (property === "cwd") {
+          cwdReads += 1;
+          if (cwdReads > 1) throw new Error("second cwd read escaped the snapshot");
+          return ".";
+        }
+        if (property === "engine") return "codex";
+        if (property === "timeoutMs") return 1_234;
+        return undefined;
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(cwdReads, 1);
+  assert.equal(transport.turns.length, 1);
+  assert.equal(transport.turns[0]?.options.timeoutMs, 1_234);
+});
+
+test("an inherited cwd getter that first returns undefined cannot throw after its snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let reads = 0;
+  const options = Object.create({
+    get cwd() {
+      reads += 1;
+      if (reads > 1) throw new Error("second inherited cwd read escaped the snapshot");
+      return undefined;
+    }
+  }) as Record<string, unknown>;
+  options.engine = "codex";
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+});
+
+test("an inherited cwd getter that later returns a path cannot alter its undefined snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let reads = 0;
+  const options = Object.create({
+    get cwd() {
+      reads += 1;
+      return reads === 1 ? undefined : ".";
+    }
+  }) as Record<string, unknown>;
+  options.engine = "codex";
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+});
+
+test("a Proxy cannot use cwd membership to return a live options object after its snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let cwdReads = 0;
+  let cwdMembershipChecks = 0;
+  const options = new Proxy<Record<string, unknown>>(
+    { engine: "codex", cwd: "." },
+    {
+      get(target, property, receiver) {
+        if (property === "cwd") {
+          cwdReads += 1;
+          if (cwdReads > 1) throw new Error("second cwd read escaped the snapshot");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+      has(target, property) {
+        if (property === "cwd") {
+          cwdMembershipChecks += 1;
+          return false;
+        }
+        return Reflect.has(target, property);
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(cwdReads, 1);
+  assert.equal(cwdMembershipChecks, 0);
+  assert.equal(transport.turns.length, 1);
+});
+
+test("a throwing Proxy cwd membership trap cannot escape the cwd snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  const membershipRefusal = new Error("cwd membership witness");
+  const options = new Proxy<Record<string, unknown>>(
+    { engine: "codex", cwd: "." },
+    {
+      has(target, property) {
+        if (property === "cwd") throw membershipRefusal;
+        return Reflect.has(target, property);
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(transport.turns.length, 1);
+});
+
 test("an invalid isolation value fails before a Codex thread opens", async () => {
   const transport = new FakeTransport([turn("unused")]);
   const runtime = new EnsembleRuntime({

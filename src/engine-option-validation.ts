@@ -3,6 +3,7 @@ import {
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
+  UnreadableAgentOptionError,
   UnrecognisedAgentOptionError
 } from "./errors.js";
 import { assertValidStripOption } from "./capability-stripping.js";
@@ -62,6 +63,32 @@ const AGENT_OPTION_KEYS = Object.keys({
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
+
+/**
+ * Read and validate `cwd` once, then shadow only its later value reads.
+ *
+ * The returned Proxy delegates every other operation to the caller's object.
+ * Its key presence and enumeration therefore stay unchanged, and accessors or
+ * traps that supply other options remain live. Every downstream `cwd` read,
+ * including an `undefined` snapshot, returns the value captured here without
+ * re-entering the caller's accessor or trap.
+ */
+export function snapshotAgentCwd<T extends object>(options: T): T {
+  let cwd: unknown;
+  try {
+    cwd = (options as { cwd?: unknown }).cwd;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+  }
+  return new Proxy(options, {
+    get(target, property, receiver) {
+      return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
+    }
+  });
+}
 
 export function assertValidAgentOptions(options: object): void {
   for (const key of Object.keys(options)) {

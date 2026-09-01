@@ -14411,6 +14411,14 @@ var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
     );
   }
 };
+var UnreadableAgentOptionError = class extends AgentOptionRejectedError {
+  constructor(option, expected, cause) {
+    super(
+      `Invalid agent() option ${JSON.stringify(option)}: reading its value threw, so it has no value to judge; expected ${expected}`,
+      { cause }
+    );
+  }
+};
 var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
   constructor(message, options) {
     super(
@@ -14442,7 +14450,11 @@ function formatAgentOptionValue(value) {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
-    return String(value);
+    try {
+      return String(value);
+    } catch {
+      return "[a value that cannot be described]";
+    }
   }
 }
 function describeError(error) {
@@ -15652,6 +15664,22 @@ var AGENT_OPTION_KEYS = Object.keys({
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+function snapshotAgentCwd(options) {
+  let cwd;
+  try {
+    cwd = options.cwd;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  if (cwd !== void 0 && typeof cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+  }
+  return new Proxy(options, {
+    get(target, property, receiver) {
+      return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
+    }
+  });
+}
 function assertValidAgentOptions(options) {
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
@@ -20845,6 +20873,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new Error("EnsembleRuntime is closed");
     }
     assertValidAgentPrompt(prompt);
+    options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);

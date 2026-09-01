@@ -10,7 +10,8 @@ import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
   assertValidSessionTurnOptions,
-  assertValidWorkerSessionOptions
+  assertValidWorkerSessionOptions,
+  snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
   AppServerBackpressureError,
@@ -503,6 +504,10 @@ export class EnsembleRuntime {
       throw new Error("EnsembleRuntime is closed");
     }
     assertValidAgentPrompt(prompt);
+    // `cwd` is read here and nowhere else on this path: what follows works
+    // from the snapshot this returns, so the value the placement check
+    // judges is the value the dispatch record and the opened placement use.
+    options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.

@@ -8,6 +8,7 @@ const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
 export interface ArchiveIntegrityReading {
   status: string;
   manifestVerified: boolean;
+  agentRecordsVerified: number;
   filesLost: Array<{ path: string; reason: string }>;
   sentinelPresent: boolean;
   sentinelVerified: boolean | null;

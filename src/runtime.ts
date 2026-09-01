@@ -329,8 +329,8 @@ export class EnsembleRuntime {
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the injected cache TTL's
-    // cliff, Codex's the measured 60-minute coin-flip point —
-    // numerically equal, semantically distinct knobs.
+    // cliff, Codex's the measured 60-minute coin-flip point — numerically
+    // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
@@ -560,14 +560,13 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution (result identity is opt-in): the
-        // envelope wraps every resolution, a schema call's null collapse
-        // included, so a fan-in that keeps the envelope still knows which
-        // worker failed — and `failure` carries the discrimination: null
-        // exactly when the settlement completed, so a worker's genuine null
-        // answer and an exhausted collapse never read alike. The durable
-        // record is unchanged — it already carries label and phase as
-        // first-class fields.
+        // Identified resolution (opt-in): the envelope wraps every
+        // resolution, a schema call's null collapse included, so a fan-in
+        // that keeps the envelope still knows which worker failed — and
+        // `failure` discriminates: null exactly when the settlement
+        // completed, so a worker's genuine null answer and an exhausted
+        // collapse never read alike. The durable record is unchanged — it
+        // already carries label and phase as first-class fields.
         const failure =
           agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
@@ -1129,8 +1128,8 @@ export class EnsembleRuntime {
     );
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
-    // a silently discarded engine or session teardown failure would make
-    // the cancellation promise unattributable.
+    // a silently discarded engine or session teardown failure would leave
+    // a cancelled run's failure unattributable.
     const teardownFailures: unknown[] = [];
     try {
       await this.#engines.close();
@@ -1817,12 +1816,62 @@ function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; me
  */
 function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
   if (error === null || error === undefined) {
-    return {
-      kind: "unavailable",
-      message: "the agent failed with no attempt recorded and no error reported to the runtime"
-    };
+    return unavailableCause("no error was reported to the runtime");
   }
-  return failureFromError(error);
+  const described = describedRejection(error);
+  if (described === null) {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+  }
+  if (described.message.trim() === "") {
+    // A `failed` status beside an empty message is the bare status this
+    // function exists to avoid: it reads as an engine that said nothing and
+    // as a diagnostic lost in transit alike. Naming the silence, and the
+    // shape that was silent, keeps the record honest without wording the
+    // engine never produced.
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+  }
+  return described;
+}
+
+/**
+ * The record's account when the runtime genuinely holds none. The reason
+ * travels with it so a consumer can tell an engine that said nothing from a
+ * diagnostic that was lost — the honesty rule in its other direction, where
+ * a generic "failed" would be the fabrication.
+ */
+function unavailableCause(reason: string): TerminalErrorRecord {
+  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+}
+
+/**
+ * `describeError` for a value that reached the runtime as a rejection,
+ * returning null rather than propagating when the value cannot be described
+ * at all. A thrown object whose `toString` throws would otherwise take the
+ * settlement path down with it, losing the whole record to report a failure.
+ */
+function describedRejection(error: unknown): { kind: string; message: string } | null {
+  try {
+    const described = failureFromError(error);
+    // A non-Error's description is `String(value)`, which for a plain object
+    // is the useless "[object Object]" — an account in form only. It is
+    // reported as unavailable, with the shape, rather than published as if
+    // the engine had spoken.
+    return described.message === "[object Object]" ? null : described;
+  } catch {
+    return null;
+  }
+}
+
+/** What was thrown, said without calling anything the thrower controls. */
+function rejectionShape(error: unknown): string {
+  try {
+    if (error instanceof Error) {
+      return String(error.name);
+    }
+  } catch {
+    return "an undescribable value";
+  }
+  return `a value of type ${typeof error}`;
 }
 
 /**

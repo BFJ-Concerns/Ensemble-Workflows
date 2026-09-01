@@ -21781,12 +21781,37 @@ function attemptedFailureAccount(record) {
 }
 function failedWithoutAttemptCause(error) {
   if (error === null || error === void 0) {
-    return {
-      kind: "unavailable",
-      message: "the agent failed with no attempt recorded and no error reported to the runtime"
-    };
+    return unavailableCause("no error was reported to the runtime");
   }
-  return failureFromError(error);
+  const described = describedRejection(error);
+  if (described === null) {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+  }
+  if (described.message.trim() === "") {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+  }
+  return described;
+}
+function unavailableCause(reason) {
+  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+}
+function describedRejection(error) {
+  try {
+    const described = failureFromError(error);
+    return described.message === "[object Object]" ? null : described;
+  } catch {
+    return null;
+  }
+}
+function rejectionShape(error) {
+  try {
+    if (error instanceof Error) {
+      return String(error.name);
+    }
+  } catch {
+    return "an undescribable value";
+  }
+  return `a value of type ${typeof error}`;
 }
 function settledFailureMessage(record) {
   const attempted = attemptedFailureAccount(record);

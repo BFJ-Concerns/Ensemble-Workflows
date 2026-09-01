@@ -178,8 +178,9 @@ test("close() abandons open holds: the wait rejects and the file is removed", as
     const decision = holds.raise({ content: "left open at run end", verdicts: ["ok"] });
     await publishedHold(dir);
 
+    const rejected = assert.rejects(decision, HoldRejectedError);
     holds.close();
-    await assert.rejects(decision, HoldRejectedError);
+    await rejected;
     assert.deepEqual((await enumerateHolds(dir)).holds, []);
     await assert.rejects(holds.raise({ content: "too late", verdicts: ["ok"] }), HoldRejectedError);
   });
@@ -211,34 +212,42 @@ test("holds publish under their launcher-supplied scope, and the two listing con
     const shared = manager(dir, events, { scope: null });
     const decisionA = leadA.raise({ content: "lead a's question", verdicts: ["ok"] });
     const decisionShared = shared.raise({ content: "keyless question", verdicts: ["ok"] });
-    await waitForEvent(events, "hold/raised", 2);
+    // Register both rejections before an assertion can fail. The finally
+    // closes every pending poll, so a real assertion failure stays red rather
+    // than leaving a live raise() timer to hold the suite open.
+    const abandoned = Promise.all([
+      assert.rejects(decisionA, HoldRejectedError),
+      assert.rejects(decisionShared, HoldRejectedError)
+    ]);
+    try {
+      await waitForEvent(events, "hold/raised", 2);
 
-    // The scoped listing is exactly the lead's own view: its hold, never
-    // another scope's and never the default shared scope's.
-    const scopedA = await enumerateHolds(dir, { scope: "lead-a" });
-    assert.deepEqual(
-      scopedA.holds.map((hold) => hold.record.content),
-      ["lead a's question"]
-    );
-    assert.equal(scopedA.holds[0]?.record.scope, "lead-a");
-    const scopedB = await enumerateHolds(dir, { scope: "lead-b" });
-    assert.deepEqual(scopedB, { holds: [], retired: [] });
+      // The scoped listing is exactly the lead's own view: its hold, never
+      // another scope's and never the default shared scope's.
+      const scopedA = await enumerateHolds(dir, { scope: "lead-a" });
+      assert.deepEqual(
+        scopedA.holds.map((hold) => hold.record.content),
+        ["lead a's question"]
+      );
+      assert.equal(scopedA.holds[0]?.record.scope, "lead-a");
+      const scopedB = await enumerateHolds(dir, { scope: "lead-b" });
+      assert.deepEqual(scopedB, { holds: [], retired: [] });
 
-    // The machine-wide listing enumerates every scope, shared included.
-    const machineWide = await enumerateHolds(dir);
-    assert.deepEqual(
-      machineWide.holds.map((hold) => hold.record.content).sort(),
-      ["keyless question", "lead a's question"]
-    );
+      // The machine-wide listing enumerates every scope, shared included.
+      const machineWide = await enumerateHolds(dir);
+      assert.deepEqual(
+        machineWide.holds.map((hold) => hold.record.content).sort(),
+        ["keyless question", "lead a's question"]
+      );
 
-    // An opaque key of hostile spelling maps to one directory, encoded.
-    assert.equal(holdScopeSegment("a/b c"), "scope-a%2Fb%20c");
-    assert.equal(holdScopeSegment(null), "shared");
-
-    leadA.close();
-    shared.close();
-    await assert.rejects(decisionA, HoldRejectedError);
-    await assert.rejects(decisionShared, HoldRejectedError);
+      // An opaque key of hostile spelling maps to one directory, encoded.
+      assert.equal(holdScopeSegment("a/b c"), "scope-a%2Fb%20c");
+      assert.equal(holdScopeSegment(null), "shared");
+    } finally {
+      leadA.close();
+      shared.close();
+      await abandoned;
+    }
   });
 });
 

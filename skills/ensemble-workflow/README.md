@@ -456,9 +456,9 @@ engine is held at its one-shot surface).
   read back like any one-shot call's, grouped by session id. A transcript
   reference is present only for a non-empty archived transcript; a turn
   without one keeps `transcripts: []` and names the reason in
-  `transcripts_unavailable`. A Codex held-session follow-up with no retained
-  client capture declares `session-client-capture-gap`, rather than claiming
-  the engine was silent. A session
+  `transcripts_unavailable`. A Codex held-session follow-up carries its own
+  transcript; a follow-up whose client capture was genuinely lost declares
+  `session-client-capture-gap` rather than claiming the engine was silent. A session
   using `isolation: 'worktree'` works one worktree for its whole life,
   finalised at session close.
 - **Claude mechanics worth knowing:** follow-up turns ride the tmux reply
@@ -753,7 +753,17 @@ rejection itself is unchanged, invoking no engine.
   an empty attempt inside the retry loop — they consume attempts rather than
   hanging or throwing, with the worker's partial text, exit evidence, and the
   engine's own diagnostic retained in the failed attempt record. A Codex turn timeout or non-retryable app-server error
-  **throws** out of `agent()`. JSON-RPC backpressure while starting a turn and
+  **throws** out of `agent()`. `TurnTimeoutError` renders through the
+  operator-diagnosis seam (a cause-first line, indented detail, no stack)
+  and discriminates two deadlines whose remedies differ: the **per-agent
+  turn deadline** — the `agent()` call's own `timeoutMs` — where the
+  remedy is that call's timeout or narrowing the work it asks for; and
+  the **transport request deadline** — an app-server request exceeding
+  its own timeout — where the agent's `timeoutMs` is not the cause and
+  raising it will not help (the transport request timeout is a
+  library-level option, not a CLI flag or ambient setting). The
+  startup-handshake timeout is excluded: it is rethrown as
+  `AppServerStartupTimeoutError` before the diagnosis seam sees it. JSON-RPC backpressure while starting a turn and
   a terminal notification whose `error.codexErrorInfo` is
   `serverOverloaded` retry within the attempt bound; either throws if it
   survives the final attempt. A notification with `willRetry: true` leaves the

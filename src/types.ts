@@ -265,6 +265,12 @@ export interface TurnResult {
   items: Record<string, number>;
   tokenUsageEvents: TokenUsageEvent[];
   transcripts?: EngineTranscriptArtifact[];
+  /**
+   * Whether this turn's engine-side transcript capture was still present when
+   * the result was assembled. Only engines that own such a capture report it;
+   * omission means the runtime has no observation to record.
+   */
+  transcriptCapture?: "retained" | "lost";
   /** Engine-specific operational evidence retained by the durable attempt record. */
   diagnostics?: JsonObject;
 }

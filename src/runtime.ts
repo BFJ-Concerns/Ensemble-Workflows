@@ -1687,6 +1687,7 @@ export class EnsembleRuntime {
           ? null
           : { requested: [...options.strip], enforcement: stripRoutes },
       session: null,
+      transcriptCapture: null,
       parseRoute: null,
       decodeFailure: null,
       rawOutput: null,
@@ -1784,6 +1785,9 @@ function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): voi
   }
   if (result.resolvedEffort !== undefined) {
     record.resolvedEffort = result.resolvedEffort;
+  }
+  if (result.transcriptCapture !== undefined) {
+    record.transcriptCapture = result.transcriptCapture;
   }
 }
 

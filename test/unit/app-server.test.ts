@@ -1008,6 +1008,7 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
     for (const prompt of ["first turn", "second turn", "third turn"]) {
       const result = await transport.runTurn(threadId, prompt, {});
       assert.equal(result.text, "hello");
+      assert.equal(result.transcriptCapture, "retained");
       assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
       assert.ok(result.transcripts?.[0]?.content.includes(prompt));
       assert.equal(transport.openTranscripts(), 0);

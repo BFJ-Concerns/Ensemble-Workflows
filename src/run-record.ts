@@ -210,6 +210,11 @@ export interface RuntimeAgentRecord {
    * this record's own fields, exactly as for a one-shot call.
    */
   session: { id: number; turn: number } | null;
+  /**
+   * What the engine's capture path observed for this turn. Null means this
+   * engine has no capture-state observation, never that a capture was lost.
+   */
+  transcriptCapture: "retained" | "lost" | null;
   /** The successful schema parse route, once a schema agent has produced a valid value. */
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
@@ -836,6 +841,7 @@ export class RunRecordWriter {
       schema: record.schema,
       strip: record.strip,
       session: record.session,
+      transcript_capture: record.transcriptCapture,
       parse_route: record.parseRoute,
       decode_failure:
         record.decodeFailure === null
@@ -1036,7 +1042,7 @@ function transcriptAbsenceReason(
   if (record.status === "timed-out") {
     return "worker-timed-out";
   }
-  if (record.engine === "codex" && (record.session?.turn ?? 0) > 1) {
+  if (record.transcriptCapture === "lost") {
     return "session-client-capture-gap";
   }
   return "engine-produced-no-transcript";

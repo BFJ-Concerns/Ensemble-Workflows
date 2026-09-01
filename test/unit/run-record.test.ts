@@ -976,6 +976,7 @@ function agentRecord(
     concurrencyGroup: engine,
     schema: null,
     strip: null,
+    transcriptCapture: null,
     parseRoute: null,
     decodeFailure: null,
     rawOutput: "ok",
@@ -1716,7 +1717,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.transcripts_unavailable, null);
 });
 
-test("only Codex held-session follow-ups declare a client transcript-capture gap", async () => {
+test("cold archive reads distinguish retained Codex capture from a genuine capture loss", async () => {
   const cwd = await gitRepo("ensemble-record-session-transcript-reason-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
   const writer = await RunRecordWriter.start({
@@ -1735,21 +1736,27 @@ test("only Codex held-session follow-ups declare a client transcript-capture gap
   const claudeFollowUp = agentRecord(2, "claude", null, 0);
   claudeFollowUp.session = { id: 2, turn: 2 };
   claudeFollowUp.attempts[0]!.transcripts = [];
-  const codexFollowUp = agentRecord(3, "codex", null, 0);
-  codexFollowUp.session = { id: 3, turn: 2 };
-  codexFollowUp.attempts[0]!.transcripts = [];
-  const interruptedCodexFollowUp = agentRecord(4, "codex", null, 0);
-  interruptedCodexFollowUp.session = { id: 4, turn: 2 };
+  const retainedCodexFollowUp = agentRecord(3, "codex", null, 0);
+  retainedCodexFollowUp.session = { id: 3, turn: 2 };
+  retainedCodexFollowUp.transcriptCapture = "retained";
+  retainedCodexFollowUp.attempts[0]!.transcripts = [];
+  const lostCodexFollowUp = agentRecord(4, "codex", null, 0);
+  lostCodexFollowUp.session = { id: 4, turn: 2 };
+  lostCodexFollowUp.transcriptCapture = "lost";
+  lostCodexFollowUp.attempts[0]!.transcripts = [];
+  const interruptedCodexFollowUp = agentRecord(5, "codex", null, 0);
+  interruptedCodexFollowUp.session = { id: 5, turn: 2 };
   interruptedCodexFollowUp.status = "interrupted";
   interruptedCodexFollowUp.attempts[0]!.transcripts = [];
-  const timedOutCodexFollowUp = agentRecord(5, "codex", null, 0);
-  timedOutCodexFollowUp.session = { id: 5, turn: 2 };
+  const timedOutCodexFollowUp = agentRecord(6, "codex", null, 0);
+  timedOutCodexFollowUp.session = { id: 6, turn: 2 };
   timedOutCodexFollowUp.status = "timed-out";
   timedOutCodexFollowUp.attempts[0]!.transcripts = [];
   await Promise.all([
     writer.recordAgent(codexFirstTurn),
     writer.recordAgent(claudeFollowUp),
-    writer.recordAgent(codexFollowUp),
+    writer.recordAgent(retainedCodexFollowUp),
+    writer.recordAgent(lostCodexFollowUp),
     writer.recordAgent(interruptedCodexFollowUp),
     writer.recordAgent(timedOutCodexFollowUp)
   ]);
@@ -1762,9 +1769,13 @@ test("only Codex held-session follow-ups declare a client transcript-capture gap
     ).transcripts_unavailable;
   assert.equal(await reasonOf("000001"), "engine-produced-no-transcript");
   assert.equal(await reasonOf("000002"), "engine-produced-no-transcript");
-  assert.equal(await reasonOf("000003"), "session-client-capture-gap");
-  assert.equal(await reasonOf("000004"), "worker-interrupted");
-  assert.equal(await reasonOf("000005"), "worker-timed-out");
+  // Both records are Codex follow-ups with no persisted transcript. The old
+  // turn-number proxy calls both a capture gap; the archived capture state
+  // distinguishes the retained capture from one the client actually lost.
+  assert.equal(await reasonOf("000003"), "engine-produced-no-transcript");
+  assert.equal(await reasonOf("000004"), "session-client-capture-gap");
+  assert.equal(await reasonOf("000005"), "worker-interrupted");
+  assert.equal(await reasonOf("000006"), "worker-timed-out");
 });
 
 /**

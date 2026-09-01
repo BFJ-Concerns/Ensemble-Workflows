@@ -1746,10 +1746,12 @@ test("cold archive reads distinguish retained Codex capture from a genuine captu
   lostCodexFollowUp.attempts[0]!.transcripts = [];
   const interruptedCodexFollowUp = agentRecord(5, "codex", null, 0);
   interruptedCodexFollowUp.session = { id: 5, turn: 2 };
+  interruptedCodexFollowUp.transcriptCapture = "lost";
   interruptedCodexFollowUp.status = "interrupted";
   interruptedCodexFollowUp.attempts[0]!.transcripts = [];
   const timedOutCodexFollowUp = agentRecord(6, "codex", null, 0);
   timedOutCodexFollowUp.session = { id: 6, turn: 2 };
+  timedOutCodexFollowUp.transcriptCapture = "lost";
   timedOutCodexFollowUp.status = "timed-out";
   timedOutCodexFollowUp.attempts[0]!.transcripts = [];
   await Promise.all([

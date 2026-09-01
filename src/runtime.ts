@@ -563,9 +563,14 @@ export class EnsembleRuntime {
         // Identified resolution (result identity is opt-in): the
         // envelope wraps every resolution, a schema call's null collapse
         // included, so a fan-in that keeps the envelope still knows which
-        // worker failed. The durable record is unchanged — it already
-        // carries label and phase as first-class fields.
-        return { label: options.label ?? null, phase: options.phase ?? null, output };
+        // worker failed — and `failure` carries the discrimination: null
+        // exactly when the settlement completed, so a worker's genuine null
+        // answer and an exhausted collapse never read alike. The durable
+        // record is unchanged — it already carries label and phase as
+        // first-class fields.
+        const failure =
+          agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
+        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
       }
       return output;
     } catch (error) {
@@ -1772,6 +1777,23 @@ function recordOperationalFailure(
 
 function failureFromError(error: unknown): { kind: string; message: string } {
   return describeError(error);
+}
+
+/**
+ * The one-line account an identified envelope's `failure` carries,
+ * read from evidence the settlement already recorded: the last attempt's
+ * own failure, else the runtime's termination cause, else the bare fact.
+ */
+function settledFailureMessage(record: RuntimeAgentRecord): string {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const failure = record.attempts[index]?.failure;
+    if (failure !== undefined && failure !== null) {
+      return `${failure.kind}: ${failure.message}`;
+    }
+  }
+  return record.terminationCause !== null
+    ? `${record.terminationCause.kind}: ${record.terminationCause.message}`
+    : "the agent failed without a recorded cause";
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

@@ -222,8 +222,9 @@ export function workerExitStatusOf(error: unknown): WorkerExitStatus | null {
 /**
  * The identity an `identity: true` call declared, riding an operational
  * failure out of `agent()` so a combinator's collapse can keep it (an
- * identified leg's failure resolves `{ label, phase, output: null }`, never
- * bare `null`). A sibling carrier to the ones above, and deliberately not a
+ * identified leg's failure resolves `{ label, phase, output: null, failure }`
+ * — the failure field the in-script discrimination reads — never bare
+ * `null`). A sibling carrier to the ones above, and deliberately not a
  * general metadata channel: it carries exactly the identity the envelope
  * needs, only on calls that opted in. Attachment never overwrites an earlier
  * value, so the identity closest to the failing call wins over a later

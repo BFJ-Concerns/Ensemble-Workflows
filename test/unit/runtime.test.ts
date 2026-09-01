@@ -305,7 +305,7 @@ test("identity: true resolves the identified envelope; default resolution is unc
     phase: "hunt",
     identity: true
   });
-  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" } });
+  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" }, failure: null });
 
   const bare = await runtime.agent("go", { engine: "codex", schema });
   assert.deepEqual(bare, { answer: "yes" });
@@ -314,15 +314,26 @@ test("identity: true resolves the identified envelope; default resolution is unc
 test("an identified schema collapse still carries the worker's identity", async () => {
   // The envelope wraps every resolution, the null collapse included — the
   // fan-in filtering idiom under identity is on `output`, and a failed leg
-  // keeps saying which worker it was.
+  // keeps saying which worker it was. The discrimination: this
+  // exhausted collapse carries a non-null `failure`, so it can never be
+  // mistaken in-script for a worker legitimately answering null.
   const runtime = new EnsembleRuntime({
     transport: new FakeTransport([turn("not json")]),
     concurrencyCaps: { codex: 1 },
     defaultMaxAttempts: 1
   });
 
-  const collapsed = await runtime.agent("go", { engine: "codex", schema, label: "verifier", identity: true });
-  assert.deepEqual(collapsed, { label: "verifier", phase: null, output: null });
+  const collapsed = (await runtime.agent("go", {
+    engine: "codex",
+    schema,
+    label: "verifier",
+    identity: true
+  })) as { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null };
+  assert.equal(collapsed.label, "verifier");
+  assert.equal(collapsed.phase, null);
+  assert.equal(collapsed.output, null);
+  assert.ok(collapsed.failure !== null, "an exhausted collapse must carry its failure");
+  assert.ok(collapsed.failure.message.length > 0);
 });
 
 test("a non-boolean identity value is rejected before any worker spawns", async () => {
@@ -2136,7 +2147,16 @@ test("an identified operational failure inside parallel resolves its envelope, n
     () => undefined
   );
 
-  assert.deepEqual(results, [{ label: "verify", phase: "check", output: null }, null]);
+  const [identified, bare] = results as [
+    { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null },
+    unknown
+  ];
+  assert.equal(bare, null);
+  assert.equal(identified.label, "verify");
+  assert.equal(identified.phase, "check");
+  assert.equal(identified.output, null);
+  assert.ok(identified.failure !== null, "a collapsed identified leg must carry its failure");
+  assert.ok(identified.failure.message.length > 0);
 });
 
 test("an engine-reported attempt duration is recorded as the engine measured it", async () => {

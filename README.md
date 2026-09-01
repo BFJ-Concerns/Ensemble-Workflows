@@ -81,7 +81,13 @@ any worker spawns.
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed
   schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
-  arguments, a nesting violation — propagates and fails the run.
+  arguments, a nesting violation — propagates and fails the run. The
+  documented route for telling a failed leg from one that legitimately
+  answered `null` is `identity: true`: an identified call resolves
+  `{ label, phase, output, failure }`, and `failure` is `null` exactly when
+  the worker's own settlement completed — a collapse (in the combinators, or
+  a schema call's exhausted attempts) carries a `{ message }` account there
+  instead.
 - `pipeline(items, ...stages)` runs each item through each stage independently,
   with no cross-item barrier between stages. Ordinary stage failures drop that
   item to `null`; the same pre-spawn author errors propagate.

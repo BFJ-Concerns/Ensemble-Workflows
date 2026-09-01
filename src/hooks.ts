@@ -168,11 +168,18 @@ export async function parallel<T>(
         log(`parallel thunk ${index} failed: ${formatError(error)}`);
         // An identified call's failure keeps its identity: the carrier
         // the runtime attached becomes the envelope the fan-in reads, with
-        // output null carrying the collapse. The envelope *is* the thunk's
-        // declared resolution shape for an identity: true call.
+        // output null carrying the collapse and `failure` carrying the
+        // discrimination — a failed leg is in-script distinguishable from
+        // one that legitimately answered null. The envelope *is* the
+        // thunk's declared resolution shape for an identity: true call.
         const identity = agentIdentityOf(error);
         if (identity !== null) {
-          return { label: identity.label, phase: identity.phase, output: null } as Awaited<T>;
+          return {
+            label: identity.label,
+            phase: identity.phase,
+            output: null,
+            failure: { message: error instanceof Error ? error.message : String(error) }
+          } as Awaited<T>;
         }
         return null;
       }
@@ -205,11 +212,17 @@ export async function pipeline<Item>(
           presentError?.(error);
           log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
           // Same identity-preserving collapse as parallel(): the failed
-          // item resolves its identity envelope when the failing call
-          // declared one, bare null otherwise.
+          // item resolves its identity envelope — failure carried for the
+          // discrimination — when the failing call declared one, bare
+          // null otherwise.
           const identity = agentIdentityOf(error);
           if (identity !== null) {
-            return { label: identity.label, phase: identity.phase, output: null };
+            return {
+              label: identity.label,
+              phase: identity.phase,
+              output: null,
+              failure: { message: error instanceof Error ? error.message : String(error) }
+            };
           }
           return null;
         }

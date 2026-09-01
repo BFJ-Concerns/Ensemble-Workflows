@@ -6,6 +6,21 @@ import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
+// Suites nest legitimately exactly once: a gate-run suite contains estate
+// tests that each spawn this runner over a single leaf test file, and no leaf
+// spawns the runner again. A runner starting at depth 2 or beyond therefore
+// means a suite is running inside a suite-spawned suite — the signature of a
+// recursive spawn storm (a child that resolved to the whole suite glob rather
+// than its intended leaf), which multiplies process trees exponentially and
+// has taken down the host. Refuse before creating any state or process.
+const inheritedSuiteDepth = Number(process.env.ENSEMBLE_SUITE_RUNNER_DEPTH ?? "0");
+if (!Number.isInteger(inheritedSuiteDepth) || inheritedSuiteDepth < 0 || inheritedSuiteDepth >= 2) {
+  process.stderr.write(
+    `Suite runner refused to start: ENSEMBLE_SUITE_RUNNER_DEPTH=${process.env.ENSEMBLE_SUITE_RUNNER_DEPTH} — a suite is already running inside a suite-spawned suite, so another runner here is a recursive spawn storm, not a legitimate estate child\n`
+  );
+  process.exit(1);
+}
+
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
 const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*m`, "g");
 // A descendant can retain the test process's output pipe after that process
@@ -50,7 +65,8 @@ const child = spawn(
     ENSEMBLE_RUN_RECORD_DIR: recordStoreDirectory,
     ...process.env,
     TMPDIR: suiteDirectory,
-    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory
+    ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY: schemaCacheDirectory,
+    ENSEMBLE_SUITE_RUNNER_DEPTH: String(inheritedSuiteDepth + 1)
   },
   stdio: ["inherit", "pipe", "pipe"],
   // A killed suite parent can leave its test process behind. Giving that

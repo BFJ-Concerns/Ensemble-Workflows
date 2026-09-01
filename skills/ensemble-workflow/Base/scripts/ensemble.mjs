@@ -21440,7 +21440,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = null;
+    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const placement = await this.#placement.open(options);
@@ -21860,12 +21860,53 @@ function recordOperationalFailure(record, attempt, startedAtMs, result) {
 function failureFromError(error) {
   return describeError(error);
 }
-function settledFailureMessage(record) {
+function attemptedFailureAccount(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
     const failure = record.attempts[index]?.failure;
     if (failure !== void 0 && failure !== null) {
-      return `${failure.kind}: ${failure.message}`;
+      return failure;
     }
+  }
+  return null;
+}
+function failedWithoutAttemptCause(error) {
+  if (error === null || error === void 0) {
+    return unavailableCause("no error was reported to the runtime");
+  }
+  const described = describedRejection(error);
+  if (described === null) {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+  }
+  if (described.message.trim() === "") {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+  }
+  return described;
+}
+function unavailableCause(reason) {
+  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+}
+function describedRejection(error) {
+  try {
+    const described = failureFromError(error);
+    return described.message === "[object Object]" ? null : described;
+  } catch {
+    return null;
+  }
+}
+function rejectionShape(error) {
+  try {
+    if (error instanceof Error) {
+      return String(error.name);
+    }
+  } catch {
+    return "an undescribable value";
+  }
+  return `a value of type ${typeof error}`;
+}
+function settledFailureMessage(record) {
+  const attempted = attemptedFailureAccount(record);
+  if (attempted !== null) {
+    return `${attempted.kind}: ${attempted.message}`;
   }
   return record.terminationCause !== null ? `${record.terminationCause.kind}: ${record.terminationCause.message}` : "the agent failed without a recorded cause";
 }

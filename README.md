@@ -496,7 +496,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `session_id`, `thread_id`; empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
-  `"worker-timed-out"`, or `"engine-produced-no-transcript"`.
+  `"worker-timed-out"`, `"session-client-capture-gap"`, or
+  `"engine-produced-no-transcript"`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every

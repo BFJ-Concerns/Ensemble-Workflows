@@ -177,8 +177,13 @@ export interface RuntimeAgentRecord {
    * the engine — a run interrupt or a whole-run timeout reaches a worker as
    * whatever its transport happened to notice (a closed app-server, an
    * aborted poll), so the attempt's own failure names the symptom and this
-   * names the cause. Null when the engine's own failure is the cause, and
-   * never an inference: the attempts array keeps what was observed.
+   * names the cause — and, where the agent ended before any attempt was
+   * observed, the account of that ending, since the attempts array has no
+   * entry to carry it (an engine that refuses an unknown model at dispatch
+   * is diagnosed here or nowhere). Null when an attempt's own failure is
+   * the account, so one failure has one home and the two cannot disagree.
+   * Never an inference: what is not observed reads as unavailable with its
+   * reason, never as a manufactured cause.
    */
   terminationCause: TerminalErrorRecord | null;
   creationOrder: number;

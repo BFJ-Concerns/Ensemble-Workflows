@@ -1268,10 +1268,16 @@ export class EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    // The attempts array already names an engine failure; a cause here
-    // would only restate it, and inventing one where no attempt ran would
-    // claim knowledge the runtime does not have.
-    record.terminationCause = null;
+    // Where an attempt ran, its own failure is the engine's account and the
+    // record's home for it; a cause here would only restate that entry, so
+    // null keeps one home for one account and the two can never disagree.
+    // An agent refused before any attempt was observed — an unknown model
+    // rejected at dispatch, a placement that never opened — has no such
+    // entry, and leaving this null there publishes a bare `failed` while
+    // the engine's rejection is legible in the run's own output. The cause
+    // is then taken from the account the runtime is holding, never
+    // synthesised from the status.
+    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
 
   async #runAgent(
@@ -1810,16 +1816,99 @@ function failureFromError(error: unknown): { kind: string; message: string } {
 }
 
 /**
+ * The engine's own account of why this agent failed, as the attempts array
+ * recorded it: the last attempt that named a failure, or null when no
+ * attempt did — either because none ran, or because none observed a fault.
+ * This is the record's home for a diagnosed failure; `terminationCause`
+ * speaks only where this is silent.
+ */
+function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } | null {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const failure = record.attempts[index]?.failure;
+    if (failure !== undefined && failure !== null) {
+      return failure;
+    }
+  }
+  return null;
+}
+
+/**
+ * The cause a failed agent records when no attempt of its own named one.
+ * The runtime publishes what it is actually holding — the rejection that
+ * ended the call, in the engine's own words — and where it holds nothing it
+ * says so with the reason, because a record that reads `failed` and nothing
+ * else is indistinguishable from one whose diagnostic was lost.
+ * Nothing here is inferred from the status.
+ */
+function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
+  if (error === null || error === undefined) {
+    return unavailableCause("no error was reported to the runtime");
+  }
+  const described = describedRejection(error);
+  if (described === null) {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+  }
+  if (described.message.trim() === "") {
+    // A `failed` status beside an empty message is the bare status this
+    // function exists to avoid: it reads as an engine that said nothing and
+    // as a diagnostic lost in transit alike. Naming the silence, and the
+    // shape that was silent, keeps the record honest without wording the
+    // engine never produced.
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+  }
+  return described;
+}
+
+/**
+ * The record's account when the runtime genuinely holds none. The reason
+ * travels with it so a consumer can tell an engine that said nothing from a
+ * diagnostic that was lost — the honesty rule in its other direction, where
+ * a generic "failed" would be the fabrication.
+ */
+function unavailableCause(reason: string): TerminalErrorRecord {
+  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+}
+
+/**
+ * `describeError` for a value that reached the runtime as a rejection,
+ * returning null rather than propagating when the value cannot be described
+ * at all. A thrown object whose `toString` throws would otherwise take the
+ * settlement path down with it, losing the whole record to report a failure.
+ */
+function describedRejection(error: unknown): { kind: string; message: string } | null {
+  try {
+    const described = failureFromError(error);
+    // A non-Error's description is `String(value)`, which for a plain object
+    // is the useless "[object Object]" — an account in form only. It is
+    // reported as unavailable, with the shape, rather than published as if
+    // the engine had spoken.
+    return described.message === "[object Object]" ? null : described;
+  } catch {
+    return null;
+  }
+}
+
+/** What was thrown, said without calling anything the thrower controls. */
+function rejectionShape(error: unknown): string {
+  try {
+    if (error instanceof Error) {
+      return String(error.name);
+    }
+  } catch {
+    return "an undescribable value";
+  }
+  return `a value of type ${typeof error}`;
+}
+
+/**
  * The one-line account an identified envelope's `failure` carries,
  * read from evidence the settlement already recorded: the last attempt's
  * own failure, else the runtime's termination cause, else the bare fact.
  */
 function settledFailureMessage(record: RuntimeAgentRecord): string {
-  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
-    const failure = record.attempts[index]?.failure;
-    if (failure !== undefined && failure !== null) {
-      return `${failure.kind}: ${failure.message}`;
-    }
+  const attempted = attemptedFailureAccount(record);
+  if (attempted !== null) {
+    return `${attempted.kind}: ${attempted.message}`;
   }
   return record.terminationCause !== null
     ? `${record.terminationCause.kind}: ${record.terminationCause.message}`

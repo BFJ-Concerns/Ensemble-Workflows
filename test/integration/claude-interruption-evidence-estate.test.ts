@@ -11,6 +11,9 @@ import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-claude-interruption-evidence.mjs");
+const readinessPollAttempts = 200;
+const readinessPollIntervalMs = 10;
+const dispatchGateTimeoutMs = readinessPollAttempts * readinessPollIntervalMs * 2;
 
 test("built CLI archives an interrupted Claude worker's already-served evidence", { timeout: 30_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-claude-interruption-estate-"));
@@ -86,6 +89,7 @@ test("built CLI retains Claude evidence when interruption races the initial disp
         ENSEMBLE_FAKE_CLAUDE_STATE: statePath,
         ENSEMBLE_FAKE_CLAUDE_GENERATING: "1",
         ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE: dispatchGatePath,
+        ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE_TIMEOUT_MS: String(dispatchGateTimeoutMs),
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
         ENSEMBLE_STATUS: "0",
@@ -152,7 +156,7 @@ async function runInterruptedCli(
 }
 
 async function waitForDispatch(statePath: string, requirePoll: boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < readinessPollAttempts; attempt += 1) {
     try {
       const state = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[]; polls?: number };
       if ((state.sessions?.length ?? 0) > 0 && (!requirePoll || (state.polls ?? 0) > 0)) {
@@ -161,7 +165,7 @@ async function waitForDispatch(statePath: string, requirePoll: boolean): Promise
     } catch {
       // The fixture has not completed dispatch yet.
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => setTimeout(resolve, readinessPollIntervalMs));
   }
   throw new Error(requirePoll ? "the Claude fixture did not dispatch a worker" : "the Claude fixture did not start its initial dispatch");
 }

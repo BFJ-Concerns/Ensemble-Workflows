@@ -26,7 +26,9 @@
  *   its transcript is written, so the caller can interrupt the real CLI.
  * - `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE` — when set, hold the dispatch
  *   command open after publishing its session and transcript until this file
- *   exists. This supplies the initial-dispatch interruption race.
+ *   exists. This supplies the initial-dispatch interruption race. It requires
+ *   `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE_TIMEOUT_MS`, supplied by the consumer
+ *   from its own readiness budget.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -84,15 +86,23 @@ async function waitForDispatchGate() {
   if (gatePath === undefined || gatePath.length === 0) {
     return;
   }
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  const declaredTimeoutMs = Number(process.env.ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE_TIMEOUT_MS);
+  if (!Number.isFinite(declaredTimeoutMs) || declaredTimeoutMs <= 0) {
+    throw new Error("fake claude dispatch gate requires ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE_TIMEOUT_MS");
+  }
+  const deadline = Date.now() + declaredTimeoutMs;
+  for (;;) {
     try {
       await readFile(gatePath, "utf8");
       return;
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error("fake claude dispatch gate was not released");
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(5, remaining)));
     }
   }
-  throw new Error("fake claude dispatch gate was not released");
 }
 
 async function dispatch() {

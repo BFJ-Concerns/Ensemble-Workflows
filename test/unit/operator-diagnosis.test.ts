@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { presentTerminalError } from "../../src/operator-diagnosis.js";
-import { AppServerExitedError, InvalidAgentSchemaError, attachWorkerExitStatus } from "../../src/errors.js";
+import { presentOperationalError, presentTerminalError } from "../../src/operator-diagnosis.js";
+import {
+  AppServerExitedError,
+  CodexSchemaSubsetUnsupportedError,
+  EngineShutdownError,
+  InvalidAgentSchemaError,
+  attachAppServerDiagnostic,
+  attachWorkerExitStatus
+} from "../../src/errors.js";
+import { AmbientConfigError } from "../../src/ambient-settings.js";
 import { WorkflowTimeoutError } from "../../src/script-runner.js";
 import { assertCompilableSchema } from "../../src/schema.js";
 
@@ -155,4 +163,66 @@ test("a rejected schema echoes the offending value beside the validator's reason
       return true;
     }
   );
+});
+
+test("an ambient-configuration failure renders as its own message, never a stack", () => {
+  const line = presentTerminalError(new AmbientConfigError("Invalid value for ENSEMBLE_STATUS_DIR: expected a non-empty directory path"), noContext);
+  assert.equal(line, "Configuration error: Invalid value for ENSEMBLE_STATUS_DIR: expected a non-empty directory path");
+});
+
+test("a Codex schema rejection leads with the remedy and carries the diagnostic once, bounded", () => {
+  const rejection = attachAppServerDiagnostic(
+    new CodexSchemaSubsetUnsupportedError(
+      { code: -32602, message: "invalid schema", data: { detail: "unsupported keyword" } },
+      { code: -32602, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
+    ),
+    { code: -32602, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
+  );
+  const rendered = presentTerminalError(rejection, noContext);
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  assert.match(lines[0] ?? "", /^Codex rejected outputSchema before generation/);
+  assert.match(lines[1] ?? "", /Use a schema supported by Codex outputSchema/);
+  // The diagnostic appears exactly once, and no frame reaches the surface.
+  assert.equal(rendered.split("invalid schema").length - 1, 1);
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
+});
+
+test("a teardown-time engine shutdown is attributed to the run ending, not the author's call", () => {
+  const line = presentTerminalError(new EngineShutdownError("codex"), noContext);
+  assert.ok(line !== null);
+  assert.match(line, /interrupted by the run ending, not by its own failure/);
+  assert.equal(line.includes("\n"), false);
+});
+
+test("worker-controlled terminal control sequences never reach operator stderr", () => {
+  // OSC (title write), CSI (erase), a bare ESC dispatch, and a stray BEL,
+  // interleaved with the text an operator must still see.
+  const hostile =
+    "before \x1b]0;pwned\x07middle \x1b[2Jkept \x1b(Balso\x07 after \x1b]8;;http://evil\x1b\\done";
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const record = {
+    id: 7,
+    attempts: [{ attempt: 1, failure: { kind: "invalid-json", message: "no JSON" }, rawOutput: hostile }]
+  } as unknown as RuntimeAgentRecord;
+
+  const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record });
+  assert.ok(rendered !== null);
+  assert.equal(/[\x00-\x08\x0b-\x1f]/.test(rendered), false, "no control bytes in the rendered surface");
+  assert.match(rendered, /before/);
+  assert.match(rendered, /middle/);
+  assert.match(rendered, /kept/);
+  assert.match(rendered, /done/);
+  // On the pre-fix tree the OSC payload and CSI bytes passed through whole;
+  // the payload is consumed with its sequence, not just the introducer.
+  assert.doesNotMatch(rendered, /pwned/);
+});
+
+test("the combinators' context-free presentation uses the same seam", () => {
+  assert.equal(
+    presentOperationalError(new EngineShutdownError("claude")),
+    "claude engine is shutting down — this worker was interrupted by the run ending, not by its own failure"
+  );
+  assert.equal(presentOperationalError(new Error("novel failure")), null);
 });

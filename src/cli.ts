@@ -9,7 +9,7 @@ import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./comp
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
 import { defaultHoldsDirectory, enumerateHolds, resolveHoldScope } from "./holds.js";
-import { presentTerminalError } from "./operator-diagnosis.js";
+import { presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -232,8 +232,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Usage policy, spanning every invocation kind: a rejected named option
     // is its own one-line diagnostic — appending the usage dump would bury
     // the line the author must act on. The usage text belongs to exactly
-    // one failure: an invocation that named no work at all (below).
-    stderr.write(`${formatError(error)}\n`);
+    // one failure: an invocation that named no work at all (below). An
+    // ambient-configuration failure takes the same clean surface through
+    // the shared operator seam — the stack behind it is harness interior.
+    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
     return 2;
   }
 
@@ -497,7 +499,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
       } catch (error) {
         teardownError = describeError(error);
-        stderr.write(`[teardown] the run failed to end cleanly: ${formatError(error)}\n`);
+        // Through the shared seam first: a teardown-time engine or
+        // app-server death must not be attributed to the author's own
+        // calls with a stack into the bundle.
+        stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
       // The seal runs even when worker teardown failed: close() rejects by
       // design when a cancellation cause must surface, and skipping the seal
@@ -516,7 +521,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
       } catch (error) {
         teardownError ??= describeError(error);
-        stderr.write(`[teardown] the archive failed to seal: ${formatError(error)}\n`);
+        stderr.write(`[teardown] the archive failed to seal: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
     } finally {
       // Last, so a supervisor woken by the sentinel finds the archive already

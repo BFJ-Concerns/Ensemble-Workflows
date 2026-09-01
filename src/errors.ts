@@ -422,9 +422,26 @@ export class WorktreePlacementRejectedError extends AgentOptionRejectedError {
   }
 }
 
+/**
+ * Which deadline expired, carried as structure beside the message. One class
+ * covers two causes with different operator remedies: a `turn` deadline is
+ * the one the author set on the `agent()` call, so that call's `timeoutMs`
+ * is the lever; a `request` deadline is the transport's own wait for an
+ * app-server reply, which no `agent()` option lengthens — telling an
+ * operator to raise `timeoutMs` there would send them to the wrong knob.
+ * Diagnosis reads these fields rather than re-parsing the message, so the
+ * operator-facing line never couples to prose the harness itself wrote.
+ */
+export type TurnTimeoutDeadline =
+  | { readonly kind: "turn"; readonly timeoutMs: number; readonly threadId: string }
+  | { readonly kind: "request"; readonly timeoutMs: number; readonly method: string };
+
 export class TurnTimeoutError extends EnsembleError {
-  constructor(message: string) {
+  readonly deadline: TurnTimeoutDeadline;
+
+  constructor(message: string, deadline: TurnTimeoutDeadline) {
     super(message);
+    this.deadline = deadline;
   }
 }
 

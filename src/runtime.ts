@@ -36,7 +36,7 @@ import {
 } from "./errors.js";
 import { CLAUDE_CACHE_TTL_VARIABLE } from "./claude-control-plane.js";
 import { claudeCacheTtlToMs } from "./claude-engine.js";
-import { HoldManager, defaultHoldsDirectory } from "./holds.js";
+import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { RunProgress } from "./progress.js";
 
 import type { HoldDecision } from "./holds.js";
@@ -289,6 +289,7 @@ export class EnsembleRuntime {
   #holdManager: HoldManager | null = null;
   #lastSettledAgentRecord: RuntimeAgentRecord | null = null;
   #holdsDir: string;
+  #holdScope: string | null;
   #holdPollIntervalMs: number | undefined;
   #holdsCwd: string;
   #claudeSessionStaleAfterMs: number;
@@ -307,6 +308,7 @@ export class EnsembleRuntime {
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
+    holdScope?: string;
     holdPollIntervalMs?: number;
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
@@ -327,12 +329,20 @@ export class EnsembleRuntime {
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the injected cache TTL's
-    // cliff, Codex's the measured 60-minute coin-flip point — numerically
-    // equal, semantically distinct knobs.
+    // cliff, Codex's the measured 60-minute coin-flip point —
+    // numerically equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
+    if (options.holdScope !== undefined && options.holdScope.trim().length === 0) {
+      // The scope is an opaque launcher-supplied key: explicitly blank is a
+      // mistake, not a request for the shared scope (omission is that).
+      throw new HoldRejectedError("holdScope must be a non-empty string when given");
+    }
+    // Library option outranks the inherited environment variable; neither
+    // lands the run's holds in the default shared scope.
+    this.#holdScope = resolveHoldScope(options.holdScope, process.env);
     this.#holdPollIntervalMs = options.holdPollIntervalMs;
     this.#holdsCwd = options.cwd ?? process.cwd();
     this.#placement = new AgentPlacementManager({
@@ -406,6 +416,7 @@ export class EnsembleRuntime {
       ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
       ...(options.holdsDir !== undefined ? { holdsDir: options.holdsDir } : {}),
+      ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
@@ -573,13 +584,14 @@ export class EnsembleRuntime {
 
   /**
    * Raise a hold and await its decision: the hold's content and
-   * accepted verdicts are published to the shared holds directory, any
-   * process — the launcher or not, alive at raise time or not — writes the
-   * decision file the record names, nonce correlation rejects stale
-   * answers, and the resolved decision is always one of the accepted
-   * verdicts. Open holds appear in the live status snapshot and the
-   * cross-run `ensemble holds` listing; raise, answer, rejection, and
-   * timeout each emit an event and land in the archive's hold_events.
+   * accepted verdicts are published under the run's launcher-supplied scope
+   * in the shared holds root, any process — the launcher or not, alive at
+   * raise time or not — writes the decision file the record names, nonce
+   * correlation rejects stale answers, and the resolved decision is always
+   * one of the accepted verdicts. Open holds appear in the live status
+   * snapshot and the `ensemble holds` listings (the run's own scope, or
+   * machine-wide); raise, answer, rejection, timeout, and dead-raiser
+   * retirement each emit an event and land in the archive's hold_events.
    */
   async raiseHold(options: { content: string; verdicts: string[]; timeoutMs?: number }): Promise<HoldDecision> {
     if (this.#closed) {
@@ -589,6 +601,7 @@ export class EnsembleRuntime {
       dir: this.#holdsDir,
       runId: this.progress.runId,
       cwd: this.#holdsCwd,
+      scope: this.#holdScope,
       ...(this.#holdPollIntervalMs !== undefined ? { pollIntervalMs: this.#holdPollIntervalMs } : {}),
       onEvent: (event) => {
         this.#emitEvent(event);
@@ -1106,8 +1119,8 @@ export class EnsembleRuntime {
     );
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
-    // a silently discarded engine or session teardown failure would leave
-    // a cancelled run's failure unattributable.
+    // a silently discarded engine or session teardown failure would make
+    // the cancellation promise unattributable.
     const teardownFailures: unknown[] = [];
     try {
       await this.#engines.close();

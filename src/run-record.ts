@@ -424,7 +424,7 @@ interface Manifest {
 
 interface HoldEventEntry {
   hold_id: string;
-  event: "raised" | "answered" | "answer-rejected" | "timed-out";
+  event: "raised" | "answered" | "answer-rejected" | "timed-out" | "retired";
   /** The accepted verdict on `answered`; null elsewhere. */
   verdict: string | null;
   /** The rejection reason on `answer-rejected`; null elsewhere. */
@@ -1421,6 +1421,10 @@ function holdEventKind(method: string): HoldEventEntry["event"] | null {
       return "answer-rejected";
     case "hold/timedOut":
       return "timed-out";
+    case "hold/retired":
+      // A dead-raiser hold this run's own sweep retired: the observation is
+      // this run's, even though the hold was another (dead) run's.
+      return "retired";
     default:
       return null;
   }

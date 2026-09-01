@@ -62,14 +62,21 @@ any worker spawns.
   send. Each turn is its own agent record carrying `session: { id, turn }`,
   and every held session is closed when the run ends.
 - `hold({ content, verdicts, timeoutMs? })` raises a decision hold: the
-  request is published to the shared `$XDG_DATA_HOME/ensemble/holds/`
-  directory and the call resolves `{ verdict, note }` when any process — the
-  launcher or not — writes the nonce-correlated decision file the record
-  names. Stale nonces, unlisted verdicts, and malformed answers are rejected
-  and the hold keeps waiting; an optional timeout rejects with
-  `HoldTimeoutError`. Open holds appear in the live status snapshot and the
-  cross-run `ensemble holds [--json]` listing, and every raise, answer,
-  rejection, and timeout lands in the archive manifest's `hold_events`.
+  request is published under the run's **scope** in the shared
+  `$XDG_DATA_HOME/ensemble/holds/` root and the call resolves
+  `{ verdict, note }` when any process — the launcher or not — writes the
+  nonce-correlated decision file the record names (hand-writable plain
+  JSON). The scope is an opaque key the launcher supplies — the `holdScope`
+  library option or `--hold-scope` flag, outranking the inherited
+  `ENSEMBLE_HOLD_SCOPE` variable a lead sets once — and a keyless run's
+  holds land in the default shared scope. Stale nonces, unlisted verdicts,
+  and malformed answers are rejected and the hold keeps waiting; an
+  optional timeout rejects with `HoldTimeoutError`. Open holds appear in
+  the live status snapshot and the `ensemble holds [--json]
+  [--scope <scope> | --all]` listing — one scope's view, or machine-wide
+  across every scope — a hold whose raiser is provably dead is retired by
+  the machinery that observes it, and every raise, answer, rejection,
+  timeout, and retirement lands in the archive manifest's `hold_events`.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed
@@ -392,7 +399,8 @@ The manifest is `manifest.json`. Its top-level fields are:
   archived args with their canonical path and SHA-256 — recorded before the
   child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
-  answer, timeout) in event order, each entry carrying `hold_id`, `event`,
+  answer, timeout, and dead-raiser retirements this run's sweep observed)
+  in event order, each entry carrying `hold_id`, `event`,
   `verdict`/`reason` where applicable, and a timestamp.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
   all-`null` outside a git repository.

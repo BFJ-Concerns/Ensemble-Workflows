@@ -53,7 +53,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json]
+node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope <scope> | --all]
 ```
 
 - `--json-args` replaces the positional string args with a parsed JSON value
@@ -469,9 +469,20 @@ pipelines used to hand-roll per script.
 
 - **Raising:** `content` is what the decider reads (a non-empty string);
   `verdicts` the non-empty set of accepted answers. The hold is published
-  as a JSON file in the shared cross-run directory
-  (`$XDG_DATA_HOME/ensemble/holds/`), carrying everything a decider needs:
-  the content, the verdicts, a fresh nonce, and the decision path.
+  as a JSON file under the run's **scope** in the shared cross-run root
+  (`$XDG_DATA_HOME/ensemble/holds/<scope>/`), carrying everything a decider
+  needs: the content, the verdicts, a fresh nonce, the decision path, and
+  the raiser's liveness evidence.
+- **Scoping:** the scope is an opaque key the launcher supplies — a lead
+  session's own id is a natural value — so cooperating leads on one machine
+  never see each other's holds in their own views. A lead sets the
+  inherited `ENSEMBLE_HOLD_SCOPE` variable once and every nested invocation
+  inherits it; the `--hold-scope` flag or `holdScope` library option
+  outranks the variable per run. A keyless run's holds land in the default
+  shared scope, which scoped listings never show and the machine-wide
+  listing always shows. Scoping is hygiene against accidental
+  cross-answering; the nonce stays the correctness boundary, and the scope
+  is never inferred from cwd or process ancestry.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
@@ -481,19 +492,24 @@ pipelines used to hand-roll per script.
   entirely. A stale nonce, an unlisted verdict, or a malformed file is
   rejected (the bad file is consumed, an event says so, the hold keeps
   waiting) — an invalid answer never reaches the script as a decision.
-- **Enumerating:** `ensemble holds` lists every open hold on the machine —
-  id, liveness of the raising process, verdicts, decision path, content —
-  and `ensemble holds --json` emits the full records; open holds also
-  appear in the run's live status snapshot while it waits.
+- **Enumerating:** two explicit listing contracts. `ensemble holds` shows
+  the inherited scope's open holds (machine-wide when no scope is set);
+  `ensemble holds --scope <scope>` names a scope explicitly; `ensemble
+  holds --all` is the machine-wide view across every scope, the shared
+  scope included. Each listing carries id, scope, verdicts, decision path,
+  and content; `--json` emits the full records plus what was retired. Open
+  holds also appear in the run's live status snapshot while it waits.
 - **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
   rejects the awaiting `hold()` with `HoldTimeoutError` (one clean line at
   the CLI; catch it to treat expiry as an outcome).
-- **Observability:** raise, answer, rejected answer, and timeout each emit
-  a runtime event and land in the archive manifest's `hold_events` list,
-  so a consumer holding only the archive can reconstruct what the run
-  waited on. Settled and abandoned holds remove their files; the listing
-  shows only what is genuinely open (an `orphaned` marker flags holds
-  whose raising process has died).
+- **Observability:** raise, answer, rejected answer, timeout, and
+  retirement each emit a runtime event and land in the archive manifest's
+  `hold_events` list, so a consumer holding only the archive can
+  reconstruct what the run waited on. Settled and abandoned holds remove
+  their files, and a hold whose raiser is provably dead — judged from the
+  liveness evidence the record carries, never guessed — is retired by the
+  enumeration or sweep that observes it, so the listing only ever shows
+  answerable holds.
 
 ## `agent()` options and per-engine support
 
@@ -533,7 +549,7 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart. Discovery qualifies only after the set grows from its cold result and the larger canonical filesystem-and-plugin set repeats; a repeated cold state therefore fails closed instead of being treated as complete. The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, or ten calls without that growth-and-repeat sequence fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but that witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode. | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart. Discovery qualifies only after the set grows from its cold result and the larger canonical filesystem-and-plugin set repeats; a repeated cold state therefore fails closed instead of being treated as complete. The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, or ten calls without that growth-and-repeat sequence fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement a live test at the worker boundary observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -601,7 +617,7 @@ selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`, `muse-glimmer-30b`.
-The `local/…` entries are served by a self-hosted router and track
+The `local/…` entries are served by a local router and track
 what it actually serves; `src/opencode-model-registry.ts` carries the
 re-survey contract.
 

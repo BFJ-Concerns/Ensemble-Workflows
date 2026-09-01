@@ -25,7 +25,8 @@ export interface AgentOptions {
    * validated pre-spawn as a harness-owned domain and converted to the
    * engine's native form, clamping to the nearest level the engine
    * offers; the resolved native value lands in the run record. opencode
-   * is exempt: its effort names the registry entry's served variants.
+   * is exempt: its effort names the registry
+   * entry's served variants.
    */
   effort?: string;
   /** Claude only: declared degradation when the pinned model tier is unavailable. */
@@ -91,9 +92,9 @@ export interface WorkerSessionOptions {
 
 /**
  * The one per-turn variation a session permits: a restate turn's shape
- * differs from a build turn's, so each `send()` takes its own optional
- * schema under the same validated-return and bounded-retry contract as a
- * one-shot call.
+ * differs from a build turn's, so each
+ * `send()` takes its own optional schema under the same validated-return and
+ * bounded-retry contract as a one-shot call.
  */
 export interface SessionTurnOptions {
   schema?: JsonSchema;
@@ -152,8 +153,8 @@ export interface RuntimeOptions {
    * deterministic cliff at the worker's configured prompt-cache TTL (the
    * 1-hour TTL its dispatch injects), past which resuming pays a full
    * uncached re-read. A library-level option like `requestTimeoutMs` —
-   * deliberately not a CLI flag or ambient setting — so library callers
-   * and tests can reach expiry. Defaults to 1 hour.
+   * deliberately not a CLI flag or ambient setting — so expiry journeys are
+   * reachable from the built artefact. Defaults to 1 hour.
    */
   claudeSessionStaleAfterMs?: number;
   /**
@@ -186,6 +187,14 @@ export interface RuntimeOptions {
    * `<XDG_DATA_HOME>/ensemble/holds`.
    */
   holdsDir?: string;
+  /**
+   * The launcher-supplied scope this run's holds publish under: an
+   * opaque key — a lead session's own id is a natural value — that confines
+   * the scoped listing to one lead's holds. Outranks the inherited
+   * `ENSEMBLE_HOLD_SCOPE` environment variable; omitted with no variable
+   * set, holds land in the default shared scope.
+   */
+  holdScope?: string;
   /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
   holdPollIntervalMs?: number;
 }

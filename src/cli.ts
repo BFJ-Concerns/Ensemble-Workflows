@@ -8,7 +8,7 @@ import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
-import { defaultHoldsDirectory, enumerateHolds } from "./holds.js";
+import { defaultHoldsDirectory, enumerateHolds, resolveHoldScope } from "./holds.js";
 import { presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
@@ -46,7 +46,8 @@ const AGENT_INVOCATION_OPTIONS = {
   "agent-ceiling": { type: "string" },
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
-  "caller-identity": { type: "string" }
+  "caller-identity": { type: "string" },
+  "hold-scope": { type: "string" }
 } as const;
 
 export interface EnsembleCliOptions {
@@ -123,23 +124,59 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   if (argv[0] === "holds") {
+    const holdsUsage =
+      "Usage: ensemble holds [--json] [--scope <scope> | --all]\n" +
+      "Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;\n" +
+      "--scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.\n";
     if (argv[1] === "--help" || argv[1] === "-h") {
-      stdout.write("Usage: ensemble holds [--json]\nLists open holds across runs; --json emits the full records.\n");
+      stdout.write(holdsUsage);
       return 0;
     }
-    // The cross-run inbox: every open hold on this machine, with the
+    // The decision inbox, on its two listing contracts: one scope's
+    // open holds (a lead's own view), or the machine-wide view across every
+    // scope, the default shared scope included. Each listed hold carries the
     // content, accepted verdicts, and decision path a decider needs — so one
     // watcher can wake one orchestrator instead of a resident session per
     // run. `--json` is the machine-readable form; the answer is a JSON file
     // at `decision_path` carrying the hold's nonce and a listed verdict.
-    const json = argv.includes("--json");
-    if (argv.length > (json ? 2 : 1)) {
-      stderr.write("Usage: ensemble holds [--json]\n");
+    let json = false;
+    let all = false;
+    let scopeFlag: string | undefined;
+    const rest = argv.slice(1);
+    for (let index = 0; index < rest.length; index += 1) {
+      const arg = rest[index];
+      if (arg === "--json") {
+        json = true;
+      } else if (arg === "--all") {
+        all = true;
+      } else if (arg === "--scope") {
+        scopeFlag = rest[index + 1];
+        index += 1;
+        if (scopeFlag === undefined || scopeFlag.trim().length === 0) {
+          stderr.write(holdsUsage);
+          return 2;
+        }
+      } else if (arg !== undefined && arg.startsWith("--scope=")) {
+        scopeFlag = arg.slice("--scope=".length);
+        if (scopeFlag.trim().length === 0) {
+          stderr.write(holdsUsage);
+          return 2;
+        }
+      } else {
+        stderr.write(holdsUsage);
+        return 2;
+      }
+    }
+    if (all && scopeFlag !== undefined) {
+      stderr.write(holdsUsage);
       return 2;
     }
-    let holds;
+    // --scope names one scope; --all forces machine-wide; otherwise the
+    // inherited variable scopes the view, and no key means machine-wide.
+    const scope = scopeFlag ?? (all ? null : resolveHoldScope(undefined, env));
+    let enumeration;
     try {
-      holds = await enumerateHolds(defaultHoldsDirectory(env));
+      enumeration = await enumerateHolds(defaultHoldsDirectory(env), scope !== null ? { scope } : {});
     } catch (error) {
       // An unreadable holds directory is not an empty one: say so, exit 1.
       stderr.write(
@@ -148,17 +185,26 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       return 1;
     }
     if (json) {
-      stdout.write(`${JSON.stringify(holds.map((hold) => ({ ...hold.record, live: hold.live })))}\n`);
+      stdout.write(
+        `${JSON.stringify({
+          holds: enumeration.holds.map((hold) => hold.record),
+          retired: enumeration.retired
+        })}\n`
+      );
       return 0;
     }
-    if (holds.length === 0) {
-      stdout.write(`No open holds under ${defaultHoldsDirectory(env)}\n`);
+    for (const record of enumeration.retired) {
+      stdout.write(`retired ${record.hold_id} — raiser provably gone; nothing could await its answer\n`);
+    }
+    if (enumeration.holds.length === 0) {
+      const view = scope !== null ? `scope ${scope}` : "any scope";
+      stdout.write(`No open holds for ${view} under ${defaultHoldsDirectory(env)}\n`);
       return 0;
     }
-    for (const hold of holds) {
+    for (const hold of enumeration.holds) {
       const { record } = hold;
       stdout.write(
-        `${record.hold_id}\t${hold.live ? "live" : "orphaned"}\traised ${record.raised_at}` +
+        `${record.hold_id}\tscope ${record.scope ?? "(shared)"}\traised ${record.raised_at}` +
           `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
@@ -220,9 +266,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   try {
     const prepared = await prepareRun(invocation, cwd);
+    // Flag outranks the inherited variable; resolved here against the
+    // injectable env so a library-driven CLI call scopes consistently.
+    const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime)({
       cwd,
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
+      ...(holdScope !== null ? { holdScope } : {}),
       ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
       ...(Object.keys(ambientSettings.workerEnvironment).length > 0
         ? { workerEnvironment: ambientSettings.workerEnvironment }
@@ -568,6 +618,8 @@ interface InvocationTuning {
   strip?: StrippableCapability[];
   /** Optional opaque identity of the process or session that invoked this run. */
   callerIdentity?: string;
+  /** The scope this run's holds publish under; outranks the inherited env variable. */
+  holdScope?: string;
 }
 
 interface ParsedWorkflowInvocation extends InvocationTuning {
@@ -784,7 +836,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
         concurrency: { type: "string", multiple: true },
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
-        "caller-identity": { type: "string" }
+        "caller-identity": { type: "string" },
+        "hold-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -805,6 +858,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
+  const holdScope = parseHoldScope(parsed.values["hold-scope"]);
 
   return {
     kind: "workflow",
@@ -816,7 +870,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(strip !== undefined ? { strip } : {}),
-    ...(callerIdentity !== undefined ? { callerIdentity } : {})
+    ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
 
@@ -861,6 +916,7 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
+  const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -887,7 +943,8 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     ...(agentCeiling !== undefined ? { agentCeiling } : {}),
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(callerIdentity !== undefined ? { callerIdentity } : {})
+    ...(callerIdentity !== undefined ? { callerIdentity } : {}),
+    ...(holdScope !== undefined ? { holdScope } : {})
   };
 }
 
@@ -1060,7 +1117,8 @@ function isKnownOption(value: string): boolean {
     value === "--concurrency" ||
     value === "--timeout" ||
     value === "--strip" ||
-    value === "--caller-identity"
+    value === "--caller-identity" ||
+    value === "--hold-scope"
   );
 }
 
@@ -1072,7 +1130,8 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--concurrency=") ||
     value.startsWith("--timeout=") ||
     value.startsWith("--strip=") ||
-    value.startsWith("--caller-identity=")
+    value.startsWith("--caller-identity=") ||
+    value.startsWith("--hold-scope=")
   );
 }
 
@@ -1208,6 +1267,16 @@ function parseCallerIdentity(value: string | undefined): string | undefined {
   return value;
 }
 
+function parseHoldScope(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value.trim().length === 0) {
+    throw new CliUsageError("--hold-scope must be a non-empty string");
+  }
+  return value;
+}
+
 function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
   if (flag !== undefined) {
     return flag;
@@ -1245,13 +1314,13 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
 
 function usage(): string {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
-    "       ensemble holds [--json]",
+    "       ensemble holds [--json] [--scope <scope> | --all]",
     ""
   ].join("\n");
 }

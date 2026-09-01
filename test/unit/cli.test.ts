@@ -1853,13 +1853,13 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
+      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
+        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n" +
-      "       ensemble holds [--json]\n"
+      "       ensemble holds [--json] [--scope <scope> | --all]\n"
   );
 });
 
@@ -1918,6 +1918,88 @@ test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
     assert.equal(await runEnsembleCli(argv, { stdout: subStdout, stderr: new CaptureStream() }), 0);
     assert.match(subStdout.text(), /Usage: ensemble/);
   }
+});
+
+test("ensemble holds serves the two listing contracts: one scope's view, and machine-wide", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-"));
+  const dataHome = path.join(directory, "data-home");
+  const holdsRoot = path.join(dataHome, "ensemble", "holds");
+  const record = (holdId: string, scope: string | null, scopeSegment: string): Record<string, unknown> => ({
+    schema_version: 2,
+    kind: "ensemble_hold",
+    run_id: "run-x",
+    hold_id: holdId,
+    nonce: `${holdId}-nonce`,
+    scope,
+    content: `question from ${holdId}`,
+    verdicts: ["ok"],
+    raised_at: new Date(0).toISOString(),
+    timeout_at: null,
+    cwd: "/nowhere",
+    // No liveness evidence: never guessed dead, so the listing keeps it.
+    owner: { host: "elsewhere.invalid", pid: 1, start_ticks: null },
+    decision_path: path.join(holdsRoot, scopeSegment, `${holdId}.decision.json`)
+  });
+  await mkdir(path.join(holdsRoot, "scope-lead-a"), { recursive: true });
+  await mkdir(path.join(holdsRoot, "shared"), { recursive: true });
+  await writeFile(
+    path.join(holdsRoot, "scope-lead-a", "hold-a.json"),
+    JSON.stringify(record("hold-a", "lead-a", "scope-lead-a"))
+  );
+  await writeFile(path.join(holdsRoot, "shared", "hold-s.json"), JSON.stringify(record("hold-s", null, "shared")));
+
+  // The scoped view: exactly the named scope's holds, the shared scope
+  // never among them.
+  const scoped = new CaptureStream();
+  assert.equal(
+    await runEnsembleCli(["holds", "--scope", "lead-a"], {
+      stdout: scoped,
+      stderr: new CaptureStream(),
+      env: { XDG_DATA_HOME: dataHome }
+    }),
+    0
+  );
+  assert.match(scoped.text(), /hold-a/);
+  assert.doesNotMatch(scoped.text(), /hold-s/);
+
+  // The inherited variable scopes the default view the same way.
+  const inherited = new CaptureStream();
+  assert.equal(
+    await runEnsembleCli(["holds"], {
+      stdout: inherited,
+      stderr: new CaptureStream(),
+      env: { XDG_DATA_HOME: dataHome, ENSEMBLE_HOLD_SCOPE: "lead-a" }
+    }),
+    0
+  );
+  assert.match(inherited.text(), /hold-a/);
+  assert.doesNotMatch(inherited.text(), /hold-s/);
+
+  // Machine-wide (--all, or keyless): every scope, shared included.
+  const machineWide = new CaptureStream();
+  assert.equal(
+    await runEnsembleCli(["holds", "--all", "--json"], {
+      stdout: machineWide,
+      stderr: new CaptureStream(),
+      env: { XDG_DATA_HOME: dataHome, ENSEMBLE_HOLD_SCOPE: "lead-a" }
+    }),
+    0
+  );
+  const parsed = JSON.parse(machineWide.text()) as { holds: Array<{ hold_id: string }>; retired: unknown[] };
+  assert.deepEqual(parsed.holds.map((hold) => hold.hold_id).sort(), ["hold-a", "hold-s"]);
+  assert.deepEqual(parsed.retired, []);
+
+  // Naming a scope and forcing machine-wide contradict: a usage error.
+  const conflicted = new CaptureStream();
+  assert.equal(
+    await runEnsembleCli(["holds", "--scope", "lead-a", "--all"], {
+      stdout: new CaptureStream(),
+      stderr: conflicted,
+      env: { XDG_DATA_HOME: dataHome }
+    }),
+    2
+  );
+  assert.match(conflicted.text(), /Usage: ensemble holds/);
 });
 
 test("an empty workflows catalogue says what it found and where it looked", async () => {

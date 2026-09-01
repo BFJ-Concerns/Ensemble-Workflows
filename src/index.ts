@@ -58,8 +58,22 @@ export type {
   SentinelManifestAttestation,
   SentinelOutcome
 } from "./completion-sentinel.js";
-export { HoldManager, defaultHoldsDirectory, enumerateHolds } from "./holds.js";
-export type { EnumeratedHold, HoldDecision, HoldFileRecord, RaiseHoldOptions } from "./holds.js";
+export {
+  HOLD_SCOPE_ENV,
+  HoldManager,
+  defaultHoldsDirectory,
+  enumerateHolds,
+  holdScopeSegment,
+  resolveHoldScope
+} from "./holds.js";
+export type {
+  EnumeratedHold,
+  EnumerateHoldsOptions,
+  HoldDecision,
+  HoldEnumeration,
+  HoldFileRecord,
+  RaiseHoldOptions
+} from "./holds.js";
 export {
   HoldRejectedError,
   HoldTimeoutError,

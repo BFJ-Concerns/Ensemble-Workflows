@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,7 +7,8 @@ import test from "node:test";
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
 import { createRuntime } from "../../src/runtime.js";
-import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
+import { RunRecordWriter } from "../../src/run-record.js";
+import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
@@ -669,6 +670,56 @@ test("a started turn with no output expires before its ordinary timeout and reco
     assert.match(attempt?.failure?.message ?? "", /first output-bearing frame within 250ms/);
   } finally {
     await runtime.close();
+  }
+});
+
+test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 5_000 }, async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-request-deadline-record-"));
+  const archiveCauseFor = async (
+    mode: "no-turn-start-ack" | "hang-after-delta",
+    options: { requestTimeoutMs: number; timeoutMs?: number }
+  ) => {
+    const codexBin = await fakeCodexFailingTurnServer(mode);
+    const runtime = await createRuntime({ codexBin, requestTimeoutMs: options.requestTimeoutMs });
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd: process.cwd(),
+      runUuid: mode,
+      workflowPath: path.join(process.cwd(), "request-deadline-test.js"),
+      workflowSource: "return true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    runtime.setRunRecorder(writer);
+
+    try {
+      await assert.rejects(
+        () =>
+          runtime.agent("time out", {
+            engine: "codex",
+            maxAttempts: 1,
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
+          }),
+        TurnTimeoutError
+      );
+    } finally {
+      await runtime.close();
+      await writer.finish({ status: "failed", exitCode: 1, result: null });
+    }
+
+    return JSON.parse(
+      await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8")
+    ) as { termination_cause: { kind: string; message: string } | null };
+  };
+
+  try {
+    const requestExpired = await archiveCauseFor("no-turn-start-ack", { requestTimeoutMs: 200 });
+    const turnExpired = await archiveCauseFor("hang-after-delta", { requestTimeoutMs: 2_000, timeoutMs: 200 });
+
+    assert.equal(requestExpired.termination_cause?.kind, "request-timeout");
+    assert.equal(turnExpired.termination_cause?.kind, "turn-timeout");
+  } finally {
+    await rm(store, { recursive: true, force: true });
   }
 });
 
@@ -1447,6 +1498,7 @@ async function fakeCodexFailingTurnServer(
     | "system-error-then-late-error"
     | "exit-mid-turn"
     | "hang-after-delta"
+    | "no-turn-start-ack"
     | "garbage-line"
     | "terminated-garbage-line"
     | "delta-no-turn-start-ack"
@@ -1503,6 +1555,11 @@ reader.on("line", (line) => {
       // deadline must fire while the request is still pending.
       send({ method: "turn/started", params: { threadId } });
       send({ method: "item/agentMessage/delta", params: { threadId, delta: "nine tenths of an answer" } });
+      return;
+    }
+    if (mode === "no-turn-start-ack") {
+      // The server accepted the connection but never acknowledges turn/start:
+      // only the transport's request deadline can end this call.
       return;
     }
     if (mode === "item-then-error") {

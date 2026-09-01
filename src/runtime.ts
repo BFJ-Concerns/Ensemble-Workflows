@@ -1258,7 +1258,10 @@ export class EnsembleRuntime {
     }
     if (error instanceof TurnTimeoutError) {
       record.status = "timed-out";
-      record.terminationCause = { kind: "turn-timeout", message: error.message };
+      record.terminationCause = {
+        kind: error.deadline.kind === "request" ? "request-timeout" : "turn-timeout",
+        message: error.message
+      };
       return;
     }
     const lastFailure = record.attempts.at(-1)?.failure;

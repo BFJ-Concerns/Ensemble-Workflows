@@ -12,6 +12,7 @@ const spawningTestMarker = { [SUITE_SPAWNING_TEST_MARKER]: "run-test-suite-robus
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const colouredEmptySuiteChildPath = path.resolve("test/fixtures/suite-runner/coloured-empty-suite-child.mjs");
+const failedHoldTestPath = path.resolve("test/fixtures/suite-runner/failed-hold-test.mjs");
 const pipeHolderParentPath = path.resolve("test/fixtures/suite-runner/pipe-holder-parent.mjs");
 const completionGuardMilliseconds = 5_000;
 const promptExitMilliseconds = 500;
@@ -65,6 +66,22 @@ test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite su
     assert.equal(result.stdout, payload);
     assert.doesNotMatch(result.stderr, /Test suite matched no tests/);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("suite runner reports a seeded hold assertion failure instead of hanging on its poll", async () => {
+  assertNotInsideSuiteSpawningTest();
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-seeded-hold-estate-"));
+  const cleanupMarker = path.join(directory, "published-and-rejected");
+  const run = startSuiteProgram(failedHoldTestPath, { ENSEMBLE_FAILED_HOLD_CLEANUP_MARKER: cleanupMarker });
+  try {
+    const result = await awaitCompletion(run.completed, "runner hung after the seeded hold assertion failure");
+    assert.equal(result.code, 1, result.output);
+    assert.match(result.output, /seeded assertion failure/);
+    await access(cleanupMarker);
+  } finally {
+    await stopSuite(run);
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -232,14 +249,20 @@ interface PipeHolder {
 }
 
 function startSuite(pipeHolder: PipeHolder) {
-  const child = spawn(process.execPath, [runnerPath, pipeHolderParentPath], {
+  return startSuiteProgram(pipeHolderParentPath, {
+    ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
+    ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath
+  });
+}
+
+function startSuiteProgram(program: string, overrides: NodeJS.ProcessEnv = {}) {
+  const child = spawn(process.execPath, [runnerPath, program], {
     env: hermeticEstateEnvironment({
-      ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
-      ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,
-      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: pipeHolderParentPath,
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: program,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
       NODE_TEST_CONTEXT: undefined,
-      ...spawningTestMarker
+      ...spawningTestMarker,
+      ...overrides
     }),
     stdio: ["ignore", "pipe", "pipe"]
   });

@@ -164,7 +164,11 @@ test("an unanswered hold with a timeout rejects with HoldTimeoutError and leaves
     const settled: string[] = [];
     const holds = manager(dir, events, { settled });
 
-    await assert.rejects(holds.raise({ content: "anyone there?", verdicts: ["yes"], timeoutMs: 20 }), HoldTimeoutError);
+    await requireRejectionWithin(
+      assert.rejects(holds.raise({ content: "anyone there?", verdicts: ["yes"], timeoutMs: 20 }), HoldTimeoutError),
+      "the unanswered hold did not time out",
+      async () => holds.close()
+    );
     assert.deepEqual((await enumerateHolds(dir)).holds, []);
     assert.deepEqual(settled, ["run-test-1"]);
     assert.ok(events.some((event) => event.method === "hold/timedOut"));
@@ -176,28 +180,43 @@ test("close() abandons open holds: the wait rejects and the file is removed", as
     const events: RuntimeEvent[] = [];
     const holds = manager(dir, events);
     const decision = holds.raise({ content: "left open at run end", verdicts: ["ok"] });
-    await publishedHold(dir);
+    const rejected = assert.rejects(decision, HoldRejectedError);
 
-    holds.close();
-    await assert.rejects(decision, HoldRejectedError);
-    assert.deepEqual((await enumerateHolds(dir)).holds, []);
-    await assert.rejects(holds.raise({ content: "too late", verdicts: ["ok"] }), HoldRejectedError);
+    try {
+      const record = await publishedHold(dir);
+
+      holds.close();
+      await requireRejectionWithin(rejected, "close() did not reject the open hold", async () => {
+        await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "ok" }));
+      });
+      assert.deepEqual((await enumerateHolds(dir)).holds, []);
+      await requireRejectionWithin(
+        assert.rejects(holds.raise({ content: "too late", verdicts: ["ok"] }), HoldRejectedError),
+        "close() did not reject a later hold",
+        noTeardownNeeded
+      );
+    } finally {
+      holds.close();
+      await requireRejectionWithin(rejected, "close() did not reject the open hold", noTeardownNeeded);
+    }
   });
 });
 
 test("hold options are validated before anything is published", async () => {
   await withHoldsDir(async (dir) => {
     const holds = manager(dir, []);
-    await assert.rejects(holds.raise({ content: "", verdicts: ["ok"] }), HoldRejectedError);
-    await assert.rejects(holds.raise({ content: "x", verdicts: [] }), HoldRejectedError);
-    await assert.rejects(holds.raise({ content: "x", verdicts: ["a", "a"] }), HoldRejectedError);
-    await assert.rejects(
-      holds.raise({ content: "x", verdicts: ["ok"], timeoutMs: 0 }),
-      HoldRejectedError
+    await requireRejectionWithin(assert.rejects(holds.raise({ content: "", verdicts: ["ok"] }), HoldRejectedError), "empty hold content did not reject", noTeardownNeeded);
+    await requireRejectionWithin(assert.rejects(holds.raise({ content: "x", verdicts: [] }), HoldRejectedError), "empty verdicts did not reject", noTeardownNeeded);
+    await requireRejectionWithin(assert.rejects(holds.raise({ content: "x", verdicts: ["a", "a"] }), HoldRejectedError), "duplicate verdicts did not reject", noTeardownNeeded);
+    await requireRejectionWithin(
+      assert.rejects(holds.raise({ content: "x", verdicts: ["ok"], timeoutMs: 0 }), HoldRejectedError),
+      "zero timeout did not reject",
+      noTeardownNeeded
     );
-    await assert.rejects(
-      holds.raise({ content: "x", verdicts: ["ok"], surprise: true } as never),
-      HoldRejectedError
+    await requireRejectionWithin(
+      assert.rejects(holds.raise({ content: "x", verdicts: ["ok"], surprise: true } as never), HoldRejectedError),
+      "unknown hold option did not reject",
+      noTeardownNeeded
     );
     // Nothing was ever published: the directory was never even created.
     assert.deepEqual(await enumerateHolds(dir), { holds: [], retired: [] });
@@ -211,36 +230,73 @@ test("holds publish under their launcher-supplied scope, and the two listing con
     const shared = manager(dir, events, { scope: null });
     const decisionA = leadA.raise({ content: "lead a's question", verdicts: ["ok"] });
     const decisionShared = shared.raise({ content: "keyless question", verdicts: ["ok"] });
-    await waitForEvent(events, "hold/raised", 2);
+    // Register both rejections before an assertion can fail. The finally
+    // closes every pending poll, so a real assertion failure stays red rather
+    // than leaving a live raise() timer to hold the suite open.
+    const abandoned = Promise.all([
+      assert.rejects(decisionA, HoldRejectedError),
+      assert.rejects(decisionShared, HoldRejectedError)
+    ]);
+    try {
+      await waitForEvent(events, "hold/raised", 2);
 
-    // The scoped listing is exactly the lead's own view: its hold, never
-    // another scope's and never the default shared scope's.
-    const scopedA = await enumerateHolds(dir, { scope: "lead-a" });
-    assert.deepEqual(
-      scopedA.holds.map((hold) => hold.record.content),
-      ["lead a's question"]
-    );
-    assert.equal(scopedA.holds[0]?.record.scope, "lead-a");
-    const scopedB = await enumerateHolds(dir, { scope: "lead-b" });
-    assert.deepEqual(scopedB, { holds: [], retired: [] });
+      // The scoped listing is exactly the lead's own view: its hold, never
+      // another scope's and never the default shared scope's.
+      const scopedA = await enumerateHolds(dir, { scope: "lead-a" });
+      assert.deepEqual(
+        scopedA.holds.map((hold) => hold.record.content),
+        ["lead a's question"]
+      );
+      assert.equal(scopedA.holds[0]?.record.scope, "lead-a");
+      const scopedB = await enumerateHolds(dir, { scope: "lead-b" });
+      assert.deepEqual(scopedB, { holds: [], retired: [] });
 
-    // The machine-wide listing enumerates every scope, shared included.
-    const machineWide = await enumerateHolds(dir);
-    assert.deepEqual(
-      machineWide.holds.map((hold) => hold.record.content).sort(),
-      ["keyless question", "lead a's question"]
-    );
+      // The machine-wide listing enumerates every scope, shared included.
+      const machineWide = await enumerateHolds(dir);
+      assert.deepEqual(
+        machineWide.holds.map((hold) => hold.record.content).sort(),
+        ["keyless question", "lead a's question"]
+      );
 
-    // An opaque key of hostile spelling maps to one directory, encoded.
-    assert.equal(holdScopeSegment("a/b c"), "scope-a%2Fb%20c");
-    assert.equal(holdScopeSegment(null), "shared");
-
-    leadA.close();
-    shared.close();
-    await assert.rejects(decisionA, HoldRejectedError);
-    await assert.rejects(decisionShared, HoldRejectedError);
+      // An opaque key of hostile spelling maps to one directory, encoded.
+      assert.equal(holdScopeSegment("a/b c"), "scope-a%2Fb%20c");
+      assert.equal(holdScopeSegment(null), "shared");
+    } finally {
+      leadA.close();
+      shared.close();
+      await requireRejectionWithin(abandoned, "close() did not reject the scoped open holds", async () => {
+        const { holds } = await enumerateHolds(dir);
+        await Promise.all(
+          holds.map(({ record }) => writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: record.verdicts[0] })))
+        );
+      });
+    }
   });
 });
+
+async function requireRejectionWithin(
+  expected: Promise<unknown>,
+  message: string,
+  releaseForTeardown: () => Promise<void>
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      expected,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${message} within 500ms`)), 500);
+      })
+    ]);
+  } catch (error) {
+    await releaseForTeardown();
+    await expected.catch(() => undefined);
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function noTeardownNeeded(): Promise<void> {}
 
 test("the scope resolves explicit-over-environment, and neither means the shared scope", () => {
   assert.equal(resolveHoldScope("flag-scope", { ENSEMBLE_HOLD_SCOPE: "env-scope" }), "flag-scope");
@@ -286,7 +342,7 @@ test("enumeration retires a dead raiser's hold and leaves the evidence-free one 
         ["run-unknown-1"]
       );
       assert.deepEqual((await readdir(scopeDir)).sort(), ["run-unknown-1.json"]);
-      await assert.rejects(stat(deadHold.decision_path));
+      await requireRejectionWithin(assert.rejects(stat(deadHold.decision_path)), "the retired decision file remained", noTeardownNeeded);
     } finally {
       await rm(proc, { recursive: true, force: true });
     }
@@ -311,21 +367,32 @@ test("a raise sweeps its own scope first: the dead sibling is retired with an ev
       const events: RuntimeEvent[] = [];
       const holds = manager(dir, events, { scope: "lead-a", procDir: proc });
       const decision = holds.raise({ content: "fresh question", verdicts: ["ok"] });
-      await waitForEvent(events, "hold/raised");
+      const rejected = assert.rejects(decision, HoldRejectedError);
 
-      const retiredEvents = events.filter((event) => event.method === "hold/retired");
-      assert.deepEqual(
-        retiredEvents.map((event) => event.params.holdId),
-        ["run-dead-1"]
-      );
-      const { holds: listed } = await enumerateHolds(dir, { scope: "lead-a", procDir: proc });
-      assert.deepEqual(
-        listed.map((hold) => hold.record.hold_id),
-        ["run-test-1"]
-      );
+      try {
+        await waitForEvent(events, "hold/raised");
 
-      holds.close();
-      await assert.rejects(decision, HoldRejectedError);
+        const retiredEvents = events.filter((event) => event.method === "hold/retired");
+        assert.deepEqual(
+          retiredEvents.map((event) => event.params.holdId),
+          ["run-dead-1"]
+        );
+        const { holds: listed } = await enumerateHolds(dir, { scope: "lead-a", procDir: proc });
+        assert.deepEqual(
+          listed.map((hold) => hold.record.hold_id),
+          ["run-test-1"]
+        );
+
+        const record = listed[0]?.record;
+        assert.ok(record, "the fresh hold must remain listed before close");
+        holds.close();
+        await requireRejectionWithin(rejected, "close() did not reject the swept-scope hold", async () => {
+          await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: record.verdicts[0] }));
+        });
+      } finally {
+        holds.close();
+        await requireRejectionWithin(rejected, "close() did not reject the swept-scope hold", noTeardownNeeded);
+      }
     } finally {
       await rm(proc, { recursive: true, force: true });
     }

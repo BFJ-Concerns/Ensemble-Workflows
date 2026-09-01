@@ -91,6 +91,32 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
   }
 });
 
+test("suite-root recovery tolerates a selected hand-off disappearing before its age is read", async () => {
+  assertNotInsideSuiteSpawningTest();
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-vanished-handoff-"));
+  const pausePath = path.join(temporaryRoot, "pause-before-handoff-age");
+  try {
+    const handoff = await createUnstampedHandoffRoot(temporaryRoot);
+    await agePastUnstampedHandoffRetention(handoff);
+    const run = startSuite(temporaryRoot, { ENSEMBLE_SUITE_TEST_PAUSE_BEFORE_HANDOFF_AGE_PATH: pausePath });
+    try {
+      await waitForFile(`${pausePath}.ready`);
+      await rm(handoff, { recursive: true, force: true });
+      await writeFile(pausePath, "release\n");
+      const result = await run.completed;
+      assert.equal(result.code, 0, result.output);
+    } finally {
+      await writeFile(pausePath, "release\n").catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill("SIGTERM");
+      await run.completed.catch(() => undefined);
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 function startSuite(temporaryRoot: string, environment: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, [runnerPath, unitTestPath], {
     env: hermeticEstateEnvironment({

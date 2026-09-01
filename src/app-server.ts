@@ -1081,6 +1081,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
       items: Object.fromEntries(turn.items),
       tokenUsageEvents: turn.tokenUsageEvents,
+      transcriptCapture: transcript === undefined ? "lost" : "retained",
       transcripts: [
         {
           filename: "transcript.codex.jsonl",

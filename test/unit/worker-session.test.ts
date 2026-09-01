@@ -260,6 +260,9 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
       // Codex reports a cumulative thread total as well as this turn's
       // delta. The archive summary must retain the latter's per-call shape.
       tokenUsageEvents: [spendEvent("thread-1", 20, 30)],
+      // The transport is the capture owner. Its observed loss, not this
+      // record's follow-up ordinal, must reach the archive reason.
+      transcriptCapture: "lost",
       transcripts: [
         {
           filename: "empty-follow-up.jsonl",
@@ -286,6 +289,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
         resolved_effort: string | null;
         transcripts: Array<{ path: string }>;
         transcripts_unavailable: string | null;
+        transcript_capture: "retained" | "lost" | null;
         usage: { summary?: { totalTokens: number } };
       };
     const first = await readAgent("000001");
@@ -306,6 +310,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
       "a manifested transcript must name non-empty archived content"
     );
     assert.deepEqual(second.transcripts, []);
+    assert.equal(second.transcript_capture, "lost");
     assert.equal(second.transcripts_unavailable, "session-client-capture-gap");
   } finally {
     await runtime.close();

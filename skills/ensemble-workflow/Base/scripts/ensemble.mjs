@@ -14988,6 +14988,7 @@ var RunRecordWriter = class _RunRecordWriter {
       schema: record.schema,
       strip: record.strip,
       session: record.session,
+      transcript_capture: record.transcriptCapture,
       parse_route: record.parseRoute,
       decode_failure: record.decodeFailure === null ? null : {
         byte_length: record.decodeFailure.byteLength,
@@ -15142,7 +15143,7 @@ function transcriptAbsenceReason(record) {
   if (record.status === "timed-out") {
     return "worker-timed-out";
   }
-  if (record.engine === "codex" && (record.session?.turn ?? 0) > 1) {
+  if (record.transcriptCapture === "lost") {
     return "session-client-capture-gap";
   }
   return "engine-produced-no-transcript";
@@ -18963,6 +18964,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
       items: Object.fromEntries(turn.items),
       tokenUsageEvents: turn.tokenUsageEvents,
+      transcriptCapture: transcript === void 0 ? "lost" : "retained",
       transcripts: [
         {
           filename: "transcript.codex.jsonl",
@@ -21780,6 +21782,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       schema: options.schema ?? null,
       strip: stripRoutes === null || options.strip === void 0 ? null : { requested: [...options.strip], enforcement: stripRoutes },
       session: null,
+      transcriptCapture: null,
       parseRoute: null,
       decodeFailure: null,
       rawOutput: null,
@@ -21840,6 +21843,9 @@ function recordTurnMetadata(record, result) {
   }
   if (result.resolvedEffort !== void 0) {
     record.resolvedEffort = result.resolvedEffort;
+  }
+  if (result.transcriptCapture !== void 0) {
+    record.transcriptCapture = result.transcriptCapture;
   }
 }
 function recordOperationalFailure(record, attempt, startedAtMs, result) {

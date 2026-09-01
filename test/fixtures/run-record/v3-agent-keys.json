@@ -27,6 +27,7 @@
   "status",
   "strip",
   "termination_cause",
+  "transcript_capture",
   "transcripts",
   "transcripts_unavailable",
   "usage",

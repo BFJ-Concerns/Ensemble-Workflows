@@ -27,6 +27,7 @@ test("a cold archive consumer finds no artefact or files-table row for a suppres
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       transcripts: Array<{ path: string }>;
       transcripts_unavailable: string | null;
+      transcript_capture: "retained" | "lost" | null;
     };
     const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
       files: Array<{ path: string }>;
@@ -38,6 +39,7 @@ test("a cold archive consumer finds no artefact or files-table row for a suppres
     // archive tree, and the manifest's integrity table must agree that there
     // is no transcript artefact to consume.
     assert.deepEqual(agent.transcripts, []);
+    assert.equal(agent.transcript_capture, "lost");
     assert.equal(agent.transcripts_unavailable, "session-client-capture-gap");
     assert.equal(archivePaths.some((entry) => entry.endsWith("empty-follow-up.jsonl")), false);
     assert.equal(manifest.files.some((entry) => entry.path.endsWith("empty-follow-up.jsonl")), false);
@@ -69,6 +71,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
     schema: null,
     strip: null,
     session: { id: 1, turn: 2 },
+    transcriptCapture: "lost",
     parseRoute: null,
     decodeFailure: null,
     rawOutput: "",

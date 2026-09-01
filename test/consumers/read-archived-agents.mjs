@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { URL } from "node:url";
 
 import { readJson } from "./archive-helpers.mjs";
 
@@ -16,13 +17,7 @@ const agentPaths = entries
 assert.ok(agentPaths.length > 0, `expected at least one agent.json below ${dataHome}`);
 
 const agents = await Promise.all(agentPaths.map((agentPath) => readJson(agentPath)));
-const v3AgentKeys = [
-  "attempts", "concurrency_group", "creation_order", "decode_failure", "effort", "engine", "execution_ms",
-  "fallback_model", "id", "isolation", "kind", "label", "model", "options", "parse_route", "phase", "prompt",
-  "queued_ms", "raw_output", "resolved_cwd", "resolved_effort", "resolved_model", "schema", "schema_version",
-  "session", "status", "strip", "termination_cause", "transcripts", "transcripts_unavailable", "usage",
-  "validated_output", "worktree"
-];
+const v3AgentKeys = await readJson(new URL("../fixtures/run-record/v3-agent-keys.json", import.meta.url));
 
 for (const [index, agent] of agents.entries()) {
   assert.equal(agent.schema_version, 3);
@@ -33,6 +28,7 @@ for (const [index, agent] of agents.entries()) {
   assert.equal(typeof agent.status, "string");
   assert.ok(Array.isArray(agent.attempts));
   assert.ok(Array.isArray(agent.transcripts));
+  assert.ok(agent.transcript_capture === null || agent.transcript_capture === "retained" || agent.transcript_capture === "lost");
   assert.ok(agent.transcripts_unavailable === null || typeof agent.transcripts_unavailable === "string");
   if (hasAbandonment) {
     const archiveDirectory = path.dirname(path.dirname(path.dirname(agentPaths[index])));

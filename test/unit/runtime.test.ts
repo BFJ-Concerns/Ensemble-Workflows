@@ -1354,6 +1354,73 @@ test("a cwd is read once, so it cannot answer differently after the call is admi
   assert.equal(records.at(-1)?.status, "complete");
 });
 
+test("a Proxy cannot use cwd membership to return a live options object after its snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let cwdReads = 0;
+  let cwdMembershipChecks = 0;
+  const options = new Proxy<Record<string, unknown>>(
+    { engine: "codex", cwd: "." },
+    {
+      get(target, property, receiver) {
+        if (property === "cwd") {
+          cwdReads += 1;
+          if (cwdReads > 1) throw new Error("second cwd read escaped the snapshot");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+      has(target, property) {
+        if (property === "cwd") {
+          cwdMembershipChecks += 1;
+          return false;
+        }
+        return Reflect.has(target, property);
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(cwdReads, 1);
+  assert.equal(cwdMembershipChecks, 0);
+  assert.equal(transport.turns.length, 1);
+});
+
+test("a throwing Proxy cwd membership trap cannot escape the cwd snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  const membershipRefusal = new Error("cwd membership witness");
+  const options = new Proxy<Record<string, unknown>>(
+    { engine: "codex", cwd: "." },
+    {
+      has(target, property) {
+        if (property === "cwd") throw membershipRefusal;
+        return Reflect.has(target, property);
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(transport.turns.length, 1);
+});
+
 test("an invalid isolation value fails before a Codex thread opens", async () => {
   const transport = new FakeTransport([turn("unused")]);
   const runtime = new EnsembleRuntime({

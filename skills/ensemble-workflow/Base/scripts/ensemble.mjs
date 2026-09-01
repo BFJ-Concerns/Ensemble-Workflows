@@ -15673,15 +15673,22 @@ function snapshotAgentCwd(options) {
   if (cwd !== void 0 && typeof cwd !== "string") {
     throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
   }
-  if (!("cwd" in options)) {
-    return options;
+  let descriptors;
+  let prototype;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(options);
+    prototype = Object.getPrototypeOf(options);
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
   }
-  const descriptors = Object.getOwnPropertyDescriptors(options);
-  return Object.create(Object.getPrototypeOf(options), {
+  const cwdDescriptor = descriptors.cwd;
+  delete descriptors.cwd;
+  return Object.create(prototype, {
     ...descriptors,
-    // Defined over the copied descriptor rather than after it: an accessor
-    // declared without `configurable` cannot be redefined on the copy.
-    cwd: { value: cwd, writable: true, enumerable: descriptors.cwd?.enumerable ?? true, configurable: true }
+    // Defined while the shadow is created rather than after it: an accessor
+    // declared without `configurable` on the caller cannot constrain the
+    // shadow. An absent or undefined cwd stays absent on the shadow.
+    ...cwd !== void 0 ? { cwd: { value: cwd, writable: true, enumerable: cwdDescriptor?.enumerable ?? true, configurable: true } } : {}
   });
 }
 function assertValidAgentOptions(options) {

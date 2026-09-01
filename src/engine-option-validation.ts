@@ -66,9 +66,8 @@ const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 
 /**
  * The single read of a call's `cwd`, and the shadow that keeps it the only
- * one. Returns the options the call should work from: the caller's own
- * object when it carries no `cwd`, otherwise a call-local copy whose `cwd` is
- * the value read here, as a plain data property.
+ * one. Returns a call-local copy whose `cwd`, when supplied, is the value
+ * read here as a plain data property.
  *
  * `cwd` is unlike the other options in that nothing downstream *checks* it —
  * the placement check, the dispatch record's `resolvedCwd`, and the placement
@@ -98,18 +97,29 @@ export function snapshotAgentCwd<T extends object>(options: T): T {
   if (cwd !== undefined && typeof cwd !== "string") {
     throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
   }
-  if (!("cwd" in options)) {
-    return options;
-  }
   // Descriptors are copied rather than invoked, so this shadows `cwd` alone:
   // no other option's accessor runs any earlier, or any more often, than it
-  // does without the copy.
-  const descriptors: Record<PropertyKey, PropertyDescriptor> = Object.getOwnPropertyDescriptors(options);
-  return Object.create(Object.getPrototypeOf(options) as object | null, {
+  // does without the copy. The shadow is unconditional: consulting `in`
+  // would let a Proxy return the live caller object again (or throw from its
+  // `has` trap) after the single read above.
+  let descriptors: Record<PropertyKey, PropertyDescriptor>;
+  let prototype: object | null;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(options);
+    prototype = Object.getPrototypeOf(options) as object | null;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  const cwdDescriptor = descriptors.cwd;
+  delete descriptors.cwd;
+  return Object.create(prototype, {
     ...descriptors,
-    // Defined over the copied descriptor rather than after it: an accessor
-    // declared without `configurable` cannot be redefined on the copy.
-    cwd: { value: cwd, writable: true, enumerable: descriptors.cwd?.enumerable ?? true, configurable: true }
+    // Defined while the shadow is created rather than after it: an accessor
+    // declared without `configurable` on the caller cannot constrain the
+    // shadow. An absent or undefined cwd stays absent on the shadow.
+    ...(cwd !== undefined
+      ? { cwd: { value: cwd, writable: true, enumerable: cwdDescriptor?.enumerable ?? true, configurable: true } }
+      : {})
   }) as T;
 }
 

@@ -1791,3 +1791,88 @@ function sortJson(value: unknown): unknown {
   }
   return value;
 }
+
+/**
+ * The consumer surface for a failed agent's account, read cold from disk.
+ *
+ * The runtime tests pin the settled in-memory record through a recorder
+ * stub; this drives the same settlements through a real `RunRecordWriter`
+ * and reads `agents/<id>/agent.json` back, because the archive is where the
+ * consumer actually looks. Two of the three ways a failure's account reaches
+ * the record are read from the same run: an engine account carried, an
+ * unreadable account named as unavailable. The third — an attempt-diagnosed
+ * failure leaving `termination_cause` null — is pinned in `runtime.test.ts`,
+ * where no attempt reaches disk.
+ */
+test("a failed agent's account is readable cold from its archived record", async () => {
+  const cwd = await gitRepo("ensemble-record-failure-account-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-failure-account-store-"));
+
+  const rejections = new Map<string, unknown>();
+  const refusal = new Error("model 'gpt-5.6-nonesuch' is not available");
+  refusal.name = "ModelNotFoundError";
+  rejections.set("refused", refusal);
+  const silent = new Error("");
+  silent.name = "SilentEngineError";
+  rejections.set("silent", silent);
+
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: (prompt) => {
+      const rejection = rejections.get(prompt);
+      if (rejection !== undefined) {
+        // Refused as the invocation is created: no attempt is ever pushed,
+        // so the attempts array cannot carry the account.
+        throw rejection;
+      }
+      throw new Error(`unexpected dispatch: ${prompt}`);
+    },
+    close: async () => undefined
+  };
+
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-failure-account",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder(writer);
+
+  await assert.rejects(() => runtime.agent("refused", { engine: "codex" }));
+  await assert.rejects(() => runtime.agent("silent", { engine: "codex" }));
+  await runtime.close();
+
+  const read = async (id: string) =>
+    JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      status: string;
+      termination_cause: { kind: string; message: string } | null;
+      attempts: Array<{ failure: { kind: string; message: string } | null }>;
+    };
+
+  // The engine's own words survive to the archive, in the field a cold
+  // consumer reads when the attempts array is empty.
+  const refused = await read("000001");
+  assert.equal(refused.status, "failed");
+  assert.deepEqual(refused.attempts, []);
+  assert.deepEqual(refused.termination_cause, {
+    kind: "ModelNotFoundError",
+    message: "model 'gpt-5.6-nonesuch' is not available"
+  });
+
+  // The other direction of the honesty rule: no account was readable, so the
+  // record says so and why, rather than publishing a bare `failed`.
+  const unreadable = await read("000002");
+  assert.equal(unreadable.status, "failed");
+  assert.deepEqual(unreadable.attempts, []);
+  assert.deepEqual(unreadable.termination_cause, {
+    kind: "unavailable",
+    message:
+      "the agent failed with no attempt recorded and the rejection the runtime holds (SilentEngineError) carried no message"
+  });
+});

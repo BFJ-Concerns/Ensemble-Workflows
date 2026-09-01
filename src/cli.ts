@@ -83,7 +83,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // any invocation parsing, and each subcommand's --help prints its own
   // usage at exit 0 rather than a usage *error* at exit 2.
   if (argv[0] === "--help" || argv[0] === "-h") {
+    // The help gesture answers with orientation, not just the flag grammar
+    // the bare usage error already shows.
     stdout.write(usage());
+    stdout.write(
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\n" +
+        "or dispatches a single agent. Results are JSON on stdout; diagnostics on stderr.\n" +
+        "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
+        "workflows (list saved workflows), holds (list open decision holds).\n" +
+        "Each subcommand answers its own --help.\n"
+    );
     return 0;
   }
   if (argv[0] === "--version") {
@@ -120,6 +129,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage());
+    stdout.write(
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\n" +
+        "prints its result as JSON on stdout. The prompt is the single positional\n" +
+        "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
+        "validates the reply against a JSON Schema; --identity wraps the result as\n" +
+        "{ label, phase, output, failure }.\n"
+    );
     return 0;
   }
 
@@ -1052,6 +1068,14 @@ function rejectMisplacedAgentTuningFlags(argv: string[]): void {
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
       throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
+    if (promptSeen && (isKnownAgentOption(value) || isKnownInlineAgentOption(value))) {
+      // Same misplacement contract as the workflow form's post-script scan:
+      // a flag after the prompt is a placement mistake to name, never an
+      // option to quietly apply or a second positional to misroute.
+      throw new CliUsageError(
+        `Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
+      );
+    }
     // Whether a flag consumes the next token is the option map's `type`,
     // not a hand-kept flag list: a boolean flag declared in
     // AGENT_INVOCATION_OPTIONS takes no value, so the token after it may
@@ -1103,6 +1127,14 @@ function isRepeatableOption(flag: string): boolean {
 
 function isKnownAgentOption(value: string): boolean {
   return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
+}
+
+/** The `--flag=value` spelling of a declared agent option. */
+function isKnownInlineAgentOption(value: string): boolean {
+  if (!value.startsWith("--") || !value.includes("=")) {
+    return false;
+  }
+  return Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2, value.indexOf("=")));
 }
 
 /** A declared agent flag that consumes no value token, read off the option map's own `type`. */

@@ -2002,6 +2002,44 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
   assert.match(conflicted.text(), /Usage: ensemble holds/);
 });
 
+test("the help answers carry orientation beyond the bare usage grammar", async () => {
+  const topLevel = new CaptureStream();
+  assert.equal(await runEnsembleCli(["--help"], { stdout: topLevel, stderr: new CaptureStream() }), 0);
+  assert.match(topLevel.text(), /^Usage: ensemble /);
+  // Pre-fix, --help printed exactly the exit-2 usage screen and nothing more.
+  assert.match(topLevel.text(), /Subcommands: agent/);
+  assert.match(topLevel.text(), /Each subcommand answers its own --help/);
+
+  const agentHelp = new CaptureStream();
+  assert.equal(await runEnsembleCli(["agent", "--help"], { stdout: agentHelp, stderr: new CaptureStream() }), 0);
+  assert.match(agentHelp.text(), /prompt is the single positional\s+argument, or stdin when omitted/);
+  assert.match(agentHelp.text(), /--identity wraps the result/);
+});
+
+test("an agent flag placed after the prompt is rejected as a misplacement", async () => {
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", "do the work", "--model=gpt-5.6-terra"], {
+    stdout: new CaptureStream(),
+    stderr,
+    createRuntime: async () => {
+      throw new Error("nothing should spawn");
+    }
+  });
+  assert.equal(exitCode, 2);
+  assert.match(stderr.text(), /Flag --model=gpt-5\.6-terra appears after the agent prompt/);
+  assert.match(stderr.text(), /put flags before the prompt/);
+
+  // The terminator still passes a dash-leading prompt through untouched.
+  const engine = new FixedResponseEngine("codex", "ok");
+  const stdout = new CaptureStream();
+  const passthroughExit = await runEnsembleCli(["agent", "--engine=codex", "--", "--model=not-a-flag"], {
+    stdout,
+    stderr: new CaptureStream(),
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+  assert.equal(passthroughExit, 0);
+});
+
 test("an empty workflows catalogue says what it found and where it looked", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-empty-workflows-"));
   const dataHome = path.join(directory, "data-home");

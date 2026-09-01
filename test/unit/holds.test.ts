@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
 import { HoldRejectedError, HoldTimeoutError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { EngineRegistry } from "../../src/engines.js";
+import { RunRecordWriter } from "../../src/run-record.js";
 
 import type { HoldFileRecord } from "../../src/holds.js";
 import type { RuntimeEvent } from "../../src/types.js";
@@ -155,6 +156,100 @@ test("a decision file caught mid-write is not consumed: the completed write stil
       events.filter((event) => event.method === "hold/answerRejected"),
       []
     );
+  });
+});
+
+test("a rejected hold remains waiting and reaches the runtime archive", async () => {
+  await withHoldsDir(async (dir) => {
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-hold-rejection-record-"));
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd: process.cwd(),
+      runUuid: "hold-rejection",
+      workflowPath: path.join(process.cwd(), "test", "unit", "holds.test.ts"),
+      workflowSource: "export const meta = { name: 'hold-rejection' };\nreturn null;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([]),
+      defaultMaxAttempts: 1,
+      holdsDir: dir,
+      holdPollIntervalMs: 5
+    });
+    runtime.setRunRecorder(writer);
+
+    try {
+      let settled = false;
+      const decision = runtime.raiseHold({ content: "take the release route?", verdicts: ["yes"] });
+      void decision.then(
+        () => { settled = true; },
+        () => { settled = true; }
+      );
+      const record = await publishedHold(dir);
+
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
+      await waitForArchiveHoldEvent(writer.archiveDir, "answer-rejected");
+
+      // The rejection is consumed, but it is not a decision: the caller is
+      // still waiting and the live hold remains answerable.
+      await Promise.resolve();
+      assert.equal(settled, false);
+      assert.equal((await enumerateHolds(dir)).holds.length, 1);
+      const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+        hold_events: Array<{ event: string; reason: string | null; attempted_verdict: string | null }>;
+      };
+      assert.deepEqual(
+        manifest.hold_events.map(({ event, reason, attempted_verdict }) => ({ event, reason, attempted_verdict })),
+        [
+          { event: "raised", reason: null, attempted_verdict: null },
+          { event: "answer-rejected", reason: "invalid-verdict", attempted_verdict: "no" }
+        ]
+      );
+
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+      assert.deepEqual(await decision, { verdict: "yes", note: null });
+    } finally {
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a concurrent hold-file reader sees only complete records through rejection publication", async () => {
+  await withHoldsDir(async (dir) => {
+    const events: RuntimeEvent[] = [];
+    const holds = manager(dir, events);
+    const decision = holds.raise({ content: "x".repeat(1_048_576), verdicts: ["yes"] });
+    try {
+      const record = await publishedHold(dir);
+      const holdPath = path.join(dir, holdScopeSegment(null), `${record.hold_id}.json`);
+      let readerStarted: (() => void) | undefined;
+      const readerHasOpenedRecord = new Promise<void>((resolve) => {
+        readerStarted = resolve;
+      });
+      const reader = readCompleteHoldAcrossPublication(holdPath, "invalid-verdict", () => readerStarted?.());
+      await Promise.race([readerHasOpenedRecord, reader]);
+
+      // This answer is parseable, so the decision poller consumes it on its
+      // first read; the reader loops over the published record until it sees
+      // the resulting rejection. It must encounter either complete version,
+      // never an absent path or a truncated JSON document.
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
+      await Promise.all([reader, waitForEvent(events, "hold/answerRejected")]);
+      await assertRepublishedRejection(dir, {
+        reason: "invalid-verdict",
+        attempted_verdict: "no",
+        attempted_verdict_state: "submitted"
+      });
+
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+      assert.deepEqual(await decision, { verdict: "yes", note: null });
+    } finally {
+      holds.close();
+      await decision.catch(() => undefined);
+    }
   });
 });
 
@@ -509,4 +604,50 @@ async function waitForEvent(events: RuntimeEvent[], method: string, count = 1): 
     await new Promise<void>((resolve) => setTimeout(resolve, 2));
   }
   throw new Error(`event ${method} (x${count}) never arrived`);
+}
+
+async function waitForArchiveHoldEvent(archiveDir: string, event: string): Promise<void> {
+  const manifestPath = path.join(archiveDir, "manifest.json");
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      hold_events: Array<{ event: string }>;
+    };
+    if (manifest.hold_events.some((entry) => entry.event === event)) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`archive hold event ${event} never appeared`);
+}
+
+async function readCompleteHoldAcrossPublication(
+  holdPath: string,
+  expectedReason: string,
+  onFirstRecord: () => void
+): Promise<void> {
+  let firstRecord = true;
+  for (let attempt = 0; attempt < 20_000; attempt += 1) {
+    let raw: string;
+    try {
+      raw = await readFile(holdPath, "utf8");
+    } catch (error) {
+      throw new Error(`concurrent reader saw no hold record: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let record: HoldFileRecord;
+    try {
+      record = JSON.parse(raw) as HoldFileRecord;
+    } catch (error) {
+      throw new Error(`concurrent reader saw a partial hold record: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    assert.equal(record.kind, "ensemble_hold");
+    if (firstRecord) {
+      firstRecord = false;
+      onFirstRecord();
+    }
+    if (record.answer_rejection?.reason === expectedReason) {
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("concurrent reader never observed the republished hold record");
 }

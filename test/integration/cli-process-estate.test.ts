@@ -995,6 +995,84 @@ test("built CLI propagates malformed schemas from both combinators before openin
   }
 });
 
+test("built CLI keeps the complete engine map and gives mapped flags their own invalid-engine diagnostic", async () => {
+  const fixture = await createProcessFixture("engine-map-cli-diagnostics");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "engine-map-cli-diagnostics",
+          description: "The CLI accepts every engine in each engine-keyed flag"
+        };
+        return "no worker needed";
+      `
+    );
+
+    const accepted = await fixture.runArgsWithEnv(
+      [
+        "--budget=codex=11",
+        "--budget=claude=22",
+        "--budget=opencode=33",
+        "--concurrency=codex=2",
+        "--concurrency=claude=3",
+        "--concurrency=opencode=4",
+        fixture.script
+      ],
+      { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    );
+    assert.equal(accepted.code, 0, accepted.stderr);
+    assert.equal(accepted.stdout, '"no worker needed"\n');
+    const manifestPath = await findOnlyFile(recordStore, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      budget_ceilings: Record<string, { value: number | null; layer: string }>;
+      concurrency: { engines: Record<string, { value: number; layer: string }> };
+    };
+    assert.deepEqual(manifest.budget_ceilings, {
+      codex: { value: 11, layer: "flag" },
+      claude: { value: 22, layer: "flag" },
+      opencode: { value: 33, layer: "flag" }
+    });
+    assert.deepEqual(manifest.concurrency.engines, {
+      codex: { value: 2, layer: "flag" },
+      claude: { value: 3, layer: "flag" },
+      opencode: { value: 4, layer: "flag" }
+    });
+
+    for (const flag of ["--budget", "--concurrency"]) {
+      const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);
+      assert.equal(rejected.code, 2);
+      assert.equal(rejected.stdout, "");
+      assert.equal(rejected.stderr, `${flag} engine must be codex, claude, or opencode; got unknown\n`);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI reports a direct-agent malformed --schema before the Codex worker starts", async () => {
+  const fixture = await createProcessFixture("direct-agent-schema-diagnostic");
+
+  try {
+    const result = await fixture.runArgs([
+      "agent",
+      "--engine=codex",
+      '--schema={"type":"definitely-not-json-schema"}',
+      "return a receipt"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
+    assert.match(result.stderr, /InvalidAgentSchemaError/);
+    assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
   const target = path.join(directory, STATUS_FILENAME);

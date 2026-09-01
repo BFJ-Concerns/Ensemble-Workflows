@@ -13,6 +13,7 @@ import {
   EngineShutdownError,
   attachFailedTurnResult,
   attachPartialWorkerText,
+  failedTurnResultOf,
   partialWorkerTextOf
 } from "./errors.js";
 import {
@@ -338,7 +339,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // teardown, serving every evidence the failed turn can still carry:
       // partial worker text, the served model, the spend the transcript has
       // already proved, and the transcript itself.
-      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      // The initial-dispatch interruption branch below has already captured
+      // and attached its one evidence read before it tears the new handle
+      // down. Every other failure keeps this existing catch-path read.
+      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -382,8 +387,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       this.#closed = true;
       this.#abortController.abort();
       try {
-        await this.#settlement?.catch(() => undefined);
-        await this.#teardown();
+        if (this.#handle !== null) {
+          await this.#settlement?.catch(() => undefined);
+          await this.#teardown();
+        }
       } finally {
         this.#onClose?.(this);
       }
@@ -411,11 +418,20 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     this.#handle = handle;
     this.#turnDelivered = true;
     if (this.#closed) {
-      // close() ran while dispatch was in flight: its teardown saw no
-      // handle, so the session just created is ours to stop — otherwise a
-      // cancelled invocation leaks a live worker.
+      // close() ran while dispatch was in flight and found no handle, so it
+      // returned without waiting for this dispatch. The new session is ours
+      // to stop, but first take the one best-effort evidence read while its
+      // transcript is still reachable. The prepared result marks this error
+      // as already read, so #runAttempt's catch will not race a second read
+      // against teardown.
+      const error = new EngineShutdownError("claude");
+      const evidence = await this.#tryFailureEvidence(0);
+      if (evidence !== null) {
+        this.#attachWorkerText(error, evidence, 0);
+      }
+      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
       await this.#teardown();
-      throw new EngineShutdownError("claude");
+      throw error;
     }
 
     const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);

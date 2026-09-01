@@ -46,7 +46,7 @@ test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite su
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-non-sgr-"));
   try {
     const childProgram = path.join(directory, "non-sgr-empty-suite-child.mjs");
-    const payload = "\u001B[2J# tests 0\n";
+    const payload = "\u001B[?m# tests 0\n";
     await writeFile(childProgram, `import process from "node:process"; process.stdout.write(${JSON.stringify(payload)});`);
     const result = await runNode([runnerPath, childProgram], {
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,

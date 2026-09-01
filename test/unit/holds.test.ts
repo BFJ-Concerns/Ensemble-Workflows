@@ -98,18 +98,40 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
     await waitForEvent(events, "hold/answerRejected");
     // The hold is still open and answerable: the rejected file was consumed.
     assert.equal((await enumerateHolds(dir)).holds.length, 1);
+    // Every rejection republishes onto the open record, so the decider who
+    // wrote the bad file reads back why it bounced — checked after each arm,
+    // since only the latest rejection is on the record at any moment.
+    await assertRepublishedRejection(dir, {
+      reason: "stale-nonce",
+      attempted_verdict: "a",
+      attempted_verdict_state: "submitted"
+    });
 
     await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "c" }));
     await waitForEvent(events, "hold/answerRejected", 2);
+    await assertRepublishedRejection(dir, {
+      reason: "invalid-verdict",
+      attempted_verdict: "c",
+      attempted_verdict_state: "submitted"
+    });
 
     await writeFile(record.decision_path, "not json");
     await waitForEvent(events, "hold/answerRejected", 3);
+    await assertRepublishedRejection(dir, {
+      reason: "malformed",
+      attempted_verdict: null,
+      attempted_verdict_state: "unparseable"
+    });
 
     await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "b" }));
     assert.deepEqual(await decision, { verdict: "b", note: null });
     assert.deepEqual(
       events.filter((event) => event.method === "hold/answerRejected").map((event) => event.params.reason),
       ["stale-nonce", "invalid-verdict", "malformed"]
+    );
+    assert.deepEqual(
+      events.filter((event) => event.method === "hold/answerRejected").map((event) => event.params.attemptedVerdict),
+      ["a", "c", null]
     );
   });
 });
@@ -392,6 +414,24 @@ async function writeProcStat(procDir: string, pid: number, startTicks: string): 
   // space so the parser's last-close-paren split is what the fixture tests.
   const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
   await writeFile(path.join(dir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
+}
+
+/**
+ * Read the open hold back off disk and assert the rejection feedback it now
+ * carries. The manager republishes before it emits, so a read taken after the
+ * arm's event is the feedback that arm produced — not a predecessor's.
+ */
+async function assertRepublishedRejection(
+  dir: string,
+  expected: { reason: string; attempted_verdict: string | null; attempted_verdict_state: string }
+): Promise<void> {
+  const republished = await publishedHold(dir);
+  const rejection = republished.answer_rejection;
+  assert.notEqual(rejection, undefined, `no rejection feedback republished for ${expected.reason}`);
+  assert.equal(rejection?.reason, expected.reason);
+  assert.equal(rejection?.attempted_verdict, expected.attempted_verdict);
+  assert.equal(rejection?.attempted_verdict_state, expected.attempted_verdict_state);
+  assert.equal(new Date(rejection?.rejected_at ?? "").toISOString(), rejection?.rejected_at);
 }
 
 async function waitForEvent(events: RuntimeEvent[], method: string, count = 1): Promise<void> {

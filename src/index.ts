@@ -69,6 +69,7 @@ export {
 export type {
   EnumeratedHold,
   EnumerateHoldsOptions,
+  HoldAnswerRejection,
   HoldDecision,
   HoldEnumeration,
   HoldFileRecord,

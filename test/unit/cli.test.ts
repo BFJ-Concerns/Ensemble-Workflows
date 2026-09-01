@@ -513,7 +513,7 @@ test("CLI separates --json-args from its malformed-JSON diagnostic", async () =>
     stderr.text(),
     "--json-args: the argument must contain valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n"
   );
-  // The flag ran into the sentence with no separator.
+  // The flag must not run into the sentence with no separator.
   assert.doesNotMatch(stderr.text(), /--json-args the argument must contain valid JSON:/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
   assert.equal(runtimeCreations, 0);
@@ -1070,6 +1070,7 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
   assert.equal(stderr.text(), "--engine must be codex, claude, or opencode; got nope\n");
+  // The flag name must not be doubled, nor the separator a comma:
   // "--engine engine must be codex, claude, or opencode, got nope".
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
@@ -2108,6 +2109,56 @@ test("an empty workflows catalogue says what it found and where it looked", asyn
   assert.match(stdout.text(), /No saved workflows found/);
   assert.ok(stdout.text().includes(path.join(directory, ".claude", "ensemble", "workflows")));
   assert.ok(stdout.text().includes(path.join(dataHome, "ensemble", "workflows")));
+});
+
+test("CLI holds renders real verdict choices and a bounced answer's rejection feedback", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-"));
+  const dataHome = path.join(directory, "data-home");
+  const sharedDir = path.join(dataHome, "ensemble", "holds", "shared");
+  await mkdir(sharedDir, { recursive: true });
+  const record = (holdId: string, extra: Record<string, unknown>): Record<string, unknown> => ({
+    schema_version: 2,
+    kind: "ensemble_hold",
+    run_id: `run-${holdId}`,
+    hold_id: holdId,
+    nonce: `${holdId}-nonce`,
+    scope: null,
+    content: `question from ${holdId}`,
+    verdicts: ["approve", "reject"],
+    raised_at: new Date(0).toISOString(),
+    timeout_at: null,
+    cwd: directory,
+    // No start ticks: the raiser is never guessed dead, so the hold is listed.
+    owner: { host: "elsewhere.invalid", pid: 2 ** 30, start_ticks: null },
+    decision_path: path.join(sharedDir, `${holdId}.decision.json`),
+    ...extra
+  });
+  await writeFile(
+    path.join(sharedDir, "bounced-hold.json"),
+    JSON.stringify(
+      record("bounced-hold", {
+        answer_rejection: {
+          reason: "invalid-verdict",
+          attempted_verdict: "later",
+          attempted_verdict_state: "submitted",
+          rejected_at: new Date(1).toISOString()
+        }
+      })
+    )
+  );
+  await writeFile(path.join(sharedDir, "open-hold.json"), JSON.stringify(record("open-hold", {})));
+  const stdout = new CaptureStream();
+
+  assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout, stderr: new CaptureStream(), env: { XDG_DATA_HOME: dataHome } }), 0);
+  assert.match(stdout.text(), /verdicts: approve \| reject/);
+  // The template spells an accepted verdict and names the alternatives, so a
+  // decider copying it writes an answer the runtime accepts.
+  assert.match(stdout.text(), /"verdict":"approve".*\(or use "reject"\)/);
+  assert.match(stdout.text(), /"nonce":"open-hold-nonce","verdict":"approve"/);
+  assert.doesNotMatch(stdout.text(), /"verdict":"…"/);
+  // The bounced answer's feedback rides the listing; the untouched hold has none.
+  assert.match(stdout.text(), /rejected: invalid-verdict \("later"\)/);
+  assert.equal(stdout.text().match(/rejected: /g)?.length, 1);
 });
 
 test("an unpinned Claude worker's resolution notice names the served model, like the Codex line", async () => {

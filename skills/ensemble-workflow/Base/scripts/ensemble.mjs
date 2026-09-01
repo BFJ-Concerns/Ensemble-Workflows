@@ -14909,6 +14909,8 @@ var RunRecordWriter = class _RunRecordWriter {
       event: kind,
       verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
+      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -15428,6 +15430,9 @@ function holdEventKind(method) {
     default:
       return null;
   }
+}
+function isAttemptedVerdictState(value) {
+  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
 }
 function extractTask(meta) {
   if (typeof meta !== "object" || meta === null || !("task" in meta)) {
@@ -16059,10 +16064,7 @@ var HoldManager = class {
     };
     await mkdir3(this.#dir, { recursive: true });
     await this.#retireDeadSiblings();
-    const tmp = `${holdPath}.${process.pid}.tmp`;
-    await writeFile4(tmp, `${JSON.stringify(record, null, 2)}
-`, { encoding: "utf8" });
-    await rename4(tmp, holdPath);
+    await publishHoldRecord(holdPath, record);
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
       holdId,
@@ -16106,7 +16108,7 @@ var HoldManager = class {
   async #awaitDecision(record, holdPath, decisionPath, deadline) {
     const grace = { lastUnparseable: null };
     for (; ; ) {
-      const decision = await this.#readDecision(record, decisionPath, grace);
+      const decision = await this.#readDecision(record, holdPath, decisionPath, grace);
       if (decision !== null) {
         this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
         return decision;
@@ -16125,7 +16127,7 @@ var HoldManager = class {
    * script as a decision. An unparseable file is rejected only once the
    * same bytes have survived a full poll (see the grace note above).
    */
-  async #readDecision(record, decisionPath, grace) {
+  async #readDecision(record, holdPath, decisionPath, grace) {
     let raw;
     try {
       raw = await readFile3(decisionPath, "utf8");
@@ -16139,9 +16141,9 @@ var HoldManager = class {
       const parsed = JSON.parse(raw);
       grace.lastUnparseable = null;
       if (parsed.nonce !== record.nonce) {
-        rejection = "stale-nonce";
+        rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
-        rejection = "invalid-verdict";
+        rejection = rejectedAnswer("invalid-verdict", parsed.verdict, this.#now());
       } else {
         decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
       }
@@ -16151,13 +16153,25 @@ var HoldManager = class {
         return null;
       }
       grace.lastUnparseable = null;
-      rejection = "malformed";
+      rejection = {
+        reason: "malformed",
+        attempted_verdict: null,
+        attempted_verdict_state: "unparseable",
+        rejected_at: new Date(this.#now()).toISOString()
+      };
     }
     if (decision !== null || rejection !== null) {
       await rm3(decisionPath, { force: true }).catch(() => void 0);
     }
     if (rejection !== null) {
-      this.#emit("hold/answerRejected", { holdId: record.hold_id, reason: rejection });
+      record.answer_rejection = rejection;
+      await publishHoldRecord(holdPath, record);
+      this.#emit("hold/answerRejected", {
+        holdId: record.hold_id,
+        reason: rejection.reason,
+        attemptedVerdict: rejection.attempted_verdict,
+        attemptedVerdictState: rejection.attempted_verdict_state
+      });
       return null;
     }
     return decision;
@@ -16243,6 +16257,20 @@ async function enumerateScopeDirectory(scopeDir, options) {
     }
   }
   return result;
+}
+async function publishHoldRecord(holdPath, record) {
+  const tmp = `${holdPath}.${process.pid}.tmp`;
+  await writeFile4(tmp, `${JSON.stringify(record, null, 2)}
+`, { encoding: "utf8" });
+  await rename4(tmp, holdPath);
+}
+function rejectedAnswer(reason, verdict, now) {
+  return {
+    reason,
+    attempted_verdict: typeof verdict === "string" ? verdict : null,
+    attempted_verdict_state: typeof verdict === "string" ? "submitted" : "missing-or-non-string",
+    rejected_at: new Date(now).toISOString()
+  };
 }
 var RAISE_HOLD_OPTION_KEYS = ["content", "verdicts", "timeoutMs"];
 var RAISE_HOLD_OPTION_KEY_SET = new Set(RAISE_HOLD_OPTION_KEYS);
@@ -28760,8 +28788,16 @@ async function runEnsembleCli(argv, options = {}) {
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
-      stdout.write(`  answer:   write {"nonce":"${record.nonce}","verdict":"\u2026"} to ${record.decision_path}
+      const [firstVerdict, ...otherVerdicts] = record.verdicts;
+      stdout.write(
+        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
+`
+      );
+      if (record.answer_rejection !== void 0) {
+        const attempted = record.answer_rejection.attempted_verdict === null ? record.answer_rejection.attempted_verdict_state : JSON.stringify(record.answer_rejection.attempted_verdict);
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})
 `);
+      }
       for (const line of record.content.split("\n")) {
         stdout.write(`  | ${line}
 `);

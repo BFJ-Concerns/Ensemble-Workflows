@@ -491,28 +491,37 @@ pipelines used to hand-roll per script.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
-  Prefer an atomic write (write a temp file beside it, then rename): the
-  runtime polls, and though an unparseable read is given a poll's grace
-  before it is judged, a rename is what removes the mid-write window
-  entirely. A stale nonce, an unlisted verdict, or a malformed file is
-  rejected (the bad file is consumed, an event says so, the hold keeps
-  waiting) — an invalid answer never reaches the script as a decision.
+  Write-then-rename is the required write shape: write to a temp file beside
+  that path and rename it into place. The runtime polls, and though an
+  unparseable read is given a poll's grace before it is judged, rename
+  removes the mid-write window entirely. A stale nonce, an unlisted verdict,
+  or a malformed file is rejected: the bad file is consumed, the
+  still-published hold record gains its rejection reason and what verdict was
+  recoverable, and the hold keeps waiting. Confirm a write took effect by
+  reading the listing again: a hold that remains open carries rejection
+  feedback to correct the next write; a vanished hold either settled or was
+  retired after its raiser was conclusively found dead. Where that
+  distinction matters, read the run's archive or live snapshot rather than
+  treating disappearance alone as acceptance. An invalid answer never reaches
+  the script as a decision.
 - **Enumerating:** two explicit listing contracts. `ensemble holds` shows
   the inherited scope's open holds (machine-wide when no scope is set);
   `ensemble holds --scope <scope>` names a scope explicitly; `ensemble
   holds --all` is the machine-wide view across every scope, the shared
   scope included. Each listing carries id, scope, verdicts, decision path,
-  and content; `--json` emits the full records plus what was retired. Open
-  holds also appear in the run's live status snapshot while it waits.
+  content, and any rejection feedback a bounced answer left behind; `--json`
+  emits the full records plus what was retired. Open holds also appear in the
+  run's live status snapshot while it waits.
 - **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
   rejects the awaiting `hold()` with `HoldTimeoutError` (one clean line at
   the CLI; catch it to treat expiry as an outcome).
 - **Observability:** raise, answer, rejected answer, timeout, and
   retirement each emit a runtime event and land in the archive manifest's
   `hold_events` list, so a consumer holding only the archive can
-  reconstruct what the run waited on. Settled and abandoned holds remove
-  their files, and a hold whose raiser is provably dead — judged from the
-  liveness evidence the record carries, never guessed — is retired by the
+  reconstruct what the run waited on, including a rejected answer's
+  submitted verdict or why none was recoverable. Settled and abandoned holds
+  remove their files, and a hold whose raiser is provably dead — judged from
+  the liveness evidence the record carries, never guessed — is retired by the
   enumeration or sweep that observes it, so the listing only ever shows
   answerable holds.
 

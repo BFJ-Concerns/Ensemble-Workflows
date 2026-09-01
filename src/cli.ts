@@ -224,7 +224,22 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
-      stdout.write(`  answer:   write {"nonce":"${record.nonce}","verdict":"…"} to ${record.decision_path}\n`);
+      // A listed hold is answerable by construction: the enumeration retires
+      // any whose raiser it can prove dead. The template spells a real
+      // verdict so the decider copies a valid answer rather than the
+      // placeholder.
+      const [firstVerdict, ...otherVerdicts] = record.verdicts;
+      stdout.write(
+        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}` +
+          `${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`
+      );
+      if (record.answer_rejection !== undefined) {
+        const attempted =
+          record.answer_rejection.attempted_verdict === null
+            ? record.answer_rejection.attempted_verdict_state
+            : JSON.stringify(record.answer_rejection.attempted_verdict);
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})\n`);
+      }
       for (const line of record.content.split("\n")) {
         stdout.write(`  | ${line}\n`);
       }

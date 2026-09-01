@@ -54,6 +54,56 @@ test("the run id and the archive directory carry one identifier, verbatim", asyn
   );
 });
 
+test("a rejected hold event preserves its submitted verdict, or explicitly says why it is unavailable", async () => {
+  const cwd = await gitRepo("ensemble-record-hold-rejection-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-hold-rejection-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-hold-rejection",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+
+  await writer.recordHoldEvent({
+    method: "hold/answerRejected",
+    params: { holdId: "hold-1", reason: "invalid-verdict", attemptedVerdict: "later", attemptedVerdictState: "submitted" },
+    receivedAt: 0
+  });
+  await writer.recordHoldEvent({
+    method: "hold/answerRejected",
+    params: { holdId: "hold-1", reason: "malformed", attemptedVerdict: null, attemptedVerdictState: "unparseable" },
+    receivedAt: 1
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    hold_events: Array<Record<string, unknown>>;
+  };
+  assert.deepEqual(manifest.hold_events, [
+    {
+      hold_id: "hold-1",
+      event: "answer-rejected",
+      verdict: null,
+      reason: "invalid-verdict",
+      attempted_verdict: "later",
+      attempted_verdict_state: "submitted",
+      at: new Date(0).toISOString()
+    },
+    {
+      hold_id: "hold-1",
+      event: "answer-rejected",
+      verdict: null,
+      reason: "malformed",
+      attempted_verdict: null,
+      attempted_verdict_state: "unparseable",
+      at: new Date(1).toISOString()
+    }
+  ]);
+});
+
 test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
   const cwd = await gitRepo("ensemble-record-effective-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));

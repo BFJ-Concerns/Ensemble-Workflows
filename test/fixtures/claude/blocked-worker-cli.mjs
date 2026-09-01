@@ -84,7 +84,7 @@ async function waitForDispatchGate() {
   if (gatePath === undefined || gatePath.length === 0) {
     return;
   }
-  for (;;) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       await readFile(gatePath, "utf8");
       return;
@@ -92,6 +92,7 @@ async function waitForDispatchGate() {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
   }
+  throw new Error("fake claude dispatch gate was not released");
 }
 
 async function dispatch() {

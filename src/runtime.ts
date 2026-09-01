@@ -148,6 +148,14 @@ interface WorkerSessionState {
   id: number;
   options: WorkerSessionOptions;
   engine: EngineAdapter;
+  /**
+   * The served identity learned when this held session first reaches its
+   * engine. Codex keeps one thread across turns, so later records inherit
+   * this observed answer rather than pretending that a follow-up turn has
+   * not resolved its already-created worker.
+   */
+  resolvedModel: string | null;
+  resolvedEffort: string | null;
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
   stalenessThresholdMs: number;
   markStaleness: boolean;
@@ -660,6 +668,8 @@ export class EnsembleRuntime {
       id: this.#sessionCounter,
       options: sessionOptions,
       engine,
+      resolvedModel: null,
+      resolvedEffort: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its configured (injected) cache TTL, Codex's the measured coin-flip
@@ -743,6 +753,12 @@ export class EnsembleRuntime {
         ...(options.strip !== undefined ? { strip: options.strip } : {})
       };
       const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      // The engine exposes the served model and effort when its held worker
+      // first starts. Every later turn is still on that worker, so carry the
+      // observed session identity into its dispatch-time record rather than
+      // making archive consumers infer it from turn one.
+      agentRecord.resolvedModel = state.resolvedModel;
+      agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
       this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
       try {
@@ -757,7 +773,7 @@ export class EnsembleRuntime {
           // its settlement — never the session's idle life: an idle held
           // worker costs the machine nothing, and charging it a slot would
           // let loitering fleets starve fresh dispatches.
-          return await this.#admission.admit(engine.name, agentId, () =>
+          const output = await this.#admission.admit(engine.name, agentId, () =>
             engine.schedule(async () => {
               started = true;
               return this.#executeAgent(
@@ -770,7 +786,17 @@ export class EnsembleRuntime {
               );
             })
           );
+          // Record only what the engine actually reported. A requested pin
+          // is not a served-model claim, and a missing response stays null.
+          state.resolvedModel ??= agentRecord.resolvedModel;
+          state.resolvedEffort ??= agentRecord.resolvedEffort;
+          return output;
         } catch (error) {
+          // A failed first turn can still have reached a live session and
+          // reported its served identity. Preserve that evidence for the
+          // next turn just as on the successful path.
+          state.resolvedModel ??= agentRecord.resolvedModel;
+          state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (!started) {
             this.progress.settleAgent(agentId, "failed");
             // Same pre-start honesty as #runAdmitted's: this session turn

@@ -760,6 +760,13 @@ export class RunRecordWriter {
     for (const attempt of record.attempts) {
       let index = 0;
       for (const transcript of attempt.transcripts) {
+        // A reference is an assertion that a transcript exists. Codex held
+        // sessions can honestly have no new transcript on a follow-up turn;
+        // preserve that absence through transcripts_unavailable instead of
+        // emitting a 0-byte artefact for consumers to discover later.
+        if (transcript.content.length === 0) {
+          continue;
+        }
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
@@ -992,11 +999,17 @@ export class RunRecordWriter {
 /**
  * Why an agent record carries no transcript, in the same vocabulary shape as
  * `usage.unavailable`: the worker never ran, the runtime ended it before a
- * transcript existed, or its engine produced none for the attempts that ran.
+ * transcript existed, the Codex session client did not retain a follow-up
+ * capture, or its engine produced none for the attempts that ran.
  */
 function transcriptAbsenceReason(
   record: RuntimeAgentRecord
-): "no-attempt-ran" | "worker-interrupted" | "worker-timed-out" | "engine-produced-no-transcript" {
+):
+  | "no-attempt-ran"
+  | "worker-interrupted"
+  | "worker-timed-out"
+  | "session-client-capture-gap"
+  | "engine-produced-no-transcript" {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
@@ -1005,6 +1018,9 @@ function transcriptAbsenceReason(
   }
   if (record.status === "timed-out") {
     return "worker-timed-out";
+  }
+  if (record.engine === "codex" && (record.session?.turn ?? 0) > 1) {
+    return "session-client-capture-gap";
   }
   return "engine-produced-no-transcript";
 }

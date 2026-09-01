@@ -2109,6 +2109,7 @@ test("CLI holds renders real verdict choices and a bounced answer's rejection fe
   assert.match(stdout.text(), /rejected: invalid-verdict \("later"\)/);
   assert.equal(stdout.text().match(/rejected: /g)?.length, 1);
 });
+
 test("an unpinned Claude worker's resolution notice names the served model, like the Codex line", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-claude-resolved-"));
   const engine = new FixedResponseEngine("claude", "done", { model: "claude-opus-5" });

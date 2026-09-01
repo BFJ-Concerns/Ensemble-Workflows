@@ -501,7 +501,6 @@ function rejectedAnswer(
   };
 }
 
-
 const RAISE_HOLD_OPTION_KEYS = ["content", "verdicts", "timeoutMs"];
 const RAISE_HOLD_OPTION_KEY_SET = new Set<string>(RAISE_HOLD_OPTION_KEYS);
 

@@ -997,6 +997,7 @@ test("built CLI propagates malformed schemas from both combinators before openin
 
 test("built CLI keeps the complete engine map and gives mapped flags their own invalid-engine diagnostic", async () => {
   const fixture = await createProcessFixture("engine-map-cli-diagnostics");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
 
   try {
     await writeFile(
@@ -1010,17 +1011,35 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
       `
     );
 
-    const accepted = await fixture.runArgs([
-      "--budget=codex=1",
-      "--budget=claude=1",
-      "--budget=opencode=1",
-      "--concurrency=codex=1",
-      "--concurrency=claude=1",
-      "--concurrency=opencode=1",
-      fixture.script
-    ]);
+    const accepted = await fixture.runArgsWithEnv(
+      [
+        "--budget=codex=11",
+        "--budget=claude=22",
+        "--budget=opencode=33",
+        "--concurrency=codex=2",
+        "--concurrency=claude=3",
+        "--concurrency=opencode=4",
+        fixture.script
+      ],
+      { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore }
+    );
     assert.equal(accepted.code, 0, accepted.stderr);
     assert.equal(accepted.stdout, '"no worker needed"\n');
+    const manifestPath = await findOnlyFile(recordStore, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      budget_ceilings: Record<string, { value: number | null; layer: string }>;
+      concurrency: { engines: Record<string, { value: number; layer: string }> };
+    };
+    assert.deepEqual(manifest.budget_ceilings, {
+      codex: { value: 11, layer: "flag" },
+      claude: { value: 22, layer: "flag" },
+      opencode: { value: 33, layer: "flag" }
+    });
+    assert.deepEqual(manifest.concurrency.engines, {
+      codex: { value: 2, layer: "flag" },
+      claude: { value: 3, layer: "flag" },
+      opencode: { value: 4, layer: "flag" }
+    });
 
     for (const flag of ["--budget", "--concurrency"]) {
       const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);

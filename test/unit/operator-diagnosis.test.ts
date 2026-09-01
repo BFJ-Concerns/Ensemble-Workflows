@@ -190,7 +190,7 @@ test("a Codex schema rejection leads with the remedy and carries the diagnostic 
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
-test("operator diagnostics strip 7-bit terminal controls but preserve an 8-bit C1 byte as evidence", () => {
+test("operator diagnostics strip 7-bit terminal controls while UTF-8 renders a C1 code point as text", () => {
   const rendered = presentTerminalError(
     new AppServerExitedError("before \u001b[31mred\u001b[0m after \u009b31mC1"),
     noContext
@@ -199,6 +199,9 @@ test("operator diagnostics strip 7-bit terminal controls but preserve an 8-bit C
   // eslint-disable-next-line no-control-regex -- the assertion proves the 7-bit escape bytes are absent.
   assert.doesNotMatch(rendered, /\u001b\[/);
   assert.match(rendered, /before red after \u009b31mC1/);
+  // U+009B is encoded as UTF-8 text, not emitted as a lone 0x9B C1 byte for
+  // a UTF-8 terminal to interpret as CSI.
+  assert.deepEqual([...Buffer.from("\u009b", "utf8")], [0xc2, 0x9b]);
 });
 
 test("a teardown-time engine shutdown is attributed to the run ending, not the author's call", () => {

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { watch } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -218,30 +217,39 @@ test("a rejected hold remains waiting and reaches the runtime archive", async ()
   });
 });
 
-test("a concurrent hold-file reader observes rejection feedback as a replacement, never an in-place rewrite", async () => {
+test("a concurrent hold-file reader sees only complete records through rejection publication", async () => {
   await withHoldsDir(async (dir) => {
     const events: RuntimeEvent[] = [];
     const holds = manager(dir, events);
-    const decision = holds.raise({ content: "publish safely?", verdicts: ["yes"] });
-    const record = await publishedHold(dir);
-    const holdPath = path.join(dir, holdScopeSegment(null), `${record.hold_id}.json`);
-    const replacement = nextWatchEvent(path.dirname(holdPath), path.basename(holdPath));
+    const decision = holds.raise({ content: "x".repeat(1_048_576), verdicts: ["yes"] });
+    try {
+      const record = await publishedHold(dir);
+      const holdPath = path.join(dir, holdScopeSegment(null), `${record.hold_id}.json`);
+      let readerStarted: (() => void) | undefined;
+      const readerHasOpenedRecord = new Promise<void>((resolve) => {
+        readerStarted = resolve;
+      });
+      const reader = readCompleteHoldAcrossPublication(holdPath, "invalid-verdict", () => readerStarted?.());
+      await Promise.race([readerHasOpenedRecord, reader]);
 
-    // This answer is parseable, so the decision poller consumes it on its
-    // first read; the test neither depends on nor defeats its malformed-read
-    // grace. The watcher is the concurrent file consumer: atomic publication
-    // replaces its existing record, whereas an in-place rewrite reports change.
-    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
-    const [event] = await Promise.all([replacement, waitForEvent(events, "hold/answerRejected")]);
-    assert.equal(event, "rename");
-    await assertRepublishedRejection(dir, {
-      reason: "invalid-verdict",
-      attempted_verdict: "no",
-      attempted_verdict_state: "submitted"
-    });
+      // This answer is parseable, so the decision poller consumes it on its
+      // first read; the reader loops over the published record until it sees
+      // the resulting rejection. It must encounter either complete version,
+      // never an absent path or a truncated JSON document.
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
+      await Promise.all([reader, waitForEvent(events, "hold/answerRejected")]);
+      await assertRepublishedRejection(dir, {
+        reason: "invalid-verdict",
+        attempted_verdict: "no",
+        attempted_verdict_state: "submitted"
+      });
 
-    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
-    assert.deepEqual(await decision, { verdict: "yes", note: null });
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+      assert.deepEqual(await decision, { verdict: "yes", note: null });
+    } finally {
+      holds.close();
+      await decision.catch(() => undefined);
+    }
   });
 });
 
@@ -545,17 +553,34 @@ async function waitForArchiveHoldEvent(archiveDir: string, event: string): Promi
   throw new Error(`archive hold event ${event} never appeared`);
 }
 
-function nextWatchEvent(directory: string, filename: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const watcher = watch(directory, (event, changed) => {
-      if (changed === filename) {
-        watcher.close();
-        resolve(event);
-      }
-    });
-    watcher.once("error", (error) => {
-      watcher.close();
-      reject(error);
-    });
-  });
+async function readCompleteHoldAcrossPublication(
+  holdPath: string,
+  expectedReason: string,
+  onFirstRecord: () => void
+): Promise<void> {
+  let firstRecord = true;
+  for (let attempt = 0; attempt < 20_000; attempt += 1) {
+    let raw: string;
+    try {
+      raw = await readFile(holdPath, "utf8");
+    } catch (error) {
+      throw new Error(`concurrent reader saw no hold record: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let record: HoldFileRecord;
+    try {
+      record = JSON.parse(raw) as HoldFileRecord;
+    } catch (error) {
+      throw new Error(`concurrent reader saw a partial hold record: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    assert.equal(record.kind, "ensemble_hold");
+    if (firstRecord) {
+      firstRecord = false;
+      onFirstRecord();
+    }
+    if (record.answer_rejection?.reason === expectedReason) {
+      return;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("concurrent reader never observed the republished hold record");
 }

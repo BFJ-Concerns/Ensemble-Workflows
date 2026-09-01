@@ -53,6 +53,30 @@ async function containedArchivePath(relativePath) {
 }
 
 const lost = new Set((manifest.integrity.files_lost ?? []).map((entry) => entry.path));
+
+// The agent records are the archive's load-bearing content, and the files
+// table is where the manifest names the ones this run wrote. Verifying only
+// the bytes the table points at answers "are these bytes unedited" while
+// leaving "is the run actually here" unasked — so an archive whose agent
+// records have been removed reads as sound, either as a bare read failure
+// that names no verification rule or, once the removal is declared in
+// `files_lost`, as a clean pass. A recorded loss excuses an ordinary file
+// from the byte walk; it cannot excuse an agent record, because a run whose
+// agents are gone is not a run this archive can still attest. Judged before
+// the byte walk so the failure names the missing record rather than
+// surfacing as whichever read happens to fault first.
+const agentRecordPaths = manifest.files
+  .map((file) => file.path)
+  .filter((filePath) => /^agents\/[^/]+\/agent\.json$/.test(filePath));
+for (const recordPath of agentRecordPaths) {
+  assert.ok(
+    !lost.has(recordPath),
+    `agent record ${recordPath} is named by the manifest but recorded lost; an archive cannot attest a run whose agent records are missing`
+  );
+  const present = await lstat(await containedArchivePath(recordPath)).catch(() => null);
+  assert.ok(present !== null, `agent record ${recordPath} is named by the manifest but missing from the archive`);
+}
+
 for (const file of manifest.files) {
   if (lost.has(file.path)) {
     continue;
@@ -91,6 +115,7 @@ const liveness = await judgeArchivedRunLiveness(manifest);
 process.stdout.write(`${JSON.stringify({
   status: manifest.status,
   manifestVerified,
+  agentRecordsVerified: agentRecordPaths.length,
   filesLost: manifest.integrity.files_lost ?? [],
   sentinelPresent: sentinel !== null,
   sentinelVerified,

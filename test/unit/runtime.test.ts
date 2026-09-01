@@ -1218,6 +1218,53 @@ test("invalid prompts and missing per-call cwd reject before a Codex thread open
   assert.equal(transport.turns.length, 0);
 });
 
+test("a cwd that refuses to describe itself is rejected by name, not by its own throw", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({ transport, defaultMaxAttempts: 1 });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // Every trap throws a plain object, so the value refuses both routes the
+  // rejection message could take to describe it (`JSON.stringify` enumerates
+  // its keys; `String` asks it for a primitive). Untyped, `cwd` reaches
+  // `path.resolve` inside the placement check and this bare object comes back
+  // out of agent() in place of any rejection — undescribable to the operator
+  // and to the archive's terminal error alike.
+  const opaque = { reason: "not an Error and describes nothing" };
+  const undescribableCwd = new Proxy(
+    {},
+    {
+      ownKeys() {
+        throw opaque;
+      },
+      getOwnPropertyDescriptor() {
+        throw opaque;
+      },
+      get() {
+        throw opaque;
+      }
+    }
+  );
+
+  await assert.rejects(
+    () => unsafeAgent("never starts", { engine: "codex", cwd: undescribableCwd }),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentOptionRejectedError);
+      assert.match(error.message, /option "cwd"/);
+      assert.match(error.message, /expected a string path/);
+      // The message had to be built over a value that throws from both
+      // description routes; a formatter that let that throw escape would
+      // destroy the very rejection it was describing.
+      assert.match(error.message, /cannot be described/);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
 test("an invalid isolation value fails before a Codex thread opens", async () => {
   const transport = new FakeTransport([turn("unused")]);
   const runtime = new EnsembleRuntime({

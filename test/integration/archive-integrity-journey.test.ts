@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -225,6 +225,66 @@ test("the reference consumer refuses path escapes and symlinked entries", async 
     const symlinkReading = await runNode([consumerPath, archiveDir]);
     assert.notEqual(symlinkReading.code, 0);
     assert.match(symlinkReading.stderr, /is a symlink/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an archive whose agent records are gone fails verification, named", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archive-agents-"));
+  const store = path.join(directory, "records");
+  const workflowPath = path.join(directory, "workflow.js");
+  // A directory outside any repository, so `isolation: "worktree"` is refused
+  // at placement — after the dispatch-time record is written and before any
+  // engine is contacted. The archive that leaves behind is the product's own
+  // agent record, written by the real writer, not a fixture standing in for
+  // one.
+  const unplaceable = path.join(directory, "not-a-repository");
+
+  try {
+    await mkdir(unplaceable);
+    await writeFile(
+      workflowPath,
+      `export const meta = { name: "agent-records" };\n` +
+        `return await agent("unreachable", ${JSON.stringify({ engine: "codex", isolation: "worktree", cwd: unplaceable, maxAttempts: 1 })});\n`
+    );
+    const run = await runNode([bundledCliPath, workflowPath], { ENSEMBLE_RUN_RECORD_DIR: store });
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /requires cwd to be inside a git repository/);
+
+    const archiveDir = path.dirname(await findOnlyFile(store, "manifest.json"));
+    const recordPath = "agents/000001/agent.json";
+    await access(path.join(archiveDir, recordPath));
+
+    const sound = await readArchiveIntegrity(archiveDir);
+    assert.equal(sound.manifestVerified, true);
+    assert.equal(sound.agentRecordsVerified, 1);
+
+    // Removed outright: the manifest still names the record, so verification
+    // must fail on the record's absence rather than on whichever read faults
+    // first — the reading a consumer can act on.
+    const manifestPath = path.join(archiveDir, "manifest.json");
+    const pristine = await readFile(manifestPath, "utf8");
+    await rm(path.join(archiveDir, "agents", "000001"), { recursive: true });
+    const removed = await runNode([consumerPath, archiveDir]);
+    assert.notEqual(removed.code, 0);
+    assert.match(removed.stderr, new RegExp(`agent record ${recordPath} is named by the manifest but missing`));
+
+    // Declared lost, with the self-digest recomputed over the declaration:
+    // every other integrity signal reads sound, and a `files_lost` entry
+    // excuses an ordinary file from the byte walk. It cannot excuse an agent
+    // record — that is the hole this check closes, and the one route by which
+    // an archive missing its load-bearing content used to verify clean.
+    const laundered = JSON.parse(pristine) as {
+      files: Array<{ path: string }>;
+      integrity: { manifest_sha256: string | null; files_lost: Array<{ path: string; reason: string }> };
+    };
+    laundered.integrity.files_lost = [{ path: recordPath, reason: "missing" }];
+    laundered.integrity.manifest_sha256 = tamperedDigest(laundered);
+    await writeFile(manifestPath, JSON.stringify(sortJson(laundered), null, 2), "utf8");
+    const excused = await runNode([consumerPath, archiveDir]);
+    assert.notEqual(excused.code, 0);
+    assert.match(excused.stderr, new RegExp(`agent record ${recordPath} is named by the manifest but recorded lost`));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

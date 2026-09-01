@@ -14442,7 +14442,11 @@ function formatAgentOptionValue(value) {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
-    return String(value);
+    try {
+      return String(value);
+    } catch {
+      return "[a value that cannot be described]";
+    }
   }
 }
 function describeError(error) {
@@ -15669,6 +15673,9 @@ function assertValidAgentOptions(options) {
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
+  if (values.cwd !== void 0 && typeof values.cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  }
   if (values.identity !== void 0 && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }

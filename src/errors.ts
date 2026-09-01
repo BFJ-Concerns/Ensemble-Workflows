@@ -544,7 +544,17 @@ function formatAgentOptionValue(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
-    return String(value);
+    // Both routes can be refused by the value itself: `JSON.stringify` runs
+    // the object's own key enumeration and `toJSON`, and `String` runs its
+    // `Symbol.toPrimitive`/`toString`. A value that throws from either would
+    // otherwise replace this rejection with its own opaque throw — the
+    // rejection message exists to say why the option was refused, so it
+    // reports the value as undescribable rather than failing to be written.
+    try {
+      return String(value);
+    } catch {
+      return "[a value that cannot be described]";
+    }
   }
 }
 

@@ -84,6 +84,18 @@ export function assertValidAgentOptions(options: object): void {
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
+  // Judged here, with the other option values, because everything downstream
+  // reads `cwd` rather than checking it: `resolveAgentCwd` hands it straight
+  // to `path.resolve`, which touches the value to report it. A non-string —
+  // an object with a throwing getter, a Proxy whose traps throw — therefore
+  // raises whatever it likes from inside the placement check, escaping the
+  // named-rejection discipline every other bad option value follows and
+  // taking the agent record with it: the throw lands before the call is
+  // queued, so the run archives with no `agents/` directory at all and an
+  // operator-facing error that describes nothing.
+  if (values.cwd !== undefined && typeof values.cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  }
   if (values.identity !== undefined && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }

@@ -636,7 +636,7 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
 async function withClaudeRuntime(
   turns: ScriptedClaudeTurn[],
   body: (runtime: EnsembleRuntime, controlPlane: SessionFakeControlPlane) => Promise<void>,
-  options: { tmux?: boolean } = {}
+  options: { tmux?: boolean; now?: () => number; staleAfterMs?: number } = {}
 ): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-worker-session-"));
   try {
@@ -650,7 +650,9 @@ async function withClaudeRuntime(
     const runtime = new EnsembleRuntime({
       engines: new EngineRegistry([adapter]),
       defaultTurnTimeoutMs: 5_000,
-      defaultMaxAttempts: 2
+      defaultMaxAttempts: 2,
+      ...(options.now !== undefined ? { now: options.now } : {}),
+      ...(options.staleAfterMs !== undefined ? { claudeSessionStaleAfterMs: options.staleAfterMs } : {})
     });
     await body(runtime, controlPlane);
   } finally {
@@ -689,6 +691,39 @@ test("a claude session is dispatched with the 1-hour cache TTL; a one-shot worke
     assert.equal(controlPlane.dispatched[1]?.cacheTtl, undefined);
     await runtime.close();
   });
+});
+
+test("a Claude session marks elapsed idle time without preventing its next send", async () => {
+  let clock = 1_000_000;
+  await withClaudeRuntime(
+    [{ text: "marked first turn" }, { text: "disabled first turn" }, { text: "marked follow-up" }],
+    async (runtime, controlPlane) => {
+      const marked = runtime.createWorkerSession({ engine: "claude" });
+      const disabled = runtime.createWorkerSession({ engine: "claude", stalenessMark: false });
+
+      await marked.send("remember this");
+      await disabled.send("do not mark this");
+      clock += 999;
+      // A genuine prior send is still below the configured cliff.
+      assert.equal(marked.stale, false);
+      assert.equal(marked.idleMs, 999);
+      // Disabling the advisory mark survives the same elapsed gap.
+      assert.equal(disabled.stale, false);
+      clock += 1;
+      assert.equal(marked.stale, true);
+      assert.equal(marked.idleMs, 1_000);
+      assert.equal(disabled.stale, false);
+
+      // A stale mark reports an advisory state only: the follow-up still
+      // reaches the existing Claude session through its valve.
+      assert.equal(await marked.send("continue after idle"), "marked follow-up");
+      assert.equal(controlPlane.dispatchCount, 2);
+      assert.equal(controlPlane.steered.length, 1);
+      assert.equal(marked.stale, false);
+      await runtime.close();
+    },
+    { now: () => clock, staleAfterMs: 1_000 }
+  );
 });
 
 test("without the valve a follow-up fails loud — the session never silently redispatches", async () => {

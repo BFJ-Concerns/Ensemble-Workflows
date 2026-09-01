@@ -1354,6 +1354,59 @@ test("a cwd is read once, so it cannot answer differently after the call is admi
   assert.equal(records.at(-1)?.status, "complete");
 });
 
+test("an inherited cwd getter that first returns undefined cannot throw after its snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let reads = 0;
+  const options = Object.create({
+    get cwd() {
+      reads += 1;
+      if (reads > 1) throw new Error("second inherited cwd read escaped the snapshot");
+      return undefined;
+    }
+  }) as Record<string, unknown>;
+  options.engine = "codex";
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+});
+
+test("an inherited cwd getter that later returns a path cannot alter its undefined snapshot", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let reads = 0;
+  const options = Object.create({
+    get cwd() {
+      reads += 1;
+      return reads === 1 ? undefined : ".";
+    }
+  }) as Record<string, unknown>;
+  options.engine = "codex";
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+});
+
 test("a Proxy cannot use cwd membership to return a live options object after its snapshot", async () => {
   const transport = new FakeTransport([turn("done")]);
   const runtime = new EnsembleRuntime({

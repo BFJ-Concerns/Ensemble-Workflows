@@ -1475,7 +1475,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
   for (const [error, expected] of [
-    [new TurnTimeoutError("turn timed out"), "timed-out"],
+    [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out"],
     [new EngineShutdownError("codex"), "interrupted"]
   ] as const) {
     const records: RuntimeAgentRecord[] = [];

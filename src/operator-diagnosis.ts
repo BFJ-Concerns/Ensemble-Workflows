@@ -3,6 +3,8 @@ import {
   EngineShutdownError,
   HoldTimeoutError,
   PreSpawnAuthorError,
+  TurnTimeoutError,
+  agentIdentityOf,
   appServerDiagnosticOf,
   workerExitStatusOf
 } from "./errors.js";
@@ -137,6 +139,41 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
       lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
+    }
+    return lines;
+  }
+  if (error instanceof TurnTimeoutError) {
+    // One class, two deadlines with different levers, discriminated from the
+    // evidence the error carries rather than one line that fits only half of
+    // it: the turn deadline is the author's own `timeoutMs` on this call, so
+    // naming it is actionable; the request deadline is the transport's wait
+    // for an app-server reply, which no `agent()` option lengthens, so the
+    // same advice there would send the operator to a knob that cannot move.
+    // (The handshake's request timeout never arrives here — the transport
+    // rethrows that one as AppServerStartupTimeoutError, whose own remedy is
+    // starting the server, not waiting longer.)
+    const deadline = error.deadline;
+    const lines =
+      deadline.kind === "turn"
+        ? [
+            `Worker exceeded its per-agent turn deadline of ${deadline.timeoutMs}ms — the worker was stopped, not the run: raise or remove timeoutMs on this agent() call, or narrow the work it asks for`
+          ]
+        : [
+            `Codex app-server did not answer ${bounded(deadline.method)} within the transport's ${deadline.timeoutMs}ms request deadline — the server stopped responding; this is not the agent's timeoutMs and raising it will not help`,
+            "Check that the codex binary is healthy and the machine is not saturated, then re-run."
+          ];
+    // The identity an `identity: true` call declared is the only handle that
+    // points back at the author's own call site. Where none was declared,
+    // the harness knows no label, and the line says less rather than
+    // inventing one.
+    const identity = agentIdentityOf(error);
+    const label = identity?.label;
+    if (label !== null && label !== undefined) {
+      const phase = identity?.phase;
+      const phaseSuffix = phase === null || phase === undefined ? "" : ` (phase ${bounded(phase)})`;
+      lines.push(`call: ${bounded(label)}${phaseSuffix}`);
+    } else if (deadline.kind === "turn") {
+      lines.push(`thread: ${bounded(deadline.threadId)}`);
     }
     return lines;
   }

@@ -523,7 +523,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
     return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`));
+        reject(
+          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
+            kind: "request",
+            timeoutMs,
+            method
+          })
+        );
       }, timeoutMs);
 
       this.#pending.set(id, { method, resolve, reject, timeout });
@@ -1139,7 +1145,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
               void this.#rejectTurn(
                 threadId,
                 state,
-                new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
+                new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
+                  kind: "turn",
+                  timeoutMs,
+                  threadId
+                })
               );
             }, timeoutMs)
     };

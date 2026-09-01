@@ -14370,8 +14370,10 @@ var WorktreePlacementRejectedError = class extends AgentOptionRejectedError {
   }
 };
 var TurnTimeoutError = class extends EnsembleError {
-  constructor(message) {
+  deadline;
+  constructor(message, deadline) {
     super(message);
+    this.deadline = deadline;
   }
 };
 var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
@@ -16336,6 +16338,25 @@ function diagnose(error, context) {
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
       lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
+    }
+    return lines;
+  }
+  if (error instanceof TurnTimeoutError) {
+    const deadline = error.deadline;
+    const lines = deadline.kind === "turn" ? [
+      `Worker exceeded its per-agent turn deadline of ${deadline.timeoutMs}ms \u2014 the worker was stopped, not the run: raise or remove timeoutMs on this agent() call, or narrow the work it asks for`
+    ] : [
+      `Codex app-server did not answer ${bounded(deadline.method)} within the transport's ${deadline.timeoutMs}ms request deadline \u2014 the server stopped responding; this is not the agent's timeoutMs and raising it will not help`,
+      "Check that the codex binary is healthy and the machine is not saturated, then re-run."
+    ];
+    const identity = agentIdentityOf(error);
+    const label = identity?.label;
+    if (label !== null && label !== void 0) {
+      const phase = identity?.phase;
+      const phaseSuffix = phase === null || phase === void 0 ? "" : ` (phase ${bounded(phase)})`;
+      lines.push(`call: ${bounded(label)}${phaseSuffix}`);
+    } else if (deadline.kind === "turn") {
+      lines.push(`thread: ${bounded(deadline.threadId)}`);
     }
     return lines;
   }
@@ -18453,7 +18474,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`));
+        reject(
+          new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`, {
+            kind: "request",
+            timeoutMs,
+            method
+          })
+        );
       }, timeoutMs);
       this.#pending.set(id, { method, resolve, reject, timeout });
       this.#writeLine(payload).catch((error) => {
@@ -18955,7 +18982,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         void this.#rejectTurn(
           threadId,
           state,
-          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs,
+            threadId
+          })
         );
       }, timeoutMs)
     };

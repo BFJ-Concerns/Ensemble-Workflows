@@ -7,6 +7,8 @@ import {
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
   InvalidAgentSchemaError,
+  TurnTimeoutError,
+  attachAgentIdentity,
   attachAppServerDiagnostic,
   attachWorkerExitStatus
 } from "../../src/errors.js";
@@ -193,6 +195,83 @@ test("a teardown-time engine shutdown is attributed to the run ending, not the a
   assert.ok(line !== null);
   assert.match(line, /interrupted by the run ending, not by its own failure/);
   assert.equal(line.includes("\n"), false);
+});
+
+test("a per-agent turn deadline names the author's own timeoutMs as the lever", () => {
+  const rendered = presentTerminalError(
+    new TurnTimeoutError("turn on 01a05c53 timed out after 30001ms", {
+      kind: "turn",
+      timeoutMs: 30_001,
+      threadId: "01a05c53"
+    }),
+    noContext
+  );
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  assert.match(lines[0] ?? "", /^Worker exceeded its per-agent turn deadline of 30001ms/);
+  // The remedy is the option the author actually holds, not a restatement.
+  assert.match(lines[0] ?? "", /timeoutMs on this agent\(\) call/);
+  // No identity was declared, so the thread is the only handle there is.
+  assert.match(lines[1] ?? "", /^\s+thread: 01a05c53$/);
+  // On the pre-fix tree this class fell through to the caller's stack.
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
+  assert.doesNotMatch(rendered, /TurnTimeoutError/);
+});
+
+test("a declared identity replaces the thread handle with the author's own call label", () => {
+  const rendered = presentTerminalError(
+    attachAgentIdentity(
+      new TurnTimeoutError("turn on 01a05c53 timed out after 5000ms", {
+        kind: "turn",
+        timeoutMs: 5_000,
+        threadId: "01a05c53"
+      }),
+      { label: "planner", phase: "fanout" }
+    ),
+    noContext
+  );
+  assert.ok(rendered !== null);
+  assert.match(rendered, /^\s+call: planner \(phase fanout\)$/m);
+  assert.doesNotMatch(rendered, /thread: /);
+});
+
+test("a transport request deadline sends the operator to the server, not to timeoutMs", () => {
+  const rendered = presentTerminalError(
+    new TurnTimeoutError("thread/start request 4 timed out after 30000ms", {
+      kind: "request",
+      timeoutMs: 30_000,
+      method: "thread/start"
+    }),
+    noContext
+  );
+  assert.ok(rendered !== null);
+  const lines = rendered.split("\n");
+  assert.match(lines[0] ?? "", /^Codex app-server did not answer thread\/start within/);
+  // The whole point of discriminating the two causes: the turn branch's
+  // remedy is wrong here, and the line must say so rather than repeat it.
+  assert.match(lines[0] ?? "", /not the agent's timeoutMs and raising it will not help/);
+  assert.doesNotMatch(lines[0] ?? "", /raise or remove timeoutMs/);
+  assert.match(lines[1] ?? "", /codex binary is healthy/);
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
+});
+
+test("an author's call label cannot smuggle terminal control onto the diagnosis", () => {
+  const rendered = presentTerminalError(
+    attachAgentIdentity(
+      new TurnTimeoutError("turn on t1 timed out after 10ms", {
+        kind: "turn",
+        timeoutMs: 10,
+        threadId: "t1"
+      }),
+      { label: "plan\x1b]0;pwned\x07ner", phase: null }
+    ),
+    noContext
+  );
+  assert.ok(rendered !== null);
+  // eslint-disable-next-line no-control-regex -- the control bytes are the subject of the assertion
+  assert.equal(/[\x00-\x08\x0b-\x1f]/.test(rendered), false, "no control bytes in the rendered surface");
+  assert.doesNotMatch(rendered, /pwned/);
+  assert.match(rendered, /call: planner/);
 });
 
 test("worker-controlled terminal control sequences never reach operator stderr", () => {

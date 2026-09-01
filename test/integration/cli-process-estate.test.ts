@@ -1610,7 +1610,10 @@ test("built CLI records observed request and notification diagnostics, but not a
       name: "timeout",
       scriptOptions: ", timeoutMs: 50",
       env: { ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1" },
-      stderr: /timed out after 50ms/,
+      // The raw message no longer reaches stderr: this class is diagnosed,
+      // so the deadline arrives as the operator's lever. The record's
+      // diagnostic is still absent — nothing observed a cause.
+      stderr: /Worker exceeded its per-agent turn deadline of 50ms/,
       diagnostic: null
     }
   ] as const;
@@ -1758,7 +1761,12 @@ test("built CLI interrupts a turn that times out before any turn notification", 
     );
 
     assert.equal(result.code, 1, `turn timeout did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /TurnTimeoutError/);
+    // The shipped bundle renders the deadline through the diagnosis seam:
+    // the operator gets the lever they hold, not the class name and the
+    // timer frames behind it.
+    assert.match(result.stderr, /Worker exceeded its per-agent turn deadline of 30001ms/);
+    assert.match(result.stderr, /timeoutMs on this agent\(\) call/);
+    assert.doesNotMatch(result.stderr, /TurnTimeoutError/);
     const messages = await fixture.messages();
     assert.deepEqual(
       messages.map((message) => message.method),
@@ -1848,7 +1856,8 @@ test("built bundle times out an output-silent worker while its tool remains acti
     );
 
     assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
-    assert.match(result.stderr, /TurnTimeoutError/);
+    assert.match(result.stderr, /Worker exceeded its per-agent turn deadline of 3000ms/);
+    assert.doesNotMatch(result.stderr, /TurnTimeoutError/);
     const messages = await fixture.messages();
     assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
     assert.equal(messages.at(-1)?.method, "turn/interrupt");

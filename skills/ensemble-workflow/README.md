@@ -502,7 +502,10 @@ pipelines used to hand-roll per script.
   feedback to correct the next write; a vanished hold either settled or was
   retired after its raiser was conclusively found dead. Where that
   distinction matters, read the run's archive or live snapshot rather than
-  treating disappearance alone as acceptance. An invalid answer never reaches
+  treating disappearance alone as acceptance. Rejection feedback becomes
+  visible only after the poller's next read: an open hold carrying no
+  rejection fields means the answer has not yet been judged — never that it
+  was judged and accepted. An invalid answer never reaches
   the script as a decision.
 - **Enumerating:** two explicit listing contracts. `ensemble holds` shows
   the inherited scope's open holds (machine-wide when no scope is set);

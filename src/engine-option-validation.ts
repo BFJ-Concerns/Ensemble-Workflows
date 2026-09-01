@@ -64,6 +64,55 @@ const AGENT_OPTION_KEYS = Object.keys({
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 
+/**
+ * The single read of a call's `cwd`, and the shadow that keeps it the only
+ * one. Returns the options the call should work from: the caller's own
+ * object when it carries no `cwd`, otherwise a call-local copy whose `cwd` is
+ * the value read here, as a plain data property.
+ *
+ * `cwd` is unlike the other options in that nothing downstream *checks* it —
+ * the placement check, the dispatch record's `resolvedCwd`, and the placement
+ * that finally opens each hand it to `path.resolve`, which touches the value.
+ * Read live, those are four reads of whatever the caller's object chose to
+ * expose, spanning the moment the record is written: an accessor answering a
+ * string once and throwing on the next read is then judged as one thing and
+ * used as another, and its throw escapes from inside the placement check as
+ * the call's whole outcome — naming no option, and leaving a settled call
+ * with no agent record behind it. Reading once, here, is what makes the
+ * judgement below binding on the value actually used.
+ *
+ * Two ways the read defeats a caller-supplied value, both ending as pre-spawn
+ * author errors like any other rejected option: the read itself throws — a
+ * getter or Proxy trap — and becomes a rejection naming the option it belongs
+ * to; or the value reads back as a non-string, which would otherwise reach
+ * `path.resolve` and raise its own type error from a place that names
+ * nothing.
+ */
+export function snapshotAgentCwd<T extends object>(options: T): T {
+  let cwd: unknown;
+  try {
+    cwd = (options as { cwd?: unknown }).cwd;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+  }
+  if (!("cwd" in options)) {
+    return options;
+  }
+  // Descriptors are copied rather than invoked, so this shadows `cwd` alone:
+  // no other option's accessor runs any earlier, or any more often, than it
+  // does without the copy.
+  const descriptors: Record<PropertyKey, PropertyDescriptor> = Object.getOwnPropertyDescriptors(options);
+  return Object.create(Object.getPrototypeOf(options) as object | null, {
+    ...descriptors,
+    // Defined over the copied descriptor rather than after it: an accessor
+    // declared without `configurable` cannot be redefined on the copy.
+    cwd: { value: cwd, writable: true, enumerable: descriptors.cwd?.enumerable ?? true, configurable: true }
+  }) as T;
+}
+
 export function assertValidAgentOptions(options: object): void {
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
@@ -85,29 +134,6 @@ export function assertValidAgentOptions(options: object): void {
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
-  // Judged here, with the other option values, because everything downstream
-  // reads `cwd` rather than checking it: `resolveAgentCwd` hands it straight
-  // to `path.resolve`, which touches the value to report it. Two ways the
-  // value defeats that, and both end as a named rejection here. The read
-  // itself can throw — a getter or Proxy trap on the options object — in
-  // which case the author's own error escapes from inside the placement
-  // check as the call's whole outcome, describing nothing and naming no
-  // option; the value is read once, here, so that throw is caught where the
-  // option it belongs to is still known. And a value that reads back as a
-  // non-string reaches `path.resolve`, which raises its own type error from
-  // the same place. Both are pre-spawn author errors like any other rejected
-  // option value, and the judgement runs on the single snapshot rather than
-  // re-reading, so a value that answers differently each time cannot be
-  // judged as one thing and used as another.
-  let cwd: unknown;
-  try {
-    cwd = values.cwd;
-  } catch (error) {
-    throw new UnreadableAgentOptionError("cwd", "a string path", error);
-  }
-  if (cwd !== undefined && typeof cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
-  }
   if (values.identity !== undefined && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }

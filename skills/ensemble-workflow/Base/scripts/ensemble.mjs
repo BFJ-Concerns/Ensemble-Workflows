@@ -15663,6 +15663,27 @@ var AGENT_OPTION_KEYS = Object.keys({
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+function snapshotAgentCwd(options) {
+  let cwd;
+  try {
+    cwd = options.cwd;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  if (cwd !== void 0 && typeof cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+  }
+  if (!("cwd" in options)) {
+    return options;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  return Object.create(Object.getPrototypeOf(options), {
+    ...descriptors,
+    // Defined over the copied descriptor rather than after it: an accessor
+    // declared without `configurable` cannot be redefined on the copy.
+    cwd: { value: cwd, writable: true, enumerable: descriptors.cwd?.enumerable ?? true, configurable: true }
+  });
+}
 function assertValidAgentOptions(options) {
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
@@ -15681,15 +15702,6 @@ function assertValidAgentOptions(options) {
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
   assertPositiveIntegerOption(values, "maxAttempts");
-  let cwd;
-  try {
-    cwd = values.cwd;
-  } catch (error) {
-    throw new UnreadableAgentOptionError("cwd", "a string path", error);
-  }
-  if (cwd !== void 0 && typeof cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
-  }
   if (values.identity !== void 0 && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }
@@ -20864,6 +20876,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new Error("EnsembleRuntime is closed");
     }
     assertValidAgentPrompt(prompt);
+    options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);

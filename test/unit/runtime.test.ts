@@ -1307,6 +1307,53 @@ test("a cwd whose property access throws is rejected by name, not by the author'
   assert.equal(transport.turns.length, 0);
 });
 
+test("a cwd is read once, so it cannot answer differently after the call is admitted", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // The harder half of the reported route: an accessor that answers once and
+  // refuses afterwards. A value read afresh at each use is judged on the
+  // first answer and used on a later one, and the later refusal lands
+  // wherever the next read happens to be — the placement check before the
+  // record is written, or the placement that opens after it, so the call
+  // dies with no agent record while the run's manifest still seals cleanly.
+  let reads = 0;
+  const options: Record<string, unknown> = { engine: "codex" };
+  Object.defineProperty(options, "cwd", {
+    enumerable: true,
+    get() {
+      reads += 1;
+      if (reads > 1) {
+        throw new Error("cwd getter witness");
+      }
+      return ".";
+    }
+  });
+
+  const output = await unsafeAgent("runs to completion", options);
+
+  assert.equal(output, "done");
+  assert.equal(reads, 1);
+  assert.equal(transport.turns.length, 1);
+  assert.equal(records.at(-1)?.resolvedCwd, path.resolve("."));
+  assert.equal(records.at(-1)?.status, "complete");
+});
+
 test("an invalid isolation value fails before a Codex thread opens", async () => {
   const transport = new FakeTransport([turn("unused")]);
   const runtime = new EnsembleRuntime({

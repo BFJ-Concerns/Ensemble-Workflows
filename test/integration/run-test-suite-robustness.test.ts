@@ -6,7 +6,9 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
+import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, runNode, SUITE_SPAWNING_TEST_MARKER } from "./estate-process.js";
+
+const spawningTestMarker = { [SUITE_SPAWNING_TEST_MARKER]: "run-test-suite-robustness.test" };
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const colouredEmptySuiteChildPath = path.resolve("test/fixtures/suite-runner/coloured-empty-suite-child.mjs");
@@ -15,13 +17,15 @@ const completionGuardMilliseconds = 5_000;
 const promptExitMilliseconds = 500;
 
 test("suite runner ignores an ambient direct-child override outside its test context", async () => {
+  assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-ambient-child-"));
   try {
     const childProgram = path.join(directory, "empty-child.mjs");
     await writeFile(childProgram, "");
     const result = await runNode([runnerPath, path.join(directory, "empty/**/*.test.js")], {
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
-      NODE_TEST_CONTEXT: undefined
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
     });
     assert.equal(result.code, 1, result.stderr);
     assert.match(result.stderr, /Test suite matched no tests/);
@@ -31,10 +35,12 @@ test("suite runner ignores an ambient direct-child override outside its test con
 });
 
 test("suite runner rejects an SGR-coloured empty-suite summary from its guarded direct child", async () => {
+  assertNotInsideSuiteSpawningTest();
   const result = await runNode([runnerPath, colouredEmptySuiteChildPath], {
     ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: colouredEmptySuiteChildPath,
     ENSEMBLE_SUITE_TEST_CONTEXT: "1",
-    NODE_TEST_CONTEXT: undefined
+    NODE_TEST_CONTEXT: undefined,
+    ...spawningTestMarker
   });
   assert.equal(result.code, 1, result.stderr);
   const payload = "\u001B[32m# tests 0\u001B[39m\n";
@@ -43,6 +49,7 @@ test("suite runner rejects an SGR-coloured empty-suite summary from its guarded 
 });
 
 test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite summary", async () => {
+  assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-non-sgr-"));
   try {
     const childProgram = path.join(directory, "non-sgr-empty-suite-child.mjs");
@@ -51,7 +58,8 @@ test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite su
     const result = await runNode([runnerPath, childProgram], {
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
-      NODE_TEST_CONTEXT: undefined
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
     });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, payload);
@@ -62,6 +70,7 @@ test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite su
 });
 
 test("suite runner delivers a descendant's trailing marker after its test child exits", async () => {
+  assertNotInsideSuiteSpawningTest();
   await withPipeHolder(async (pipeHolder) => {
     const run = startSuite(pipeHolder);
     try {
@@ -80,6 +89,7 @@ test("suite runner delivers a descendant's trailing marker after its test child 
 });
 
 test("suite runner bounds its close wait when a detached descendant retains its pipe", async () => {
+  assertNotInsideSuiteSpawningTest();
   await withPipeHolder(async (pipeHolder) => {
     const run = startSuite(pipeHolder);
     try {
@@ -95,6 +105,7 @@ test("suite runner bounds its close wait when a detached descendant retains its 
 });
 
 test("concurrent suite runners keep their hand-off state in separate namespaces", async () => {
+  assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-concurrent-"));
   const childProgram = path.join(directory, "successful-child.mjs");
   const firstPause = path.join(directory, "first-pause");
@@ -134,6 +145,54 @@ test("concurrent suite runners keep their hand-off state in separate namespaces"
   } finally {
     await writeFile(firstPause, "release\n");
     await stopSuite(first);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("suite runner refuses to nest beyond one suite-spawned suite, before creating any state", async () => {
+  assertNotInsideSuiteSpawningTest();
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-depth-cap-"));
+  try {
+    const childProgram = path.join(directory, "empty-child.mjs");
+    await writeFile(childProgram, "");
+    const result = await runNode([runnerPath, childProgram], {
+      TMPDIR: directory,
+      ENSEMBLE_SUITE_RUNNER_DEPTH: "2",
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
+      ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
+    });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /Suite runner refused to start: ENSEMBLE_SUITE_RUNNER_DEPTH=2/);
+    assert.equal(result.stdout, "", "a refused runner must not have started its test child");
+    const created = (await readdir(directory)).filter((entry) => entry.startsWith("ensemble-test-suite-"));
+    assert.deepEqual(created, [], "a refused runner must not have created suite state");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("suite runner stamps its child one nesting level deeper than its own", async () => {
+  assertNotInsideSuiteSpawningTest();
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-depth-stamp-"));
+  try {
+    const childProgram = path.join(directory, "depth-reporting-child.mjs");
+    await writeFile(
+      childProgram,
+      'import process from "node:process"; process.stdout.write(`child-depth=${process.env.ENSEMBLE_SUITE_RUNNER_DEPTH}\\n`);'
+    );
+    const result = await runNode([runnerPath, childProgram], {
+      TMPDIR: directory,
+      ENSEMBLE_SUITE_RUNNER_DEPTH: "1",
+      ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
+      ENSEMBLE_SUITE_TEST_CONTEXT: "1",
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /(?:^|\n)child-depth=2(?:\n|$)/, result.stdout);
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -179,7 +238,8 @@ function startSuite(pipeHolder: PipeHolder) {
       ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: pipeHolderParentPath,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
-      NODE_TEST_CONTEXT: undefined
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
     }),
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -204,7 +264,8 @@ function startPausedSuite(temporaryDirectory: string, pausePath: string, childPr
       ENSEMBLE_SUITE_TEST_CHILD_PROGRAM: childProgram,
       ENSEMBLE_SUITE_TEST_CONTEXT: "1",
       ENSEMBLE_SUITE_TEST_PAUSE_AFTER_CHILD_SPAWN_PATH: pausePath,
-      NODE_TEST_CONTEXT: undefined
+      NODE_TEST_CONTEXT: undefined,
+      ...spawningTestMarker
     }),
     stdio: ["ignore", "pipe", "pipe"]
   });

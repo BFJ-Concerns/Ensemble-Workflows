@@ -6,12 +6,13 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { hermeticEstateEnvironment } from "./estate-process.js";
+import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, SUITE_SPAWNING_TEST_MARKER } from "./estate-process.js";
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
 
 test("suite-root recovery bounds unstamped hand-off retention and preserves stamped child process-group liveness", { timeout: 90_000 }, async (t) => {
+  assertNotInsideSuiteSpawningTest();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-ownership-stamped-estate-"));
   const heldChildren: HeldChild[] = [];
   try {
@@ -57,7 +58,12 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
 
 function startSuite(temporaryRoot: string, environment: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, [runnerPath, unitTestPath], {
-    env: hermeticEstateEnvironment({ TMPDIR: temporaryRoot, NODE_TEST_CONTEXT: undefined, ...environment }),
+    env: hermeticEstateEnvironment({
+      TMPDIR: temporaryRoot,
+      NODE_TEST_CONTEXT: undefined,
+      [SUITE_SPAWNING_TEST_MARKER]: "suite-root-ownership-stamped-estate.test",
+      ...environment
+    }),
     stdio: ["ignore", "pipe", "pipe"]
   });
   let output = "";

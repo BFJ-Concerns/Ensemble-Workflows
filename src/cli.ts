@@ -997,7 +997,7 @@ function parseIsolation(value: string | undefined): "worktree" | undefined {
     return undefined;
   }
   if (value !== "worktree") {
-    throw new CliUsageError(`--isolation must be worktree, got ${value}`);
+    throw new CliUsageError(`--isolation must be worktree; got ${value}`);
   }
   return value;
 }
@@ -1250,13 +1250,13 @@ function parseEngineName(value: string, flagName: string): EngineName {
   if (flagName === "--engine") {
     throw new CliUsageError(`${flagName} must be codex, claude, or opencode; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode; got ${value}`);
 }
 
 function parseBudgetCeiling(value: string): number {
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 0) {
-    throw new CliUsageError(`--budget value must be a non-negative integer, got ${value}`);
+    throw new CliUsageError(`--budget value must be a non-negative integer; got ${value}`);
   }
   return ceiling;
 }
@@ -1264,7 +1264,7 @@ function parseBudgetCeiling(value: string): number {
 function parseConcurrencyCap(value: string): number {
   const cap = Number(value);
   if (!Number.isInteger(cap) || cap < 1) {
-    throw new CliUsageError(`--concurrency value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--concurrency value must be a positive integer; got ${value}`);
   }
   return cap;
 }
@@ -1278,7 +1278,7 @@ function parseAgentCeiling(value: string | undefined): number | null | undefined
   }
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 1) {
-    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null; got ${value}`);
   }
   return ceiling;
 }
@@ -1291,13 +1291,13 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
   }
   const timeoutMs = Number(value);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
-    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds; got ${value}`);
   }
   // Same 32-bit timer bound the per-agent timeoutMs enforces: above it the
   // platform coerces the delay (~1ms) or throws from Node internals — a limit
   // the author set but did not get, which is the fail-loud invariant's case.
   if (timeoutMs > MAX_TIMER_DELAY_MS) {
-    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
   }
   return timeoutMs;
 }
@@ -1308,7 +1308,7 @@ function parseMaxAttempts(value: string | undefined): number | undefined {
   }
   const maxAttempts = Number(value);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new CliUsageError(`--max-attempts value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--max-attempts value must be a positive integer; got ${value}`);
   }
   return maxAttempts;
 }

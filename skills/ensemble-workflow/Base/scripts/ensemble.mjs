@@ -29401,7 +29401,7 @@ function parseIsolation(value) {
     return void 0;
   }
   if (value !== "worktree") {
-    throw new CliUsageError(`--isolation must be worktree, got ${value}`);
+    throw new CliUsageError(`--isolation must be worktree; got ${value}`);
   }
   return value;
 }
@@ -29593,19 +29593,19 @@ function parseEngineName(value, flagName) {
   if (flagName === "--engine") {
     throw new CliUsageError(`${flagName} must be codex, claude, or opencode; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode; got ${value}`);
 }
 function parseBudgetCeiling(value) {
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 0) {
-    throw new CliUsageError(`--budget value must be a non-negative integer, got ${value}`);
+    throw new CliUsageError(`--budget value must be a non-negative integer; got ${value}`);
   }
   return ceiling;
 }
 function parseConcurrencyCap(value) {
   const cap = Number(value);
   if (!Number.isInteger(cap) || cap < 1) {
-    throw new CliUsageError(`--concurrency value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--concurrency value must be a positive integer; got ${value}`);
   }
   return cap;
 }
@@ -29618,7 +29618,7 @@ function parseAgentCeiling(value) {
   }
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 1) {
-    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null; got ${value}`);
   }
   return ceiling;
 }
@@ -29628,10 +29628,10 @@ function parseTimeoutMs(value) {
   }
   const timeoutMs = Number(value);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
-    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds; got ${value}`);
   }
   if (timeoutMs > MAX_TIMER_DELAY_MS) {
-    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
   }
   return timeoutMs;
 }
@@ -29641,7 +29641,7 @@ function parseMaxAttempts(value) {
   }
   const maxAttempts = Number(value);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new CliUsageError(`--max-attempts value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--max-attempts value must be a positive integer; got ${value}`);
   }
   return maxAttempts;
 }

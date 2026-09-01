@@ -1,4 +1,4 @@
-/* global process, Buffer */
+/* global process, Buffer, setTimeout */
 
 /**
  * A stand-in `claude` CLI for the one condition a live worker cannot be

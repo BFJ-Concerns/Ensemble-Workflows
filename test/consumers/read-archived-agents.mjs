@@ -43,7 +43,13 @@ for (const [index, agent] of agents.entries()) {
     assert.equal(typeof transcript.source, "string");
     assert.ok(transcript.thread_id === null || typeof transcript.thread_id === "string");
     assert.ok(transcript.session_id === null || typeof transcript.session_id === "string");
-    const contents = await readFile(path.join(archiveDirectory, transcript.path), "utf8");
+    const transcriptPath = path.posix.normalize(transcript.path);
+    const ownTranscriptPrefix = `${path.relative(archiveDirectory, path.dirname(agentPaths[index])).split(path.sep).join("/")}/`;
+    assert.ok(
+      transcriptPath.startsWith(ownTranscriptPrefix),
+      `agent ${agent.id} transcript must remain below ${ownTranscriptPrefix}: ${transcript.path}`
+    );
+    const contents = await readFile(path.join(archiveDirectory, transcriptPath), "utf8");
     assert.notEqual(contents, "", `expected transcript ${transcript.path} to retain its contents`);
   }
 }

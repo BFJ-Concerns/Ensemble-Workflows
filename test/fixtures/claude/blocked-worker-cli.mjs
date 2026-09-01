@@ -123,9 +123,28 @@ async function roster() {
   process.stdout.write(`${JSON.stringify(state.sessions)}\n`);
 }
 
-async function forget(id) {
+async function stop(id) {
   const state = await readState();
-  state.sessions = state.sessions.filter((session) => session.id !== id && session.sessionId !== id);
+  const session = state.sessions.find((candidate) => candidate.id === id || candidate.sessionId === id);
+  if (session === undefined) {
+    process.stderr.write(`fake claude: cannot stop unknown session ${id}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  session.status = "stopped";
+  session.state = "stopped";
+  await writeState(state);
+}
+
+async function remove(id) {
+  const state = await readState();
+  const session = state.sessions.find((candidate) => candidate.id === id || candidate.sessionId === id);
+  if (session === undefined || session.state !== "stopped") {
+    process.stderr.write(`fake claude: refusing to remove session ${id} before stop\n`);
+    process.exitCode = 1;
+    return;
+  }
+  state.sessions = state.sessions.filter((candidate) => candidate !== session);
   await writeState(state);
 }
 
@@ -133,8 +152,10 @@ if (argv.includes("--bg")) {
   await dispatch();
 } else if (argv[0] === "agents") {
   await roster();
-} else if (argv[0] === "stop" || argv[0] === "rm") {
-  await forget(argv[1]);
+} else if (argv[0] === "stop") {
+  await stop(argv[1]);
+} else if (argv[0] === "rm") {
+  await remove(argv[1]);
 } else {
   process.stderr.write(`fake claude: unsupported invocation ${JSON.stringify(argv)}\n`);
   process.exit(2);

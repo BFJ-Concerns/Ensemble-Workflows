@@ -22,7 +22,7 @@ if (!Number.isInteger(inheritedSuiteDepth) || inheritedSuiteDepth < 0 || inherit
 }
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
-const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*m`, "g");
+const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 // A descendant can retain the test process's output pipe after that process
 // exits. Keep accepting its final output, but do not let that inherited pipe
 // hold the gate open indefinitely.
@@ -213,9 +213,14 @@ async function recoverFinishedSuites(directory) {
         } catch {
           if (isHandoffSuite(entry.name)) {
             // The detached child may exist without its durable process-group
-            // stamp. Retain a plausibly live hand-off, but bound the leak from
-            // a wrapper that died before it could write the ownership record.
-            if (await directoryAgeMilliseconds(suiteDirectory) > unstampedHandoffRetentionMilliseconds) {
+            // stamp. An aged hand-off is reclaimable only after the wrapper
+            // named in its hand-off identity is dead: age bounds a leak, but
+            // cannot distinguish a slow live wrapper from an abandoned one.
+            const handoffParentProcess = handoffParentProcessId(entry.name);
+            if (
+              await directoryAgeMilliseconds(suiteDirectory) > unstampedHandoffRetentionMilliseconds &&
+              (handoffParentProcess === null || await processIsDead(handoffParentProcess))
+            ) {
               await rm(suiteDirectory, { recursive: true, force: true });
             }
             return;
@@ -277,6 +282,11 @@ function pendingParentProcessId(name) {
 
 function isHandoffSuite(name) {
   return name.startsWith("ensemble-test-suite-handoff-");
+}
+
+function handoffParentProcessId(name) {
+  const match = /^ensemble-test-suite-handoff-pending-parent-([1-9]\d*)-/.exec(name);
+  return match === null ? null : Number(match[1]);
 }
 
 async function processIsDead(processId) {

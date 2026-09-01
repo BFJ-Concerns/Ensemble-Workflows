@@ -11,10 +11,23 @@ import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, SUITE_SPAW
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
 
+test("live hand-off parent spawn errors reject without terminating the estate", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-spawn-error-"));
+  try {
+    await assert.rejects(
+      createLiveParentUnstampedHandoffRoot(temporaryRoot, path.join(temporaryRoot, "missing-parent")),
+      /failed to spawn live hand-off parent/
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("suite-root recovery bounds unstamped hand-off retention and preserves stamped child process-group liveness", { timeout: 90_000 }, async (t) => {
   assertNotInsideSuiteSpawningTest();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-ownership-stamped-estate-"));
   const heldChildren: HeldChild[] = [];
+  const liveHandoffRoots: LiveHandoffRoot[] = [];
   try {
     const deadParentRoot = await createDeadParentPendingRoot(temporaryRoot);
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
@@ -29,6 +42,15 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
     await runAndRequireClean(temporaryRoot);
     await access(freshHandoffRoot);
 
+    const liveHandoffRoot = await createLiveParentUnstampedHandoffRoot(temporaryRoot);
+    liveHandoffRoots.push(liveHandoffRoot);
+    await agePastUnstampedHandoffRetention(liveHandoffRoot.root);
+    await runAndRequireClean(temporaryRoot);
+    await access(liveHandoffRoot.root);
+    await liveHandoffRoot.stop();
+    await runAndRequireClean(temporaryRoot);
+    await assertMissing(liveHandoffRoot.root, "recovery must reclaim an aged unstamped hand-off after its parent dies");
+
     const held = await createStampedHeldRoot(temporaryRoot);
     heldChildren.push(held.child);
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
@@ -41,9 +63,9 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
 
     await requirePausedLiveRunnerToExecuteTests(temporaryRoot);
 
-    t.diagnostic("real suite-runner recovery reclaimed dead parent-owned and stale unstamped hand-off roots, retained a fresh unstamped root and a live stamped child group, then reclaimed the stamped root after release; a live parent paused after child spawn still ran tests and reported a non-zero test count");
+    t.diagnostic("real suite-runner recovery reclaimed dead parent-owned and stale unstamped hand-off roots, retained fresh and aged-live hand-off roots, retained a live stamped child group, then reclaimed each once its owner died; a live parent paused after child spawn still ran tests and reported a non-zero test count");
   } finally {
-    await Promise.all(heldChildren.map(stopHeldChild));
+    await Promise.all([...heldChildren.map(stopHeldChild), ...liveHandoffRoots.map((root) => root.stop())]);
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 });
@@ -84,6 +106,44 @@ async function runAndRequireClean(temporaryRoot: string): Promise<void> {
 async function createDeadParentPendingRoot(temporaryRoot: string): Promise<string> {
   const parentProcessId = await createDeadProcessId();
   return mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-pending-parent-${parentProcessId}-`));
+}
+
+interface LiveHandoffRoot {
+  root: string;
+  stop: () => Promise<void>;
+}
+
+async function createLiveParentUnstampedHandoffRoot(
+  temporaryRoot: string,
+  parentExecutable = process.execPath
+): Promise<LiveHandoffRoot> {
+  const parent = spawn(parentExecutable, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+  const exited = new Promise<void>((resolve, reject) => {
+    parent.once("error", reject);
+    parent.once("exit", () => resolve());
+  });
+  // The parent can fail before this helper reaches its first caller-owned
+  // cleanup path. Attach a handler now; stop() still awaits the same promise.
+  void exited.catch(() => undefined);
+  if (parent.pid === undefined) {
+    const failure = await exited.then(
+      () => new Error("live hand-off parent exited before receiving a process id"),
+      (error: unknown) => error
+    );
+    throw new Error(`failed to spawn live hand-off parent: ${String(failure)}`);
+  }
+  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parent.pid}-`));
+  let stopping = false;
+  return {
+    root,
+    stop: async () => {
+      if (!stopping) {
+        stopping = true;
+        parent.kill("SIGTERM");
+      }
+      await exited;
+    }
+  };
 }
 
 async function createDeadProcessId(): Promise<number> {

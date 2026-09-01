@@ -51,6 +51,8 @@ test("built CLI archives an interrupted Claude worker's already-served evidence"
       transcripts: 1,
       totalTokens: 159
     });
+    const roster = JSON.parse(await readFile(statePath, "utf8")) as { sessions?: unknown[] };
+    assert.deepEqual(roster.sessions, [], "the interrupted built-CLI run must stop the held Claude session before it exits");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

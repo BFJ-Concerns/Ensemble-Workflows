@@ -473,7 +473,13 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   when, and by which run — for a record a killed run left `"in-progress"`.
 - `termination_cause`: the `{ kind, message }` that settled this agent at that
   status when the runtime decided it — a run that ended under the worker, or a
-  turn timeout — and `null` when the attempts already name the cause.
+  deadline the runtime enforced — and `null` when the attempts already name the
+  cause. Two deadline kinds are distinguished, because they fail for different
+  reasons: `"turn-timeout"` is the per-agent turn deadline expiring, meaning the
+  worker was still going when its own time ran out; `"request-timeout"` is a
+  transport request deadline expiring, meaning the engine never answered a
+  request the client had sent. A consumer telling one from the other is telling
+  a slow worker from an unresponsive engine.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `strip`: requested capability names and resolved enforcement routes.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
@@ -496,7 +502,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `session_id`, `thread_id`; empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
-  `"worker-timed-out"`, or `"engine-produced-no-transcript"`.
+  `"worker-timed-out"`, `"session-client-capture-gap"`, or
+  `"engine-produced-no-transcript"`.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every

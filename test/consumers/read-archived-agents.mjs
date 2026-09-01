@@ -27,12 +27,20 @@ const v3AgentKeys = [
 for (const [index, agent] of agents.entries()) {
   assert.equal(agent.schema_version, 3);
   assert.equal(agent.kind, "agent_record");
-  assert.deepEqual(Object.keys(agent).sort(), v3AgentKeys);
+  const hasAbandonment = agent.abandonment !== undefined;
+  assert.deepEqual(Object.keys(agent).sort(), hasAbandonment ? [...v3AgentKeys, "abandonment"].sort() : v3AgentKeys);
   assert.ok(agent.label === null || typeof agent.label === "string");
   assert.equal(typeof agent.status, "string");
   assert.ok(Array.isArray(agent.attempts));
   assert.ok(Array.isArray(agent.transcripts));
   assert.ok(agent.transcripts_unavailable === null || typeof agent.transcripts_unavailable === "string");
+  if (hasAbandonment) {
+    const archiveDirectory = path.dirname(path.dirname(path.dirname(agentPaths[index])));
+    const manifest = await readJson(path.join(archiveDirectory, "manifest.json"));
+    assert.equal(manifest.status, "abandoned");
+    assert.deepEqual(agent.abandonment, manifest.abandonment);
+    assert.equal(agent.abandonment?.reason, "owner-process-gone");
+  }
   if (agent.transcripts.length > 0) assert.equal(agent.transcripts_unavailable, null);
 
   const archiveDirectory = path.dirname(path.dirname(path.dirname(agentPaths[index])));

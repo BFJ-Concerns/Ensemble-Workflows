@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { access, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -10,6 +11,7 @@ import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, SUITE_SPAW
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
+type LiveParent = Pick<ReturnType<typeof spawn>, "pid" | "once" | "kill">;
 
 test("live hand-off parent spawn errors reject without terminating the estate", async () => {
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-spawn-error-"));
@@ -18,6 +20,25 @@ test("live hand-off parent spawn errors reject without terminating the estate", 
       createLiveParentUnstampedHandoffRoot(temporaryRoot, path.join(temporaryRoot, "missing-parent")),
       /failed to spawn live hand-off parent/
     );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("live hand-off parent absorbs an in-window error before its first stop", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-in-window-error-"));
+  try {
+    const parent = new EventEmitter() as EventEmitter & { pid: number; kill: (signal: NodeJS.Signals) => boolean };
+    parent.pid = 42_424;
+    parent.kill = () => true;
+    queueMicrotask(() => parent.emit("error", new Error("in-window parent failure")));
+
+    const live = await createLiveParentUnstampedHandoffRoot(temporaryRoot, process.execPath, parent as unknown as LiveParent);
+    // Let the forced error arrive before the caller's first stop(). The helper
+    // owns this gap: without its immediate rejection observer Node treats the
+    // rejected promise as unhandled before the await below can consume it.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await assert.rejects(live.stop(), /in-window parent failure/);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -115,9 +136,10 @@ interface LiveHandoffRoot {
 
 async function createLiveParentUnstampedHandoffRoot(
   temporaryRoot: string,
-  parentExecutable = process.execPath
+  parentExecutable = process.execPath,
+  suppliedParent?: LiveParent
 ): Promise<LiveHandoffRoot> {
-  const parent = spawn(parentExecutable, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+  const parent = suppliedParent ?? spawn(parentExecutable, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
   const exited = new Promise<void>((resolve, reject) => {
     parent.once("error", reject);
     parent.once("exit", () => resolve());

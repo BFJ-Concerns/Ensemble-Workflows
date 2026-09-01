@@ -20,7 +20,7 @@ const v3AgentKeys = [
   "attempts", "concurrency_group", "creation_order", "decode_failure", "effort", "engine", "execution_ms",
   "fallback_model", "id", "isolation", "kind", "label", "model", "options", "parse_route", "phase", "prompt",
   "queued_ms", "raw_output", "resolved_cwd", "resolved_effort", "resolved_model", "schema", "schema_version",
-  "session", "status", "strip", "termination_cause", "transcripts", "transcripts_unavailable", "usage",
+  "session", "status", "strip", "termination_cause", "transcript_capture", "transcripts", "transcripts_unavailable", "usage",
   "validated_output", "worktree"
 ];
 
@@ -32,6 +32,7 @@ for (const [index, agent] of agents.entries()) {
   assert.equal(typeof agent.status, "string");
   assert.ok(Array.isArray(agent.attempts));
   assert.ok(Array.isArray(agent.transcripts));
+  assert.ok(agent.transcript_capture === null || agent.transcript_capture === "retained" || agent.transcript_capture === "lost");
   assert.ok(agent.transcripts_unavailable === null || typeof agent.transcripts_unavailable === "string");
   if (agent.transcripts.length > 0) assert.equal(agent.transcripts_unavailable, null);
 

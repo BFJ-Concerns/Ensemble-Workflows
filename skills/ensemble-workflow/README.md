@@ -456,9 +456,10 @@ engine is held at its one-shot surface).
   read back like any one-shot call's, grouped by session id. A transcript
   reference is present only for a non-empty archived transcript; a turn
   without one keeps `transcripts: []` and names the reason in
-  `transcripts_unavailable`. A Codex held-session follow-up carries its own
-  transcript; a follow-up whose client capture was genuinely lost declares
-  `session-client-capture-gap` rather than claiming the engine was silent. A session
+  `transcripts_unavailable`. `transcript_capture` records whether the engine's
+  capture path observed the turn retained or lost; only observed loss declares
+  `session-client-capture-gap`. A Codex held-session follow-up carries its own
+  transcript. A session
   using `isolation: 'worktree'` works one worktree for its whole life,
   finalised at session close.
 - **Claude mechanics worth knowing:** follow-up turns ride the tmux reply

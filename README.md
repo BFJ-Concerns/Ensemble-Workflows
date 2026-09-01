@@ -476,6 +476,12 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   turn timeout — and `null` when the attempts already name the cause.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `strip`: requested capability names and resolved enforcement routes.
+- `session`: the run-scoped held-worker ordinal and this record's turn number,
+  or `null` for a one-shot call.
+- `transcript_capture`: what an engine's capture path observed for this turn:
+  `"retained"`, `"lost"`, or `null` when the engine does not report capture
+  state. An observed `"lost"` capture is the only route to
+  `"session-client-capture-gap"` when no transcript was archived.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
 - `decode_failure`: `{ byte_length, line_prefix }` or `null`.
 - `raw_output`: final raw model text, or the latest raw failed output.
@@ -497,7 +503,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
   `"worker-timed-out"`, `"session-client-capture-gap"`, or
-  `"engine-produced-no-transcript"`.
+  `"engine-produced-no-transcript"`. The reason names an observed capture
+  loss only when `transcript_capture` is `"lost"`; it does not infer one from
+  a held session's turn number.
 
 Codex transcripts are captured from the app-server stream because threads are
 ephemeral: the archive records the prompt-bearing `turn/start` request and every

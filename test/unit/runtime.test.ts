@@ -1354,6 +1354,41 @@ test("a cwd is read once, so it cannot answer differently after the call is admi
   assert.equal(records.at(-1)?.status, "complete");
 });
 
+test("a cwd snapshot preserves other options supplied by a Proxy get trap", async () => {
+  const transport = new FakeTransport([turn("done")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  let cwdReads = 0;
+  const options = new Proxy<Record<string, unknown>>(
+    {},
+    {
+      get(_target, property) {
+        if (property === "cwd") {
+          cwdReads += 1;
+          if (cwdReads > 1) throw new Error("second cwd read escaped the snapshot");
+          return ".";
+        }
+        if (property === "engine") return "codex";
+        if (property === "timeoutMs") return 1_234;
+        return undefined;
+      }
+    }
+  );
+
+  assert.equal(await unsafeAgent("runs to completion", options), "done");
+  assert.equal(cwdReads, 1);
+  assert.equal(transport.turns.length, 1);
+  assert.equal(transport.turns[0]?.options.timeoutMs, 1_234);
+});
+
 test("an inherited cwd getter that first returns undefined cannot throw after its snapshot", async () => {
   const transport = new FakeTransport([turn("done")]);
   const runtime = new EnsembleRuntime({

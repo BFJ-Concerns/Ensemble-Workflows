@@ -65,28 +65,13 @@ const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
 
 /**
- * The single read of a call's `cwd`, and the shadow that keeps it the only
- * one. Returns a call-local copy whose `cwd` is the value read here as a
- * plain data property, including an `undefined` value that must shadow an
- * inherited accessor.
+ * Read and validate `cwd` once, then shadow only its later value reads.
  *
- * `cwd` is unlike the other options in that nothing downstream *checks* it —
- * the placement check, the dispatch record's `resolvedCwd`, and the placement
- * that finally opens each hand it to `path.resolve`, which touches the value.
- * Read live, those are four reads of whatever the caller's object chose to
- * expose, spanning the moment the record is written: an accessor answering a
- * string once and throwing on the next read is then judged as one thing and
- * used as another, and its throw escapes from inside the placement check as
- * the call's whole outcome — naming no option, and leaving a settled call
- * with no agent record behind it. Reading once, here, is what makes the
- * judgement below binding on the value actually used.
- *
- * Two ways the read defeats a caller-supplied value, both ending as pre-spawn
- * author errors like any other rejected option: the read itself throws — a
- * getter or Proxy trap — and becomes a rejection naming the option it belongs
- * to; or the value reads back as a non-string, which would otherwise reach
- * `path.resolve` and raise its own type error from a place that names
- * nothing.
+ * The returned Proxy delegates every other operation to the caller's object.
+ * Its key presence and enumeration therefore stay unchanged, and accessors or
+ * traps that supply other options remain live. Every downstream `cwd` read,
+ * including an `undefined` snapshot, returns the value captured here without
+ * re-entering the caller's accessor or trap.
  */
 export function snapshotAgentCwd<T extends object>(options: T): T {
   let cwd: unknown;
@@ -98,31 +83,11 @@ export function snapshotAgentCwd<T extends object>(options: T): T {
   if (cwd !== undefined && typeof cwd !== "string") {
     throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
   }
-  // Descriptors are copied rather than invoked, so this shadows `cwd` alone:
-  // no other option's accessor runs any earlier, or any more often, than it
-  // does without the copy. The shadow is unconditional: consulting `in`
-  // would let a Proxy return the live caller object again (or throw from its
-  // `has` trap) after the single read above.
-  let descriptors: Record<PropertyKey, PropertyDescriptor>;
-  let prototype: object | null;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(options);
-    prototype = Object.getPrototypeOf(options) as object | null;
-  } catch (error) {
-    throw new UnreadableAgentOptionError("cwd", "a string path", error);
-  }
-  const cwdDescriptor = descriptors.cwd;
-  delete descriptors.cwd;
-  return Object.create(prototype, {
-    ...descriptors,
-    // Defined while the shadow is created rather than after it: an accessor
-    // declared without `configurable` on the caller cannot constrain the
-    // shadow. This stays present even when its value is undefined: otherwise
-    // an inherited accessor remains visible to downstream value checks. It is
-    // enumerable only when the caller had an own enumerable cwd, so validation
-    // does not treat an absent or inherited option as a supplied key.
-    cwd: { value: cwd, writable: true, enumerable: cwdDescriptor?.enumerable ?? false, configurable: true }
-  }) as T;
+  return new Proxy(options, {
+    get(target, property, receiver) {
+      return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
+    }
+  });
 }
 
 export function assertValidAgentOptions(options: object): void {

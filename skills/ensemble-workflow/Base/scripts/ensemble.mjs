@@ -15673,25 +15673,10 @@ function snapshotAgentCwd(options) {
   if (cwd !== void 0 && typeof cwd !== "string") {
     throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
   }
-  let descriptors;
-  let prototype;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(options);
-    prototype = Object.getPrototypeOf(options);
-  } catch (error) {
-    throw new UnreadableAgentOptionError("cwd", "a string path", error);
-  }
-  const cwdDescriptor = descriptors.cwd;
-  delete descriptors.cwd;
-  return Object.create(prototype, {
-    ...descriptors,
-    // Defined while the shadow is created rather than after it: an accessor
-    // declared without `configurable` on the caller cannot constrain the
-    // shadow. This stays present even when its value is undefined: otherwise
-    // an inherited accessor remains visible to downstream value checks. It is
-    // enumerable only when the caller had an own enumerable cwd, so validation
-    // does not treat an absent or inherited option as a supplied key.
-    cwd: { value: cwd, writable: true, enumerable: cwdDescriptor?.enumerable ?? false, configurable: true }
+  return new Proxy(options, {
+    get(target, property, receiver) {
+      return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
+    }
   });
 }
 function assertValidAgentOptions(options) {

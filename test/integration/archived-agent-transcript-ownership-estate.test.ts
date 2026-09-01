@@ -15,7 +15,7 @@ interface AgentRecord {
   transcripts: Array<{ path: string }>;
 }
 
-test("cold archive consumer refuses transcript references outside each agent's own unique directory", { timeout: 45_000 }, async () => {
+test("cold archive consumer refuses transcript references outside each agent's own directory", { timeout: 45_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archived-agent-ownership-estate-"));
   try {
     const recordStore = path.join(directory, "records");

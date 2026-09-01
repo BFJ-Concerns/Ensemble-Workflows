@@ -257,7 +257,6 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
       ]
     }),
     turnResult("second", {
-      resolvedEffort: "low",
       // Codex reports a cumulative thread total as well as this turn's
       // delta. The archive summary must retain the latter's per-call shape.
       tokenUsageEvents: [spendEvent("thread-1", 20, 30)],
@@ -331,6 +330,7 @@ test("a Codex held session cold-reads each scripted turn under its own agent rec
   const transport = new ScriptedTransport(
     ["first", "second", "third"].map((turn, index) =>
       turnResult(`${turn} answer`, {
+        resolvedEffort: ["low", "high", "medium"][index]!,
         transcripts: [
           {
             filename: `${turn}-turn.jsonl`,
@@ -356,6 +356,7 @@ test("a Codex held session cold-reads each scripted turn under its own agent rec
     const records = await Promise.all(
       ["000001", "000002", "000003"].map(async (id) => {
         const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+          resolved_effort: string | null;
           transcripts: Array<{ path: string }>;
           transcripts_unavailable: string | null;
         };
@@ -364,6 +365,7 @@ test("a Codex held session cold-reads each scripted turn under its own agent rec
         const transcript = record.transcripts[0]!;
         assert.match(transcript.path, new RegExp(`^agents/${id}/`));
         return {
+          resolvedEffort: record.resolved_effort,
           path: transcript.path,
           content: await readFile(path.join(writer.archiveDir, transcript.path), "utf8")
         };
@@ -372,6 +374,7 @@ test("a Codex held session cold-reads each scripted turn under its own agent rec
 
     assert.equal(new Set(records.map((record) => record.path)).size, 3);
     assert.deepEqual(records.map((record) => record.content), ["{\"turn\":1}\n", "{\"turn\":2}\n", "{\"turn\":3}\n"]);
+    assert.deepEqual(records.map((record) => record.resolvedEffort), ["low", "high", "medium"]);
     assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1", "thread-1"]);
   } finally {
     await runtime.close();

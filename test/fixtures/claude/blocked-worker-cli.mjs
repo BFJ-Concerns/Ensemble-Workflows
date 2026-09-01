@@ -24,6 +24,9 @@
  *   JSON; defaults to 120 input / 30 output / 9 cache-read.
  * - `ENSEMBLE_FAKE_CLAUDE_GENERATING` — leave the worker generating after
  *   its transcript is written, so the caller can interrupt the real CLI.
+ * - `ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE` — when set, hold the dispatch
+ *   command open after publishing its session and transcript until this file
+ *   exists. This supplies the initial-dispatch interruption race.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -76,6 +79,21 @@ function isGenerating() {
   return process.env.ENSEMBLE_FAKE_CLAUDE_GENERATING === "1";
 }
 
+async function waitForDispatchGate() {
+  const gatePath = process.env.ENSEMBLE_FAKE_CLAUDE_DISPATCH_GATE;
+  if (gatePath === undefined || gatePath.length === 0) {
+    return;
+  }
+  for (;;) {
+    try {
+      await readFile(gatePath, "utf8");
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+}
+
 async function dispatch() {
   const name = flagValue("--name") ?? "unnamed";
   const prompt = await readStdin();
@@ -114,6 +132,7 @@ async function dispatch() {
   });
   await writeState(state);
   process.stdout.write(`${id}\n`);
+  await waitForDispatchGate();
 }
 
 async function roster() {

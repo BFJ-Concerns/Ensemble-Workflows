@@ -4,18 +4,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runNode } from "./estate-process.js";
+import { assertNotInsideSuiteSpawningTest, runNode, SUITE_SPAWNING_TEST_MARKER } from "./estate-process.js";
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 
 test("suite runner rejects an empty test tree after its real Node test consumer reports zero tests", async () => {
+  assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-empty-suite-estate-"));
   const emptyTree = path.join(directory, "empty");
   try {
     await mkdir(emptyTree);
     const result = await runNode([runnerPath, path.join(emptyTree, "**/*.test.js")], {
       NODE_TEST_CONTEXT: undefined,
-      FORCE_COLOR: "3"
+      FORCE_COLOR: "3",
+      [SUITE_SPAWNING_TEST_MARKER]: "suite-runner-empty-estate.test"
     });
 
     assert.equal(result.code, 1, result.stderr);

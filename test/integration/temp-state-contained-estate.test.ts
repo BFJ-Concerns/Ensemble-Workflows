@@ -6,7 +6,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { hermeticEstateEnvironment } from "./estate-process.js";
+import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, SUITE_SPAWNING_TEST_MARKER } from "./estate-process.js";
 
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const thisTestPath = path.resolve("dist/test/integration/temp-state-contained-estate.test.js");
@@ -28,6 +28,7 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
   });
 } else {
   test("the suite runner removes clean and killed state without reaping a live child cache", { timeout: 90_000 }, async (t) => {
+    assertNotInsideSuiteSpawningTest();
     const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-temp-state-contained-estate-"));
     try {
       // Kill a suite parent during an active child test. The next suite must
@@ -66,7 +67,12 @@ function runSuite(temporaryRoot: string, testPath: string, additions: NodeJS.Pro
   const child = spawn(process.execPath, [runnerPath, testPath], {
     // Node marks a test worker in its inherited environment. A nested
     // invocation is a new independent suite, not another worker of this one.
-    env: hermeticEstateEnvironment({ ...additions, TMPDIR: temporaryRoot, NODE_TEST_CONTEXT: undefined }),
+    env: hermeticEstateEnvironment({
+      ...additions,
+      TMPDIR: temporaryRoot,
+      NODE_TEST_CONTEXT: undefined,
+      [SUITE_SPAWNING_TEST_MARKER]: "temp-state-contained-estate.test"
+    }),
     stdio: ["ignore", "pipe", "pipe"]
   });
   let output = "";

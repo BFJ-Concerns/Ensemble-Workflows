@@ -401,6 +401,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
+    // A held Codex session reuses its thread, but each runtime turn writes a
+    // separate agent record. #completeTurn prunes the previous turn's buffer,
+    // so register a fresh capture before a follow-up turn begins rather than
+    // dropping its frames against an absent thread entry.
+    if (!this.#transcripts.has(threadId)) {
+      this.#transcripts.set(threadId, {
+        resolvedModel: null,
+        resolvedEffort: null,
+        events: []
+      });
+    }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
     this.#turns.set(threadId, state);
     // The turn can terminalise while turn/start is still awaiting its

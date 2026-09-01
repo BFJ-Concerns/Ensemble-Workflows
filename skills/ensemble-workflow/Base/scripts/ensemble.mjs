@@ -18401,6 +18401,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return [...names].sort();
   }
   async runTurn(threadId, prompt, options) {
+    if (!this.#transcripts.has(threadId)) {
+      this.#transcripts.set(threadId, {
+        resolvedModel: null,
+        resolvedEffort: null,
+        events: []
+      });
+    }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
     this.#turns.set(threadId, state);
     state.promise.catch(() => void 0);

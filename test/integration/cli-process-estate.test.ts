@@ -995,6 +995,65 @@ test("built CLI propagates malformed schemas from both combinators before openin
   }
 });
 
+test("built CLI keeps the complete engine map and gives mapped flags their own invalid-engine diagnostic", async () => {
+  const fixture = await createProcessFixture("engine-map-cli-diagnostics");
+
+  try {
+    await writeFile(
+      fixture.script,
+      `
+        export const meta = {
+          name: "engine-map-cli-diagnostics",
+          description: "The CLI accepts every engine in each engine-keyed flag"
+        };
+        return "no worker needed";
+      `
+    );
+
+    const accepted = await fixture.runArgs([
+      "--budget=codex=1",
+      "--budget=claude=1",
+      "--budget=opencode=1",
+      "--concurrency=codex=1",
+      "--concurrency=claude=1",
+      "--concurrency=opencode=1",
+      fixture.script
+    ]);
+    assert.equal(accepted.code, 0, accepted.stderr);
+    assert.equal(accepted.stdout, '"no worker needed"\n');
+
+    for (const flag of ["--budget", "--concurrency"]) {
+      const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);
+      assert.equal(rejected.code, 2);
+      assert.equal(rejected.stdout, "");
+      assert.equal(rejected.stderr, `${flag} engine must be codex, claude, or opencode, got unknown\n`);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("built CLI reports a direct-agent malformed --schema before the Codex worker starts", async () => {
+  const fixture = await createProcessFixture("direct-agent-schema-diagnostic");
+
+  try {
+    const result = await fixture.runArgs([
+      "agent",
+      "--engine=codex",
+      '--schema={"type":"definitely-not-json-schema"}',
+      "return a receipt"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
+    assert.match(result.stderr, /InvalidAgentSchemaError/);
+    assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
+    assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
   const target = path.join(directory, STATUS_FILENAME);

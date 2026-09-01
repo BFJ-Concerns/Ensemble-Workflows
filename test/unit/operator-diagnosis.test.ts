@@ -190,6 +190,17 @@ test("a Codex schema rejection leads with the remedy and carries the diagnostic 
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
+test("operator diagnostics strip 7-bit terminal controls but preserve an 8-bit C1 byte as evidence", () => {
+  const rendered = presentTerminalError(
+    new AppServerExitedError("before \u001b[31mred\u001b[0m after \u009b31mC1"),
+    noContext
+  );
+  assert.ok(rendered !== null);
+  // eslint-disable-next-line no-control-regex -- the assertion proves the 7-bit escape bytes are absent.
+  assert.doesNotMatch(rendered, /\u001b\[/);
+  assert.match(rendered, /before red after \u009b31mC1/);
+});
+
 test("a teardown-time engine shutdown is attributed to the run ending, not the author's call", () => {
   const line = presentTerminalError(new EngineShutdownError("codex"), noContext);
   assert.ok(line !== null);

@@ -1198,7 +1198,8 @@ async function parseJsonValue(value: string, cwd: string, flagName: "--json-args
     return JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliUsageError(`${flagName} ${sourceDescription} must contain valid JSON: ${message}`);
+    const diagnosticPrefix = flagName === "--json-args" ? `${flagName}: ` : `${flagName} `;
+    throw new CliUsageError(`${diagnosticPrefix}${sourceDescription} must contain valid JSON: ${message}`);
   }
 }
 
@@ -1230,6 +1231,9 @@ function parseEngineMap<T>(
 function parseEngineName(value: string, flagName: string): EngineName {
   if (value === "codex" || value === "claude" || value === "opencode") {
     return value;
+  }
+  if (flagName === "--engine") {
+    throw new CliUsageError(`${flagName} must be codex, claude, or opencode; got ${value}`);
   }
   throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
 }

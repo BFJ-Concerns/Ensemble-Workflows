@@ -493,6 +493,32 @@ test("CLI passes parsed JSON as args when --json-args is set", async () => {
   assert.equal(stderr.text(), "");
 });
 
+test("CLI separates --json-args from its malformed-JSON diagnostic", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  let runtimeCreations = 0;
+
+  const exitCode = await runEnsembleCli(["--json-args", "{", "workflow.js"], {
+    stdout,
+    stderr,
+    createRuntime: async () => {
+      runtimeCreations += 1;
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(
+    stderr.text(),
+    "--json-args: the argument must contain valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n"
+  );
+  // The flag ran into the sentence with no separator.
+  assert.doesNotMatch(stderr.text(), /--json-args the argument must contain valid JSON:/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
+  assert.equal(runtimeCreations, 0);
+});
+
 test("CLI reads parsed JSON args from an @file path", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-file-"));
   const script = path.join(directory, "workflow.js");
@@ -1024,6 +1050,30 @@ test("ensemble agent reports option mistakes as stack-free usage errors", async 
   assert.match(stderr.text(), /Unknown option '--unknown'/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
   assert.doesNotMatch(stderr.text(), /\n\s+at /);
+});
+
+test("ensemble agent names an invalid --engine value without repeating the flag", async () => {
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  let runtimeCreations = 0;
+
+  const exitCode = await runEnsembleCli(["agent", "--engine=nope", "prompt"], {
+    stdin: Readable.from([]),
+    stdout,
+    stderr,
+    createRuntime: async () => {
+      runtimeCreations += 1;
+      return fakeRuntime();
+    }
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(stderr.text(), "--engine must be codex, claude, or opencode; got nope\n");
+  // "--engine engine must be codex, claude, or opencode, got nope".
+  assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
+  assert.equal(runtimeCreations, 0);
 });
 
 test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and blank prompts before runtime creation", async () => {

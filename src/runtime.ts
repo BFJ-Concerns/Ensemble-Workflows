@@ -329,8 +329,8 @@ export class EnsembleRuntime {
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the injected cache TTL's
-    // cliff, Codex's the measured 60-minute coin-flip point — numerically
-    // equal, semantically distinct knobs.
+    // cliff, Codex's the measured 60-minute coin-flip point —
+    // numerically equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
@@ -560,13 +560,14 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution (opt-in): the envelope wraps every
-        // resolution, a schema call's null collapse included, so a fan-in
-        // that keeps the envelope still knows which worker failed — and
-        // `failure` discriminates: null exactly when the settlement
-        // completed, so a worker's genuine null answer and an exhausted
-        // collapse never read alike. The durable record is unchanged — it
-        // already carries label and phase as first-class fields.
+        // Identified resolution (result identity is opt-in): the
+        // envelope wraps every resolution, a schema call's null collapse
+        // included, so a fan-in that keeps the envelope still knows which
+        // worker failed — and `failure` carries the discrimination: null
+        // exactly when the settlement completed, so a worker's genuine null
+        // answer and an exhausted collapse never read alike. The durable
+        // record is unchanged — it already carries label and phase as
+        // first-class fields.
         const failure =
           agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
@@ -1128,8 +1129,8 @@ export class EnsembleRuntime {
     );
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
-    // a silently discarded engine or session teardown failure would leave
-    // a cancelled run's failure unattributable.
+    // a silently discarded engine or session teardown failure would make
+    // the cancellation promise unattributable.
     const teardownFailures: unknown[] = [];
     try {
       await this.#engines.close();
@@ -1242,10 +1243,16 @@ export class EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    // The attempts array already names an engine failure; a cause here
-    // would only restate it, and inventing one where no attempt ran would
-    // claim knowledge the runtime does not have.
-    record.terminationCause = null;
+    // Where an attempt ran, its own failure is the engine's account and the
+    // record's home for it; a cause here would only restate that entry, so
+    // null keeps one home for one account and the two can never disagree.
+    // An agent refused before any attempt was observed — an unknown model
+    // rejected at dispatch, a placement that never opened — has no such
+    // entry, and leaving this null there publishes a bare `failed` while
+    // the engine's rejection is legible in the run's own output. The cause
+    // is then taken from the account the runtime is holding, never
+    // synthesised from the status.
+    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
 
   async #runAgent(
@@ -1784,16 +1791,49 @@ function failureFromError(error: unknown): { kind: string; message: string } {
 }
 
 /**
+ * The engine's own account of why this agent failed, as the attempts array
+ * recorded it: the last attempt that named a failure, or null when no
+ * attempt did — either because none ran, or because none observed a fault.
+ * This is the record's home for a diagnosed failure; `terminationCause`
+ * speaks only where this is silent.
+ */
+function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } | null {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const failure = record.attempts[index]?.failure;
+    if (failure !== undefined && failure !== null) {
+      return failure;
+    }
+  }
+  return null;
+}
+
+/**
+ * The cause a failed agent records when no attempt of its own named one.
+ * The runtime publishes what it is actually holding — the rejection that
+ * ended the call, in the engine's own words — and where it holds nothing it
+ * says so with the reason, because a record that reads `failed` and nothing
+ * else is indistinguishable from one whose diagnostic was lost.
+ * Nothing here is inferred from the status.
+ */
+function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
+  if (error === null || error === undefined) {
+    return {
+      kind: "unavailable",
+      message: "the agent failed with no attempt recorded and no error reported to the runtime"
+    };
+  }
+  return failureFromError(error);
+}
+
+/**
  * The one-line account an identified envelope's `failure` carries,
  * read from evidence the settlement already recorded: the last attempt's
  * own failure, else the runtime's termination cause, else the bare fact.
  */
 function settledFailureMessage(record: RuntimeAgentRecord): string {
-  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
-    const failure = record.attempts[index]?.failure;
-    if (failure !== undefined && failure !== null) {
-      return `${failure.kind}: ${failure.message}`;
-    }
+  const attempted = attemptedFailureAccount(record);
+  if (attempted !== null) {
+    return `${attempted.kind}: ${attempted.message}`;
   }
   return record.terminationCause !== null
     ? `${record.terminationCause.kind}: ${record.terminationCause.message}`

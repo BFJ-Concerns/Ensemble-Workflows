@@ -21350,7 +21350,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = null;
+    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const placement = await this.#placement.open(options);
@@ -21770,12 +21770,28 @@ function recordOperationalFailure(record, attempt, startedAtMs, result) {
 function failureFromError(error) {
   return describeError(error);
 }
-function settledFailureMessage(record) {
+function attemptedFailureAccount(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
     const failure = record.attempts[index]?.failure;
     if (failure !== void 0 && failure !== null) {
-      return `${failure.kind}: ${failure.message}`;
+      return failure;
     }
+  }
+  return null;
+}
+function failedWithoutAttemptCause(error) {
+  if (error === null || error === void 0) {
+    return {
+      kind: "unavailable",
+      message: "the agent failed with no attempt recorded and no error reported to the runtime"
+    };
+  }
+  return failureFromError(error);
+}
+function settledFailureMessage(record) {
+  const attempted = attemptedFailureAccount(record);
+  if (attempted !== null) {
+    return `${attempted.kind}: ${attempted.message}`;
   }
   return record.terminationCause !== null ? `${record.terminationCause.kind}: ${record.terminationCause.message}` : "the agent failed without a recorded cause";
 }

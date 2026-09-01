@@ -11,6 +11,18 @@ import { assertNotInsideSuiteSpawningTest, hermeticEstateEnvironment, SUITE_SPAW
 const runnerPath = path.resolve("scripts/run-test-suite.mjs");
 const unitTestPath = path.resolve("dist/test/unit/workflow-registry.test.js");
 
+test("live hand-off parent spawn errors reject without terminating the estate", async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-spawn-error-"));
+  try {
+    await assert.rejects(
+      createLiveParentUnstampedHandoffRoot(temporaryRoot, path.join(temporaryRoot, "missing-parent")),
+      /failed to spawn live hand-off parent/
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("suite-root recovery bounds unstamped hand-off retention and preserves stamped child process-group liveness", { timeout: 90_000 }, async (t) => {
   assertNotInsideSuiteSpawningTest();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-suite-root-ownership-stamped-estate-"));
@@ -101,14 +113,26 @@ interface LiveHandoffRoot {
   stop: () => Promise<void>;
 }
 
-async function createLiveParentUnstampedHandoffRoot(temporaryRoot: string): Promise<LiveHandoffRoot> {
-  const parent = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
-  assert.ok(parent.pid, "the live hand-off root needs a process id");
-  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parent.pid}-`));
+async function createLiveParentUnstampedHandoffRoot(
+  temporaryRoot: string,
+  parentExecutable = process.execPath
+): Promise<LiveHandoffRoot> {
+  const parent = spawn(parentExecutable, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
   const exited = new Promise<void>((resolve, reject) => {
     parent.once("error", reject);
     parent.once("exit", () => resolve());
   });
+  // The parent can fail before this helper reaches its first caller-owned
+  // cleanup path. Attach a handler now; stop() still awaits the same promise.
+  void exited.catch(() => undefined);
+  if (parent.pid === undefined) {
+    const failure = await exited.then(
+      () => new Error("live hand-off parent exited before receiving a process id"),
+      (error: unknown) => error
+    );
+    throw new Error(`failed to spawn live hand-off parent: ${String(failure)}`);
+  }
+  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-handoff-pending-parent-${parent.pid}-`));
   let stopping = false;
   return {
     root,

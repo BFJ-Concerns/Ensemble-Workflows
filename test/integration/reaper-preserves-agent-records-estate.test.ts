@@ -11,7 +11,6 @@ import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode } from
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const recordingAppServerPath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-archived-agents.mjs");
-const scratchRoot = tmpdir();
 
 interface ArchivedAgent {
   status: string;
@@ -23,7 +22,7 @@ interface ArchivedAgent {
 }
 
 test("the cold archive consumer sees a real killed run's agent record preserved and abandoned after reaping", { timeout: 45_000 }, async () => {
-  const directory = await mkdtemp(path.join(scratchRoot, "ensemble-reaper-agent-record-estate-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-reaper-agent-record-estate-"));
   let run: ReturnType<typeof spawn> | null = null;
   try {
     const recordStore = path.join(directory, "records");

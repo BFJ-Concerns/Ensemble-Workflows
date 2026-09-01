@@ -788,7 +788,8 @@ test("ensemble agent honours --max-attempts and rejects invalid values before an
 
   assert.equal(rejectedExit, 2);
   assert.equal(rejectedEngine.attempts, 0);
-  assert.match(rejectedStderr.text(), /--max-attempts value must be a positive integer, got 0/);
+  assert.match(rejectedStderr.text(), /--max-attempts value must be a positive integer; got 0/);
+  assert.doesNotMatch(rejectedStderr.text(), /Usage: ensemble/);
   assert.doesNotMatch(rejectedStderr.text(), /at .*\(/, "usage errors print without a stack trace");
 });
 
@@ -1022,7 +1023,8 @@ test("--timeout above the 32-bit timer bound is a usage error, not a platform su
   const exitCode = await runEnsembleCli(["--timeout=2147483648", "workflow.js"], { stdout, stderr });
 
   assert.equal(exitCode, 2);
-  assert.match(stderr.text(), /--timeout value must be at most 2147483647 milliseconds, got 2147483648/);
+  assert.match(stderr.text(), /--timeout value must be at most 2147483647 milliseconds; got 2147483648/);
+  assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
 
   // The bound is inclusive: the maximum representable delay is accepted (and
   // then fails on the missing script, which is the next check in line).
@@ -1075,6 +1077,55 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
   assert.equal(runtimeCreations, 0);
+});
+
+test("CLI renders named value mistakes in the must-be-got register without usage", async () => {
+  const cases = [
+    {
+      argv: ["agent", "--engine=codex", "--isolation=sandbox", "prompt"],
+      stderr: "--isolation must be worktree; got sandbox\n"
+    },
+    {
+      // This deliberately reaches parseEngineName: an unknown map key is an
+      // engine-name mistake, not an invalid budget value.
+      argv: ["--budget=bogus=1", "workflow.js"],
+      stderr: "--budget engine must be codex, claude, or opencode; got bogus\n"
+    },
+    {
+      argv: ["--budget=codex=-1", "workflow.js"],
+      stderr: "--budget value must be a non-negative integer; got -1\n"
+    },
+    {
+      argv: ["--concurrency=codex=0", "workflow.js"],
+      stderr: "--concurrency value must be a positive integer; got 0\n"
+    },
+    {
+      argv: ["--agent-ceiling=0", "workflow.js"],
+      stderr: "--agent-ceiling value must be a positive integer or null; got 0\n"
+    },
+    {
+      argv: ["--timeout=soon", "workflow.js"],
+      stderr: "--timeout value must be a positive integer of milliseconds; got soon\n"
+    },
+    {
+      argv: ["agent", "--engine=codex", "--max-attempts=0", "prompt"],
+      stderr: "--max-attempts value must be a positive integer; got 0\n"
+    }
+  ];
+
+  for (const entry of cases) {
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(entry.argv, {
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(stderr.text(), entry.stderr);
+    assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
+  }
 });
 
 test("ensemble agent rejects misplaced tuning flags, duplicate scalar flags, and blank prompts before runtime creation", async () => {
@@ -1687,7 +1738,7 @@ test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", 
 
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
-  assert.match(stderr.text(), /--timeout value must be a positive integer of milliseconds/);
+  assert.match(stderr.text(), /--timeout value must be a positive integer of milliseconds; got soon/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/, "a named-option rejection is one line, not a usage dump");
 });
 

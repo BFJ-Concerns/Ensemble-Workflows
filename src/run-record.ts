@@ -1139,12 +1139,19 @@ export interface ReapAbandonedRunsOptions {
  * there no ordering argument exists, so a residual fresh-read-to-rename
  * window remains — confined to a pre-owner writer still running
  * mid-upgrade, and accepted as transition-era cost rather than claimed
- * away. Agent records are never touched: the manifest is the decidable
- * surface, and everything already written is evidence to preserve.
+ * away. The reaper resolves *statuses*, never content: beside the manifest
+ * flip it rewrites the run's own still-`in-progress` agent records to
+ * `abandoned` with the same abandonment provenance, because a dispatch-time
+ * agent record frozen at `in-progress` reads to a consumer as "no attempt
+ * ran, nothing spent" — a claim the run's death made undecidable, not
+ * false. `abandoned` marks the recording as truncated: whatever attempts
+ * and usage the record carries are what was recorded before the death,
+ * and their absence is unobserved, never zero. The reaper still never
+ * deletes, never invents usage or attempts, and never touches a record
+ * whose own terminal status landed.
  * Never-fail throughout — a sweep failure must never fail the run that
- * triggered it (it is awaited, so its cost is one or two manifest reads
- * per sibling, bounded by the namespace's own run count). Returns the run
- * uuids it flipped.
+ * triggered it (it is awaited, so its cost is bounded by the namespace's
+ * own run and agent counts). Returns the run uuids it flipped.
  */
 export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Promise<string[]> {
   const procDir = options.procDir ?? "/proc";
@@ -1188,12 +1195,13 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       if (fresh.status !== "in-progress") {
         continue;
       }
-      fresh.status = "abandoned";
-      fresh.abandonment = {
+      const abandonment: AbandonmentRecord = {
         observed_at: new Date().toISOString(),
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      fresh.status = "abandoned";
+      fresh.abandonment = abandonment;
       // The reaper changes an attested manifest itself, so renew its
       // self-attestation just as the writer does: null its field, hash the
       // canonical form, then let the standalone helper atomically replace it.
@@ -1204,12 +1212,52 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
       }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
+      await resolveAbandonedAgentRecords(path.join(options.namespaceDir, entry.name), abandonment);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.
     }
   }
   return reaped;
+}
+
+/**
+ * Resolve an abandoned run's own unsettled agent records: every
+ * `in-progress` agent.json flips to `abandoned`, carrying the manifest's
+ * abandonment provenance, so no record keeps asserting a dispatch-time
+ * snapshot as an outcome. The same ordering argument as the manifest's
+ * applies — the owner was observed dead before these reads, so every write
+ * the dead process made is visible, and a settled record shows its
+ * terminal status and is skipped. Status resolution only: nothing else in
+ * the record changes, and a record that cannot be read or written is left
+ * as it stands rather than ending the sweep.
+ */
+async function resolveAbandonedAgentRecords(runDir: string, abandonment: AbandonmentRecord): Promise<void> {
+  const agentsDir = path.join(runDir, "agents");
+  const agentEntries = await readdir(agentsDir, { withFileTypes: true }).catch(() => null);
+  if (agentEntries === null) {
+    return;
+  }
+  for (const agentEntry of agentEntries) {
+    if (!agentEntry.isDirectory()) {
+      continue;
+    }
+    try {
+      const agentJsonPath = path.join(agentsDir, agentEntry.name, "agent.json");
+      const agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8")) as {
+        status?: unknown;
+        abandonment?: AbandonmentRecord;
+      };
+      if (agentRecord.status !== "in-progress") {
+        continue;
+      }
+      agentRecord.status = "abandoned";
+      agentRecord.abandonment = abandonment;
+      await writeStandaloneText(agentJsonPath, `${canonicalJson(agentRecord)}\n`);
+    } catch {
+      // One unresolvable agent record must not end the sweep.
+    }
+  }
 }
 
 async function judgeOwnerGone(

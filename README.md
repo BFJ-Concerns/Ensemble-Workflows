@@ -333,7 +333,14 @@ matching start ticks is live; and everything else, including a pid the reader
 has no readable proc filesystem to check, is undecidable. That reading is a
 consumer's to make, not an API the harness exports, and it lets a supervisor
 tell a killed run from a running one at read time, on an archive nobody has
-rewritten. Agent records under a reaped run are preserved untouched.
+rewritten. A reap also resolves the run's own stranded agent records: every
+`agent.json` still `in-progress` flips to `"abandoned"` carrying the same
+`abandonment` block, because a dispatch-time record frozen at `in-progress`
+would otherwise read as "no attempt ran, nothing spent" — a claim the death
+made undecidable, not false. An abandoned agent record's attempts and usage
+are exactly what was recorded before the death: their absence means
+unobserved, never zero. Settled agent records are evidence and are never
+rewritten.
 
 ### Run record schema
 
@@ -446,8 +453,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `changed`, and `removed` — or `null`.
 - `label`, `phase`, and `status`. Agent status is `"in-progress"`,
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
-  `"abandoned"` means the run ended while the dispatch record was still being
-  persisted, so the harness did not observe an agent outcome.
+  `"abandoned"` means no agent outcome was observed: written by the run's own
+  close when it ended while the dispatch record was still being persisted,
+  and by the reaper — with an `abandonment` block naming what was observed,
+  when, and by which run — for a record a killed run left `"in-progress"`.
 - `termination_cause`: the `{ kind, message }` that settled this agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   turn timeout — and `null` when the attempts already name the cause.

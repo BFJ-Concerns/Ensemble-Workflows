@@ -1324,6 +1324,53 @@ test("the reaper flips provably-dead in-progress runs and leaves every judged-li
   }
 });
 
+test("the reaper resolves a reaped run's in-progress agent records and leaves settled ones", async () => {
+  const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-agents-ns-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-agents-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    const host = hostname();
+    await writeAttestedRunManifest(namespaceDir, "dead-run", {
+      status: "in-progress",
+      owner: { pid: 999999, start_ticks: "3333", host }
+    });
+    // The discriminating pair: a dispatch-time record the death stranded,
+    // and a sibling whose settlement landed before the death.
+    await writeAgentRecord(namespaceDir, "dead-run", "000001", {
+      kind: "agent_record",
+      id: 1,
+      status: "in-progress",
+      attempts: []
+    });
+    await writeAgentRecord(namespaceDir, "dead-run", "000002", {
+      kind: "agent_record",
+      id: 2,
+      status: "complete",
+      attempts: [{ attempt: 1, status: "complete" }]
+    });
+
+    const reaped = await reapAbandonedRuns({
+      namespaceDir,
+      procDir: proc,
+      observer: { pid: process.pid, runUuid: "sweeper-run" }
+    });
+
+    assert.deepEqual(reaped, ["dead-run"]);
+    const stranded = await readAgentRecord(namespaceDir, "dead-run", "000001");
+    assert.equal(stranded.status, "abandoned", "a stranded dispatch-time record stops asserting in-progress");
+    const abandonment = stranded.abandonment as { reason: string; observed_by: { run_uuid: string } };
+    assert.equal(abandonment.reason, "owner-process-gone");
+    assert.equal(abandonment.observed_by.run_uuid, "sweeper-run");
+    assert.deepEqual(stranded.attempts, [], "resolution never invents attempts or usage");
+    const settled = await readAgentRecord(namespaceDir, "dead-run", "000002");
+    assert.equal(settled.status, "complete", "a landed settlement is evidence, never rewritten");
+    assert.equal(settled.abandonment, undefined);
+  } finally {
+    await rm(namespaceDir, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+  }
+});
+
 test("the reaper abandons a provably-dead manifest with a null integrity block", async () => {
   const namespaceDir = await mkdtemp(path.join(tmpdir(), "ensemble-reap-null-integrity-ns-"));
   const proc = await mkdtemp(path.join(tmpdir(), "ensemble-reap-null-integrity-proc-"));
@@ -1470,6 +1517,27 @@ async function writeAttestedRunManifest(
 
 async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path.join(namespaceDir, runName, "manifest.json"), "utf8")) as Record<string, unknown>;
+}
+
+async function writeAgentRecord(
+  namespaceDir: string,
+  runName: string,
+  agentDir: string,
+  record: unknown
+): Promise<void> {
+  const dir = path.join(namespaceDir, runName, "agents", agentDir);
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, "agent.json"), `${JSON.stringify(record)}\n`);
+}
+
+async function readAgentRecord(
+  namespaceDir: string,
+  runName: string,
+  agentDir: string
+): Promise<Record<string, unknown>> {
+  return JSON.parse(
+    await readFile(path.join(namespaceDir, runName, "agents", agentDir, "agent.json"), "utf8")
+  ) as Record<string, unknown>;
 }
 
 async function gitRepo(prefix: string): Promise<string> {

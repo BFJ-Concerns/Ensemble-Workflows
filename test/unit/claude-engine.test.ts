@@ -7,7 +7,13 @@ import test from "node:test";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
-import { EmptyAgentOutputError, EngineShutdownError, InvalidAgentOptionValueError, partialWorkerTextOf } from "../../src/errors.js";
+import {
+  EmptyAgentOutputError,
+  EngineShutdownError,
+  InvalidAgentOptionValueError,
+  failedTurnResultOf,
+  partialWorkerTextOf
+} from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { usageSince } from "../../src/claude-transcript.js";
 
@@ -55,6 +61,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #tmux: boolean;
   #steerSucceeds: boolean;
   #steerConsumesTurn: boolean;
+  #dispatchGate: DispatchGate | undefined;
   #steered = false;
 
   #sessionSeq = 0;
@@ -67,13 +74,14 @@ class FakeControlPlane implements ClaudeControlPlane {
   constructor(
     dir: string,
     turns: ScriptedTurn[],
-    options: { tmux?: boolean; steerSucceeds?: boolean; steerConsumesTurn?: boolean } = {}
+    options: FakeControlPlaneOptions = {}
   ) {
     this.#dir = dir;
     this.#turns = [...turns];
     this.#tmux = options.tmux ?? true;
     this.#steerSucceeds = options.steerSucceeds ?? true;
     this.#steerConsumesTurn = options.steerConsumesTurn ?? true;
+    this.#dispatchGate = options.dispatchGate;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -85,6 +93,8 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#handle = { id: `fake-${this.#sessionSeq}`, sessionId, name: options.name, cwd: options.cwd };
     this.#present = true;
     await this.#consume("write");
+    this.#dispatchGate?.arrived();
+    await this.#dispatchGate?.release;
     return this.#handle;
   }
 
@@ -149,6 +159,18 @@ class FakeControlPlane implements ClaudeControlPlane {
       await appendFile(this.#path, line);
     }
   }
+}
+
+interface DispatchGate {
+  arrived: () => void;
+  release: Promise<void>;
+}
+
+interface FakeControlPlaneOptions {
+  tmux?: boolean;
+  steerSucceeds?: boolean;
+  steerConsumesTurn?: boolean;
+  dispatchGate?: DispatchGate;
 }
 
 function assistantLine(assistant: ScriptedTurn["assistant"] & object & { creation?: number }): string {
@@ -230,7 +252,7 @@ function makeRuntime(
 async function withControlPlane(
   turns: ScriptedTurn[],
   body: (controlPlane: FakeControlPlane) => Promise<void>,
-  options: { tmux?: boolean; steerSucceeds?: boolean; steerConsumesTurn?: boolean } = {}
+  options: FakeControlPlaneOptions = {}
 ): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-engine-"));
   try {
@@ -338,6 +360,48 @@ test("Claude adapter close stops an active session and winds down its poll loop"
     assert.equal(controlPlane.stopCount, 1);
     assert.equal(controlPlane.pollCount, 1);
   });
+});
+
+test("an initial-dispatch interruption retains transcript evidence before teardown", async () => {
+  let releaseDispatch: (() => void) | undefined;
+  const dispatchReleased = new Promise<void>((resolve) => {
+    releaseDispatch = resolve;
+  });
+  let dispatchArrived: (() => void) | undefined;
+  const dispatchArrivedPromise = new Promise<void>((resolve) => {
+    dispatchArrived = resolve;
+  });
+
+  await withControlPlane(
+    [{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "raced evidence", stop: "tool_use", model: "claude-raced" } }],
+    async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+      const invocation = adapter.createInvocation("keep working", {});
+      const attempt = invocation.runAttempt({ attempt: 1 });
+      await dispatchArrivedPromise;
+
+      const close = adapter.close();
+      let closeCompleted = false;
+      void close.then(() => {
+        closeCompleted = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const closeCompletedBeforeDispatchReleased = closeCompleted;
+      releaseDispatch?.();
+      await close;
+
+      await assert.rejects(attempt, (error: unknown) => {
+        assert.ok(error instanceof EngineShutdownError);
+        assert.equal(partialWorkerTextOf(error), "raced evidence");
+        assert.equal(failedTurnResultOf(error)?.text, "raced evidence");
+        assert.equal(failedTurnResultOf(error)?.resolvedModel, "claude-raced");
+        return true;
+      });
+      assert.equal(closeCompletedBeforeDispatchReleased, true, "close must not wait for the in-flight dispatch");
+      assert.equal(controlPlane.stopCount, 1);
+    },
+    { dispatchGate: { arrived: () => dispatchArrived?.(), release: dispatchReleased } }
+  );
 });
 
 test("Claude interruption retains transcript-proved turn evidence in the archive", async () => {

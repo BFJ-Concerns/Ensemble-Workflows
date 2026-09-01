@@ -17372,7 +17372,8 @@ var ClaudeEngineInvocation = class {
       }
       return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
     } catch (error) {
-      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
+      const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
       if (error instanceof Error && evidence !== null) {
         this.#attachWorkerText(error, evidence, fromIndex);
       }
@@ -17399,8 +17400,10 @@ var ClaudeEngineInvocation = class {
       this.#closed = true;
       this.#abortController.abort();
       try {
-        await this.#settlement?.catch(() => void 0);
-        await this.#teardown();
+        if (this.#handle !== null) {
+          await this.#settlement?.catch(() => void 0);
+          await this.#teardown();
+        }
       } finally {
         this.#onClose?.(this);
       }
@@ -17424,8 +17427,14 @@ var ClaudeEngineInvocation = class {
     this.#handle = handle;
     this.#turnDelivered = true;
     if (this.#closed) {
+      const error = new EngineShutdownError("claude");
+      const evidence = await this.#tryFailureEvidence(0);
+      if (evidence !== null) {
+        this.#attachWorkerText(error, evidence, 0);
+      }
+      attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
       await this.#teardown();
-      throw new EngineShutdownError("claude");
+      throw error;
     }
     const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
     return this.#buildResult(handle, transcript, 0);

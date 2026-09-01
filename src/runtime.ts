@@ -36,7 +36,7 @@ import {
 } from "./errors.js";
 import { CLAUDE_CACHE_TTL_VARIABLE } from "./claude-control-plane.js";
 import { claudeCacheTtlToMs } from "./claude-engine.js";
-import { HoldManager, defaultHoldsDirectory } from "./holds.js";
+import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
 import { RunProgress } from "./progress.js";
 
 import type { HoldDecision } from "./holds.js";
@@ -289,6 +289,7 @@ export class EnsembleRuntime {
   #holdManager: HoldManager | null = null;
   #lastSettledAgentRecord: RuntimeAgentRecord | null = null;
   #holdsDir: string;
+  #holdScope: string | null;
   #holdPollIntervalMs: number | undefined;
   #holdsCwd: string;
   #claudeSessionStaleAfterMs: number;
@@ -307,6 +308,7 @@ export class EnsembleRuntime {
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
+    holdScope?: string;
     holdPollIntervalMs?: number;
     worktreeManager?: WorktreeIsolationManager;
     runId?: string;
@@ -333,6 +335,14 @@ export class EnsembleRuntime {
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
+    if (options.holdScope !== undefined && options.holdScope.trim().length === 0) {
+      // The scope is an opaque launcher-supplied key: explicitly blank is a
+      // mistake, not a request for the shared scope (omission is that).
+      throw new HoldRejectedError("holdScope must be a non-empty string when given");
+    }
+    // Library option outranks the inherited environment variable; neither
+    // lands the run's holds in the default shared scope.
+    this.#holdScope = resolveHoldScope(options.holdScope, process.env);
     this.#holdPollIntervalMs = options.holdPollIntervalMs;
     this.#holdsCwd = options.cwd ?? process.cwd();
     this.#placement = new AgentPlacementManager({
@@ -406,6 +416,7 @@ export class EnsembleRuntime {
       ...(options.agentCeiling !== undefined ? { agentCeiling: options.agentCeiling } : {}),
       defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
       ...(options.holdsDir !== undefined ? { holdsDir: options.holdsDir } : {}),
+      ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
@@ -549,21 +560,30 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution (result identity is opt-in): the
-        // envelope wraps every resolution, a schema call's null collapse
-        // included, so a fan-in that keeps the envelope still knows which
-        // worker failed. The durable record is unchanged — it already
-        // carries label and phase as first-class fields.
-        return { label: options.label ?? null, phase: options.phase ?? null, output };
+        // Identified resolution (opt-in): the envelope wraps every
+        // resolution, a schema call's null collapse included, so a fan-in
+        // that keeps the envelope still knows which worker failed — and
+        // `failure` discriminates: null exactly when the settlement
+        // completed, so a worker's genuine null answer and an exhausted
+        // collapse never read alike. The durable record is unchanged — it
+        // already carries label and phase as first-class fields.
+        const failure =
+          agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
+        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
       }
       return output;
     } catch (error) {
-      if (options.identity === true && error instanceof Error) {
+      if (options.identity === true) {
         // An identified call keeps its identity through operational failure:
         // the combinators' collapse reads this carrier and resolves
-        // { label, phase, output: null } instead of bare null. The call's
-        // own contract is unchanged — the error still propagates.
-        attachAgentIdentity(error, { label: options.label ?? null, phase: options.phase ?? null });
+        // the failure-bearing envelope instead of bare null. A non-Error
+        // rejection cannot carry the property, so it is wrapped — losing
+        // the discrimination to a rejection's spelling would re-open the
+        // silent-empty-success case. The call's own contract is otherwise
+        // unchanged — the error still propagates.
+        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        throw carrier;
       }
       throw error;
     } finally {
@@ -573,13 +593,14 @@ export class EnsembleRuntime {
 
   /**
    * Raise a hold and await its decision: the hold's content and
-   * accepted verdicts are published to the shared holds directory, any
-   * process — the launcher or not, alive at raise time or not — writes the
-   * decision file the record names, nonce correlation rejects stale
-   * answers, and the resolved decision is always one of the accepted
-   * verdicts. Open holds appear in the live status snapshot and the
-   * cross-run `ensemble holds` listing; raise, answer, rejection, and
-   * timeout each emit an event and land in the archive's hold_events.
+   * accepted verdicts are published under the run's launcher-supplied scope
+   * in the shared holds root, any process — the launcher or not, alive at
+   * raise time or not — writes the decision file the record names, nonce
+   * correlation rejects stale answers, and the resolved decision is always
+   * one of the accepted verdicts. Open holds appear in the live status
+   * snapshot and the `ensemble holds` listings (the run's own scope, or
+   * machine-wide); raise, answer, rejection, timeout, and dead-raiser
+   * retirement each emit an event and land in the archive's hold_events.
    */
   async raiseHold(options: { content: string; verdicts: string[]; timeoutMs?: number }): Promise<HoldDecision> {
     if (this.#closed) {
@@ -589,6 +610,7 @@ export class EnsembleRuntime {
       dir: this.#holdsDir,
       runId: this.progress.runId,
       cwd: this.#holdsCwd,
+      scope: this.#holdScope,
       ...(this.#holdPollIntervalMs !== undefined ? { pollIntervalMs: this.#holdPollIntervalMs } : {}),
       onEvent: (event) => {
         this.#emitEvent(event);
@@ -1759,6 +1781,23 @@ function recordOperationalFailure(
 
 function failureFromError(error: unknown): { kind: string; message: string } {
   return describeError(error);
+}
+
+/**
+ * The one-line account an identified envelope's `failure` carries,
+ * read from evidence the settlement already recorded: the last attempt's
+ * own failure, else the runtime's termination cause, else the bare fact.
+ */
+function settledFailureMessage(record: RuntimeAgentRecord): string {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const failure = record.attempts[index]?.failure;
+    if (failure !== undefined && failure !== null) {
+      return `${failure.kind}: ${failure.message}`;
+    }
+  }
+  return record.terminationCause !== null
+    ? `${record.terminationCause.kind}: ${record.terminationCause.message}`
+    : "the agent failed without a recorded cause";
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

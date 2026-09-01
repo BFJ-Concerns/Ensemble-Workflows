@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { HoldManager, defaultHoldsDirectory, enumerateHolds } from "../../src/holds.js";
+import {
+  HoldManager,
+  defaultHoldsDirectory,
+  enumerateHolds,
+  holdScopeSegment,
+  resolveHoldScope
+} from "../../src/holds.js";
 import { HoldRejectedError, HoldTimeoutError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { EngineRegistry } from "../../src/engines.js";
@@ -24,22 +30,24 @@ async function withHoldsDir(body: (dir: string) => Promise<void>): Promise<void>
 function manager(
   dir: string,
   events: RuntimeEvent[],
-  options: { open?: string[]; settled?: string[] } = {}
+  options: { open?: string[]; settled?: string[]; scope?: string | null; procDir?: string } = {}
 ): HoldManager {
   return new HoldManager({
     dir,
     runId: "run-test",
     cwd: "/fake/cwd",
+    scope: options.scope ?? null,
     pollIntervalMs: 5,
     onEvent: (event) => events.push(event),
     onOpen: (hold) => options.open?.push(hold.id),
-    onSettled: (id) => options.settled?.push(id)
+    onSettled: (id) => options.settled?.push(id),
+    ...(options.procDir !== undefined ? { procDir: options.procDir } : {})
   });
 }
 
 async function publishedHold(dir: string): Promise<HoldFileRecord> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const holds = await enumerateHolds(dir);
+    const { holds } = await enumerateHolds(dir);
     if (holds.length > 0 && holds[0] !== undefined) {
       return holds[0].record;
     }
@@ -58,16 +66,20 @@ test("a hold is answered by a process that writes the nonce-correlated decision 
     assert.equal(record.run_id, "run-test");
     assert.equal(record.content, "merge the release branch?");
     assert.deepEqual(record.verdicts, ["approve", "reject"]);
-    assert.equal(record.owner?.pid, process.pid);
-    assert.equal(record.owner?.host, hostname());
+    // A keyless raise lands in the default shared scope's directory.
+    assert.equal(record.scope, null);
+    assert.equal(path.dirname(record.decision_path), path.join(dir, holdScopeSegment(null)));
+    // The raiser's liveness evidence rides the record for the retirement check.
+    assert.equal(record.owner.pid, process.pid);
+    assert.equal(record.owner.host, hostname());
     // The decider is any process: the answer is a plain file write at the
     // path the published record itself names.
     await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "approve", note: "ship it" }));
 
     assert.deepEqual(await decision, { verdict: "approve", note: "ship it" });
     // Settled holds leave the listing — both files are consumed.
-    assert.deepEqual(await enumerateHolds(dir), []);
-    assert.deepEqual(await readdir(dir), []);
+    assert.deepEqual(await enumerateHolds(dir), { holds: [], retired: [] });
+    assert.deepEqual(await readdir(path.join(dir, holdScopeSegment(null))), []);
     assert.deepEqual(
       events.map((event) => event.method),
       ["hold/raised", "hold/answered"]
@@ -85,20 +97,31 @@ test("a stale nonce and an unlisted verdict are rejected — the hold keeps wait
     await writeFile(record.decision_path, JSON.stringify({ nonce: "not-the-nonce", verdict: "a" }));
     await waitForEvent(events, "hold/answerRejected");
     // The hold is still open and answerable: the rejected file was consumed.
-    assert.equal((await enumerateHolds(dir)).length, 1);
-    const afterStaleNonce = await publishedHold(dir);
-    assert.deepEqual(afterStaleNonce.answer_rejection, {
+    assert.equal((await enumerateHolds(dir)).holds.length, 1);
+    // Every rejection republishes onto the open record, so the decider who
+    // wrote the bad file reads back why it bounced — checked after each arm,
+    // since only the latest rejection is on the record at any moment.
+    await assertRepublishedRejection(dir, {
       reason: "stale-nonce",
       attempted_verdict: "a",
-      attempted_verdict_state: "submitted",
-      rejected_at: afterStaleNonce.answer_rejection?.rejected_at
+      attempted_verdict_state: "submitted"
     });
 
     await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "c" }));
     await waitForEvent(events, "hold/answerRejected", 2);
+    await assertRepublishedRejection(dir, {
+      reason: "invalid-verdict",
+      attempted_verdict: "c",
+      attempted_verdict_state: "submitted"
+    });
 
     await writeFile(record.decision_path, "not json");
     await waitForEvent(events, "hold/answerRejected", 3);
+    await assertRepublishedRejection(dir, {
+      reason: "malformed",
+      attempted_verdict: null,
+      attempted_verdict_state: "unparseable"
+    });
 
     await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "b" }));
     assert.deepEqual(await decision, { verdict: "b", note: null });
@@ -142,7 +165,7 @@ test("an unanswered hold with a timeout rejects with HoldTimeoutError and leaves
     const holds = manager(dir, events, { settled });
 
     await assert.rejects(holds.raise({ content: "anyone there?", verdicts: ["yes"], timeoutMs: 20 }), HoldTimeoutError);
-    assert.deepEqual(await enumerateHolds(dir), []);
+    assert.deepEqual((await enumerateHolds(dir)).holds, []);
     assert.deepEqual(settled, ["run-test-1"]);
     assert.ok(events.some((event) => event.method === "hold/timedOut"));
   });
@@ -157,7 +180,7 @@ test("close() abandons open holds: the wait rejects and the file is removed", as
 
     holds.close();
     await assert.rejects(decision, HoldRejectedError);
-    assert.deepEqual(await enumerateHolds(dir), []);
+    assert.deepEqual((await enumerateHolds(dir)).holds, []);
     await assert.rejects(holds.raise({ content: "too late", verdicts: ["ok"] }), HoldRejectedError);
   });
 });
@@ -177,78 +200,134 @@ test("hold options are validated before anything is published", async () => {
       HoldRejectedError
     );
     // Nothing was ever published: the directory was never even created.
-    assert.deepEqual(await enumerateHolds(dir), []);
+    assert.deepEqual(await enumerateHolds(dir), { holds: [], retired: [] });
   });
 });
 
-test("the cross-run listing carries liveness evidence: a dead raiser reads orphaned", async () => {
+test("holds publish under their launcher-supplied scope, and the two listing contracts hold", async () => {
   await withHoldsDir(async (dir) => {
-    // A hold file left by a killed run: same shape, provably dead pid.
-    const orphan: HoldFileRecord = {
-      schema_version: 1,
-      kind: "ensemble_hold",
-      run_id: "run-dead",
-      hold_id: "run-dead-1",
-      nonce: "dead-nonce",
-      content: "abandoned question",
-      verdicts: ["ok"],
-      raised_at: new Date(0).toISOString(),
-      timeout_at: null,
-      cwd: "/nowhere",
-      pid: 2 ** 30,
-      decision_path: path.join(dir, "run-dead-1.decision.json")
-    };
-    await writeFile(path.join(dir, "run-dead-1.json"), JSON.stringify(orphan));
-
     const events: RuntimeEvent[] = [];
-    const holds = manager(dir, events);
-    const decision = holds.raise({ content: "live question", verdicts: ["ok"] });
-    await waitForEvent(events, "hold/raised");
+    const leadA = manager(dir, events, { scope: "lead-a" });
+    const shared = manager(dir, events, { scope: null });
+    const decisionA = leadA.raise({ content: "lead a's question", verdicts: ["ok"] });
+    const decisionShared = shared.raise({ content: "keyless question", verdicts: ["ok"] });
+    await waitForEvent(events, "hold/raised", 2);
 
-    const listed = await enumerateHolds(dir);
-    assert.equal(listed.length, 2);
-    const byId = new Map(listed.map((hold) => [hold.record.hold_id, hold]));
-    assert.equal(byId.get("run-dead-1")?.live, false);
-    assert.equal(byId.get("run-test-1")?.live, true);
+    // The scoped listing is exactly the lead's own view: its hold, never
+    // another scope's and never the default shared scope's.
+    const scopedA = await enumerateHolds(dir, { scope: "lead-a" });
+    assert.deepEqual(
+      scopedA.holds.map((hold) => hold.record.content),
+      ["lead a's question"]
+    );
+    assert.equal(scopedA.holds[0]?.record.scope, "lead-a");
+    const scopedB = await enumerateHolds(dir, { scope: "lead-b" });
+    assert.deepEqual(scopedB, { holds: [], retired: [] });
 
-    holds.close();
-    await assert.rejects(decision, HoldRejectedError);
+    // The machine-wide listing enumerates every scope, shared included.
+    const machineWide = await enumerateHolds(dir);
+    assert.deepEqual(
+      machineWide.holds.map((hold) => hold.record.content).sort(),
+      ["keyless question", "lead a's question"]
+    );
+
+    // An opaque key of hostile spelling maps to one directory, encoded.
+    assert.equal(holdScopeSegment("a/b c"), "scope-a%2Fb%20c");
+    assert.equal(holdScopeSegment(null), "shared");
+
+    leadA.close();
+    shared.close();
+    await assert.rejects(decisionA, HoldRejectedError);
+    await assert.rejects(decisionShared, HoldRejectedError);
   });
 });
 
-test("a hold with conclusive owner evidence is removed, while a legacy pid-only hold remains orphaned", async () => {
-  await withHoldsDir(async (dir) => {
-    const procDir = await mkdtemp(path.join(tmpdir(), "ensemble-holds-proc-"));
-    const host = hostname();
-    try {
-      await mkdir(path.join(procDir, String(process.pid)), { recursive: true });
-      await writeFile(path.join(procDir, String(process.pid), "stat"), fakeProcStat("self-ticks"));
-      const dead: HoldFileRecord = {
-        schema_version: 1,
-        kind: "ensemble_hold",
-        run_id: "run-dead",
-        hold_id: "run-dead-1",
-        nonce: "dead-nonce",
-        content: "conclusively abandoned",
-        verdicts: ["ok"],
-        raised_at: new Date(0).toISOString(),
-        timeout_at: null,
-        cwd: "/nowhere",
-        pid: 4242,
-        owner: { host, pid: 4242, start_ticks: "recorded-ticks" },
-        decision_path: path.join(dir, "run-dead-1.decision.json")
-      };
-      const legacy = { ...dead, hold_id: "run-legacy-1", owner: undefined, decision_path: path.join(dir, "run-legacy-1.decision.json") };
-      await writeFile(path.join(dir, "run-dead-1.json"), JSON.stringify(dead));
-      await writeFile(path.join(dir, "run-legacy-1.json"), JSON.stringify(legacy));
+test("the scope resolves explicit-over-environment, and neither means the shared scope", () => {
+  assert.equal(resolveHoldScope("flag-scope", { ENSEMBLE_HOLD_SCOPE: "env-scope" }), "flag-scope");
+  assert.equal(resolveHoldScope(undefined, { ENSEMBLE_HOLD_SCOPE: "env-scope" }), "env-scope");
+  assert.equal(resolveHoldScope(undefined, { ENSEMBLE_HOLD_SCOPE: "   " }), null);
+  assert.equal(resolveHoldScope(undefined, {}), null);
+});
 
-      const listed = await enumerateHolds(dir, { procDir, host });
-      assert.equal(listed.length, 1);
-      assert.equal(listed[0]?.record.hold_id, "run-legacy-1");
-      assert.equal(listed[0]?.live, false);
-      assert.deepEqual(await readdir(dir), ["run-legacy-1.json"]);
+test("enumeration retires a dead raiser's hold and leaves the evidence-free one listed", async () => {
+  await withHoldsDir(async (dir) => {
+    const proc = await mkdtemp(path.join(tmpdir(), "ensemble-holds-proc-"));
+    try {
+      await writeProcStat(proc, process.pid, "1111");
+      const scopeDir = path.join(dir, holdScopeSegment("lead-a"));
+      await mkdir(scopeDir, { recursive: true });
+      const host = hostname();
+      const deadHold = holdRecord("run-dead-1", "lead-a", {
+        host,
+        pid: 999999,
+        start_ticks: "3333",
+        decisionDir: scopeDir
+      });
+      await writeFile(path.join(scopeDir, "run-dead-1.json"), JSON.stringify(deadHold));
+      // A stale answer beside the dead hold goes with it.
+      await writeFile(deadHold.decision_path, JSON.stringify({ nonce: "stale", verdict: "ok" }));
+      const undecidable = holdRecord("run-unknown-1", "lead-a", {
+        host,
+        pid: 999998,
+        start_ticks: null,
+        decisionDir: scopeDir
+      });
+      await writeFile(path.join(scopeDir, "run-unknown-1.json"), JSON.stringify(undecidable));
+
+      const enumeration = await enumerateHolds(dir, { scope: "lead-a", procDir: proc });
+      // The dead raiser's hold is retired — removed, reported — and the
+      // evidence-free one is never guessed at: it stays answerable.
+      assert.deepEqual(
+        enumeration.retired.map((record) => record.hold_id),
+        ["run-dead-1"]
+      );
+      assert.deepEqual(
+        enumeration.holds.map((hold) => hold.record.hold_id),
+        ["run-unknown-1"]
+      );
+      assert.deepEqual((await readdir(scopeDir)).sort(), ["run-unknown-1.json"]);
+      await assert.rejects(stat(deadHold.decision_path));
     } finally {
-      await rm(procDir, { recursive: true, force: true });
+      await rm(proc, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a raise sweeps its own scope first: the dead sibling is retired with an event", async () => {
+  await withHoldsDir(async (dir) => {
+    const proc = await mkdtemp(path.join(tmpdir(), "ensemble-holds-proc-"));
+    try {
+      await writeProcStat(proc, process.pid, "1111");
+      const scopeDir = path.join(dir, holdScopeSegment("lead-a"));
+      await mkdir(scopeDir, { recursive: true });
+      const deadHold = holdRecord("run-dead-1", "lead-a", {
+        host: hostname(),
+        pid: 999999,
+        start_ticks: "3333",
+        decisionDir: scopeDir
+      });
+      await writeFile(path.join(scopeDir, "run-dead-1.json"), JSON.stringify(deadHold));
+
+      const events: RuntimeEvent[] = [];
+      const holds = manager(dir, events, { scope: "lead-a", procDir: proc });
+      const decision = holds.raise({ content: "fresh question", verdicts: ["ok"] });
+      await waitForEvent(events, "hold/raised");
+
+      const retiredEvents = events.filter((event) => event.method === "hold/retired");
+      assert.deepEqual(
+        retiredEvents.map((event) => event.params.holdId),
+        ["run-dead-1"]
+      );
+      const { holds: listed } = await enumerateHolds(dir, { scope: "lead-a", procDir: proc });
+      assert.deepEqual(
+        listed.map((hold) => hold.record.hold_id),
+        ["run-test-1"]
+      );
+
+      holds.close();
+      await assert.rejects(decision, HoldRejectedError);
+    } finally {
+      await rm(proc, { recursive: true, force: true });
     }
   });
 });
@@ -259,6 +338,7 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
       engines: new EngineRegistry([]),
       defaultMaxAttempts: 1,
       holdsDir: dir,
+      holdScope: "runtime-scope",
       holdPollIntervalMs: 5
     });
     const holdEvents: Array<{ method: string }> = [];
@@ -270,6 +350,7 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
 
     const decision = runtime.raiseHold({ content: "proceed?", verdicts: ["yes", "no"] });
     const record = await publishedHold(dir);
+    assert.equal(record.scope, "runtime-scope");
     // The open hold is visible to a status poller while the run waits.
     const openSnapshot = runtime.progress.snapshot();
     assert.equal(openSnapshot.holds.length, 1);
@@ -287,10 +368,71 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
   });
 });
 
+test("an explicitly blank runtime holdScope fails loud at construction", () => {
+  assert.throws(
+    () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([]),
+        defaultMaxAttempts: 1,
+        holdScope: "  "
+      }),
+    HoldRejectedError
+  );
+});
+
 test("the default holds directory lives under the ensemble data home", () => {
   const dir = defaultHoldsDirectory({ XDG_DATA_HOME: "/data/home" });
   assert.equal(dir, path.join("/data/home", "ensemble", "holds"));
 });
+
+function holdRecord(
+  holdId: string,
+  scope: string | null,
+  options: { host: string; pid: number; start_ticks: string | null; decisionDir: string }
+): HoldFileRecord {
+  return {
+    schema_version: 2,
+    kind: "ensemble_hold",
+    run_id: holdId.replace(/-\d+$/, ""),
+    hold_id: holdId,
+    nonce: `${holdId}-nonce`,
+    scope,
+    content: `question from ${holdId}`,
+    verdicts: ["ok"],
+    raised_at: new Date(0).toISOString(),
+    timeout_at: null,
+    cwd: "/nowhere",
+    owner: { host: options.host, pid: options.pid, start_ticks: options.start_ticks },
+    decision_path: path.join(options.decisionDir, `${holdId}.decision.json`)
+  };
+}
+
+async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
+  const dir = path.join(procDir, String(pid));
+  await mkdir(dir, { recursive: true });
+  // Fields 3–21 precede starttime (field 22); the comm field carries a
+  // space so the parser's last-close-paren split is what the fixture tests.
+  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
+  await writeFile(path.join(dir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
+}
+
+/**
+ * Read the open hold back off disk and assert the rejection feedback it now
+ * carries. The manager republishes before it emits, so a read taken after the
+ * arm's event is the feedback that arm produced — not a predecessor's.
+ */
+async function assertRepublishedRejection(
+  dir: string,
+  expected: { reason: string; attempted_verdict: string | null; attempted_verdict_state: string }
+): Promise<void> {
+  const republished = await publishedHold(dir);
+  const rejection = republished.answer_rejection;
+  assert.notEqual(rejection, undefined, `no rejection feedback republished for ${expected.reason}`);
+  assert.equal(rejection?.reason, expected.reason);
+  assert.equal(rejection?.attempted_verdict, expected.attempted_verdict);
+  assert.equal(rejection?.attempted_verdict_state, expected.attempted_verdict_state);
+  assert.equal(new Date(rejection?.rejected_at ?? "").toISOString(), rejection?.rejected_at);
+}
 
 async function waitForEvent(events: RuntimeEvent[], method: string, count = 1): Promise<void> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
@@ -300,8 +442,4 @@ async function waitForEvent(events: RuntimeEvent[], method: string, count = 1): 
     await new Promise<void>((resolve) => setTimeout(resolve, 2));
   }
   throw new Error(`event ${method} (x${count}) never arrived`);
-}
-
-function fakeProcStat(startTicks: string): string {
-  return `1 (node) S ${"0 ".repeat(18)}${startTicks} 0`;
 }

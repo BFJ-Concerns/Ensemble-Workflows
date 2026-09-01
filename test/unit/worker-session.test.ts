@@ -313,6 +313,68 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
   }
 });
 
+test("a Codex held session archives each scripted turn under its own agent record", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-session-transcript-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd: process.cwd(),
+    runUuid: "session-transcript-capture",
+    workflowPath: path.join(process.cwd(), "session-workflow.js"),
+    workflowSource: "export const meta = { task: 'session transcript capture' };\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const transport = new ScriptedTransport(
+    ["first", "second", "third"].map((turn, index) =>
+      turnResult(`${turn} answer`, {
+        transcripts: [
+          {
+            filename: `${turn}-turn.jsonl`,
+            format: "jsonl",
+            source: "scripted-codex",
+            threadId: "thread-1",
+            content: JSON.stringify({ turn: index + 1 }) + "\n"
+          }
+        ]
+      })
+    )
+  );
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder(writer);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+
+  try {
+    await session.send("first prompt");
+    await session.send("second prompt");
+    await session.send("third prompt");
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+    const records = await Promise.all(
+      ["000001", "000002", "000003"].map(async (id) => {
+        const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+          transcripts: Array<{ path: string }>;
+          transcripts_unavailable: string | null;
+        };
+        assert.equal(record.transcripts_unavailable, null);
+        assert.equal(record.transcripts.length, 1);
+        const transcript = record.transcripts[0]!;
+        assert.match(transcript.path, new RegExp(`^agents/${id}/`));
+        return {
+          path: transcript.path,
+          content: await readFile(path.join(writer.archiveDir, transcript.path), "utf8")
+        };
+      })
+    );
+
+    assert.equal(new Set(records.map((record) => record.path)).size, 3);
+    assert.deepEqual(records.map((record) => record.content), ["{\"turn\":1}\n", "{\"turn\":2}\n", "{\"turn\":3}\n"]);
+    assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1", "thread-1"]);
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
 test("an idle session holds no engine-cap slot between turns", async () => {
   // Cap 1: if the idle session occupied the slot, the one-shot call below
   // could never be admitted and this test would hang (and time out).

@@ -984,7 +984,7 @@ test("Codex app-server missing binary rejects start instead of crashing", async 
   );
 });
 
-test("Codex app-server prunes a thread's transcript once its turn completes", async () => {
+test("Codex app-server gives every reused-thread turn a fresh transcript buffer", async () => {
   const codexBin = await fakeCodexTurnServer();
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
@@ -1004,12 +1004,19 @@ test("Codex app-server prunes a thread's transcript once its turn completes", as
     const threadId = await transport.openThread({});
     assert.equal(transport.openTranscripts(), 1);
 
-    const result = await transport.runTurn(threadId, "hello?", {});
-    assert.equal(result.text, "hello");
-    assert.equal(result.resolvedModel, "gpt-test-default");
-    assert.equal(result.resolvedEffort, "medium");
-    assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
-    assert.equal(transport.openTranscripts(), 0);
+    const results = [];
+    for (const prompt of ["first turn", "second turn", "third turn"]) {
+      const result = await transport.runTurn(threadId, prompt, {});
+      assert.equal(result.text, "hello");
+      assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
+      assert.ok(result.transcripts?.[0]?.content.includes(prompt));
+      assert.equal(transport.openTranscripts(), 0);
+      results.push(result);
+    }
+
+    assert.equal(results[0]?.resolvedModel, "gpt-test-default");
+    assert.equal(results[0]?.resolvedEffort, "medium");
+    assert.equal(new Set(results.map((result) => result.transcripts?.[0]?.content)).size, 3);
   } finally {
     await transport.close();
   }

@@ -1017,6 +1017,11 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
     assert.equal(results[0]?.resolvedModel, "gpt-test-default");
     assert.equal(results[0]?.resolvedEffort, "medium");
     assert.equal(new Set(results.map((result) => result.transcripts?.[0]?.content)).size, 3);
+    assert.doesNotMatch(results[1]?.transcripts?.[0]?.content ?? "", /first turn/);
+
+    const effortFollowUp = await transport.runTurn(threadId, "effort follow-up", { effort: "high" });
+    assert.equal(effortFollowUp.resolvedEffort, "high");
+    assert.equal(effortFollowUp.resolvedModel, undefined);
   } finally {
     await transport.close();
   }

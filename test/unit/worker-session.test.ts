@@ -257,6 +257,7 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
       ]
     }),
     turnResult("second", {
+      resolvedEffort: "low",
       // Codex reports a cumulative thread total as well as this turn's
       // delta. The archive summary must retain the latter's per-call shape.
       tokenUsageEvents: [spendEvent("thread-1", 20, 30)],
@@ -313,7 +314,10 @@ test("a Codex follow-up record retains session identity, per-call usage, and hon
   }
 });
 
-test("a Codex held session archives each scripted turn under its own agent record", async () => {
+// ScriptedTransport supplies transcript payloads directly, so this cold-read
+// archive layer also passes against the broken app-server buffer. The
+// discriminating fail-before is the app-server test above the transport seam.
+test("a Codex held session cold-reads each scripted turn under its own agent record", async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-session-transcript-store-"));
   const writer = await RunRecordWriter.start({
     storeDir: store,

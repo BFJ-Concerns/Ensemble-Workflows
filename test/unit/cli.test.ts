@@ -984,7 +984,9 @@ test("ensemble agent leaves fallback-model support to the engine and rejects mal
 
   assert.equal(malformedExit, 2);
   assert.equal(runtimeCreations, 0);
-  assert.match(malformedStderr.text(), /Option '--fallback-model <value>' argument missing/);
+  // The placement scan runs first: a flag after the prompt is named as a
+  // misplacement with its remedy, before parseArgs could misread it.
+  assert.match(malformedStderr.text(), /Flag --fallback-model appears after the agent prompt/);
   assert.doesNotMatch(malformedStderr.text(), /\n\s+at /);
 });
 

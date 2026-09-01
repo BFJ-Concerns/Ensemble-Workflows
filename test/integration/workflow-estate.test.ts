@@ -995,7 +995,10 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   assert.equal(unsupported.exitCode, 1);
   assert.equal(unsupported.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
   const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
-  assert.match(unsupportedDiagnostic, /CodexSchemaSubsetUnsupportedError: Codex rejected outputSchema before generation/);
+  // The operator seam renders the rejection cause-first with its remedy; the
+  // discriminator from ordinary validation failure is the pre-generation line.
+  assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
+  assert.match(unsupportedDiagnostic, /Use a schema supported by Codex outputSchema/);
   assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
 
   const ordinaryValidation = await runScriptWithCliEngines(

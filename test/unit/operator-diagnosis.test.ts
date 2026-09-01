@@ -209,6 +209,7 @@ test("worker-controlled terminal control sequences never reach operator stderr",
 
   const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record });
   assert.ok(rendered !== null);
+  // eslint-disable-next-line no-control-regex -- the control bytes are the subject of the assertion
   assert.equal(/[\x00-\x08\x0b-\x1f]/.test(rendered), false, "no control bytes in the rendered surface");
   assert.match(rendered, /before/);
   assert.match(rendered, /middle/);

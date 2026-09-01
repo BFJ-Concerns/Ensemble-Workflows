@@ -105,7 +105,8 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}`);
+      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
     }
     return lines;
   }

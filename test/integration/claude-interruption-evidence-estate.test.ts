@@ -25,7 +25,7 @@ test("built CLI archives an interrupted Claude worker's already-served evidence"
     await chmod(path.join(binDirectory, "claude"), 0o755);
 
     const run = await runInterruptedCli(
-      [bundledCliPath, "agent", "keep working", "--engine", "claude", "--max-attempts", "1"],
+      [bundledCliPath, "agent", "--engine", "claude", "--max-attempts", "1", "keep working"],
       {
         PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
         HOME: workerHome,

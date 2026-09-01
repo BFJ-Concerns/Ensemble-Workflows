@@ -1,5 +1,12 @@
-import { HoldTimeoutError, PreSpawnAuthorError, appServerDiagnosticOf, workerExitStatusOf } from "./errors.js";
-import { WorkflowTimeoutError } from "./script-runner.js";
+import {
+  CodexSchemaSubsetUnsupportedError,
+  EngineShutdownError,
+  HoldTimeoutError,
+  PreSpawnAuthorError,
+  appServerDiagnosticOf,
+  workerExitStatusOf
+} from "./errors.js";
+import { AmbientConfigError } from "./ambient-settings.js";
 
 import type { RuntimeAgentRecord } from "./run-record.js";
 
@@ -11,6 +18,11 @@ import type { RuntimeAgentRecord } from "./run-record.js";
  * their own clean-line family; a genuinely unknown error falls through to
  * the caller's stack rendering, because hiding an undiagnosed failure's
  * internals would trade evidence for tidiness.
+ *
+ * This module is the one seam every operator-facing failure surface calls —
+ * the CLI's terminal catch, its early configuration catch, the teardown
+ * lines, and the combinators' per-leg failure logs — so a failure class
+ * gains its rendering here once, not per surface.
  */
 
 export interface TerminalPresentationContext {
@@ -30,13 +42,23 @@ export function presentTerminalError(error: unknown, context: TerminalPresentati
   return [first, ...detail.map((line) => `  ${line}`)].join("\n");
 }
 
+/**
+ * The context-free rendering for surfaces that have no archive pointer or
+ * last-record accessor to offer — the combinators' per-leg logs, the
+ * teardown lines, the pre-run configuration catch. Same seam, same lines,
+ * minus the salvage pointers only the terminal catch can name.
+ */
+export function presentOperationalError(error: unknown): string | null {
+  return presentTerminalError(error, { archiveDir: null, lastAgentRecord: null });
+}
+
 function diagnose(error: unknown, context: TerminalPresentationContext): string[] | null {
   if (isInterrupt(error)) {
     return [
       `Interrupted (${error.signal}) — partial result on stdout${recordSuffix(context)}`
     ];
   }
-  if (error instanceof WorkflowTimeoutError) {
+  if (isWorkflowTimeout(error)) {
     return [`${error.message} — partial result on stdout${recordSuffix(context)}`];
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
@@ -68,6 +90,32 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
       "Prompt exceeds the platform's argument-size limit (E2BIG) — shorten the prompt (this engine passes it as a process argument)"
     ];
   }
+  if (error instanceof AmbientConfigError) {
+    // The message already names the layer and the remedy; the stack behind
+    // it is harness interior, useful to nobody fixing a config value.
+    return [`Configuration error: ${error.message}`];
+  }
+  if (error instanceof CodexSchemaSubsetUnsupportedError) {
+    // Cause and remedy first; the app-server's diagnostic once, bounded —
+    // the raw error duplicates the payload into the message and the data
+    // field, and neither copy belongs on the default surface twice.
+    const lines = [
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
+      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+    ];
+    const diagnostic = appServerDiagnosticOf(error);
+    if (diagnostic !== null) {
+      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
+    }
+    return lines;
+  }
+  if (error instanceof EngineShutdownError) {
+    // Reached the operator only because the run was already ending: the
+    // leg was interrupted by teardown, not failed by its own work — a
+    // stack here points into the author's parallel() call and lies.
+    return [`${error.message} — this worker was interrupted by the run ending, not by its own failure`];
+  }
   if (error instanceof Error && error.name === "AppServerExitedError") {
     // Discriminate how the server died from the evidence the error already
     // carries, rather than presenting one generic class for interrupt,
@@ -82,10 +130,13 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
         : exit?.exitCode !== null && exit?.exitCode !== undefined
           ? `exited with code ${exit.exitCode}`
           : "exited unexpectedly";
-    const lines = [`Codex app-server ${how}`, ...error.message.split("\n")];
+    // The server's message is kept whole but stripped of terminal
+    // control: its stderr tail is engine-controlled bytes, and evidence
+    // preservation never licenses control injection.
+    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      lines.push(`server diagnostic: ${diagnostic.message}`);
+      lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
     }
     return lines;
   }
@@ -100,8 +151,25 @@ function recordSuffix(context: TerminalPresentationContext): string {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
 }
 
+/**
+ * Terminal-control sequences a worker's output could smuggle onto the
+ * operator's stderr: OSC (title/clipboard/hyperlink writes, BEL- or
+ * ST-terminated), CSI (cursor and erase control), the remaining
+ * single-character ESC dispatches, and stray BEL. Worker output is data,
+ * never terminal input, so these are stripped before any bounded excerpt
+ * is rendered.
+ */
+const TERMINAL_CONTROL_SEQUENCES =
+  // eslint-disable-next-line no-control-regex -- the control characters are the subject of the strip
+  /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B\[[0-?]*[ -/]*[@-~]?|\u001B[@-_]?|\u0007/g;
+
+/** Strip only — for evidence kept whole that must still never carry terminal control. */
+function stripControl(text: string): string {
+  return text.replace(TERMINAL_CONTROL_SEQUENCES, "");
+}
+
 function bounded(text: string, limit = 400): string {
-  const flat = text.replace(/\s+/g, " ").trim();
+  const flat = stripControl(text).replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
@@ -114,6 +182,13 @@ function isInterrupt(error: unknown): error is Error & { signal: string } {
     error.name === "WorkflowInterruptedError" &&
     typeof (error as { signal?: unknown }).signal === "string"
   );
+}
+
+function isWorkflowTimeout(error: unknown): error is Error {
+  // Structural for the same cycle-avoidance reason as the interrupt match:
+  // this module is imported by the combinators, which the script runner
+  // (WorkflowTimeoutError's home) itself imports.
+  return error instanceof Error && error.name === "WorkflowTimeoutError";
 }
 
 function findErrorCode(error: unknown, code: string): boolean {

@@ -171,9 +171,9 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
 });
 
 test("parallel resolves an identified failure to its envelope, not bare null", async () => {
-  // An identity: true call that fails operationally inside a fan-out
-  // keeps its identity — the carrier the runtime attached becomes the
-  // resolved envelope, with output null carrying the collapse.
+  // A thunk throwing an error with an attached identity collapses to an
+  // envelope that preserves the identity, sets output to null, and carries
+  // the error message in failure.
   const failure = attachAgentIdentity(new Error("worker died"), { label: "verify", phase: "check" });
   const logs: string[] = [];
 
@@ -187,7 +187,10 @@ test("parallel resolves an identified failure to its envelope, not bare null", a
     (message) => logs.push(message)
   );
 
-  assert.deepEqual(results, ["first", { label: "verify", phase: "check", output: null }]);
+  assert.deepEqual(results, [
+    "first",
+    { label: "verify", phase: "check", output: null, failure: { message: "worker died" } }
+  ]);
   assert.match(logs[0] ?? "", /parallel thunk 1 failed/);
 });
 
@@ -204,7 +207,7 @@ test("pipeline resolves an identified failed item to its envelope", async () => 
     () => {}
   );
 
-  assert.deepEqual(results, [{ label: "leg", phase: null, output: null }]);
+  assert.deepEqual(results, [{ label: "leg", phase: null, output: null, failure: { message: "stage died" } }]);
 });
 
 test("the hooks agent surface presents the canonical overload set", async () => {
@@ -221,7 +224,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   async function fakeAgent(prompt: string, agentOptions: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     calls.push(agentOptions);
     if (agentOptions.identity === true) {
-      return { label: agentOptions.label ?? null, phase: agentOptions.phase ?? null, output: "identified" };
+      return { label: agentOptions.label ?? null, phase: agentOptions.phase ?? null, output: "identified", failure: null };
     }
     if (agentOptions.schema !== undefined) {
       return { structured: true };
@@ -252,7 +255,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
 
   assert.equal(await plain, "plain");
   assert.deepEqual(await structured, { structured: true });
-  assert.deepEqual(await identified, { label: null, phase: null, output: "identified" });
+  assert.deepEqual(await identified, { label: null, phase: null, output: "identified", failure: null });
   // Defaults still merge beneath the typed surface.
   assert.equal(calls[0]?.model, "default-model");
 });

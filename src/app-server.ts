@@ -112,6 +112,15 @@ const DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 const SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1_000;
 const MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+/**
+ * Aggregate wall-clock bound on one discovery, checked between samples:
+ * the attempt cap bounds the call count, each call is bounded by the
+ * request timeout, and this deadline stops the loop from starting another
+ * sample once the elapsed budget is spent — discovery is paid inside a
+ * held admission slot. An in-flight sample is not raced against it, so
+ * the true ceiling is this deadline plus one request timeout.
+ */
+const SKILL_DISCOVERY_DEADLINE_MS = 30_000;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -133,6 +142,8 @@ export interface CodexAppServerTransportOptions {
   onEvent?: (event: RuntimeEvent) => void;
   /** Test seam for discovery's deliberately time-spaced cold-start sampling. */
   skillDiscoveryStabilityIntervalMs?: number;
+  /** Aggregate wall-clock bound on one discovery's whole sampling loop. */
+  skillDiscoveryDeadlineMs?: number;
 }
 
 /**
@@ -207,6 +218,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #firstOutputTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #skillDiscoveryStabilityIntervalMs: number;
+  #skillDiscoveryDeadlineMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
@@ -225,6 +237,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#skillDiscoveryStabilityIntervalMs =
       options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -312,6 +325,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {
+    const startedAt = Date.now();
     let previousNames: readonly string[] | undefined;
     let observedExpansion = false;
     for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
@@ -330,6 +344,16 @@ export class CodexAppServerTransport implements RuntimeTransport {
         }
       }
       previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        // Checked between samples (an in-flight call keeps its own request
+        // timeout): once the elapsed budget is spent, no further sample
+        // starts. Failing loud keeps the strip contract:
+        // a deadline can never dispatch a partial deny overlay.
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
       }

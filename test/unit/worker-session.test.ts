@@ -24,6 +24,7 @@ import type {
 } from "../../src/claude-control-plane.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
+import type { EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
@@ -33,7 +34,7 @@ import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions
 // is *which thread* each turn landed on.
 // ---------------------------------------------------------------------------
 
-function turnResult(text: string, overrides: Partial<TurnResult> = {}): TurnResult {
+function turnResult(text: string, overrides: Partial<EngineAttemptResult> = {}): EngineAttemptResult {
   return {
     text,
     deltaText: text,
@@ -72,10 +73,10 @@ class ScriptedTransport implements RuntimeTransport {
   readonly openedThreads: ThreadStartOptions[] = [];
   readonly turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
 
-  #responses: TurnResult[];
+  #responses: EngineAttemptResult[];
   #onTurn: ((result: TurnResult) => void) | undefined;
 
-  constructor(responses: TurnResult[], onTurn?: (result: TurnResult) => void) {
+  constructor(responses: EngineAttemptResult[], onTurn?: (result: TurnResult) => void) {
     this.#responses = [...responses];
     this.#onTurn = onTurn;
   }
@@ -170,7 +171,10 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
       captured.push(structuredClone(record));
     }
   } as unknown as RunRecordWriter;
-  const transport = new ScriptedTransport([turnResult("one"), turnResult("two")]);
+  const transport = new ScriptedTransport([
+    turnResult("one", { resolvedModel: "gpt-5.6-terra-2026-08-30", resolvedEffort: "low" }),
+    turnResult("two")
+  ]);
   const runtime = codexRuntime(transport);
   runtime.setRunRecorder(recorder);
   const session = runtime.createWorkerSession({ engine: "codex", label: "builder" });
@@ -189,8 +193,40 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
   assert.equal(secondDispatch?.status, "in-progress");
   assert.deepEqual(secondDispatch?.session, { id: 1, turn: 2 });
   assert.equal(secondDispatch?.prompt, "now build it");
+  assert.equal(secondDispatch?.resolvedModel, "gpt-5.6-terra-2026-08-30");
+  assert.equal(secondDispatch?.resolvedEffort, "low");
   assert.deepEqual(secondSettled?.session, { id: 1, turn: 2 });
   assert.equal(secondSettled?.label, "builder");
+  await runtime.close();
+});
+
+test("a failed first Codex turn carries served identity into the next dispatch", async () => {
+  const captured: RuntimeAgentRecord[] = [];
+  const recorder = {
+    recordAgent: async (record: RuntimeAgentRecord) => {
+      captured.push(structuredClone(record));
+    }
+  } as unknown as RunRecordWriter;
+  const transport = new ScriptedTransport([
+    turnResult("", {
+      resolvedModel: "gpt-5.6-terra-2026-08-30",
+      resolvedEffort: "low",
+      attemptFailure: { kind: "empty-output", message: "the first turn failed after identifying its worker" }
+    }),
+    turnResult("recovered")
+  ]);
+  const runtime = codexRuntime(transport);
+  runtime.setRunRecorder(recorder);
+  const session = runtime.createWorkerSession({ engine: "codex", maxAttempts: 1 });
+
+  await assert.rejects(session.send("first prompt"));
+  await session.send("follow-up prompt");
+
+  const secondDispatch = captured.find(
+    (record) => record.session?.turn === 2 && record.status === "in-progress"
+  );
+  assert.equal(secondDispatch?.resolvedModel, "gpt-5.6-terra-2026-08-30");
+  assert.equal(secondDispatch?.resolvedEffort, "low");
   await runtime.close();
 });
 

@@ -62,19 +62,32 @@ any worker spawns.
   send. Each turn is its own agent record carrying `session: { id, turn }`,
   and every held session is closed when the run ends.
 - `hold({ content, verdicts, timeoutMs? })` raises a decision hold: the
-  request is published to the shared `$XDG_DATA_HOME/ensemble/holds/`
-  directory and the call resolves `{ verdict, note }` when any process — the
-  launcher or not — writes the nonce-correlated decision file the record
-  names. Stale nonces, unlisted verdicts, and malformed answers are rejected
-  and the hold keeps waiting; an optional timeout rejects with
-  `HoldTimeoutError`. Open holds appear in the live status snapshot and the
-  cross-run `ensemble holds [--json]` listing, and every raise, answer,
-  rejection, and timeout lands in the archive manifest's `hold_events`.
+  request is published under the run's **scope** in the shared
+  `$XDG_DATA_HOME/ensemble/holds/` root and the call resolves
+  `{ verdict, note }` when any process — the launcher or not — writes the
+  nonce-correlated decision file the record names (hand-writable plain
+  JSON). The scope is an opaque key the launcher supplies — the `holdScope`
+  library option or `--hold-scope` flag, outranking the inherited
+  `ENSEMBLE_HOLD_SCOPE` variable a lead sets once — and a keyless run's
+  holds land in the default shared scope. Stale nonces, unlisted verdicts,
+  and malformed answers are rejected and the hold keeps waiting; an
+  optional timeout rejects with `HoldTimeoutError`. Open holds appear in
+  the live status snapshot and the `ensemble holds [--json]
+  [--scope <scope> | --all]` listing — one scope's view, or machine-wide
+  across every scope — a hold whose raiser is provably dead is retired by
+  the machinery that observes it, and every raise, answer, rejection,
+  timeout, and retirement lands in the archive manifest's `hold_events`.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   failed thunk becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed
   schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
-  arguments, a nesting violation — propagates and fails the run.
+  arguments, a nesting violation — propagates and fails the run. The
+  documented route for telling a failed leg from one that legitimately
+  answered `null` is `identity: true`: an identified call resolves
+  `{ label, phase, output, failure }`, and `failure` is `null` exactly when
+  the worker's own settlement completed — a collapse (in the combinators, or
+  a schema call's exhausted attempts) carries a `{ message }` account there
+  instead.
 - `pipeline(items, ...stages)` runs each item through each stage independently,
   with no cross-item barrier between stages. Ordinary stage failures drop that
   item to `null`; the same pre-spawn author errors propagate.
@@ -333,7 +346,14 @@ matching start ticks is live; and everything else, including a pid the reader
 has no readable proc filesystem to check, is undecidable. That reading is a
 consumer's to make, not an API the harness exports, and it lets a supervisor
 tell a killed run from a running one at read time, on an archive nobody has
-rewritten. Agent records under a reaped run are preserved untouched.
+rewritten. A reap also resolves the run's own stranded agent records: every
+`agent.json` still `in-progress` flips to `"abandoned"` carrying the same
+`abandonment` block, because a dispatch-time record frozen at `in-progress`
+would otherwise read as "no attempt ran, nothing spent" — a claim the death
+made undecidable, not false. An abandoned agent record's attempts and usage
+are exactly what was recorded before the death: their absence means
+unobserved, never zero. Settled agent records are evidence and are never
+rewritten.
 
 ### Run record schema
 
@@ -385,9 +405,11 @@ The manifest is `manifest.json`. Its top-level fields are:
   archived args with their canonical path and SHA-256 — recorded before the
   child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
-  answer, timeout) in event order, each entry carrying `hold_id`, `event`,
+  answer, timeout, and dead-raiser retirements this run's sweep observed)
+  in event order, each entry carrying `hold_id`, `event`,
   `verdict`/`reason` where applicable, and a timestamp.
-- `git`: start/end HEAD, dirty flag, and archived diff path when dirty.
+- `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
+  all-`null` outside a git repository.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
@@ -445,8 +467,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `changed`, and `removed` — or `null`.
 - `label`, `phase`, and `status`. Agent status is `"in-progress"`,
   `"complete"`, `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`;
-  `"abandoned"` means the run ended while the dispatch record was still being
-  persisted, so the harness did not observe an agent outcome.
+  `"abandoned"` means no agent outcome was observed: written by the run's own
+  close when it ended while the dispatch record was still being persisted,
+  and by the reaper — with an `abandonment` block naming what was observed,
+  when, and by which run — for a record a killed run left `"in-progress"`.
 - `termination_cause`: the `{ kind, message }` that settled this agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   turn timeout — and `null` when the attempts already name the cause.

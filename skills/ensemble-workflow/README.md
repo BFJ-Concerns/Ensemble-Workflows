@@ -53,6 +53,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
   [--timeout ms] [prompt]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
+node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope <scope> | --all]
 ```
 
 - `--json-args` replaces the positional string args with a parsed JSON value
@@ -60,7 +61,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
 - Workflow tuning flags must precede the script path. To pass a script argument
   that has the same spelling as a tuning flag, put `--` before the script path:
   `-- <script.js> --json-args`.
-- `--budget engine=N` sets a per-engine token ceiling; `--concurrency engine=N`
+- `--budget engine=N` sets a per-engine token-spend threshold checked at
+  dispatch; `--concurrency engine=N`
   caps that engine's parallel workers. Both repeatable, one engine each.
 - `--agent-ceiling N` caps all workers in the run across every engine. It is
   unset and unbounded by default; `--agent-ceiling null` explicitly lifts a
@@ -197,8 +199,9 @@ parent link — recorded before the child runs. Each args entry names a
 writer. The root's `meta.task` remains the single grouping identity.
 
 Summary usage in the record (schema version 3) uses one declared vocabulary:
-`freshInputTokens`, `cachedInputTokens`, `outputTokens`, and
-`reasoningOutputTokens` — disjoint classes summing to `totalTokens`, each
+`freshInputTokens`, `cachedInputTokens`, `outputTokens`,
+`reasoningOutputTokens`, and `unclassifiedTokens` — disjoint classes summing
+to `totalTokens`, each
 engine's native fields mapped under one inclusion rule (Codex reports cached
 within input and reasoning within output; the summary subtracts both out).
 `cachedInputTokens` remains the combined cache figure used for admission and
@@ -208,7 +211,11 @@ cache reads and writes. Where the engine separates those costs,
 field being absent means that part is not separable, never zero.
 `reasoningOutputTokens: null` means the engine does not separate reasoning —
 not zero; Claude's transcript-derived events do not separate it, so their
-summary is `null` and carries the whole generation in `outputTokens`. The
+summary is `null` and carries the whole generation in `outputTokens`.
+`unclassifiedTokens` is spend the engine's total covers but no declared class
+does — opencode steps carrying only a `total` are the known case; naming it
+keeps the summary honest, so no class absorbs tokens by lying about what they
+were and no reported spend is erased into an all-zero summary. The
 manifest's `cost_rollup` keys spend per engine and per *served* model (the
 literal `unresolved` when no served model was ever learned, never the
 requested pin); its cost entries are `provider-reported` figures only, and a
@@ -235,8 +242,9 @@ already exist.
 While a run is active, Ensemble writes `ensemble.local.json` — a small JSON
 object describing the run's current state — atomically to the status directory.
 The file is removed when the run finishes; absence means no run is in flight.
-The full schema and a worked example are in the
-[root README](../../README.md#ensemblelocaljson-schema); the fields are:
+The full schema and a worked example are in the repository's root
+[README](../../README.md#ensemblelocaljson-schema) (outside this bundle; see
+the source repository); the fields are:
 
 - `schema`: `1`.
 - `runId`: string.
@@ -257,6 +265,12 @@ The full schema and a worked example are in the
   and `phase`, and two liveness stamps (`startedAtMs`, `firstEvidenceAtMs`) as
   Unix epoch milliseconds or `null`. `firstEvidenceAtMs` is earliest-wins: a
   worker with no evidence stamp has never produced output.
+- `holds`: array of open decision holds, empty when the run is not waiting.
+  Each object has string `id`, string `content` (bounded to 500 characters;
+  the hold file carries the full text), string-array `verdicts`, and numeric
+  `raisedAtMs` (Unix epoch milliseconds).
+- `owner`: object (`host`, `pid`, `start_ticks`) — the writer's liveness
+  evidence, so a poller can refute a snapshot a killed run left behind.
 
 Treat a snapshot whose `updatedAt` is more than 30 seconds old as stale; the
 writer refreshes a quiet run every 10 seconds.
@@ -264,9 +278,12 @@ writer refreshes a quiet run every 10 seconds.
 ## Durable run record
 
 By default, every run writes a permanent archive (recording is disabled by
-`ENSEMBLE_RUN_RECORD=off` or a null run-record directory). The full schema is in the
-[root README](../../README.md#run-record-schema); the key structures are
-summarised here for quick reference.
+`ENSEMBLE_RUN_RECORD=off` or a null run-record directory). Archives are stored
+under `$STORE/runs/cwd/<namespace-sha256>/<run-uuid>/`, where `$STORE`
+defaults to `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`).
+The full schema is in the repository's root
+[README](../../README.md#run-record-schema) (outside this bundle; see the
+source repository); the key structures are summarised here for quick reference.
 
 Each JSON artefact carries `schema_version` (currently `3`) and `kind`
 (`run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`).
@@ -281,15 +298,21 @@ material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
 and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
-`git` (start/end HEAD, dirty flag, diff path), `environment` (OS arch/platform/
+`budget_ceilings` / `run_timeout_ms` (the effective per-engine token
+ceilings and whole-run timeout, each as `{ value, layer }` — the same
+auditable shape as `concurrency`),
+`git` (start/end HEAD, dirty flag, diff path; all-`null` outside a git
+repository), `environment` (OS arch/platform/
 release, Node version, tool versions for claude/codex/git/opencode), `harness`
 (package name, version, git commit), `result` (archive path, exit code),
 `error` (`{ kind, message }` or `null` — what ended the run; see the
-[root README](../../README.md#run-record-schema) for the full description),
+repository's root [README](../../README.md#run-record-schema) for the full
+description),
 `cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
 path, size, SHA-256 for each archived artefact; the manifest itself is excluded),
 `integrity` (`manifest_sha256` self-digest, `files_lost` entries; see the
-[root README](../../README.md#run-record-schema) for canonical semantics).
+repository's root [README](../../README.md#run-record-schema) for canonical
+semantics).
 
 ### Agent record (`agents/<id>/agent.json`)
 
@@ -446,9 +469,20 @@ pipelines used to hand-roll per script.
 
 - **Raising:** `content` is what the decider reads (a non-empty string);
   `verdicts` the non-empty set of accepted answers. The hold is published
-  as a JSON file in the shared cross-run directory
-  (`$XDG_DATA_HOME/ensemble/holds/`), carrying everything a decider needs:
-  the content, the verdicts, a fresh nonce, and the decision path.
+  as a JSON file under the run's **scope** in the shared cross-run root
+  (`$XDG_DATA_HOME/ensemble/holds/<scope>/`), carrying everything a decider
+  needs: the content, the verdicts, a fresh nonce, the decision path, and
+  the raiser's liveness evidence.
+- **Scoping:** the scope is an opaque key the launcher supplies — a lead
+  session's own id is a natural value — so cooperating leads on one machine
+  never see each other's holds in their own views. A lead sets the
+  inherited `ENSEMBLE_HOLD_SCOPE` variable once and every nested invocation
+  inherits it; the `--hold-scope` flag or `holdScope` library option
+  outranks the variable per run. A keyless run's holds land in the default
+  shared scope, which scoped listings never show and the machine-wide
+  listing always shows. Scoping is hygiene against accidental
+  cross-answering; the nonce stays the correctness boundary, and the scope
+  is never inferred from cwd or process ancestry.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
   accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
@@ -458,19 +492,24 @@ pipelines used to hand-roll per script.
   entirely. A stale nonce, an unlisted verdict, or a malformed file is
   rejected (the bad file is consumed, an event says so, the hold keeps
   waiting) — an invalid answer never reaches the script as a decision.
-- **Enumerating:** `ensemble holds` lists every open hold on the machine —
-  id, liveness of the raising process, verdicts, decision path, content —
-  and `ensemble holds --json` emits the full records; open holds also
-  appear in the run's live status snapshot while it waits.
+- **Enumerating:** two explicit listing contracts. `ensemble holds` shows
+  the inherited scope's open holds (machine-wide when no scope is set);
+  `ensemble holds --scope <scope>` names a scope explicitly; `ensemble
+  holds --all` is the machine-wide view across every scope, the shared
+  scope included. Each listing carries id, scope, verdicts, decision path,
+  and content; `--json` emits the full records plus what was retired. Open
+  holds also appear in the run's live status snapshot while it waits.
 - **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
   rejects the awaiting `hold()` with `HoldTimeoutError` (one clean line at
   the CLI; catch it to treat expiry as an outcome).
-- **Observability:** raise, answer, rejected answer, and timeout each emit
-  a runtime event and land in the archive manifest's `hold_events` list,
-  so a consumer holding only the archive can reconstruct what the run
-  waited on. Settled and abandoned holds remove their files; the listing
-  shows only what is genuinely open (an `orphaned` marker flags holds
-  whose raising process has died).
+- **Observability:** raise, answer, rejected answer, timeout, and
+  retirement each emit a runtime event and land in the archive manifest's
+  `hold_events` list, so a consumer holding only the archive can
+  reconstruct what the run waited on. Settled and abandoned holds remove
+  their files, and a hold whose raiser is provably dead — judged from the
+  liveness evidence the record carries, never guessed — is retired by the
+  enumeration or sweep that observes it, so the listing only ever shows
+  answerable holds.
 
 ## `agent()` options and per-engine support
 
@@ -510,8 +549,8 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart. Discovery qualifies only after the set grows from its cold result and the larger canonical filesystem-and-plugin set repeats; a repeated cold state therefore fails closed instead of being treated as complete. The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, or ten calls without that growth-and-repeat sequence fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
-| `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output }` (label/phase `null` when unset) instead of the bare output — a schema call's `null` collapse included, so a fan-in keeping the envelope still knows which worker failed. An identified call that fails *operationally* inside `parallel()`/`pipeline()` also keeps its identity: the combinator resolves `{ label, phase, output: null }` for it, never bare `null`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
 user running the harness can and can reach the network. `strip` is the

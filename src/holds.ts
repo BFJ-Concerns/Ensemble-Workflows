@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import path from "node:path";
 
 import { HoldRejectedError, HoldTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { readProcessStartTicks } from "./run-record.js";
+import { snapshotOwnerGone } from "./status-file.js";
 
+import type { SnapshotOwnerEvidence } from "./status-file.js";
 import type { RuntimeEvent } from "./types.js";
 
 /**
@@ -15,10 +18,47 @@ import type { RuntimeEvent } from "./types.js";
  * deliberately: the decision writer need not be the process that launched
  * the run, nor exist when the hold was raised — an orchestrator sleeps
  * between holds, and a fresh session answers a predecessor's — with nonce
- * correlation keeping stale answers safe. Holds from every run share one
- * per-user directory so a watcher can enumerate them without knowing any
- * run's own directories.
+ * correlation keeping stale answers safe, and answers staying hand-writable
+ * plain JSON.
+ *
+ * Every hold publishes under a **scope** — an opaque key the launcher
+ * supplies (a lead session's own id is a natural value), carried by the
+ * inherited `ENSEMBLE_HOLD_SCOPE` environment variable a lead sets once so
+ * every nested invocation inherits it, outranked by the `--hold-scope` flag
+ * or the `holdScope` library option. The scope is per-lead coordination
+ * state, never inferred from the raising process's cwd or ancestry, and it
+ * takes no config-file layer. A run whose launcher supplied no key lands in
+ * the default shared scope, which scoped listings never show and the
+ * machine-wide listing always shows. Scoping is hygiene against accidental
+ * cross-answering between cooperating local processes — the nonce remains
+ * the correctness boundary.
  */
+
+/** The inherited scope variable a lead sets once; flag and library option outrank it. */
+export const HOLD_SCOPE_ENV = "ENSEMBLE_HOLD_SCOPE";
+
+/**
+ * Resolve the hold scope for a raise: an explicit value (flag or library
+ * option) wins, the inherited environment variable applies otherwise, and
+ * neither means the default shared scope (`null`).
+ */
+export function resolveHoldScope(explicit: string | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const inherited = env[HOLD_SCOPE_ENV];
+  return inherited !== undefined && inherited.trim().length > 0 ? inherited : null;
+}
+
+/**
+ * The scope's directory segment under the holds root. Named scopes are
+ * URI-component-encoded behind a fixed prefix, so an opaque key of any
+ * spelling maps to exactly one directory and can never collide with the
+ * shared scope's reserved segment.
+ */
+export function holdScopeSegment(scope: string | null): string {
+  return scope === null ? "shared" : `scope-${encodeURIComponent(scope)}`;
+}
 
 export interface RaiseHoldOptions {
   /** What the decider reads: the question, its context, what hangs on it. */
@@ -37,34 +77,49 @@ export interface HoldDecision {
 
 /** The on-disk hold record, as `ensemble holds` and deciders read it. */
 export interface HoldFileRecord {
-  schema_version: 1;
+  schema_version: 2;
   kind: "ensemble_hold";
   run_id: string;
   hold_id: string;
   /** Correlates the answer to this raise: a decision bearing any other nonce is stale. */
   nonce: string;
+  /** The launcher-supplied scope this hold publishes under; null is the shared scope. */
+  scope: string | null;
   content: string;
   verdicts: string[];
   raised_at: string;
   timeout_at: string | null;
+  /** Display-only metadata: never the scope, never a liveness judgement. */
   cwd: string;
-  /** The raising process — liveness evidence for the cross-run listing. */
-  pid: number;
+  /**
+   * The raising process's liveness evidence — the same `{host, pid,
+   * start_ticks}` block the archive and status snapshot carry, judged with
+   * the same never-guess check when the machinery retires dead-raiser holds.
+   */
+  owner: SnapshotOwnerEvidence;
   /** Where the decider writes the answer: `{ "nonce", "verdict", "note"? }`. */
   decision_path: string;
 }
 
-/** One enumerated hold, with the listing's own liveness reading beside it. */
+/** One enumerated open hold. */
 export interface EnumeratedHold {
   record: HoldFileRecord;
-  /** Whether the raising process is still alive; false marks an orphaned hold. */
-  live: boolean;
   path: string;
+}
+
+/**
+ * One enumeration's complete result: the answerable holds it found, and the
+ * dead-raiser holds it retired while looking (the listing only ever shows
+ * answerable holds, so observing a provably dead raiser removes its hold).
+ */
+export interface HoldEnumeration {
+  holds: EnumeratedHold[];
+  retired: HoldFileRecord[];
 }
 
 const DECISION_SUFFIX = ".decision.json";
 
-/** The shared cross-run holds directory: `<XDG_DATA_HOME>/ensemble/holds`. */
+/** The shared cross-run holds root: `<XDG_DATA_HOME>/ensemble/holds`. */
 export function defaultHoldsDirectory(env: NodeJS.ProcessEnv = process.env): string {
   const dataHome =
     env.XDG_DATA_HOME !== undefined && env.XDG_DATA_HOME.length > 0
@@ -74,41 +129,51 @@ export function defaultHoldsDirectory(env: NodeJS.ProcessEnv = process.env): str
 }
 
 export interface HoldManagerOptions {
+  /** The holds root; the manager publishes under its scope's segment within it. */
   dir: string;
   runId: string;
   cwd: string;
+  /** The launcher-supplied scope; null publishes into the default shared scope. */
+  scope: string | null;
   /** Gap between decision-file polls. Tests inject a tiny value. */
   pollIntervalMs?: number;
   now?: () => number;
-  /** Raise/answer/timeout (and rejected-answer) events for the runtime's listeners. */
+  /** Raise/answer/timeout/rejection/retirement events for the runtime's listeners. */
   onEvent?: (event: RuntimeEvent) => void;
   /** Live-status hooks: the snapshot shows open holds while they wait. */
   onOpen?: (hold: { id: string; content: string; verdicts: string[] }) => void;
   onSettled?: (id: string) => void;
+  /** Test seam for the retirement sweep's liveness evidence. */
+  procDir?: string;
 }
 
 export class HoldManager {
   #dir: string;
   #runId: string;
   #cwd: string;
+  #scope: string | null;
   #pollIntervalMs: number;
   #now: () => number;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #onOpen: HoldManagerOptions["onOpen"];
   #onSettled: HoldManagerOptions["onSettled"];
+  #procDir: string;
   #sequence = 0;
   #closed = false;
   #abort = new AbortController();
+  #sweepDone = false;
 
   constructor(options: HoldManagerOptions) {
-    this.#dir = options.dir;
+    this.#dir = path.join(options.dir, holdScopeSegment(options.scope));
     this.#runId = options.runId;
     this.#cwd = options.cwd;
+    this.#scope = options.scope;
     this.#pollIntervalMs = options.pollIntervalMs ?? 500;
     this.#now = options.now ?? (() => Date.now());
     this.#onEvent = options.onEvent;
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
+    this.#procDir = options.procDir ?? "/proc";
   }
 
   async raise(options: RaiseHoldOptions): Promise<HoldDecision> {
@@ -124,23 +189,31 @@ export class HoldManager {
     const raisedAt = this.#now();
     const deadline = options.timeoutMs === undefined ? null : raisedAt + options.timeoutMs;
     const record: HoldFileRecord = {
-      schema_version: 1,
+      schema_version: 2,
       kind: "ensemble_hold",
       run_id: this.#runId,
       hold_id: holdId,
       nonce,
+      scope: this.#scope,
       content: options.content,
       verdicts: [...options.verdicts],
       raised_at: new Date(raisedAt).toISOString(),
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
-      pid: process.pid,
+      owner: {
+        host: hostname(),
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+      },
       decision_path: decisionPath
     };
 
     // The holds directory is coordination state, created on demand — unlike
     // the opt-in status directory, there is no configuration to validate.
     await mkdir(this.#dir, { recursive: true });
+    // The first raise sweeps this scope for dead-raiser leftovers, so a
+    // lead's own scope never accumulates holds nobody can answer.
+    await this.#retireDeadSiblings();
     // Atomic publish: a decider never reads a half-written hold.
     const tmp = `${holdPath}.${process.pid}.tmp`;
     await writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8" });
@@ -149,6 +222,7 @@ export class HoldManager {
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
       holdId,
+      scope: this.#scope,
       content: options.content,
       verdicts: record.verdicts,
       decisionPath,
@@ -169,6 +243,27 @@ export class HoldManager {
   close(): void {
     this.#closed = true;
     this.#abort.abort();
+  }
+
+  /**
+   * Retire this scope's dead-raiser holds, once per manager: the sweep that
+   * observes a raiser provably gone removes its hold, observably — one
+   * `hold/retired` event per removal. Judgement is the shared never-guess
+   * owner check; anything undecidable stays.
+   */
+  async #retireDeadSiblings(): Promise<void> {
+    if (this.#sweepDone) {
+      return;
+    }
+    this.#sweepDone = true;
+    try {
+      const { retired } = await enumerateScopeDirectory(this.#dir, { procDir: this.#procDir });
+      for (const record of retired) {
+        this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope });
+      }
+    } catch {
+      // The sweep is hygiene: its failure must never fail a raise.
+    }
   }
 
   async #awaitDecision(
@@ -276,54 +371,93 @@ export class HoldManager {
   }
 }
 
+export interface EnumerateHoldsOptions {
+  /**
+   * A named scope confines the listing to that scope's directory — the
+   * lead's own view. Omitted, the listing is machine-wide: every scope,
+   * the default shared scope included.
+   */
+  scope?: string;
+  /** Test seam for the retirement judgement's liveness evidence. */
+  procDir?: string;
+}
+
 /**
- * Enumerate open holds across runs — every hold file in the directory, with
- * a liveness reading of its raising process so a watcher can tell a waiting
- * run from an orphaned file a killed run left behind.
+ * Enumerate open holds — one scope's, or machine-wide across every scope.
+ * Enumeration is also the retirement machinery: a hold whose raiser is
+ * provably gone (the shared never-guess owner check) is removed and
+ * reported in `retired` rather than listed, so the listing only ever shows
+ * answerable holds. Anything undecidable — a foreign host, missing
+ * evidence — stays listed.
  */
-export async function enumerateHolds(dir: string): Promise<EnumeratedHold[]> {
-  let entries: string[];
+export async function enumerateHolds(dir: string, options: EnumerateHoldsOptions = {}): Promise<HoldEnumeration> {
+  const procDir = options.procDir ?? "/proc";
+  if (options.scope !== undefined) {
+    return enumerateScopeDirectory(path.join(dir, holdScopeSegment(options.scope)), { procDir });
+  }
+  let entries: Array<{ name: string; isDirectory(): boolean }>;
   try {
-    entries = await readdir(dir);
+    entries = await readdir(dir, { withFileTypes: true });
   } catch (error) {
     if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      // No directory yet means no hold has ever been raised here: honestly
+      // No root yet means no hold has ever been raised here: honestly
       // empty. Any other failure must NOT read as "no open holds" — an
       // unreadable inbox claiming emptiness would hide holds that may
       // exist — so it propagates for the caller to report.
-      return [];
+      return { holds: [], retired: [] };
     }
     throw error;
   }
-  const holds: EnumeratedHold[] = [];
+  const result: HoldEnumeration = { holds: [], retired: [] };
+  for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const scoped = await enumerateScopeDirectory(path.join(dir, entry.name), { procDir });
+    result.holds.push(...scoped.holds);
+    result.retired.push(...scoped.retired);
+  }
+  return result;
+}
+
+async function enumerateScopeDirectory(scopeDir: string, options: { procDir: string }): Promise<HoldEnumeration> {
+  let entries: string[];
+  try {
+    entries = await readdir(scopeDir);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { holds: [], retired: [] };
+    }
+    throw error;
+  }
+  const result: HoldEnumeration = { holds: [], retired: [] };
   for (const entry of entries.sort()) {
     if (!entry.endsWith(".json") || entry.endsWith(DECISION_SUFFIX)) {
       continue;
     }
-    const holdPath = path.join(dir, entry);
+    const holdPath = path.join(scopeDir, entry);
     try {
       const record = JSON.parse(await readFile(holdPath, "utf8")) as HoldFileRecord;
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
-      holds.push({ record, live: isProcessAlive(record.pid), path: holdPath });
+      if (await snapshotOwnerGone(record.owner, options.procDir)) {
+        // The raiser is provably dead: nothing can await this hold's
+        // decision, so the machinery that observed the death retires it —
+        // the hold file and any stale answer beside it.
+        await rm(holdPath, { force: true }).catch(() => undefined);
+        if (typeof record.decision_path === "string") {
+          await rm(record.decision_path, { force: true }).catch(() => undefined);
+        }
+        result.retired.push(record);
+        continue;
+      }
+      result.holds.push({ record, path: holdPath });
     } catch {
       // A half-removed or foreign file is not a hold; the listing skips it.
     }
   }
-  return holds;
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ESRCH");
-  }
+  return result;
 }
 
 const RAISE_HOLD_OPTION_KEYS = ["content", "verdicts", "timeoutMs"];

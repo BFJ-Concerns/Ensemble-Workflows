@@ -39,7 +39,7 @@ test("built CLI archives the spend and transcript a failed Claude worker already
     await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runNode(
-      [bundledCliPath, "agent", "decide something", "--engine", "claude", "--max-attempts", "1"],
+      [bundledCliPath, "agent", "--engine", "claude", "--max-attempts", "1", "decide something"],
       {
         PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
         HOME: workerHome,
@@ -92,7 +92,7 @@ test("built CLI archives a failed Claude worker's spend-free transcript as engin
     await chmod(path.join(binDirectory, "tmux"), 0o755);
 
     const run = await runNode(
-      [bundledCliPath, "agent", "decide something", "--engine", "claude", "--max-attempts", "1"],
+      [bundledCliPath, "agent", "--engine", "claude", "--max-attempts", "1", "decide something"],
       {
         PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
         HOME: workerHome,

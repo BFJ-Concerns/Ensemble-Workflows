@@ -1,5 +1,6 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
 import { PreSpawnAuthorError, agentIdentityOf } from "./errors.js";
+import { presentOperationalError } from "./operator-diagnosis.js";
 
 import type {
   AgentCallSignature,
@@ -165,14 +166,21 @@ export async function parallel<T>(
           throw error;
         }
         presentError?.(error);
-        log(`parallel thunk ${index} failed: ${formatError(error)}`);
+        log(`parallel thunk ${index} failed: ${describeWorkerFailure(error)}`);
         // An identified call's failure keeps its identity: the carrier
         // the runtime attached becomes the envelope the fan-in reads, with
-        // output null carrying the collapse. The envelope *is* the thunk's
-        // declared resolution shape for an identity: true call.
+        // output null carrying the collapse and `failure` carrying the
+        // discrimination — a failed leg is in-script distinguishable from
+        // one that legitimately answered null. The envelope *is* the
+        // thunk's declared resolution shape for an identity: true call.
         const identity = agentIdentityOf(error);
         if (identity !== null) {
-          return { label: identity.label, phase: identity.phase, output: null } as Awaited<T>;
+          return {
+            label: identity.label,
+            phase: identity.phase,
+            output: null,
+            failure: { message: error instanceof Error ? error.message : String(error) }
+          } as Awaited<T>;
         }
         return null;
       }
@@ -203,13 +211,19 @@ export async function pipeline<Item>(
             throw error;
           }
           presentError?.(error);
-          log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
+          log(`pipeline item ${index} stage ${stageIndex} failed: ${describeWorkerFailure(error)}`);
           // Same identity-preserving collapse as parallel(): the failed
-          // item resolves its identity envelope when the failing call
-          // declared one, bare null otherwise.
+          // item resolves its identity envelope — failure carried so a
+          // failed leg is distinguishable from a genuine null answer — when
+          // the failing call declared one, bare null otherwise.
           const identity = agentIdentityOf(error);
           if (identity !== null) {
-            return { label: identity.label, phase: identity.phase, output: null };
+            return {
+              label: identity.label,
+              phase: identity.phase,
+              output: null,
+              failure: { message: error instanceof Error ? error.message : String(error) }
+            };
           }
           return null;
         }
@@ -267,7 +281,17 @@ function mergeSessionDefaults(
   return merged as unknown as WorkerSessionOptions;
 }
 
-function formatError(error: unknown): string {
+/**
+ * A collapsed leg's log line goes through the shared operator seam first:
+ * a worker's operational death is presented as its cause, not as a stack
+ * of harness frames attributed to the author's fan-out. Undiagnosed
+ * errors keep their stack — evidence over tidiness.
+ */
+function describeWorkerFailure(error: unknown): string {
+  const presented = presentOperationalError(error);
+  if (presented !== null) {
+    return presented;
+  }
   if (error instanceof Error) {
     return error.stack ?? error.message;
   }

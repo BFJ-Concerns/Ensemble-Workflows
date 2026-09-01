@@ -104,6 +104,14 @@ export interface IdentifiedAgentResult {
   label: string | null;
   phase: string | null;
   output: unknown;
+  /**
+   * The discrimination: `null` on success — a `null` output beside a
+   * `null` failure is a worker's genuine answer — and the failure's
+   * one-line account when a combinator collapsed this leg, so a fan-in
+   * tells a failed worker from one that legitimately answered `null`
+   * without parsing logs.
+   */
+  failure: { message: string } | null;
 }
 
 /**
@@ -186,6 +194,14 @@ export interface RuntimeOptions {
    * `<XDG_DATA_HOME>/ensemble/holds`.
    */
   holdsDir?: string;
+  /**
+   * The launcher-supplied scope this run's holds publish under: an
+   * opaque key — a lead session's own id is a natural value — that confines
+   * the scoped listing to one lead's holds. Outranks the inherited
+   * `ENSEMBLE_HOLD_SCOPE` environment variable; omitted with no variable
+   * set, holds land in the default shared scope.
+   */
+  holdScope?: string;
   /** Gap between hold decision-file polls; a library/test knob like the timeouts above. */
   holdPollIntervalMs?: number;
 }

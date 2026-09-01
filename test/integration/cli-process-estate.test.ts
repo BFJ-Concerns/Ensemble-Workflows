@@ -45,13 +45,13 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]\n" +
+    assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]\n" +
       "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]\n" +
+      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n" +
-      "       ensemble holds [--json]\n");
+      "       ensemble holds [--json] [--scope <scope> | --all]\n");
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {

@@ -29,6403 +29,6 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// node_modules/acorn/dist/acorn.js
-var require_acorn = __commonJS({
-  "node_modules/acorn/dist/acorn.js"(exports, module) {
-    (function(global, factory) {
-      typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory(global.acorn = {}));
-    })(exports, (function(exports2) {
-      "use strict";
-      var astralIdentifierCodes2 = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
-      var astralIdentifierStartCodes2 = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
-      var nonASCIIidentifierChars2 = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
-      var nonASCIIidentifierStartChars2 = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0560-\u0588\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088F\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5C\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDC-\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7DC\uA7F1-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC";
-      var reservedWords2 = {
-        3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
-        5: "class enum extends super const export import",
-        6: "enum",
-        strict: "implements interface let package private protected public static yield",
-        strictBind: "eval arguments"
-      };
-      var ecma5AndLessKeywords2 = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
-      var keywords$12 = {
-        5: ecma5AndLessKeywords2,
-        "5module": ecma5AndLessKeywords2 + " export import",
-        6: ecma5AndLessKeywords2 + " const class extends export import super"
-      };
-      var keywordRelationalOperator2 = /^in(stanceof)?$/;
-      var nonASCIIidentifierStart2 = new RegExp("[" + nonASCIIidentifierStartChars2 + "]");
-      var nonASCIIidentifier2 = new RegExp("[" + nonASCIIidentifierStartChars2 + nonASCIIidentifierChars2 + "]");
-      function isInAstralSet2(code, set) {
-        var pos = 65536;
-        for (var i3 = 0; i3 < set.length; i3 += 2) {
-          pos += set[i3];
-          if (pos > code) {
-            return false;
-          }
-          pos += set[i3 + 1];
-          if (pos >= code) {
-            return true;
-          }
-        }
-        return false;
-      }
-      function isIdentifierStart2(code, astral) {
-        if (code < 65) {
-          return code === 36;
-        }
-        if (code < 91) {
-          return true;
-        }
-        if (code < 97) {
-          return code === 95;
-        }
-        if (code < 123) {
-          return true;
-        }
-        if (code <= 65535) {
-          return code >= 170 && nonASCIIidentifierStart2.test(String.fromCharCode(code));
-        }
-        if (astral === false) {
-          return false;
-        }
-        return isInAstralSet2(code, astralIdentifierStartCodes2);
-      }
-      function isIdentifierChar2(code, astral) {
-        if (code < 48) {
-          return code === 36;
-        }
-        if (code < 58) {
-          return true;
-        }
-        if (code < 65) {
-          return false;
-        }
-        if (code < 91) {
-          return true;
-        }
-        if (code < 97) {
-          return code === 95;
-        }
-        if (code < 123) {
-          return true;
-        }
-        if (code <= 65535) {
-          return code >= 170 && nonASCIIidentifier2.test(String.fromCharCode(code));
-        }
-        if (astral === false) {
-          return false;
-        }
-        return isInAstralSet2(code, astralIdentifierStartCodes2) || isInAstralSet2(code, astralIdentifierCodes2);
-      }
-      var TokenType3 = function TokenType4(label, conf) {
-        if (conf === void 0) conf = {};
-        this.label = label;
-        this.keyword = conf.keyword;
-        this.beforeExpr = !!conf.beforeExpr;
-        this.startsExpr = !!conf.startsExpr;
-        this.isLoop = !!conf.isLoop;
-        this.isAssign = !!conf.isAssign;
-        this.prefix = !!conf.prefix;
-        this.postfix = !!conf.postfix;
-        this.binop = conf.binop || null;
-        this.updateContext = null;
-      };
-      function binop2(name, prec) {
-        return new TokenType3(name, { beforeExpr: true, binop: prec });
-      }
-      var beforeExpr2 = { beforeExpr: true }, startsExpr2 = { startsExpr: true };
-      var keywords2 = {};
-      function kw2(name, options) {
-        if (options === void 0) options = {};
-        options.keyword = name;
-        return keywords2[name] = new TokenType3(name, options);
-      }
-      var types$12 = {
-        num: new TokenType3("num", startsExpr2),
-        regexp: new TokenType3("regexp", startsExpr2),
-        string: new TokenType3("string", startsExpr2),
-        name: new TokenType3("name", startsExpr2),
-        privateId: new TokenType3("privateId", startsExpr2),
-        eof: new TokenType3("eof"),
-        // Punctuation token types.
-        bracketL: new TokenType3("[", { beforeExpr: true, startsExpr: true }),
-        bracketR: new TokenType3("]"),
-        braceL: new TokenType3("{", { beforeExpr: true, startsExpr: true }),
-        braceR: new TokenType3("}"),
-        parenL: new TokenType3("(", { beforeExpr: true, startsExpr: true }),
-        parenR: new TokenType3(")"),
-        comma: new TokenType3(",", beforeExpr2),
-        semi: new TokenType3(";", beforeExpr2),
-        colon: new TokenType3(":", beforeExpr2),
-        dot: new TokenType3("."),
-        question: new TokenType3("?", beforeExpr2),
-        questionDot: new TokenType3("?."),
-        arrow: new TokenType3("=>", beforeExpr2),
-        template: new TokenType3("template"),
-        invalidTemplate: new TokenType3("invalidTemplate"),
-        ellipsis: new TokenType3("...", beforeExpr2),
-        backQuote: new TokenType3("`", startsExpr2),
-        dollarBraceL: new TokenType3("${", { beforeExpr: true, startsExpr: true }),
-        // Operators. These carry several kinds of properties to help the
-        // parser use them properly (the presence of these properties is
-        // what categorizes them as operators).
-        //
-        // `binop`, when present, specifies that this operator is a binary
-        // operator, and will refer to its precedence.
-        //
-        // `prefix` and `postfix` mark the operator as a prefix or postfix
-        // unary operator.
-        //
-        // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
-        // binary operators with a very low precedence, that should result
-        // in AssignmentExpression nodes.
-        eq: new TokenType3("=", { beforeExpr: true, isAssign: true }),
-        assign: new TokenType3("_=", { beforeExpr: true, isAssign: true }),
-        incDec: new TokenType3("++/--", { prefix: true, postfix: true, startsExpr: true }),
-        prefix: new TokenType3("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
-        logicalOR: binop2("||", 1),
-        logicalAND: binop2("&&", 2),
-        bitwiseOR: binop2("|", 3),
-        bitwiseXOR: binop2("^", 4),
-        bitwiseAND: binop2("&", 5),
-        equality: binop2("==/!=/===/!==", 6),
-        relational: binop2("</>/<=/>=", 7),
-        bitShift: binop2("<</>>/>>>", 8),
-        plusMin: new TokenType3("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
-        modulo: binop2("%", 10),
-        star: binop2("*", 10),
-        slash: binop2("/", 10),
-        starstar: new TokenType3("**", { beforeExpr: true }),
-        coalesce: binop2("??", 1),
-        // Keyword token types.
-        _break: kw2("break"),
-        _case: kw2("case", beforeExpr2),
-        _catch: kw2("catch"),
-        _continue: kw2("continue"),
-        _debugger: kw2("debugger"),
-        _default: kw2("default", beforeExpr2),
-        _do: kw2("do", { isLoop: true, beforeExpr: true }),
-        _else: kw2("else", beforeExpr2),
-        _finally: kw2("finally"),
-        _for: kw2("for", { isLoop: true }),
-        _function: kw2("function", startsExpr2),
-        _if: kw2("if"),
-        _return: kw2("return", beforeExpr2),
-        _switch: kw2("switch"),
-        _throw: kw2("throw", beforeExpr2),
-        _try: kw2("try"),
-        _var: kw2("var"),
-        _const: kw2("const"),
-        _while: kw2("while", { isLoop: true }),
-        _with: kw2("with"),
-        _new: kw2("new", { beforeExpr: true, startsExpr: true }),
-        _this: kw2("this", startsExpr2),
-        _super: kw2("super", startsExpr2),
-        _class: kw2("class", startsExpr2),
-        _extends: kw2("extends", beforeExpr2),
-        _export: kw2("export"),
-        _import: kw2("import", startsExpr2),
-        _null: kw2("null", startsExpr2),
-        _true: kw2("true", startsExpr2),
-        _false: kw2("false", startsExpr2),
-        _in: kw2("in", { beforeExpr: true, binop: 7 }),
-        _instanceof: kw2("instanceof", { beforeExpr: true, binop: 7 }),
-        _typeof: kw2("typeof", { beforeExpr: true, prefix: true, startsExpr: true }),
-        _void: kw2("void", { beforeExpr: true, prefix: true, startsExpr: true }),
-        _delete: kw2("delete", { beforeExpr: true, prefix: true, startsExpr: true })
-      };
-      var lineBreak2 = /\r\n?|\n|\u2028|\u2029/;
-      var lineBreakG2 = new RegExp(lineBreak2.source, "g");
-      function isNewLine2(code) {
-        return code === 10 || code === 13 || code === 8232 || code === 8233;
-      }
-      function nextLineBreak2(code, from, end) {
-        if (end === void 0) end = code.length;
-        for (var i3 = from; i3 < end; i3++) {
-          var next = code.charCodeAt(i3);
-          if (isNewLine2(next)) {
-            return i3 < end - 1 && next === 13 && code.charCodeAt(i3 + 1) === 10 ? i3 + 2 : i3 + 1;
-          }
-        }
-        return -1;
-      }
-      var nonASCIIwhitespace2 = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
-      var skipWhiteSpace2 = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
-      var ref2 = Object.prototype;
-      var hasOwnProperty2 = ref2.hasOwnProperty;
-      var toString2 = ref2.toString;
-      var hasOwn2 = Object.hasOwn || (function(obj, propName) {
-        return hasOwnProperty2.call(obj, propName);
-      });
-      var isArray2 = Array.isArray || (function(obj) {
-        return toString2.call(obj) === "[object Array]";
-      });
-      var regexpCache2 = /* @__PURE__ */ Object.create(null);
-      function wordsRegexp2(words) {
-        return regexpCache2[words] || (regexpCache2[words] = new RegExp("^(?:" + words.replace(/ /g, "|") + ")$"));
-      }
-      function codePointToString2(code) {
-        if (code <= 65535) {
-          return String.fromCharCode(code);
-        }
-        code -= 65536;
-        return String.fromCharCode((code >> 10) + 55296, (code & 1023) + 56320);
-      }
-      var loneSurrogate2 = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/;
-      var Position3 = function Position4(line, col) {
-        this.line = line;
-        this.column = col;
-      };
-      Position3.prototype.offset = function offset2(n) {
-        return new Position3(this.line, this.column + n);
-      };
-      var SourceLocation3 = function SourceLocation4(p, start, end) {
-        this.start = start;
-        this.end = end;
-        if (p.sourceFile !== null) {
-          this.source = p.sourceFile;
-        }
-      };
-      function getLineInfo2(input, offset2) {
-        for (var line = 1, cur = 0; ; ) {
-          var nextBreak = nextLineBreak2(input, cur, offset2);
-          if (nextBreak < 0) {
-            return new Position3(line, offset2 - cur);
-          }
-          ++line;
-          cur = nextBreak;
-        }
-      }
-      var defaultOptions2 = {
-        // `ecmaVersion` indicates the ECMAScript version to parse. Must be
-        // either 3, 5, 6 (or 2015), 7 (2016), 8 (2017), 9 (2018), 10
-        // (2019), 11 (2020), 12 (2021), 13 (2022), 14 (2023), or `"latest"`
-        // (the latest version the library supports). This influences
-        // support for strict mode, the set of reserved words, and support
-        // for new syntax features.
-        ecmaVersion: null,
-        // `sourceType` indicates the mode the code should be parsed in.
-        // Can be either `"script"`, `"module"` or `"commonjs"`. This influences global
-        // strict mode and parsing of `import` and `export` declarations.
-        sourceType: "script",
-        // When set to true, enable strict parsing mode even if `sourceType`
-        // is `"script"`.
-        strict: false,
-        // `onInsertedSemicolon` can be a callback that will be called when
-        // a semicolon is automatically inserted. It will be passed the
-        // position of the inserted semicolon as an offset, and if
-        // `locations` is enabled, it is given the location as a `{line,
-        // column}` object as second argument.
-        onInsertedSemicolon: null,
-        // `onTrailingComma` is similar to `onInsertedSemicolon`, but for
-        // trailing commas.
-        onTrailingComma: null,
-        // By default, reserved words are only enforced if ecmaVersion >= 5.
-        // Set `allowReserved` to a boolean value to explicitly turn this on
-        // an off. When this option has the value "never", reserved words
-        // and keywords can also not be used as property names.
-        allowReserved: null,
-        // When enabled, a return at the top level is not considered an
-        // error.
-        allowReturnOutsideFunction: false,
-        // When enabled, import/export statements are not constrained to
-        // appearing at the top of the program, and an import.meta expression
-        // in a script isn't considered an error.
-        allowImportExportEverywhere: false,
-        // By default, await identifiers are allowed to appear at the top-level scope only if ecmaVersion >= 2022.
-        // When enabled, await identifiers are allowed to appear at the top-level scope,
-        // but they are still not allowed in non-async functions.
-        allowAwaitOutsideFunction: null,
-        // When enabled, super identifiers are not constrained to
-        // appearing in methods and do not raise an error when they appear elsewhere.
-        allowSuperOutsideMethod: null,
-        // When enabled, hashbang directive in the beginning of file is
-        // allowed and treated as a line comment. Enabled by default when
-        // `ecmaVersion` >= 2023.
-        allowHashBang: false,
-        // By default, the parser will verify that private properties are
-        // only used in places where they are valid and have been declared.
-        // Set this to false to turn such checks off.
-        checkPrivateFields: true,
-        // When `locations` is on, `loc` properties holding objects with
-        // `start` and `end` properties in `{line, column}` form (with
-        // line being 1-based and column 0-based) will be attached to the
-        // nodes.
-        locations: false,
-        // A function can be passed as `onToken` option, which will
-        // cause Acorn to call that function with object in the same
-        // format as tokens returned from `tokenizer().getToken()`. Note
-        // that you are not allowed to call the parser from the
-        // callback—that will corrupt its internal state.
-        onToken: null,
-        // A function can be passed as `onComment` option, which will
-        // cause Acorn to call that function with `(block, text, start,
-        // end)` parameters whenever a comment is skipped. `block` is a
-        // boolean indicating whether this is a block (`/* */`) comment,
-        // `text` is the content of the comment, and `start` and `end` are
-        // character offsets that denote the start and end of the comment.
-        // When the `locations` option is on, two more parameters are
-        // passed, the full `{line, column}` locations of the start and
-        // end of the comments. Note that you are not allowed to call the
-        // parser from the callback—that will corrupt its internal state.
-        // When this option has an array as value, objects representing the
-        // comments are pushed to it.
-        onComment: null,
-        // Nodes have their start and end characters offsets recorded in
-        // `start` and `end` properties (directly on the node, rather than
-        // the `loc` object, which holds line/column data. To also add a
-        // [semi-standardized][range] `range` property holding a `[start,
-        // end]` array with the same numbers, set the `ranges` option to
-        // `true`.
-        //
-        // [range]: https://bugzilla.mozilla.org/show_bug.cgi?id=745678
-        ranges: false,
-        // It is possible to parse multiple files into a single AST by
-        // passing the tree produced by parsing the first file as
-        // `program` option in subsequent parses. This will add the
-        // toplevel forms of the parsed file to the `Program` (top) node
-        // of an existing parse tree.
-        program: null,
-        // When `locations` is on, you can pass this to record the source
-        // file in every node's `loc` object.
-        sourceFile: null,
-        // This value, if given, is stored in every node, whether
-        // `locations` is on or off.
-        directSourceFile: null,
-        // When enabled, parenthesized expressions are represented by
-        // (non-standard) ParenthesizedExpression nodes
-        preserveParens: false
-      };
-      var warnedAboutEcmaVersion2 = false;
-      function getOptions2(opts) {
-        var options = {};
-        for (var opt in defaultOptions2) {
-          options[opt] = opts && hasOwn2(opts, opt) ? opts[opt] : defaultOptions2[opt];
-        }
-        if (options.ecmaVersion === "latest") {
-          options.ecmaVersion = 1e8;
-        } else if (options.ecmaVersion == null) {
-          if (!warnedAboutEcmaVersion2 && typeof console === "object" && console.warn) {
-            warnedAboutEcmaVersion2 = true;
-            console.warn("Since Acorn 8.0.0, options.ecmaVersion is required.\nDefaulting to 2020, but this will stop working in the future.");
-          }
-          options.ecmaVersion = 11;
-        } else if (options.ecmaVersion >= 2015) {
-          options.ecmaVersion -= 2009;
-        }
-        if (options.allowReserved == null) {
-          options.allowReserved = options.ecmaVersion < 5;
-        }
-        if (!opts || opts.allowHashBang == null) {
-          options.allowHashBang = options.ecmaVersion >= 14;
-        }
-        if (isArray2(options.onToken)) {
-          var tokens = options.onToken;
-          options.onToken = function(token) {
-            return tokens.push(token);
-          };
-        }
-        if (isArray2(options.onComment)) {
-          options.onComment = pushComment2(options, options.onComment);
-        }
-        if (options.sourceType === "commonjs" && options.allowAwaitOutsideFunction) {
-          throw new Error("Cannot use allowAwaitOutsideFunction with sourceType: commonjs");
-        }
-        return options;
-      }
-      function pushComment2(options, array) {
-        return function(block, text, start, end, startLoc, endLoc) {
-          var comment = {
-            type: block ? "Block" : "Line",
-            value: text,
-            start,
-            end
-          };
-          if (options.locations) {
-            comment.loc = new SourceLocation3(this, startLoc, endLoc);
-          }
-          if (options.ranges) {
-            comment.range = [start, end];
-          }
-          array.push(comment);
-        };
-      }
-      var SCOPE_TOP2 = 1, SCOPE_FUNCTION2 = 2, SCOPE_ASYNC2 = 4, SCOPE_GENERATOR2 = 8, SCOPE_ARROW2 = 16, SCOPE_SIMPLE_CATCH2 = 32, SCOPE_SUPER2 = 64, SCOPE_DIRECT_SUPER2 = 128, SCOPE_CLASS_STATIC_BLOCK2 = 256, SCOPE_CLASS_FIELD_INIT2 = 512, SCOPE_SWITCH2 = 1024, SCOPE_VAR2 = SCOPE_TOP2 | SCOPE_FUNCTION2 | SCOPE_CLASS_STATIC_BLOCK2;
-      function functionFlags2(async, generator) {
-        return SCOPE_FUNCTION2 | (async ? SCOPE_ASYNC2 : 0) | (generator ? SCOPE_GENERATOR2 : 0);
-      }
-      var BIND_NONE2 = 0, BIND_VAR2 = 1, BIND_LEXICAL2 = 2, BIND_FUNCTION2 = 3, BIND_SIMPLE_CATCH2 = 4, BIND_OUTSIDE2 = 5;
-      var Parser3 = function Parser4(options, input, startPos) {
-        this.options = options = getOptions2(options);
-        this.sourceFile = options.sourceFile;
-        this.keywords = wordsRegexp2(keywords$12[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
-        var reserved = "";
-        if (options.allowReserved !== true) {
-          reserved = reservedWords2[options.ecmaVersion >= 6 ? 6 : options.ecmaVersion === 5 ? 5 : 3];
-          if (options.sourceType === "module") {
-            reserved += " await";
-          }
-        }
-        this.reservedWords = wordsRegexp2(reserved);
-        var reservedStrict = (reserved ? reserved + " " : "") + reservedWords2.strict;
-        this.reservedWordsStrict = wordsRegexp2(reservedStrict);
-        this.reservedWordsStrictBind = wordsRegexp2(reservedStrict + " " + reservedWords2.strictBind);
-        this.input = String(input);
-        this.containsEsc = false;
-        if (startPos) {
-          this.pos = startPos;
-          this.lineStart = this.input.lastIndexOf("\n", startPos - 1) + 1;
-          this.curLine = this.input.slice(0, this.lineStart).split(lineBreak2).length;
-        } else {
-          this.pos = this.lineStart = 0;
-          this.curLine = 1;
-        }
-        this.type = types$12.eof;
-        this.value = null;
-        this.start = this.end = this.pos;
-        this.startLoc = this.endLoc = this.curPosition();
-        this.lastTokEndLoc = this.lastTokStartLoc = null;
-        this.lastTokStart = this.lastTokEnd = this.pos;
-        this.context = this.initialContext();
-        this.exprAllowed = true;
-        this.inModule = options.sourceType === "module";
-        this.strict = this.inModule || options.strict === true || this.strictDirective(this.pos);
-        this.potentialArrowAt = -1;
-        this.potentialArrowInForAwait = false;
-        this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
-        this.labels = [];
-        this.undefinedExports = /* @__PURE__ */ Object.create(null);
-        if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!") {
-          this.skipLineComment(2);
-        }
-        this.scopeStack = [];
-        this.enterScope(
-          this.options.sourceType === "commonjs" ? SCOPE_FUNCTION2 : SCOPE_TOP2
-        );
-        this.regexpState = null;
-        this.privateNameStack = [];
-      };
-      var prototypeAccessors2 = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
-      Parser3.prototype.parse = function parse5() {
-        var this$1$1 = this;
-        var node = this.options.program || this.startNode();
-        this.nextToken();
-        return this.catchStackOverflow(function() {
-          return this$1$1.parseTopLevel(node);
-        });
-      };
-      prototypeAccessors2.inFunction.get = function() {
-        return (this.currentVarScope().flags & SCOPE_FUNCTION2) > 0;
-      };
-      prototypeAccessors2.inGenerator.get = function() {
-        return (this.currentVarScope().flags & SCOPE_GENERATOR2) > 0;
-      };
-      prototypeAccessors2.inAsync.get = function() {
-        return (this.currentVarScope().flags & SCOPE_ASYNC2) > 0;
-      };
-      prototypeAccessors2.canAwait.get = function() {
-        for (var i3 = this.scopeStack.length - 1; i3 >= 0; i3--) {
-          var ref3 = this.scopeStack[i3];
-          var flags = ref3.flags;
-          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2)) {
-            return false;
-          }
-          if (flags & SCOPE_FUNCTION2) {
-            return (flags & SCOPE_ASYNC2) > 0;
-          }
-        }
-        return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
-      };
-      prototypeAccessors2.allowReturn.get = function() {
-        if (this.inFunction) {
-          return true;
-        }
-        if (this.options.allowReturnOutsideFunction && this.currentVarScope().flags & SCOPE_TOP2) {
-          return true;
-        }
-        return false;
-      };
-      prototypeAccessors2.allowSuper.get = function() {
-        var ref3 = this.currentThisScope();
-        var flags = ref3.flags;
-        return (flags & SCOPE_SUPER2) > 0 || this.options.allowSuperOutsideMethod;
-      };
-      prototypeAccessors2.allowDirectSuper.get = function() {
-        return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER2) > 0;
-      };
-      prototypeAccessors2.treatFunctionsAsVar.get = function() {
-        return this.treatFunctionsAsVarInScope(this.currentScope());
-      };
-      prototypeAccessors2.allowNewDotTarget.get = function() {
-        for (var i3 = this.scopeStack.length - 1; i3 >= 0; i3--) {
-          var ref3 = this.scopeStack[i3];
-          var flags = ref3.flags;
-          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2) || flags & SCOPE_FUNCTION2 && !(flags & SCOPE_ARROW2)) {
-            return true;
-          }
-        }
-        return false;
-      };
-      prototypeAccessors2.allowUsing.get = function() {
-        var ref3 = this.currentScope();
-        var flags = ref3.flags;
-        if (flags & SCOPE_SWITCH2) {
-          return false;
-        }
-        if (!this.inModule && flags & SCOPE_TOP2) {
-          return false;
-        }
-        return true;
-      };
-      prototypeAccessors2.inClassStaticBlock.get = function() {
-        return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK2) > 0;
-      };
-      Parser3.extend = function extend2() {
-        var plugins = [], len = arguments.length;
-        while (len--) plugins[len] = arguments[len];
-        var cls = this;
-        for (var i3 = 0; i3 < plugins.length; i3++) {
-          cls = plugins[i3](cls);
-        }
-        return cls;
-      };
-      Parser3.parse = function parse5(input, options) {
-        return new this(options, input).parse();
-      };
-      Parser3.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
-        var parser = new this(options, input, pos);
-        parser.nextToken();
-        return parser.parseExpression();
-      };
-      Parser3.tokenizer = function tokenizer3(input, options) {
-        return new this(options, input);
-      };
-      Object.defineProperties(Parser3.prototype, prototypeAccessors2);
-      var pp$92 = Parser3.prototype;
-      var literal2 = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
-      pp$92.strictDirective = function(start) {
-        if (this.options.ecmaVersion < 5) {
-          return false;
-        }
-        for (; ; ) {
-          skipWhiteSpace2.lastIndex = start;
-          start += skipWhiteSpace2.exec(this.input)[0].length;
-          var match = literal2.exec(this.input.slice(start));
-          if (!match) {
-            return false;
-          }
-          if ((match[1] || match[2]) === "use strict") {
-            skipWhiteSpace2.lastIndex = start + match[0].length;
-            var spaceAfter = skipWhiteSpace2.exec(this.input), end = spaceAfter.index + spaceAfter[0].length;
-            var next = this.input.charAt(end);
-            return next === ";" || next === "}" || lineBreak2.test(spaceAfter[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(next) || next === "!" && this.input.charAt(end + 1) === "=");
-          }
-          start += match[0].length;
-          skipWhiteSpace2.lastIndex = start;
-          start += skipWhiteSpace2.exec(this.input)[0].length;
-          if (this.input[start] === ";") {
-            start++;
-          }
-        }
-      };
-      pp$92.eat = function(type) {
-        if (this.type === type) {
-          this.next();
-          return true;
-        } else {
-          return false;
-        }
-      };
-      pp$92.isContextual = function(name) {
-        return this.type === types$12.name && this.value === name && !this.containsEsc;
-      };
-      pp$92.eatContextual = function(name) {
-        if (!this.isContextual(name)) {
-          return false;
-        }
-        this.next();
-        return true;
-      };
-      pp$92.catchStackOverflow = function(f) {
-        try {
-          return f();
-        } catch (e) {
-          if (e instanceof Error && (/\bstack\b.*\b(exceeded|overflow)\b/i.test(e.message) || /\btoo much recursion\b/i.test(e.message))) {
-            this.raise(this.start, "Not enough stack space to parse input");
-          } else {
-            throw e;
-          }
-        }
-      };
-      pp$92.expectContextual = function(name) {
-        if (!this.eatContextual(name)) {
-          this.unexpected();
-        }
-      };
-      pp$92.canInsertSemicolon = function() {
-        return this.type === types$12.eof || this.type === types$12.braceR || lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
-      };
-      pp$92.insertSemicolon = function() {
-        if (this.canInsertSemicolon()) {
-          if (this.options.onInsertedSemicolon) {
-            this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc);
-          }
-          return true;
-        }
-      };
-      pp$92.semicolon = function() {
-        if (!this.eat(types$12.semi) && !this.insertSemicolon()) {
-          this.unexpected();
-        }
-      };
-      pp$92.afterTrailingComma = function(tokType, notNext) {
-        if (this.type === tokType) {
-          if (this.options.onTrailingComma) {
-            this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc);
-          }
-          if (!notNext) {
-            this.next();
-          }
-          return true;
-        }
-      };
-      pp$92.expect = function(type) {
-        this.eat(type) || this.unexpected();
-      };
-      pp$92.unexpected = function(pos) {
-        this.raise(pos != null ? pos : this.start, "Unexpected token");
-      };
-      var DestructuringErrors3 = function DestructuringErrors4() {
-        this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
-      };
-      pp$92.checkPatternErrors = function(refDestructuringErrors, isAssign) {
-        if (!refDestructuringErrors) {
-          return;
-        }
-        if (refDestructuringErrors.trailingComma > -1) {
-          this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element");
-        }
-        var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
-        if (parens > -1) {
-          this.raiseRecoverable(parens, isAssign ? "Assigning to rvalue" : "Parenthesized pattern");
-        }
-      };
-      pp$92.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
-        if (!refDestructuringErrors) {
-          return false;
-        }
-        var shorthandAssign = refDestructuringErrors.shorthandAssign;
-        var doubleProto = refDestructuringErrors.doubleProto;
-        if (!andThrow) {
-          return shorthandAssign >= 0 || doubleProto >= 0;
-        }
-        if (shorthandAssign >= 0) {
-          this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns");
-        }
-        if (doubleProto >= 0) {
-          this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property");
-        }
-      };
-      pp$92.checkYieldAwaitInDefaultParams = function() {
-        if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos)) {
-          this.raise(this.yieldPos, "Yield expression cannot be a default value");
-        }
-        if (this.awaitPos) {
-          this.raise(this.awaitPos, "Await expression cannot be a default value");
-        }
-      };
-      pp$92.isSimpleAssignTarget = function(expr) {
-        if (expr.type === "ParenthesizedExpression") {
-          return this.isSimpleAssignTarget(expr.expression);
-        }
-        return expr.type === "Identifier" || expr.type === "MemberExpression";
-      };
-      var pp$82 = Parser3.prototype;
-      pp$82.parseTopLevel = function(node) {
-        var exports$1 = /* @__PURE__ */ Object.create(null);
-        if (!node.body) {
-          node.body = [];
-        }
-        while (this.type !== types$12.eof) {
-          var stmt = this.parseStatement(null, true, exports$1);
-          node.body.push(stmt);
-        }
-        if (this.inModule) {
-          for (var i3 = 0, list3 = Object.keys(this.undefinedExports); i3 < list3.length; i3 += 1) {
-            var name = list3[i3];
-            this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
-          }
-        }
-        this.adaptDirectivePrologue(node.body);
-        this.next();
-        node.sourceType = this.options.sourceType === "commonjs" ? "script" : this.options.sourceType;
-        return this.finishNode(node, "Program");
-      };
-      var loopLabel2 = { kind: "loop" }, switchLabel2 = { kind: "switch" };
-      pp$82.isLet = function(context) {
-        if (this.options.ecmaVersion < 6 || !this.isContextual("let")) {
-          return false;
-        }
-        skipWhiteSpace2.lastIndex = this.pos;
-        var skip = skipWhiteSpace2.exec(this.input);
-        var next = this.pos + skip[0].length, nextCh = this.fullCharCodeAt(next);
-        if (nextCh === 91 || nextCh === 92) {
-          return true;
-        }
-        if (context) {
-          return false;
-        }
-        if (nextCh === 123) {
-          return true;
-        }
-        if (isIdentifierStart2(nextCh)) {
-          var start = next;
-          do {
-            next += nextCh <= 65535 ? 1 : 2;
-          } while (isIdentifierChar2(nextCh = this.fullCharCodeAt(next)));
-          if (nextCh === 92) {
-            return true;
-          }
-          var ident = this.input.slice(start, next);
-          if (!keywordRelationalOperator2.test(ident)) {
-            return true;
-          }
-        }
-        return false;
-      };
-      pp$82.isAsyncFunction = function() {
-        if (this.options.ecmaVersion < 8 || !this.isContextual("async")) {
-          return false;
-        }
-        skipWhiteSpace2.lastIndex = this.pos;
-        var skip = skipWhiteSpace2.exec(this.input);
-        var next = this.pos + skip[0].length, after;
-        return !lineBreak2.test(this.input.slice(this.pos, next)) && this.input.slice(next, next + 8) === "function" && (next + 8 === this.input.length || !(isIdentifierChar2(after = this.fullCharCodeAt(next + 8)) || after === 92));
-      };
-      pp$82.isUsingKeyword = function(isAwaitUsing, isFor) {
-        if (this.options.ecmaVersion < 17 || !this.isContextual(isAwaitUsing ? "await" : "using")) {
-          return false;
-        }
-        skipWhiteSpace2.lastIndex = this.pos;
-        var skip = skipWhiteSpace2.exec(this.input);
-        var next = this.pos + skip[0].length;
-        if (lineBreak2.test(this.input.slice(this.pos, next))) {
-          return false;
-        }
-        if (isAwaitUsing) {
-          var usingEndPos = next + 5, after;
-          if (this.input.slice(next, usingEndPos) !== "using" || usingEndPos === this.input.length || isIdentifierChar2(after = this.fullCharCodeAt(usingEndPos)) || after === 92) {
-            return false;
-          }
-          skipWhiteSpace2.lastIndex = usingEndPos;
-          var skipAfterUsing = skipWhiteSpace2.exec(this.input);
-          next = usingEndPos + skipAfterUsing[0].length;
-          if (skipAfterUsing && lineBreak2.test(this.input.slice(usingEndPos, next))) {
-            return false;
-          }
-        }
-        var ch = this.fullCharCodeAt(next);
-        if (!isIdentifierStart2(ch) && ch !== 92) {
-          return false;
-        }
-        var idStart = next;
-        do {
-          next += ch <= 65535 ? 1 : 2;
-        } while (isIdentifierChar2(ch = this.fullCharCodeAt(next)));
-        if (ch === 92) {
-          return true;
-        }
-        var id = this.input.slice(idStart, next);
-        if (keywordRelationalOperator2.test(id)) {
-          return false;
-        }
-        if (isFor && !isAwaitUsing && id === "of") {
-          skipWhiteSpace2.lastIndex = next;
-          var skipAfterOf = skipWhiteSpace2.exec(this.input);
-          next = next + skipAfterOf[0].length;
-          if (this.input.charCodeAt(next) !== 61 || // Check for ==, === and => operators
-          (ch = this.input.charCodeAt(next + 1)) === 61 || ch === 62) {
-            return false;
-          }
-        }
-        return true;
-      };
-      pp$82.isAwaitUsing = function(isFor) {
-        return this.isUsingKeyword(true, isFor);
-      };
-      pp$82.isUsing = function(isFor) {
-        return this.isUsingKeyword(false, isFor);
-      };
-      pp$82.parseStatement = function(context, topLevel, exports$1) {
-        var starttype = this.type, node = this.startNode(), kind;
-        if (this.isLet(context)) {
-          starttype = types$12._var;
-          kind = "let";
-        }
-        switch (starttype) {
-          case types$12._break:
-          case types$12._continue:
-            return this.parseBreakContinueStatement(node, starttype.keyword);
-          case types$12._debugger:
-            return this.parseDebuggerStatement(node);
-          case types$12._do:
-            return this.parseDoStatement(node);
-          case types$12._for:
-            return this.parseForStatement(node);
-          case types$12._function:
-            if (context && (this.strict || context !== "if" && context !== "label") && this.options.ecmaVersion >= 6) {
-              this.unexpected();
-            }
-            return this.parseFunctionStatement(node, false, !context);
-          case types$12._class:
-            if (context) {
-              this.unexpected();
-            }
-            return this.parseClass(node, true);
-          case types$12._if:
-            return this.parseIfStatement(node);
-          case types$12._return:
-            return this.parseReturnStatement(node);
-          case types$12._switch:
-            return this.parseSwitchStatement(node);
-          case types$12._throw:
-            return this.parseThrowStatement(node);
-          case types$12._try:
-            return this.parseTryStatement(node);
-          case types$12._const:
-          case types$12._var:
-            kind = kind || this.value;
-            if (context && kind !== "var") {
-              this.unexpected();
-            }
-            return this.parseVarStatement(node, kind);
-          case types$12._while:
-            return this.parseWhileStatement(node);
-          case types$12._with:
-            return this.parseWithStatement(node);
-          case types$12.braceL:
-            return this.parseBlock(true, node);
-          case types$12.semi:
-            return this.parseEmptyStatement(node);
-          case types$12._export:
-          case types$12._import:
-            if (this.options.ecmaVersion > 10 && starttype === types$12._import) {
-              skipWhiteSpace2.lastIndex = this.pos;
-              var skip = skipWhiteSpace2.exec(this.input);
-              var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
-              if (nextCh === 40 || nextCh === 46) {
-                return this.parseExpressionStatement(node, this.parseExpression());
-              }
-            }
-            if (!this.options.allowImportExportEverywhere) {
-              if (!topLevel) {
-                this.raise(this.start, "'import' and 'export' may only appear at the top level");
-              }
-              if (!this.inModule) {
-                this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'");
-              }
-            }
-            return starttype === types$12._import ? this.parseImport(node) : this.parseExport(node, exports$1);
-          // If the statement does not start with a statement keyword or a
-          // brace, it's an ExpressionStatement or LabeledStatement. We
-          // simply start parsing an expression, and afterwards, if the
-          // next token is a colon and the expression was a simple
-          // Identifier node, we switch to interpreting it as a label.
-          default:
-            if (this.isAsyncFunction()) {
-              if (context) {
-                this.unexpected();
-              }
-              this.next();
-              return this.parseFunctionStatement(node, true, !context);
-            }
-            var usingKind = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
-            if (usingKind) {
-              if (!this.allowUsing) {
-                this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement");
-              }
-              if (context) {
-                this.raise(this.start, "Using declaration is not allowed in single-statement positions");
-              }
-              if (usingKind === "await using") {
-                if (!this.canAwait) {
-                  this.raise(this.start, "Await using cannot appear outside of async function");
-                }
-                this.next();
-              }
-              this.next();
-              this.parseVar(node, false, usingKind);
-              this.semicolon();
-              return this.finishNode(node, "VariableDeclaration");
-            }
-            var maybeName = this.value, expr = this.parseExpression();
-            if (starttype === types$12.name && expr.type === "Identifier" && this.eat(types$12.colon)) {
-              return this.parseLabeledStatement(node, maybeName, expr, context);
-            } else {
-              return this.parseExpressionStatement(node, expr);
-            }
-        }
-      };
-      pp$82.parseBreakContinueStatement = function(node, keyword) {
-        var isBreak = keyword === "break";
-        this.next();
-        if (this.eat(types$12.semi) || this.insertSemicolon()) {
-          node.label = null;
-        } else if (this.type !== types$12.name) {
-          this.unexpected();
-        } else {
-          node.label = this.parseIdent();
-          this.semicolon();
-        }
-        var i3 = 0;
-        for (; i3 < this.labels.length; ++i3) {
-          var lab = this.labels[i3];
-          if (node.label == null || lab.name === node.label.name) {
-            if (lab.kind != null && (isBreak || lab.kind === "loop")) {
-              break;
-            }
-            if (node.label && isBreak) {
-              break;
-            }
-          }
-        }
-        if (i3 === this.labels.length) {
-          this.raise(node.start, "Unsyntactic " + keyword);
-        }
-        return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
-      };
-      pp$82.parseDebuggerStatement = function(node) {
-        this.next();
-        this.semicolon();
-        return this.finishNode(node, "DebuggerStatement");
-      };
-      pp$82.parseDoStatement = function(node) {
-        this.next();
-        this.labels.push(loopLabel2);
-        node.body = this.parseStatement("do");
-        this.labels.pop();
-        this.expect(types$12._while);
-        node.test = this.parseParenExpression();
-        if (this.options.ecmaVersion >= 6) {
-          this.eat(types$12.semi);
-        } else {
-          this.semicolon();
-        }
-        return this.finishNode(node, "DoWhileStatement");
-      };
-      pp$82.parseForStatement = function(node) {
-        this.next();
-        var awaitAt = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
-        this.labels.push(loopLabel2);
-        this.enterScope(0);
-        this.expect(types$12.parenL);
-        if (this.type === types$12.semi) {
-          if (awaitAt > -1) {
-            this.unexpected(awaitAt);
-          }
-          return this.parseFor(node, null);
-        }
-        var isLet = this.isLet();
-        if (this.type === types$12._var || this.type === types$12._const || isLet) {
-          var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
-          this.next();
-          this.parseVar(init$1, true, kind);
-          this.finishNode(init$1, "VariableDeclaration");
-          return this.parseForAfterInit(node, init$1, awaitAt);
-        }
-        var startsWithLet = this.isContextual("let"), isForOf = false;
-        var usingKind = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
-        if (usingKind) {
-          var init$2 = this.startNode();
-          this.next();
-          if (usingKind === "await using") {
-            if (!this.canAwait) {
-              this.raise(this.start, "Await using cannot appear outside of async function");
-            }
-            this.next();
-          }
-          this.parseVar(init$2, true, usingKind);
-          this.finishNode(init$2, "VariableDeclaration");
-          return this.parseForAfterInit(node, init$2, awaitAt);
-        }
-        var containsEsc = this.containsEsc;
-        var refDestructuringErrors = new DestructuringErrors3();
-        var initPos = this.start;
-        var init = awaitAt > -1 ? this.parseExprSubscripts(refDestructuringErrors, "await") : this.parseExpression(true, refDestructuringErrors);
-        if (this.type === types$12._in || (isForOf = this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
-          if (awaitAt > -1) {
-            if (this.type === types$12._in) {
-              this.unexpected(awaitAt);
-            }
-            node.await = true;
-          } else if (isForOf && this.options.ecmaVersion >= 8) {
-            if (init.start === initPos && !containsEsc && init.type === "Identifier" && init.name === "async") {
-              this.unexpected();
-            } else if (this.options.ecmaVersion >= 9) {
-              node.await = false;
-            }
-          }
-          if (startsWithLet && isForOf) {
-            this.raise(init.start, "The left-hand side of a for-of loop may not start with 'let'.");
-          }
-          this.toAssignable(init, false, refDestructuringErrors);
-          this.checkLValPattern(init);
-          return this.parseForIn(node, init);
-        } else {
-          this.checkExpressionErrors(refDestructuringErrors, true);
-        }
-        if (awaitAt > -1) {
-          this.unexpected(awaitAt);
-        }
-        return this.parseFor(node, init);
-      };
-      pp$82.parseForAfterInit = function(node, init, awaitAt) {
-        if ((this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && init.declarations.length === 1) {
-          if (this.type === types$12._in) {
-            if ((init.kind === "using" || init.kind === "await using") && !init.declarations[0].init) {
-              this.raise(this.start, "Using declaration is not allowed in for-in loops");
-            }
-            if (this.options.ecmaVersion >= 9 && awaitAt > -1) {
-              this.unexpected(awaitAt);
-            }
-          } else if (this.options.ecmaVersion >= 9) {
-            node.await = awaitAt > -1;
-          }
-          return this.parseForIn(node, init);
-        }
-        if (awaitAt > -1) {
-          this.unexpected(awaitAt);
-        }
-        return this.parseFor(node, init);
-      };
-      pp$82.parseFunctionStatement = function(node, isAsync, declarationPosition) {
-        this.next();
-        return this.parseFunction(node, FUNC_STATEMENT2 | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT2), false, isAsync);
-      };
-      pp$82.parseIfStatement = function(node) {
-        this.next();
-        node.test = this.parseParenExpression();
-        node.consequent = this.parseStatement("if");
-        node.alternate = this.eat(types$12._else) ? this.parseStatement("if") : null;
-        return this.finishNode(node, "IfStatement");
-      };
-      pp$82.parseReturnStatement = function(node) {
-        if (!this.allowReturn) {
-          this.raise(this.start, "'return' outside of function");
-        }
-        this.next();
-        if (this.eat(types$12.semi) || this.insertSemicolon()) {
-          node.argument = null;
-        } else {
-          node.argument = this.parseExpression();
-          this.semicolon();
-        }
-        return this.finishNode(node, "ReturnStatement");
-      };
-      pp$82.parseSwitchStatement = function(node) {
-        this.next();
-        node.discriminant = this.parseParenExpression();
-        node.cases = [];
-        this.expect(types$12.braceL);
-        this.labels.push(switchLabel2);
-        this.enterScope(SCOPE_SWITCH2);
-        var cur;
-        for (var sawDefault = false; this.type !== types$12.braceR; ) {
-          if (this.type === types$12._case || this.type === types$12._default) {
-            var isCase = this.type === types$12._case;
-            if (cur) {
-              this.finishNode(cur, "SwitchCase");
-            }
-            node.cases.push(cur = this.startNode());
-            cur.consequent = [];
-            this.next();
-            if (isCase) {
-              cur.test = this.parseExpression();
-            } else {
-              if (sawDefault) {
-                this.raiseRecoverable(this.lastTokStart, "Multiple default clauses");
-              }
-              sawDefault = true;
-              cur.test = null;
-            }
-            this.expect(types$12.colon);
-          } else {
-            if (!cur) {
-              this.unexpected();
-            }
-            cur.consequent.push(this.parseStatement(null));
-          }
-        }
-        this.exitScope();
-        if (cur) {
-          this.finishNode(cur, "SwitchCase");
-        }
-        this.next();
-        this.labels.pop();
-        return this.finishNode(node, "SwitchStatement");
-      };
-      pp$82.parseThrowStatement = function(node) {
-        this.next();
-        if (lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) {
-          this.raise(this.lastTokEnd, "Illegal newline after throw");
-        }
-        node.argument = this.parseExpression();
-        this.semicolon();
-        return this.finishNode(node, "ThrowStatement");
-      };
-      var empty$12 = [];
-      pp$82.parseCatchClauseParam = function() {
-        var param = this.parseBindingAtom();
-        var simple = param.type === "Identifier";
-        this.enterScope(simple ? SCOPE_SIMPLE_CATCH2 : 0);
-        this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH2 : BIND_LEXICAL2);
-        this.expect(types$12.parenR);
-        return param;
-      };
-      pp$82.parseTryStatement = function(node) {
-        this.next();
-        node.block = this.parseBlock();
-        node.handler = null;
-        if (this.type === types$12._catch) {
-          var clause = this.startNode();
-          this.next();
-          if (this.eat(types$12.parenL)) {
-            clause.param = this.parseCatchClauseParam();
-          } else {
-            if (this.options.ecmaVersion < 10) {
-              this.unexpected();
-            }
-            clause.param = null;
-            this.enterScope(0);
-          }
-          clause.body = this.parseBlock(false);
-          this.exitScope();
-          node.handler = this.finishNode(clause, "CatchClause");
-        }
-        node.finalizer = this.eat(types$12._finally) ? this.parseBlock() : null;
-        if (!node.handler && !node.finalizer) {
-          this.raise(node.start, "Missing catch or finally clause");
-        }
-        return this.finishNode(node, "TryStatement");
-      };
-      pp$82.parseVarStatement = function(node, kind, allowMissingInitializer) {
-        this.next();
-        this.parseVar(node, false, kind, allowMissingInitializer);
-        this.semicolon();
-        return this.finishNode(node, "VariableDeclaration");
-      };
-      pp$82.parseWhileStatement = function(node) {
-        this.next();
-        node.test = this.parseParenExpression();
-        this.labels.push(loopLabel2);
-        node.body = this.parseStatement("while");
-        this.labels.pop();
-        return this.finishNode(node, "WhileStatement");
-      };
-      pp$82.parseWithStatement = function(node) {
-        if (this.strict) {
-          this.raise(this.start, "'with' in strict mode");
-        }
-        this.next();
-        node.object = this.parseParenExpression();
-        node.body = this.parseStatement("with");
-        return this.finishNode(node, "WithStatement");
-      };
-      pp$82.parseEmptyStatement = function(node) {
-        this.next();
-        return this.finishNode(node, "EmptyStatement");
-      };
-      pp$82.parseLabeledStatement = function(node, maybeName, expr, context) {
-        for (var i$1 = 0, list3 = this.labels; i$1 < list3.length; i$1 += 1) {
-          var label = list3[i$1];
-          if (label.name === maybeName) {
-            this.raise(expr.start, "Label '" + maybeName + "' is already declared");
-          }
-        }
-        var kind = this.type.isLoop ? "loop" : this.type === types$12._switch ? "switch" : null;
-        for (var i3 = this.labels.length - 1; i3 >= 0; i3--) {
-          var label$1 = this.labels[i3];
-          if (label$1.statementStart === node.start) {
-            label$1.statementStart = this.start;
-            label$1.kind = kind;
-          } else {
-            break;
-          }
-        }
-        this.labels.push({ name: maybeName, kind, statementStart: this.start });
-        node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
-        this.labels.pop();
-        node.label = expr;
-        return this.finishNode(node, "LabeledStatement");
-      };
-      pp$82.parseExpressionStatement = function(node, expr) {
-        node.expression = expr;
-        this.semicolon();
-        return this.finishNode(node, "ExpressionStatement");
-      };
-      pp$82.parseBlock = function(createNewLexicalScope, node, exitStrict) {
-        if (createNewLexicalScope === void 0) createNewLexicalScope = true;
-        if (node === void 0) node = this.startNode();
-        node.body = [];
-        this.expect(types$12.braceL);
-        if (createNewLexicalScope) {
-          this.enterScope(0);
-        }
-        while (this.type !== types$12.braceR) {
-          var stmt = this.parseStatement(null);
-          node.body.push(stmt);
-        }
-        if (exitStrict) {
-          this.strict = false;
-        }
-        this.next();
-        if (createNewLexicalScope) {
-          this.exitScope();
-        }
-        return this.finishNode(node, "BlockStatement");
-      };
-      pp$82.parseFor = function(node, init) {
-        node.init = init;
-        this.expect(types$12.semi);
-        node.test = this.type === types$12.semi ? null : this.parseExpression();
-        this.expect(types$12.semi);
-        node.update = this.type === types$12.parenR ? null : this.parseExpression();
-        this.expect(types$12.parenR);
-        node.body = this.parseStatement("for");
-        this.exitScope();
-        this.labels.pop();
-        return this.finishNode(node, "ForStatement");
-      };
-      pp$82.parseForIn = function(node, init) {
-        var isForIn = this.type === types$12._in;
-        this.next();
-        if (init.type === "VariableDeclaration" && init.declarations[0].init != null && (!isForIn || this.options.ecmaVersion < 8 || this.strict || init.kind !== "var" || init.declarations[0].id.type !== "Identifier")) {
-          this.raise(
-            init.start,
-            (isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"
-          );
-        }
-        node.left = init;
-        node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
-        this.expect(types$12.parenR);
-        node.body = this.parseStatement("for");
-        this.exitScope();
-        this.labels.pop();
-        return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement");
-      };
-      pp$82.parseVar = function(node, isFor, kind, allowMissingInitializer) {
-        node.declarations = [];
-        node.kind = kind;
-        for (; ; ) {
-          var decl = this.startNode();
-          this.parseVarId(decl, kind);
-          if (this.eat(types$12.eq)) {
-            decl.init = this.parseMaybeAssign(isFor);
-          } else if (!allowMissingInitializer && kind === "const" && !(this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
-            this.unexpected();
-          } else if (!allowMissingInitializer && (kind === "using" || kind === "await using") && this.options.ecmaVersion >= 17 && this.type !== types$12._in && !this.isContextual("of")) {
-            this.raise(this.lastTokEnd, "Missing initializer in " + kind + " declaration");
-          } else if (!allowMissingInitializer && decl.id.type !== "Identifier" && !(isFor && (this.type === types$12._in || this.isContextual("of")))) {
-            this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
-          } else {
-            decl.init = null;
-          }
-          node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
-          if (!this.eat(types$12.comma)) {
-            break;
-          }
-        }
-        return node;
-      };
-      pp$82.parseVarId = function(decl, kind) {
-        decl.id = kind === "using" || kind === "await using" ? this.parseIdent() : this.parseBindingAtom();
-        this.checkLValPattern(decl.id, kind === "var" ? BIND_VAR2 : BIND_LEXICAL2, false);
-      };
-      var FUNC_STATEMENT2 = 1, FUNC_HANGING_STATEMENT2 = 2, FUNC_NULLABLE_ID2 = 4;
-      pp$82.parseFunction = function(node, statement, allowExpressionBody, isAsync, forInit) {
-        this.initFunction(node);
-        if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
-          if (this.type === types$12.star && statement & FUNC_HANGING_STATEMENT2) {
-            this.unexpected();
-          }
-          node.generator = this.eat(types$12.star);
-        }
-        if (this.options.ecmaVersion >= 8) {
-          node.async = !!isAsync;
-        }
-        if (statement & FUNC_STATEMENT2) {
-          node.id = statement & FUNC_NULLABLE_ID2 && this.type !== types$12.name ? null : this.parseIdent();
-          if (node.id && !(statement & FUNC_HANGING_STATEMENT2)) {
-            this.checkLValSimple(node.id, this.strict || node.generator || node.async ? this.treatFunctionsAsVar ? BIND_VAR2 : BIND_LEXICAL2 : BIND_FUNCTION2);
-          }
-        }
-        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
-        this.yieldPos = 0;
-        this.awaitPos = 0;
-        this.awaitIdentPos = 0;
-        this.enterScope(functionFlags2(node.async, node.generator));
-        if (!(statement & FUNC_STATEMENT2)) {
-          node.id = this.type === types$12.name ? this.parseIdent() : null;
-        }
-        this.parseFunctionParams(node);
-        this.parseFunctionBody(node, allowExpressionBody, false, forInit);
-        this.yieldPos = oldYieldPos;
-        this.awaitPos = oldAwaitPos;
-        this.awaitIdentPos = oldAwaitIdentPos;
-        return this.finishNode(node, statement & FUNC_STATEMENT2 ? "FunctionDeclaration" : "FunctionExpression");
-      };
-      pp$82.parseFunctionParams = function(node) {
-        this.expect(types$12.parenL);
-        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
-        this.checkYieldAwaitInDefaultParams();
-      };
-      pp$82.parseClass = function(node, isStatement) {
-        this.next();
-        var oldStrict = this.strict;
-        this.strict = true;
-        this.parseClassId(node, isStatement);
-        this.parseClassSuper(node);
-        var privateNameMap = this.enterClassBody();
-        var classBody = this.startNode();
-        var hadConstructor = false;
-        classBody.body = [];
-        this.expect(types$12.braceL);
-        while (this.type !== types$12.braceR) {
-          var element = this.parseClassElement(node.superClass !== null);
-          if (element) {
-            classBody.body.push(element);
-            if (element.type === "MethodDefinition" && element.kind === "constructor") {
-              if (hadConstructor) {
-                this.raiseRecoverable(element.start, "Duplicate constructor in the same class");
-              }
-              hadConstructor = true;
-            } else if (element.key && element.key.type === "PrivateIdentifier" && isPrivateNameConflicted2(privateNameMap, element)) {
-              this.raiseRecoverable(element.key.start, "Identifier '#" + element.key.name + "' has already been declared");
-            }
-          }
-        }
-        this.strict = oldStrict;
-        this.next();
-        node.body = this.finishNode(classBody, "ClassBody");
-        this.exitClassBody();
-        return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
-      };
-      pp$82.parseClassElement = function(constructorAllowsSuper) {
-        if (this.eat(types$12.semi)) {
-          return null;
-        }
-        var ecmaVersion3 = this.options.ecmaVersion;
-        var node = this.startNode();
-        var keyName = "";
-        var isGenerator = false;
-        var isAsync = false;
-        var kind = "method";
-        var isStatic = false;
-        if (this.eatContextual("static")) {
-          if (ecmaVersion3 >= 13 && this.eat(types$12.braceL)) {
-            this.parseClassStaticBlock(node);
-            return node;
-          }
-          if (this.isClassElementNameStart() || this.type === types$12.star) {
-            isStatic = true;
-          } else {
-            keyName = "static";
-          }
-        }
-        node.static = isStatic;
-        if (!keyName && ecmaVersion3 >= 8 && this.eatContextual("async")) {
-          if ((this.isClassElementNameStart() || this.type === types$12.star) && !this.canInsertSemicolon()) {
-            isAsync = true;
-          } else {
-            keyName = "async";
-          }
-        }
-        if (!keyName && (ecmaVersion3 >= 9 || !isAsync) && this.eat(types$12.star)) {
-          isGenerator = true;
-        }
-        if (!keyName && !isAsync && !isGenerator) {
-          var lastValue = this.value;
-          if (this.eatContextual("get") || this.eatContextual("set")) {
-            if (this.isClassElementNameStart()) {
-              kind = lastValue;
-            } else {
-              keyName = lastValue;
-            }
-          }
-        }
-        if (keyName) {
-          node.computed = false;
-          node.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc);
-          node.key.name = keyName;
-          this.finishNode(node.key, "Identifier");
-        } else {
-          this.parseClassElementName(node);
-        }
-        if (ecmaVersion3 < 13 || this.type === types$12.parenL || kind !== "method" || isGenerator || isAsync) {
-          var isConstructor = !node.static && checkKeyName2(node, "constructor");
-          var allowsDirectSuper = isConstructor && constructorAllowsSuper;
-          if (isConstructor && kind !== "method") {
-            this.raise(node.key.start, "Constructor can't have get/set modifier");
-          }
-          node.kind = isConstructor ? "constructor" : kind;
-          this.parseClassMethod(node, isGenerator, isAsync, allowsDirectSuper);
-        } else {
-          this.parseClassField(node);
-        }
-        return node;
-      };
-      pp$82.isClassElementNameStart = function() {
-        return this.type === types$12.name || this.type === types$12.privateId || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword;
-      };
-      pp$82.parseClassElementName = function(element) {
-        if (this.type === types$12.privateId) {
-          if (this.value === "constructor") {
-            this.raise(this.start, "Classes can't have an element named '#constructor'");
-          }
-          element.computed = false;
-          element.key = this.parsePrivateIdent();
-        } else {
-          this.parsePropertyName(element);
-        }
-      };
-      pp$82.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
-        var key = method.key;
-        if (method.kind === "constructor") {
-          if (isGenerator) {
-            this.raise(key.start, "Constructor can't be a generator");
-          }
-          if (isAsync) {
-            this.raise(key.start, "Constructor can't be an async method");
-          }
-        } else if (method.static && checkKeyName2(method, "prototype")) {
-          this.raise(key.start, "Classes may not have a static property named prototype");
-        }
-        var value = method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
-        if (method.kind === "get" && value.params.length !== 0) {
-          this.raiseRecoverable(value.start, "getter should have no params");
-        }
-        if (method.kind === "set" && value.params.length !== 1) {
-          this.raiseRecoverable(value.start, "setter should have exactly one param");
-        }
-        if (method.kind === "set" && value.params[0].type === "RestElement") {
-          this.raiseRecoverable(value.params[0].start, "Setter cannot use rest params");
-        }
-        return this.finishNode(method, "MethodDefinition");
-      };
-      pp$82.parseClassField = function(field) {
-        if (checkKeyName2(field, "constructor")) {
-          this.raise(field.key.start, "Classes can't have a field named 'constructor'");
-        } else if (field.static && checkKeyName2(field, "prototype")) {
-          this.raise(field.key.start, "Classes can't have a static field named 'prototype'");
-        }
-        if (this.eat(types$12.eq)) {
-          this.enterScope(SCOPE_CLASS_FIELD_INIT2 | SCOPE_SUPER2);
-          field.value = this.parseMaybeAssign();
-          this.exitScope();
-        } else {
-          field.value = null;
-        }
-        this.semicolon();
-        return this.finishNode(field, "PropertyDefinition");
-      };
-      pp$82.parseClassStaticBlock = function(node) {
-        node.body = [];
-        var oldLabels = this.labels;
-        this.labels = [];
-        this.enterScope(SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_SUPER2);
-        while (this.type !== types$12.braceR) {
-          var stmt = this.parseStatement(null);
-          node.body.push(stmt);
-        }
-        this.next();
-        this.exitScope();
-        this.labels = oldLabels;
-        return this.finishNode(node, "StaticBlock");
-      };
-      pp$82.parseClassId = function(node, isStatement) {
-        if (this.type === types$12.name) {
-          node.id = this.parseIdent();
-          if (isStatement) {
-            this.checkLValSimple(node.id, BIND_LEXICAL2, false);
-          }
-        } else {
-          if (isStatement === true) {
-            this.unexpected();
-          }
-          node.id = null;
-        }
-      };
-      pp$82.parseClassSuper = function(node) {
-        node.superClass = this.eat(types$12._extends) ? this.parseExprSubscripts(null, false) : null;
-      };
-      pp$82.enterClassBody = function() {
-        var element = { declared: /* @__PURE__ */ Object.create(null), used: [] };
-        this.privateNameStack.push(element);
-        return element.declared;
-      };
-      pp$82.exitClassBody = function() {
-        var ref3 = this.privateNameStack.pop();
-        var declared = ref3.declared;
-        var used = ref3.used;
-        if (!this.options.checkPrivateFields) {
-          return;
-        }
-        var len = this.privateNameStack.length;
-        var parent = len === 0 ? null : this.privateNameStack[len - 1];
-        for (var i3 = 0; i3 < used.length; ++i3) {
-          var id = used[i3];
-          if (!hasOwn2(declared, id.name)) {
-            if (parent) {
-              parent.used.push(id);
-            } else {
-              this.raiseRecoverable(id.start, "Private field '#" + id.name + "' must be declared in an enclosing class");
-            }
-          }
-        }
-      };
-      function isPrivateNameConflicted2(privateNameMap, element) {
-        var name = element.key.name;
-        var curr = privateNameMap[name];
-        var next = "true";
-        if (element.type === "MethodDefinition" && (element.kind === "get" || element.kind === "set")) {
-          next = (element.static ? "s" : "i") + element.kind;
-        }
-        if (curr === "iget" && next === "iset" || curr === "iset" && next === "iget" || curr === "sget" && next === "sset" || curr === "sset" && next === "sget") {
-          privateNameMap[name] = "true";
-          return false;
-        } else if (!curr) {
-          privateNameMap[name] = next;
-          return false;
-        } else {
-          return true;
-        }
-      }
-      function checkKeyName2(node, name) {
-        var computed = node.computed;
-        var key = node.key;
-        return !computed && (key.type === "Identifier" && key.name === name || key.type === "Literal" && key.value === name);
-      }
-      pp$82.parseExportAllDeclaration = function(node, exports$1) {
-        if (this.options.ecmaVersion >= 11) {
-          if (this.eatContextual("as")) {
-            node.exported = this.parseModuleExportName();
-            this.checkExport(exports$1, node.exported, this.lastTokStart);
-          } else {
-            node.exported = null;
-          }
-        }
-        this.expectContextual("from");
-        if (this.type !== types$12.string) {
-          this.unexpected();
-        }
-        node.source = this.parseExprAtom();
-        if (this.options.ecmaVersion >= 16) {
-          node.attributes = this.parseWithClause();
-        }
-        this.semicolon();
-        return this.finishNode(node, "ExportAllDeclaration");
-      };
-      pp$82.parseExport = function(node, exports$1) {
-        this.next();
-        if (this.eat(types$12.star)) {
-          return this.parseExportAllDeclaration(node, exports$1);
-        }
-        if (this.eat(types$12._default)) {
-          this.checkExport(exports$1, "default", this.lastTokStart);
-          node.declaration = this.parseExportDefaultDeclaration();
-          return this.finishNode(node, "ExportDefaultDeclaration");
-        }
-        if (this.shouldParseExportStatement()) {
-          node.declaration = this.parseExportDeclaration(node);
-          if (node.declaration.type === "VariableDeclaration") {
-            this.checkVariableExport(exports$1, node.declaration.declarations);
-          } else {
-            this.checkExport(exports$1, node.declaration.id, node.declaration.id.start);
-          }
-          node.specifiers = [];
-          node.source = null;
-          if (this.options.ecmaVersion >= 16) {
-            node.attributes = [];
-          }
-        } else {
-          node.declaration = null;
-          node.specifiers = this.parseExportSpecifiers(exports$1);
-          if (this.eatContextual("from")) {
-            if (this.type !== types$12.string) {
-              this.unexpected();
-            }
-            node.source = this.parseExprAtom();
-            if (this.options.ecmaVersion >= 16) {
-              node.attributes = this.parseWithClause();
-            }
-          } else {
-            for (var i3 = 0, list3 = node.specifiers; i3 < list3.length; i3 += 1) {
-              var spec = list3[i3];
-              this.checkUnreserved(spec.local);
-              this.checkLocalExport(spec.local);
-              if (spec.local.type === "Literal") {
-                this.raise(spec.local.start, "A string literal cannot be used as an exported binding without `from`.");
-              }
-            }
-            node.source = null;
-            if (this.options.ecmaVersion >= 16) {
-              node.attributes = [];
-            }
-          }
-          this.semicolon();
-        }
-        return this.finishNode(node, "ExportNamedDeclaration");
-      };
-      pp$82.parseExportDeclaration = function(node) {
-        return this.parseStatement(null);
-      };
-      pp$82.parseExportDefaultDeclaration = function() {
-        var isAsync;
-        if (this.type === types$12._function || (isAsync = this.isAsyncFunction())) {
-          var fNode = this.startNode();
-          this.next();
-          if (isAsync) {
-            this.next();
-          }
-          return this.parseFunction(fNode, FUNC_STATEMENT2 | FUNC_NULLABLE_ID2, false, isAsync);
-        } else if (this.type === types$12._class) {
-          var cNode = this.startNode();
-          return this.parseClass(cNode, "nullableID");
-        } else {
-          var declaration = this.parseMaybeAssign();
-          this.semicolon();
-          return declaration;
-        }
-      };
-      pp$82.checkExport = function(exports$1, name, pos) {
-        if (!exports$1) {
-          return;
-        }
-        if (typeof name !== "string") {
-          name = name.type === "Identifier" ? name.name : name.value;
-        }
-        if (hasOwn2(exports$1, name)) {
-          this.raiseRecoverable(pos, "Duplicate export '" + name + "'");
-        }
-        exports$1[name] = true;
-      };
-      pp$82.checkPatternExport = function(exports$1, pat) {
-        var type = pat.type;
-        if (type === "Identifier") {
-          this.checkExport(exports$1, pat, pat.start);
-        } else if (type === "ObjectPattern") {
-          for (var i3 = 0, list3 = pat.properties; i3 < list3.length; i3 += 1) {
-            var prop = list3[i3];
-            this.checkPatternExport(exports$1, prop);
-          }
-        } else if (type === "ArrayPattern") {
-          for (var i$1 = 0, list$1 = pat.elements; i$1 < list$1.length; i$1 += 1) {
-            var elt = list$1[i$1];
-            if (elt) {
-              this.checkPatternExport(exports$1, elt);
-            }
-          }
-        } else if (type === "Property") {
-          this.checkPatternExport(exports$1, pat.value);
-        } else if (type === "AssignmentPattern") {
-          this.checkPatternExport(exports$1, pat.left);
-        } else if (type === "RestElement") {
-          this.checkPatternExport(exports$1, pat.argument);
-        }
-      };
-      pp$82.checkVariableExport = function(exports$1, decls) {
-        if (!exports$1) {
-          return;
-        }
-        for (var i3 = 0, list3 = decls; i3 < list3.length; i3 += 1) {
-          var decl = list3[i3];
-          this.checkPatternExport(exports$1, decl.id);
-        }
-      };
-      pp$82.shouldParseExportStatement = function() {
-        return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
-      };
-      pp$82.parseExportSpecifier = function(exports$1) {
-        var node = this.startNode();
-        node.local = this.parseModuleExportName();
-        node.exported = this.eatContextual("as") ? this.parseModuleExportName() : node.local;
-        this.checkExport(
-          exports$1,
-          node.exported,
-          node.exported.start
-        );
-        return this.finishNode(node, "ExportSpecifier");
-      };
-      pp$82.parseExportSpecifiers = function(exports$1) {
-        var nodes = [], first = true;
-        this.expect(types$12.braceL);
-        while (!this.eat(types$12.braceR)) {
-          if (!first) {
-            this.expect(types$12.comma);
-            if (this.afterTrailingComma(types$12.braceR)) {
-              break;
-            }
-          } else {
-            first = false;
-          }
-          nodes.push(this.parseExportSpecifier(exports$1));
-        }
-        return nodes;
-      };
-      pp$82.parseImport = function(node) {
-        this.next();
-        if (this.type === types$12.string) {
-          node.specifiers = empty$12;
-          node.source = this.parseExprAtom();
-        } else {
-          node.specifiers = this.parseImportSpecifiers();
-          this.expectContextual("from");
-          node.source = this.type === types$12.string ? this.parseExprAtom() : this.unexpected();
-        }
-        if (this.options.ecmaVersion >= 16) {
-          node.attributes = this.parseWithClause();
-        }
-        this.semicolon();
-        return this.finishNode(node, "ImportDeclaration");
-      };
-      pp$82.parseImportSpecifier = function() {
-        var node = this.startNode();
-        node.imported = this.parseModuleExportName();
-        if (this.eatContextual("as")) {
-          node.local = this.parseIdent();
-        } else {
-          this.checkUnreserved(node.imported);
-          node.local = node.imported;
-        }
-        this.checkLValSimple(node.local, BIND_LEXICAL2);
-        return this.finishNode(node, "ImportSpecifier");
-      };
-      pp$82.parseImportDefaultSpecifier = function() {
-        var node = this.startNode();
-        node.local = this.parseIdent();
-        this.checkLValSimple(node.local, BIND_LEXICAL2);
-        return this.finishNode(node, "ImportDefaultSpecifier");
-      };
-      pp$82.parseImportNamespaceSpecifier = function() {
-        var node = this.startNode();
-        this.next();
-        this.expectContextual("as");
-        node.local = this.parseIdent();
-        this.checkLValSimple(node.local, BIND_LEXICAL2);
-        return this.finishNode(node, "ImportNamespaceSpecifier");
-      };
-      pp$82.parseImportSpecifiers = function() {
-        var nodes = [], first = true;
-        if (this.type === types$12.name) {
-          nodes.push(this.parseImportDefaultSpecifier());
-          if (!this.eat(types$12.comma)) {
-            return nodes;
-          }
-        }
-        if (this.type === types$12.star) {
-          nodes.push(this.parseImportNamespaceSpecifier());
-          return nodes;
-        }
-        this.expect(types$12.braceL);
-        while (!this.eat(types$12.braceR)) {
-          if (!first) {
-            this.expect(types$12.comma);
-            if (this.afterTrailingComma(types$12.braceR)) {
-              break;
-            }
-          } else {
-            first = false;
-          }
-          nodes.push(this.parseImportSpecifier());
-        }
-        return nodes;
-      };
-      pp$82.parseWithClause = function() {
-        var nodes = [];
-        if (!this.eat(types$12._with)) {
-          return nodes;
-        }
-        this.expect(types$12.braceL);
-        var attributeKeys = {};
-        var first = true;
-        while (!this.eat(types$12.braceR)) {
-          if (!first) {
-            this.expect(types$12.comma);
-            if (this.afterTrailingComma(types$12.braceR)) {
-              break;
-            }
-          } else {
-            first = false;
-          }
-          var attr = this.parseImportAttribute();
-          var keyName = attr.key.type === "Identifier" ? attr.key.name : attr.key.value;
-          if (hasOwn2(attributeKeys, keyName)) {
-            this.raiseRecoverable(attr.key.start, "Duplicate attribute key '" + keyName + "'");
-          }
-          attributeKeys[keyName] = true;
-          nodes.push(attr);
-        }
-        return nodes;
-      };
-      pp$82.parseImportAttribute = function() {
-        var node = this.startNode();
-        node.key = this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
-        this.expect(types$12.colon);
-        if (this.type !== types$12.string) {
-          this.unexpected();
-        }
-        node.value = this.parseExprAtom();
-        return this.finishNode(node, "ImportAttribute");
-      };
-      pp$82.parseModuleExportName = function() {
-        if (this.options.ecmaVersion >= 13 && this.type === types$12.string) {
-          var stringLiteral = this.parseLiteral(this.value);
-          if (loneSurrogate2.test(stringLiteral.value)) {
-            this.raise(stringLiteral.start, "An export name cannot include a lone surrogate.");
-          }
-          return stringLiteral;
-        }
-        return this.parseIdent(true);
-      };
-      pp$82.adaptDirectivePrologue = function(statements) {
-        for (var i3 = 0; i3 < statements.length && this.isDirectiveCandidate(statements[i3]); ++i3) {
-          statements[i3].directive = statements[i3].expression.raw.slice(1, -1);
-        }
-      };
-      pp$82.isDirectiveCandidate = function(statement) {
-        return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && // Reject parenthesized strings.
-        (this.input[statement.start] === '"' || this.input[statement.start] === "'");
-      };
-      var pp$72 = Parser3.prototype;
-      pp$72.toAssignable = function(node, isBinding, refDestructuringErrors) {
-        if (this.options.ecmaVersion >= 6 && node) {
-          switch (node.type) {
-            case "Identifier":
-              if (this.inAsync && node.name === "await") {
-                this.raise(node.start, "Cannot use 'await' as identifier inside an async function");
-              }
-              break;
-            case "ObjectPattern":
-            case "ArrayPattern":
-            case "AssignmentPattern":
-            case "RestElement":
-              break;
-            case "ObjectExpression":
-              node.type = "ObjectPattern";
-              if (refDestructuringErrors) {
-                this.checkPatternErrors(refDestructuringErrors, true);
-              }
-              for (var i3 = 0, list3 = node.properties; i3 < list3.length; i3 += 1) {
-                var prop = list3[i3];
-                this.toAssignable(prop, isBinding);
-                if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
-                  this.raise(prop.argument.start, "Unexpected token");
-                }
-              }
-              break;
-            case "Property":
-              if (node.kind !== "init") {
-                this.raise(node.key.start, "Object pattern can't contain getter or setter");
-              }
-              this.toAssignable(node.value, isBinding);
-              break;
-            case "ArrayExpression":
-              node.type = "ArrayPattern";
-              if (refDestructuringErrors) {
-                this.checkPatternErrors(refDestructuringErrors, true);
-              }
-              this.toAssignableList(node.elements, isBinding);
-              break;
-            case "SpreadElement":
-              node.type = "RestElement";
-              this.toAssignable(node.argument, isBinding);
-              if (node.argument.type === "AssignmentPattern") {
-                this.raise(node.argument.start, "Rest elements cannot have a default value");
-              }
-              break;
-            case "AssignmentExpression":
-              if (node.operator !== "=") {
-                this.raise(node.left.end, "Only '=' operator can be used for specifying default value.");
-              }
-              node.type = "AssignmentPattern";
-              delete node.operator;
-              this.toAssignable(node.left, isBinding);
-              break;
-            case "ParenthesizedExpression":
-              this.toAssignable(node.expression, isBinding, refDestructuringErrors);
-              break;
-            case "ChainExpression":
-              this.raiseRecoverable(node.start, "Optional chaining cannot appear in left-hand side");
-              break;
-            case "MemberExpression":
-              if (!isBinding) {
-                break;
-              }
-            default:
-              this.raise(node.start, "Assigning to rvalue");
-          }
-        } else if (refDestructuringErrors) {
-          this.checkPatternErrors(refDestructuringErrors, true);
-        }
-        return node;
-      };
-      pp$72.toAssignableList = function(exprList, isBinding) {
-        var end = exprList.length;
-        for (var i3 = 0; i3 < end; i3++) {
-          var elt = exprList[i3];
-          if (elt) {
-            this.toAssignable(elt, isBinding);
-          }
-        }
-        if (end) {
-          var last = exprList[end - 1];
-          if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier") {
-            this.unexpected(last.argument.start);
-          }
-        }
-        return exprList;
-      };
-      pp$72.parseSpread = function(refDestructuringErrors) {
-        var node = this.startNode();
-        this.next();
-        node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
-        return this.finishNode(node, "SpreadElement");
-      };
-      pp$72.parseRestBinding = function() {
-        var node = this.startNode();
-        this.next();
-        if (this.options.ecmaVersion === 6 && this.type !== types$12.name) {
-          this.unexpected();
-        }
-        node.argument = this.parseBindingAtom();
-        return this.finishNode(node, "RestElement");
-      };
-      pp$72.parseBindingAtom = function() {
-        if (this.options.ecmaVersion >= 6) {
-          switch (this.type) {
-            case types$12.bracketL:
-              var node = this.startNode();
-              this.next();
-              node.elements = this.parseBindingList(types$12.bracketR, true, true);
-              return this.finishNode(node, "ArrayPattern");
-            case types$12.braceL:
-              return this.parseObj(true);
-          }
-        }
-        return this.parseIdent();
-      };
-      pp$72.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
-        var elts = [], first = true;
-        while (!this.eat(close)) {
-          if (first) {
-            first = false;
-          } else {
-            this.expect(types$12.comma);
-          }
-          if (allowEmpty && this.type === types$12.comma) {
-            elts.push(null);
-          } else if (allowTrailingComma && this.afterTrailingComma(close)) {
-            break;
-          } else if (this.type === types$12.ellipsis) {
-            var rest = this.parseRestBinding();
-            this.parseBindingListItem(rest);
-            elts.push(rest);
-            if (this.type === types$12.comma) {
-              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
-            }
-            this.expect(close);
-            break;
-          } else {
-            elts.push(this.parseAssignableListItem(allowModifiers));
-          }
-        }
-        return elts;
-      };
-      pp$72.parseAssignableListItem = function(allowModifiers) {
-        var elem = this.parseMaybeDefault(this.start, this.startLoc);
-        this.parseBindingListItem(elem);
-        return elem;
-      };
-      pp$72.parseBindingListItem = function(param) {
-        return param;
-      };
-      pp$72.parseMaybeDefault = function(startPos, startLoc, left) {
-        left = left || this.parseBindingAtom();
-        if (this.options.ecmaVersion < 6 || !this.eat(types$12.eq)) {
-          return left;
-        }
-        var node = this.startNodeAt(startPos, startLoc);
-        node.left = left;
-        node.right = this.parseMaybeAssign();
-        return this.finishNode(node, "AssignmentPattern");
-      };
-      pp$72.checkLValSimple = function(expr, bindingType, checkClashes) {
-        if (bindingType === void 0) bindingType = BIND_NONE2;
-        var isBind = bindingType !== BIND_NONE2;
-        switch (expr.type) {
-          case "Identifier":
-            if (this.strict && this.reservedWordsStrictBind.test(expr.name)) {
-              this.raiseRecoverable(expr.start, (isBind ? "Binding " : "Assigning to ") + expr.name + " in strict mode");
-            }
-            if (isBind) {
-              if (bindingType === BIND_LEXICAL2 && expr.name === "let") {
-                this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name");
-              }
-              if (checkClashes) {
-                if (hasOwn2(checkClashes, expr.name)) {
-                  this.raiseRecoverable(expr.start, "Argument name clash");
-                }
-                checkClashes[expr.name] = true;
-              }
-              if (bindingType !== BIND_OUTSIDE2) {
-                this.declareName(expr.name, bindingType, expr.start);
-              }
-            }
-            break;
-          case "ChainExpression":
-            this.raiseRecoverable(expr.start, "Optional chaining cannot appear in left-hand side");
-            break;
-          case "MemberExpression":
-            if (isBind) {
-              this.raiseRecoverable(expr.start, "Binding member expression");
-            }
-            break;
-          case "ParenthesizedExpression":
-            if (isBind) {
-              this.raiseRecoverable(expr.start, "Binding parenthesized expression");
-            }
-            return this.checkLValSimple(expr.expression, bindingType, checkClashes);
-          default:
-            this.raise(expr.start, (isBind ? "Binding" : "Assigning to") + " rvalue");
-        }
-      };
-      pp$72.checkLValPattern = function(expr, bindingType, checkClashes) {
-        if (bindingType === void 0) bindingType = BIND_NONE2;
-        switch (expr.type) {
-          case "ObjectPattern":
-            for (var i3 = 0, list3 = expr.properties; i3 < list3.length; i3 += 1) {
-              var prop = list3[i3];
-              this.checkLValInnerPattern(prop, bindingType, checkClashes);
-            }
-            break;
-          case "ArrayPattern":
-            for (var i$1 = 0, list$1 = expr.elements; i$1 < list$1.length; i$1 += 1) {
-              var elem = list$1[i$1];
-              if (elem) {
-                this.checkLValInnerPattern(elem, bindingType, checkClashes);
-              }
-            }
-            break;
-          default:
-            this.checkLValSimple(expr, bindingType, checkClashes);
-        }
-      };
-      pp$72.checkLValInnerPattern = function(expr, bindingType, checkClashes) {
-        if (bindingType === void 0) bindingType = BIND_NONE2;
-        switch (expr.type) {
-          case "Property":
-            this.checkLValInnerPattern(expr.value, bindingType, checkClashes);
-            break;
-          case "AssignmentPattern":
-            this.checkLValPattern(expr.left, bindingType, checkClashes);
-            break;
-          case "RestElement":
-            this.checkLValPattern(expr.argument, bindingType, checkClashes);
-            break;
-          default:
-            this.checkLValPattern(expr, bindingType, checkClashes);
-        }
-      };
-      var TokContext3 = function TokContext4(token, isExpr, preserveSpace, override, generator) {
-        this.token = token;
-        this.isExpr = !!isExpr;
-        this.preserveSpace = !!preserveSpace;
-        this.override = override;
-        this.generator = !!generator;
-      };
-      var types2 = {
-        b_stat: new TokContext3("{", false),
-        b_expr: new TokContext3("{", true),
-        b_tmpl: new TokContext3("${", false),
-        p_stat: new TokContext3("(", false),
-        p_expr: new TokContext3("(", true),
-        q_tmpl: new TokContext3("`", true, true, function(p) {
-          return p.tryReadTemplateToken();
-        }),
-        f_stat: new TokContext3("function", false),
-        f_expr: new TokContext3("function", true),
-        f_expr_gen: new TokContext3("function", true, false, null, true),
-        f_gen: new TokContext3("function", false, false, null, true)
-      };
-      var pp$62 = Parser3.prototype;
-      pp$62.initialContext = function() {
-        return [types2.b_stat];
-      };
-      pp$62.curContext = function() {
-        return this.context[this.context.length - 1];
-      };
-      pp$62.braceIsBlock = function(prevType) {
-        var parent = this.curContext();
-        if (parent === types2.f_expr || parent === types2.f_stat) {
-          return true;
-        }
-        if (prevType === types$12.colon && (parent === types2.b_stat || parent === types2.b_expr)) {
-          return !parent.isExpr;
-        }
-        if (prevType === types$12._return || prevType === types$12.name && this.exprAllowed) {
-          return lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
-        }
-        if (prevType === types$12._else || prevType === types$12.semi || prevType === types$12.eof || prevType === types$12.parenR || prevType === types$12.arrow) {
-          return true;
-        }
-        if (prevType === types$12.braceL) {
-          return parent === types2.b_stat;
-        }
-        if (prevType === types$12._var || prevType === types$12._const || prevType === types$12.name) {
-          return false;
-        }
-        return !this.exprAllowed;
-      };
-      pp$62.inGeneratorContext = function() {
-        for (var i3 = this.context.length - 1; i3 >= 1; i3--) {
-          var context = this.context[i3];
-          if (context.token === "function") {
-            return context.generator;
-          }
-        }
-        return false;
-      };
-      pp$62.updateContext = function(prevType) {
-        var update, type = this.type;
-        if (type.keyword && prevType === types$12.dot) {
-          this.exprAllowed = false;
-        } else if (update = type.updateContext) {
-          update.call(this, prevType);
-        } else {
-          this.exprAllowed = type.beforeExpr;
-        }
-      };
-      pp$62.overrideContext = function(tokenCtx) {
-        if (this.curContext() !== tokenCtx) {
-          this.context[this.context.length - 1] = tokenCtx;
-        }
-      };
-      types$12.parenR.updateContext = types$12.braceR.updateContext = function() {
-        if (this.context.length === 1) {
-          this.exprAllowed = true;
-          return;
-        }
-        var out = this.context.pop();
-        if (out === types2.b_stat && this.curContext().token === "function") {
-          out = this.context.pop();
-        }
-        this.exprAllowed = !out.isExpr;
-      };
-      types$12.braceL.updateContext = function(prevType) {
-        this.context.push(this.braceIsBlock(prevType) ? types2.b_stat : types2.b_expr);
-        this.exprAllowed = true;
-      };
-      types$12.dollarBraceL.updateContext = function() {
-        this.context.push(types2.b_tmpl);
-        this.exprAllowed = true;
-      };
-      types$12.parenL.updateContext = function(prevType) {
-        var statementParens = prevType === types$12._if || prevType === types$12._for || prevType === types$12._with || prevType === types$12._while;
-        this.context.push(statementParens ? types2.p_stat : types2.p_expr);
-        this.exprAllowed = true;
-      };
-      types$12.incDec.updateContext = function() {
-      };
-      types$12._function.updateContext = types$12._class.updateContext = function(prevType) {
-        if (prevType.beforeExpr && prevType !== types$12._else && !(prevType === types$12.semi && this.curContext() !== types2.p_stat) && !(prevType === types$12._return && lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) && !((prevType === types$12.colon || prevType === types$12.braceL) && this.curContext() === types2.b_stat)) {
-          this.context.push(types2.f_expr);
-        } else {
-          this.context.push(types2.f_stat);
-        }
-        this.exprAllowed = false;
-      };
-      types$12.colon.updateContext = function() {
-        if (this.curContext().token === "function") {
-          this.context.pop();
-        }
-        this.exprAllowed = true;
-      };
-      types$12.backQuote.updateContext = function() {
-        if (this.curContext() === types2.q_tmpl) {
-          this.context.pop();
-        } else {
-          this.context.push(types2.q_tmpl);
-        }
-        this.exprAllowed = false;
-      };
-      types$12.star.updateContext = function(prevType) {
-        if (prevType === types$12._function) {
-          var index = this.context.length - 1;
-          if (this.context[index] === types2.f_expr) {
-            this.context[index] = types2.f_expr_gen;
-          } else {
-            this.context[index] = types2.f_gen;
-          }
-        }
-        this.exprAllowed = true;
-      };
-      types$12.name.updateContext = function(prevType) {
-        var allowed = false;
-        if (this.options.ecmaVersion >= 6 && prevType !== types$12.dot) {
-          if (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) {
-            allowed = true;
-          }
-        }
-        this.exprAllowed = allowed;
-      };
-      var pp$52 = Parser3.prototype;
-      pp$52.checkPropClash = function(prop, propHash, refDestructuringErrors) {
-        if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
-          return;
-        }
-        if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand)) {
-          return;
-        }
-        var key = prop.key;
-        var name;
-        switch (key.type) {
-          case "Identifier":
-            name = key.name;
-            break;
-          case "Literal":
-            name = String(key.value);
-            break;
-          default:
-            return;
-        }
-        var kind = prop.kind;
-        if (this.options.ecmaVersion >= 6) {
-          if (name === "__proto__" && kind === "init") {
-            if (propHash.proto) {
-              if (refDestructuringErrors) {
-                if (refDestructuringErrors.doubleProto < 0) {
-                  refDestructuringErrors.doubleProto = key.start;
-                }
-              } else {
-                this.raiseRecoverable(key.start, "Redefinition of __proto__ property");
-              }
-            }
-            propHash.proto = true;
-          }
-          return;
-        }
-        name = "$" + name;
-        var other = propHash[name];
-        if (other) {
-          var redefinition;
-          if (kind === "init") {
-            redefinition = this.strict && other.init || other.get || other.set;
-          } else {
-            redefinition = other.init || other[kind];
-          }
-          if (redefinition) {
-            this.raiseRecoverable(key.start, "Redefinition of property");
-          }
-        } else {
-          other = propHash[name] = {
-            init: false,
-            get: false,
-            set: false
-          };
-        }
-        other[kind] = true;
-      };
-      pp$52.parseExpression = function(forInit, refDestructuringErrors) {
-        var this$1$1 = this;
-        return this.catchStackOverflow(function() {
-          var startPos = this$1$1.start, startLoc = this$1$1.startLoc;
-          var expr = this$1$1.parseMaybeAssign(forInit, refDestructuringErrors);
-          if (this$1$1.type === types$12.comma) {
-            var node = this$1$1.startNodeAt(startPos, startLoc);
-            node.expressions = [expr];
-            while (this$1$1.eat(types$12.comma)) {
-              node.expressions.push(this$1$1.parseMaybeAssign(forInit, refDestructuringErrors));
-            }
-            return this$1$1.finishNode(node, "SequenceExpression");
-          }
-          return expr;
-        });
-      };
-      pp$52.parseMaybeAssign = function(forInit, refDestructuringErrors, afterLeftParse) {
-        if (this.isContextual("yield")) {
-          if (this.inGenerator) {
-            return this.parseYield(forInit);
-          } else {
-            this.exprAllowed = false;
-          }
-        }
-        var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldDoubleProto = -1;
-        if (refDestructuringErrors) {
-          oldParenAssign = refDestructuringErrors.parenthesizedAssign;
-          oldTrailingComma = refDestructuringErrors.trailingComma;
-          oldDoubleProto = refDestructuringErrors.doubleProto;
-          refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
-        } else {
-          refDestructuringErrors = new DestructuringErrors3();
-          ownDestructuringErrors = true;
-        }
-        var startPos = this.start, startLoc = this.startLoc;
-        if (this.type === types$12.parenL || this.type === types$12.name) {
-          this.potentialArrowAt = this.start;
-          this.potentialArrowInForAwait = forInit === "await";
-        }
-        var left = this.parseMaybeConditional(forInit, refDestructuringErrors);
-        if (afterLeftParse) {
-          left = afterLeftParse.call(this, left, startPos, startLoc);
-        }
-        if (this.type.isAssign) {
-          var node = this.startNodeAt(startPos, startLoc);
-          node.operator = this.value;
-          if (this.type === types$12.eq) {
-            left = this.toAssignable(left, false, refDestructuringErrors);
-          }
-          if (!ownDestructuringErrors) {
-            refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.doubleProto = -1;
-          }
-          if (refDestructuringErrors.shorthandAssign >= left.start) {
-            refDestructuringErrors.shorthandAssign = -1;
-          }
-          if (this.type === types$12.eq) {
-            this.checkLValPattern(left);
-          } else {
-            this.checkLValSimple(left);
-          }
-          node.left = left;
-          this.next();
-          node.right = this.parseMaybeAssign(forInit);
-          if (oldDoubleProto > -1) {
-            refDestructuringErrors.doubleProto = oldDoubleProto;
-          }
-          return this.finishNode(node, "AssignmentExpression");
-        } else {
-          if (ownDestructuringErrors) {
-            this.checkExpressionErrors(refDestructuringErrors, true);
-          }
-        }
-        if (oldParenAssign > -1) {
-          refDestructuringErrors.parenthesizedAssign = oldParenAssign;
-        }
-        if (oldTrailingComma > -1) {
-          refDestructuringErrors.trailingComma = oldTrailingComma;
-        }
-        return left;
-      };
-      pp$52.parseMaybeConditional = function(forInit, refDestructuringErrors) {
-        var startPos = this.start, startLoc = this.startLoc;
-        var expr = this.parseExprOps(forInit, refDestructuringErrors);
-        if (this.checkExpressionErrors(refDestructuringErrors)) {
-          return expr;
-        }
-        if (!(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$12.question)) {
-          var node = this.startNodeAt(startPos, startLoc);
-          node.test = expr;
-          node.consequent = this.parseMaybeAssign();
-          this.expect(types$12.colon);
-          node.alternate = this.parseMaybeAssign(forInit);
-          return this.finishNode(node, "ConditionalExpression");
-        }
-        return expr;
-      };
-      pp$52.parseExprOps = function(forInit, refDestructuringErrors) {
-        var startPos = this.start, startLoc = this.startLoc;
-        var expr = this.parseMaybeUnary(refDestructuringErrors, false, false, forInit);
-        if (this.checkExpressionErrors(refDestructuringErrors)) {
-          return expr;
-        }
-        return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, forInit);
-      };
-      pp$52.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, forInit) {
-        var prec = this.type.binop;
-        if (prec != null && (!forInit || this.type !== types$12._in)) {
-          if (prec > minPrec) {
-            var logical = this.type === types$12.logicalOR || this.type === types$12.logicalAND;
-            var coalesce = this.type === types$12.coalesce;
-            if (coalesce) {
-              prec = types$12.logicalAND.binop;
-            }
-            var op = this.value;
-            this.next();
-            var startPos = this.start, startLoc = this.startLoc;
-            var right = this.parseExprOp(this.parseMaybeUnary(null, false, false, forInit), startPos, startLoc, prec, forInit);
-            var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical || coalesce);
-            if (logical && this.type === types$12.coalesce || coalesce && (this.type === types$12.logicalOR || this.type === types$12.logicalAND)) {
-              this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses");
-            }
-            return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, forInit);
-          }
-        }
-        return left;
-      };
-      pp$52.buildBinary = function(startPos, startLoc, left, right, op, logical) {
-        if (right.type === "PrivateIdentifier") {
-          this.raise(right.start, "Private identifier can only be left side of binary expression");
-        }
-        var node = this.startNodeAt(startPos, startLoc);
-        node.left = left;
-        node.operator = op;
-        node.right = right;
-        return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression");
-      };
-      pp$52.parseMaybeUnary = function(refDestructuringErrors, sawUnary, incDec, forInit) {
-        var startPos = this.start, startLoc = this.startLoc, expr;
-        if (this.isContextual("await") && this.canAwait) {
-          expr = this.parseAwait(forInit);
-          sawUnary = true;
-        } else if (this.type.prefix) {
-          var node = this.startNode(), update = this.type === types$12.incDec;
-          node.operator = this.value;
-          node.prefix = true;
-          this.next();
-          node.argument = this.parseMaybeUnary(null, true, update, forInit);
-          this.checkExpressionErrors(refDestructuringErrors, true);
-          if (update) {
-            this.checkLValSimple(node.argument);
-          } else if (this.strict && node.operator === "delete" && isLocalVariableAccess2(node.argument)) {
-            this.raiseRecoverable(node.start, "Deleting local variable in strict mode");
-          } else if (node.operator === "delete" && isPrivateFieldAccess2(node.argument)) {
-            this.raiseRecoverable(node.start, "Private fields can not be deleted");
-          } else {
-            sawUnary = true;
-          }
-          expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
-        } else if (!sawUnary && this.type === types$12.privateId) {
-          if ((forInit || this.privateNameStack.length === 0) && this.options.checkPrivateFields) {
-            this.unexpected();
-          }
-          expr = this.parsePrivateIdent();
-          if (this.type !== types$12._in) {
-            this.unexpected();
-          }
-        } else {
-          expr = this.parseExprSubscripts(refDestructuringErrors, forInit);
-          if (this.checkExpressionErrors(refDestructuringErrors)) {
-            return expr;
-          }
-          while (this.type.postfix && !this.canInsertSemicolon()) {
-            var node$1 = this.startNodeAt(startPos, startLoc);
-            node$1.operator = this.value;
-            node$1.prefix = false;
-            node$1.argument = expr;
-            this.checkLValSimple(expr);
-            this.next();
-            expr = this.finishNode(node$1, "UpdateExpression");
-          }
-        }
-        if (!incDec && this.eat(types$12.starstar)) {
-          if (sawUnary) {
-            this.unexpected(this.lastTokStart);
-          } else {
-            return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false, false, forInit), "**", false);
-          }
-        } else {
-          return expr;
-        }
-      };
-      function isLocalVariableAccess2(node) {
-        return node.type === "Identifier" || node.type === "ParenthesizedExpression" && isLocalVariableAccess2(node.expression);
-      }
-      function isPrivateFieldAccess2(node) {
-        return node.type === "MemberExpression" && node.property.type === "PrivateIdentifier" || node.type === "ChainExpression" && isPrivateFieldAccess2(node.expression) || node.type === "ParenthesizedExpression" && isPrivateFieldAccess2(node.expression);
-      }
-      pp$52.parseExprSubscripts = function(refDestructuringErrors, forInit) {
-        var startPos = this.start, startLoc = this.startLoc;
-        var expr = this.parseExprAtom(refDestructuringErrors, forInit);
-        if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") {
-          return expr;
-        }
-        var result = this.parseSubscripts(expr, startPos, startLoc, false, forInit);
-        if (refDestructuringErrors && result.type === "MemberExpression") {
-          if (refDestructuringErrors.parenthesizedAssign >= result.start) {
-            refDestructuringErrors.parenthesizedAssign = -1;
-          }
-          if (refDestructuringErrors.parenthesizedBind >= result.start) {
-            refDestructuringErrors.parenthesizedBind = -1;
-          }
-          if (refDestructuringErrors.trailingComma >= result.start) {
-            refDestructuringErrors.trailingComma = -1;
-          }
-        }
-        return result;
-      };
-      pp$52.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
-        var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
-        var optionalChained = false;
-        while (true) {
-          var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
-          if (element.optional) {
-            optionalChained = true;
-          }
-          if (element === base || element.type === "ArrowFunctionExpression") {
-            if (optionalChained) {
-              var chainNode = this.startNodeAt(startPos, startLoc);
-              chainNode.expression = element;
-              element = this.finishNode(chainNode, "ChainExpression");
-            }
-            return element;
-          }
-          base = element;
-        }
-      };
-      pp$52.shouldParseAsyncArrow = function() {
-        return !this.canInsertSemicolon() && this.eat(types$12.arrow);
-      };
-      pp$52.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
-        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
-      };
-      pp$52.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
-        var optionalSupported = this.options.ecmaVersion >= 11;
-        var optional = optionalSupported && this.eat(types$12.questionDot);
-        if (noCalls && optional) {
-          this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
-        }
-        var computed = this.eat(types$12.bracketL);
-        if (computed || optional && this.type !== types$12.parenL && this.type !== types$12.backQuote || this.eat(types$12.dot)) {
-          var node = this.startNodeAt(startPos, startLoc);
-          node.object = base;
-          if (computed) {
-            node.property = this.parseExpression();
-            this.expect(types$12.bracketR);
-          } else if (this.type === types$12.privateId && base.type !== "Super") {
-            node.property = this.parsePrivateIdent();
-          } else {
-            node.property = this.parseIdent(this.options.allowReserved !== "never");
-          }
-          node.computed = !!computed;
-          if (optionalSupported) {
-            node.optional = optional;
-          }
-          base = this.finishNode(node, "MemberExpression");
-        } else if (!noCalls && this.eat(types$12.parenL)) {
-          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
-          this.yieldPos = 0;
-          this.awaitPos = 0;
-          this.awaitIdentPos = 0;
-          var exprList = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
-          if (maybeAsyncArrow && !optional && this.shouldParseAsyncArrow()) {
-            this.checkPatternErrors(refDestructuringErrors, false);
-            this.checkYieldAwaitInDefaultParams();
-            if (this.awaitIdentPos > 0) {
-              this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function");
-            }
-            this.yieldPos = oldYieldPos;
-            this.awaitPos = oldAwaitPos;
-            this.awaitIdentPos = oldAwaitIdentPos;
-            return this.parseSubscriptAsyncArrow(startPos, startLoc, exprList, forInit);
-          }
-          this.checkExpressionErrors(refDestructuringErrors, true);
-          this.yieldPos = oldYieldPos || this.yieldPos;
-          this.awaitPos = oldAwaitPos || this.awaitPos;
-          this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
-          var node$1 = this.startNodeAt(startPos, startLoc);
-          node$1.callee = base;
-          node$1.arguments = exprList;
-          if (optionalSupported) {
-            node$1.optional = optional;
-          }
-          base = this.finishNode(node$1, "CallExpression");
-        } else if (this.type === types$12.backQuote) {
-          if (optional || optionalChained) {
-            this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
-          }
-          var node$2 = this.startNodeAt(startPos, startLoc);
-          node$2.tag = base;
-          node$2.quasi = this.parseTemplate({ isTagged: true });
-          base = this.finishNode(node$2, "TaggedTemplateExpression");
-        }
-        return base;
-      };
-      pp$52.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
-        if (this.type === types$12.slash) {
-          this.readRegexp();
-        }
-        var node, canBeArrow = this.potentialArrowAt === this.start;
-        switch (this.type) {
-          case types$12._super:
-            if (!this.allowSuper) {
-              this.raise(this.start, "'super' keyword outside a method");
-            }
-            node = this.startNode();
-            this.next();
-            if (this.type === types$12.parenL && !this.allowDirectSuper) {
-              this.raise(node.start, "super() call outside constructor of a subclass");
-            }
-            if (this.type !== types$12.dot && this.type !== types$12.bracketL && this.type !== types$12.parenL) {
-              this.unexpected();
-            }
-            return this.finishNode(node, "Super");
-          case types$12._this:
-            node = this.startNode();
-            this.next();
-            return this.finishNode(node, "ThisExpression");
-          case types$12.name:
-            var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
-            var id = this.parseIdent(false);
-            if (this.options.ecmaVersion >= 8 && !containsEsc && id.name === "async" && !this.canInsertSemicolon() && this.eat(types$12._function)) {
-              this.overrideContext(types2.f_expr);
-              return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true, forInit);
-            }
-            if (canBeArrow && !this.canInsertSemicolon()) {
-              if (this.eat(types$12.arrow)) {
-                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], false, forInit);
-              }
-              if (this.options.ecmaVersion >= 8 && id.name === "async" && this.type === types$12.name && !containsEsc && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) {
-                id = this.parseIdent(false);
-                if (this.canInsertSemicolon() || !this.eat(types$12.arrow)) {
-                  this.unexpected();
-                }
-                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], true, forInit);
-              }
-            }
-            return id;
-          case types$12.regexp:
-            var value = this.value;
-            node = this.parseLiteral(value.value);
-            node.regex = { pattern: value.pattern, flags: value.flags };
-            return node;
-          case types$12.num:
-          case types$12.string:
-            return this.parseLiteral(this.value);
-          case types$12._null:
-          case types$12._true:
-          case types$12._false:
-            node = this.startNode();
-            node.value = this.type === types$12._null ? null : this.type === types$12._true;
-            node.raw = this.type.keyword;
-            this.next();
-            return this.finishNode(node, "Literal");
-          case types$12.parenL:
-            var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow, forInit);
-            if (refDestructuringErrors) {
-              if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr)) {
-                refDestructuringErrors.parenthesizedAssign = start;
-              }
-              if (refDestructuringErrors.parenthesizedBind < 0) {
-                refDestructuringErrors.parenthesizedBind = start;
-              }
-            }
-            return expr;
-          case types$12.bracketL:
-            node = this.startNode();
-            this.next();
-            node.elements = this.parseExprList(types$12.bracketR, true, true, refDestructuringErrors);
-            return this.finishNode(node, "ArrayExpression");
-          case types$12.braceL:
-            this.overrideContext(types2.b_expr);
-            return this.parseObj(false, refDestructuringErrors);
-          case types$12._function:
-            node = this.startNode();
-            this.next();
-            return this.parseFunction(node, 0);
-          case types$12._class:
-            return this.parseClass(this.startNode(), false);
-          case types$12._new:
-            return this.parseNew();
-          case types$12.backQuote:
-            return this.parseTemplate();
-          case types$12._import:
-            if (this.options.ecmaVersion >= 11) {
-              return this.parseExprImport(forNew);
-            } else {
-              return this.unexpected();
-            }
-          default:
-            return this.parseExprAtomDefault();
-        }
-      };
-      pp$52.parseExprAtomDefault = function() {
-        this.unexpected();
-      };
-      pp$52.parseExprImport = function(forNew) {
-        var node = this.startNode();
-        if (this.containsEsc) {
-          this.raiseRecoverable(this.start, "Escape sequence in keyword import");
-        }
-        this.next();
-        if (this.type === types$12.parenL && !forNew) {
-          return this.parseDynamicImport(node);
-        } else if (this.type === types$12.dot) {
-          var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
-          meta.name = "import";
-          node.meta = this.finishNode(meta, "Identifier");
-          return this.parseImportMeta(node);
-        } else {
-          this.unexpected();
-        }
-      };
-      pp$52.parseDynamicImport = function(node) {
-        this.next();
-        node.source = this.parseMaybeAssign();
-        if (this.options.ecmaVersion >= 16) {
-          if (!this.eat(types$12.parenR)) {
-            this.expect(types$12.comma);
-            if (!this.afterTrailingComma(types$12.parenR)) {
-              node.options = this.parseMaybeAssign();
-              if (!this.eat(types$12.parenR)) {
-                this.expect(types$12.comma);
-                if (!this.afterTrailingComma(types$12.parenR)) {
-                  this.unexpected();
-                }
-              }
-            } else {
-              node.options = null;
-            }
-          } else {
-            node.options = null;
-          }
-        } else {
-          if (!this.eat(types$12.parenR)) {
-            var errorPos = this.start;
-            if (this.eat(types$12.comma) && this.eat(types$12.parenR)) {
-              this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
-            } else {
-              this.unexpected(errorPos);
-            }
-          }
-        }
-        return this.finishNode(node, "ImportExpression");
-      };
-      pp$52.parseImportMeta = function(node) {
-        this.next();
-        var containsEsc = this.containsEsc;
-        node.property = this.parseIdent(true);
-        if (node.property.name !== "meta") {
-          this.raiseRecoverable(node.property.start, "The only valid meta property for import is 'import.meta'");
-        }
-        if (containsEsc) {
-          this.raiseRecoverable(node.start, "'import.meta' must not contain escaped characters");
-        }
-        if (this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere) {
-          this.raiseRecoverable(node.start, "Cannot use 'import.meta' outside a module");
-        }
-        return this.finishNode(node, "MetaProperty");
-      };
-      pp$52.parseLiteral = function(value) {
-        var node = this.startNode();
-        node.value = value;
-        node.raw = this.input.slice(this.start, this.end);
-        if (node.raw.charCodeAt(node.raw.length - 1) === 110) {
-          node.bigint = node.value != null ? node.value.toString() : node.raw.slice(0, -1).replace(/_/g, "");
-        }
-        this.next();
-        return this.finishNode(node, "Literal");
-      };
-      pp$52.parseParenExpression = function() {
-        this.expect(types$12.parenL);
-        var val = this.parseExpression();
-        this.expect(types$12.parenR);
-        return val;
-      };
-      pp$52.shouldParseArrow = function(exprList) {
-        return !this.canInsertSemicolon();
-      };
-      pp$52.parseParenAndDistinguishExpression = function(canBeArrow, forInit) {
-        var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
-        if (this.options.ecmaVersion >= 6) {
-          this.next();
-          var innerStartPos = this.start, innerStartLoc = this.startLoc;
-          var exprList = [], first = true, lastIsComma = false;
-          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
-          this.yieldPos = 0;
-          this.awaitPos = 0;
-          while (this.type !== types$12.parenR) {
-            first ? first = false : this.expect(types$12.comma);
-            if (allowTrailingComma && this.afterTrailingComma(types$12.parenR, true)) {
-              lastIsComma = true;
-              break;
-            } else if (this.type === types$12.ellipsis) {
-              spreadStart = this.start;
-              exprList.push(this.parseParenItem(this.parseRestBinding()));
-              if (this.type === types$12.comma) {
-                this.raiseRecoverable(
-                  this.start,
-                  "Comma is not permitted after the rest element"
-                );
-              }
-              break;
-            } else {
-              exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
-            }
-          }
-          var innerEndPos = this.lastTokEnd, innerEndLoc = this.lastTokEndLoc;
-          this.expect(types$12.parenR);
-          if (canBeArrow && this.shouldParseArrow(exprList) && this.eat(types$12.arrow)) {
-            this.checkPatternErrors(refDestructuringErrors, false);
-            this.checkYieldAwaitInDefaultParams();
-            this.yieldPos = oldYieldPos;
-            this.awaitPos = oldAwaitPos;
-            return this.parseParenArrowList(startPos, startLoc, exprList, forInit);
-          }
-          if (!exprList.length || lastIsComma) {
-            this.unexpected(this.lastTokStart);
-          }
-          if (spreadStart) {
-            this.unexpected(spreadStart);
-          }
-          this.checkExpressionErrors(refDestructuringErrors, true);
-          this.yieldPos = oldYieldPos || this.yieldPos;
-          this.awaitPos = oldAwaitPos || this.awaitPos;
-          if (exprList.length > 1) {
-            val = this.startNodeAt(innerStartPos, innerStartLoc);
-            val.expressions = exprList;
-            this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
-          } else {
-            val = exprList[0];
-          }
-        } else {
-          val = this.parseParenExpression();
-        }
-        if (this.options.preserveParens) {
-          var par = this.startNodeAt(startPos, startLoc);
-          par.expression = val;
-          return this.finishNode(par, "ParenthesizedExpression");
-        } else {
-          return val;
-        }
-      };
-      pp$52.parseParenItem = function(item) {
-        return item;
-      };
-      pp$52.parseParenArrowList = function(startPos, startLoc, exprList, forInit) {
-        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, false, forInit);
-      };
-      var empty2 = [];
-      pp$52.parseNew = function() {
-        if (this.containsEsc) {
-          this.raiseRecoverable(this.start, "Escape sequence in keyword new");
-        }
-        var node = this.startNode();
-        this.next();
-        if (this.options.ecmaVersion >= 6 && this.type === types$12.dot) {
-          var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
-          meta.name = "new";
-          node.meta = this.finishNode(meta, "Identifier");
-          this.next();
-          var containsEsc = this.containsEsc;
-          node.property = this.parseIdent(true);
-          if (node.property.name !== "target") {
-            this.raiseRecoverable(node.property.start, "The only valid meta property for new is 'new.target'");
-          }
-          if (containsEsc) {
-            this.raiseRecoverable(node.start, "'new.target' must not contain escaped characters");
-          }
-          if (!this.allowNewDotTarget) {
-            this.raiseRecoverable(node.start, "'new.target' can only be used in functions and class static block");
-          }
-          return this.finishNode(node, "MetaProperty");
-        }
-        var startPos = this.start, startLoc = this.startLoc;
-        node.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), startPos, startLoc, true, false);
-        if (node.callee.type === "Super") {
-          this.raiseRecoverable(startPos, "Invalid use of 'super'");
-        }
-        if (this.eat(types$12.parenL)) {
-          node.arguments = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false);
-        } else {
-          node.arguments = empty2;
-        }
-        return this.finishNode(node, "NewExpression");
-      };
-      pp$52.parseTemplateElement = function(ref3) {
-        var isTagged = ref3.isTagged;
-        var elem = this.startNode();
-        if (this.type === types$12.invalidTemplate) {
-          if (!isTagged) {
-            this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
-          }
-          elem.value = {
-            raw: this.value.replace(/\r\n?/g, "\n"),
-            cooked: null
-          };
-        } else {
-          elem.value = {
-            raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, "\n"),
-            cooked: this.value
-          };
-        }
-        this.next();
-        elem.tail = this.type === types$12.backQuote;
-        return this.finishNode(elem, "TemplateElement");
-      };
-      pp$52.parseTemplate = function(ref3) {
-        if (ref3 === void 0) ref3 = {};
-        var isTagged = ref3.isTagged;
-        if (isTagged === void 0) isTagged = false;
-        var node = this.startNode();
-        this.next();
-        node.expressions = [];
-        var curElt = this.parseTemplateElement({ isTagged });
-        node.quasis = [curElt];
-        while (!curElt.tail) {
-          if (this.type === types$12.eof) {
-            this.raise(this.pos, "Unterminated template literal");
-          }
-          this.expect(types$12.dollarBraceL);
-          node.expressions.push(this.parseExpression());
-          this.expect(types$12.braceR);
-          node.quasis.push(curElt = this.parseTemplateElement({ isTagged }));
-        }
-        this.next();
-        return this.finishNode(node, "TemplateLiteral");
-      };
-      pp$52.isAsyncProp = function(prop) {
-        return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" && (this.type === types$12.name || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === types$12.star) && !lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
-      };
-      pp$52.parseObj = function(isPattern, refDestructuringErrors) {
-        var node = this.startNode(), first = true, propHash = {};
-        node.properties = [];
-        this.next();
-        while (!this.eat(types$12.braceR)) {
-          if (!first) {
-            this.expect(types$12.comma);
-            if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types$12.braceR)) {
-              break;
-            }
-          } else {
-            first = false;
-          }
-          var prop = this.parseProperty(isPattern, refDestructuringErrors);
-          if (!isPattern) {
-            this.checkPropClash(prop, propHash, refDestructuringErrors);
-          }
-          node.properties.push(prop);
-        }
-        return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression");
-      };
-      pp$52.parseProperty = function(isPattern, refDestructuringErrors) {
-        var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
-        if (this.options.ecmaVersion >= 9 && this.eat(types$12.ellipsis)) {
-          if (isPattern) {
-            prop.argument = this.parseIdent(false);
-            if (this.type === types$12.comma) {
-              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
-            }
-            return this.finishNode(prop, "RestElement");
-          }
-          prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
-          if (this.type === types$12.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
-            refDestructuringErrors.trailingComma = this.start;
-          }
-          return this.finishNode(prop, "SpreadElement");
-        }
-        if (this.options.ecmaVersion >= 6) {
-          prop.method = false;
-          prop.shorthand = false;
-          if (isPattern || refDestructuringErrors) {
-            startPos = this.start;
-            startLoc = this.startLoc;
-          }
-          if (!isPattern) {
-            isGenerator = this.eat(types$12.star);
-          }
-        }
-        var containsEsc = this.containsEsc;
-        this.parsePropertyName(prop);
-        if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
-          isAsync = true;
-          isGenerator = this.options.ecmaVersion >= 9 && this.eat(types$12.star);
-          this.parsePropertyName(prop);
-        } else {
-          isAsync = false;
-        }
-        this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
-        return this.finishNode(prop, "Property");
-      };
-      pp$52.parseGetterSetter = function(prop) {
-        var kind = prop.key.name;
-        this.parsePropertyName(prop);
-        prop.value = this.parseMethod(false);
-        prop.kind = kind;
-        var paramCount = prop.kind === "get" ? 0 : 1;
-        if (prop.value.params.length !== paramCount) {
-          var start = prop.value.start;
-          if (prop.kind === "get") {
-            this.raiseRecoverable(start, "getter should have no params");
-          } else {
-            this.raiseRecoverable(start, "setter should have exactly one param");
-          }
-        } else {
-          if (prop.kind === "set" && prop.value.params[0].type === "RestElement") {
-            this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
-          }
-        }
-      };
-      pp$52.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
-        if ((isGenerator || isAsync) && this.type === types$12.colon) {
-          this.unexpected();
-        }
-        if (this.eat(types$12.colon)) {
-          prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
-          prop.kind = "init";
-        } else if (this.options.ecmaVersion >= 6 && this.type === types$12.parenL) {
-          if (isPattern) {
-            this.unexpected();
-          }
-          prop.method = true;
-          prop.value = this.parseMethod(isGenerator, isAsync);
-          prop.kind = "init";
-        } else if (!isPattern && !containsEsc && this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" && (prop.key.name === "get" || prop.key.name === "set") && (this.type !== types$12.comma && this.type !== types$12.braceR && this.type !== types$12.eq)) {
-          if (isGenerator || isAsync) {
-            this.unexpected();
-          }
-          this.parseGetterSetter(prop);
-        } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
-          if (isGenerator || isAsync) {
-            this.unexpected();
-          }
-          this.checkUnreserved(prop.key);
-          if (prop.key.name === "await" && !this.awaitIdentPos) {
-            this.awaitIdentPos = startPos;
-          }
-          if (isPattern) {
-            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
-          } else if (this.type === types$12.eq && refDestructuringErrors) {
-            if (refDestructuringErrors.shorthandAssign < 0) {
-              refDestructuringErrors.shorthandAssign = this.start;
-            }
-            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
-          } else {
-            prop.value = this.copyNode(prop.key);
-          }
-          prop.kind = "init";
-          prop.shorthand = true;
-        } else {
-          this.unexpected();
-        }
-      };
-      pp$52.parsePropertyName = function(prop) {
-        if (this.options.ecmaVersion >= 6) {
-          if (this.eat(types$12.bracketL)) {
-            prop.computed = true;
-            prop.key = this.parseMaybeAssign();
-            this.expect(types$12.bracketR);
-            return prop.key;
-          } else {
-            prop.computed = false;
-          }
-        }
-        return prop.key = this.type === types$12.num || this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
-      };
-      pp$52.initFunction = function(node) {
-        node.id = null;
-        if (this.options.ecmaVersion >= 6) {
-          node.generator = node.expression = false;
-        }
-        if (this.options.ecmaVersion >= 8) {
-          node.async = false;
-        }
-      };
-      pp$52.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
-        var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
-        this.initFunction(node);
-        if (this.options.ecmaVersion >= 6) {
-          node.generator = isGenerator;
-        }
-        if (this.options.ecmaVersion >= 8) {
-          node.async = !!isAsync;
-        }
-        this.yieldPos = 0;
-        this.awaitPos = 0;
-        this.awaitIdentPos = 0;
-        this.enterScope(functionFlags2(isAsync, node.generator) | SCOPE_SUPER2 | (allowDirectSuper ? SCOPE_DIRECT_SUPER2 : 0));
-        this.expect(types$12.parenL);
-        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
-        this.checkYieldAwaitInDefaultParams();
-        this.parseFunctionBody(node, false, true, false);
-        this.yieldPos = oldYieldPos;
-        this.awaitPos = oldAwaitPos;
-        this.awaitIdentPos = oldAwaitIdentPos;
-        return this.finishNode(node, "FunctionExpression");
-      };
-      pp$52.parseArrowExpression = function(node, params, isAsync, forInit) {
-        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
-        this.enterScope(functionFlags2(isAsync, false) | SCOPE_ARROW2);
-        this.initFunction(node);
-        if (this.options.ecmaVersion >= 8) {
-          node.async = !!isAsync;
-        }
-        this.yieldPos = 0;
-        this.awaitPos = 0;
-        this.awaitIdentPos = 0;
-        node.params = this.toAssignableList(params, true);
-        this.parseFunctionBody(node, true, false, forInit);
-        this.yieldPos = oldYieldPos;
-        this.awaitPos = oldAwaitPos;
-        this.awaitIdentPos = oldAwaitIdentPos;
-        return this.finishNode(node, "ArrowFunctionExpression");
-      };
-      pp$52.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
-        var isExpression = isArrowFunction && this.type !== types$12.braceL;
-        var oldStrict = this.strict, useStrict = false;
-        if (isExpression) {
-          node.body = this.parseMaybeAssign(forInit);
-          node.expression = true;
-          this.checkParams(node, false);
-        } else {
-          var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
-          if (!oldStrict || nonSimple) {
-            useStrict = this.strictDirective(this.end);
-            if (useStrict && nonSimple) {
-              this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list");
-            }
-          }
-          var oldLabels = this.labels;
-          this.labels = [];
-          if (useStrict) {
-            this.strict = true;
-          }
-          this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
-          if (this.strict && node.id) {
-            this.checkLValSimple(node.id, BIND_OUTSIDE2);
-          }
-          node.body = this.parseBlock(false, void 0, useStrict && !oldStrict);
-          node.expression = false;
-          this.adaptDirectivePrologue(node.body.body);
-          this.labels = oldLabels;
-        }
-        this.exitScope();
-      };
-      pp$52.isSimpleParamList = function(params) {
-        for (var i3 = 0, list3 = params; i3 < list3.length; i3 += 1) {
-          var param = list3[i3];
-          if (param.type !== "Identifier") {
-            return false;
-          }
-        }
-        return true;
-      };
-      pp$52.checkParams = function(node, allowDuplicates) {
-        var nameHash = /* @__PURE__ */ Object.create(null);
-        for (var i3 = 0, list3 = node.params; i3 < list3.length; i3 += 1) {
-          var param = list3[i3];
-          this.checkLValInnerPattern(param, BIND_VAR2, allowDuplicates ? null : nameHash);
-        }
-      };
-      pp$52.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
-        var elts = [], first = true;
-        while (!this.eat(close)) {
-          if (!first) {
-            this.expect(types$12.comma);
-            if (allowTrailingComma && this.afterTrailingComma(close)) {
-              break;
-            }
-          } else {
-            first = false;
-          }
-          var elt = void 0;
-          if (allowEmpty && this.type === types$12.comma) {
-            elt = null;
-          } else if (this.type === types$12.ellipsis) {
-            elt = this.parseSpread(refDestructuringErrors);
-            if (refDestructuringErrors && this.type === types$12.comma && refDestructuringErrors.trailingComma < 0) {
-              refDestructuringErrors.trailingComma = this.start;
-            }
-          } else {
-            elt = this.parseMaybeAssign(false, refDestructuringErrors);
-          }
-          elts.push(elt);
-        }
-        return elts;
-      };
-      pp$52.checkUnreserved = function(ref3) {
-        var start = ref3.start;
-        var end = ref3.end;
-        var name = ref3.name;
-        if (this.inGenerator && name === "yield") {
-          this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
-        }
-        if (this.inAsync && name === "await") {
-          this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
-        }
-        if (!(this.currentThisScope().flags & SCOPE_VAR2) && name === "arguments") {
-          this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
-        }
-        if (this.inClassStaticBlock && (name === "arguments" || name === "await")) {
-          this.raise(start, "Cannot use " + name + " in class static initialization block");
-        }
-        if (this.keywords.test(name)) {
-          this.raise(start, "Unexpected keyword '" + name + "'");
-        }
-        if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf("\\") !== -1) {
-          return;
-        }
-        var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
-        if (re.test(name)) {
-          if (!this.inAsync && name === "await") {
-            this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
-          }
-          this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
-        }
-      };
-      pp$52.parseIdent = function(liberal) {
-        var node = this.parseIdentNode();
-        this.next(!!liberal);
-        this.finishNode(node, "Identifier");
-        if (!liberal) {
-          this.checkUnreserved(node);
-          if (node.name === "await" && !this.awaitIdentPos) {
-            this.awaitIdentPos = node.start;
-          }
-        }
-        return node;
-      };
-      pp$52.parseIdentNode = function() {
-        var node = this.startNode();
-        if (this.type === types$12.name) {
-          node.name = this.value;
-        } else if (this.type.keyword) {
-          node.name = this.type.keyword;
-          if ((node.name === "class" || node.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
-            this.context.pop();
-          }
-          this.type = types$12.name;
-        } else {
-          this.unexpected();
-        }
-        return node;
-      };
-      pp$52.parsePrivateIdent = function() {
-        var node = this.startNode();
-        if (this.type === types$12.privateId) {
-          node.name = this.value;
-        } else {
-          this.unexpected();
-        }
-        this.next();
-        this.finishNode(node, "PrivateIdentifier");
-        if (this.options.checkPrivateFields) {
-          if (this.privateNameStack.length === 0) {
-            this.raise(node.start, "Private field '#" + node.name + "' must be declared in an enclosing class");
-          } else {
-            this.privateNameStack[this.privateNameStack.length - 1].used.push(node);
-          }
-        }
-        return node;
-      };
-      pp$52.parseYield = function(forInit) {
-        if (!this.yieldPos) {
-          this.yieldPos = this.start;
-        }
-        var node = this.startNode();
-        this.next();
-        if (this.type === types$12.semi || this.canInsertSemicolon() || this.type !== types$12.star && !this.type.startsExpr) {
-          node.delegate = false;
-          node.argument = null;
-        } else {
-          node.delegate = this.eat(types$12.star);
-          node.argument = this.parseMaybeAssign(forInit);
-        }
-        return this.finishNode(node, "YieldExpression");
-      };
-      pp$52.parseAwait = function(forInit) {
-        if (!this.awaitPos) {
-          this.awaitPos = this.start;
-        }
-        var node = this.startNode();
-        this.next();
-        node.argument = this.parseMaybeUnary(null, true, false, forInit);
-        return this.finishNode(node, "AwaitExpression");
-      };
-      var pp$42 = Parser3.prototype;
-      pp$42.raise = function(pos, message) {
-        var loc = getLineInfo2(this.input, pos);
-        message += " (" + loc.line + ":" + loc.column + ")";
-        if (this.sourceFile) {
-          message += " in " + this.sourceFile;
-        }
-        var err = new SyntaxError(message);
-        err.pos = pos;
-        err.loc = loc;
-        err.raisedAt = this.pos;
-        throw err;
-      };
-      pp$42.raiseRecoverable = pp$42.raise;
-      pp$42.curPosition = function() {
-        if (this.options.locations) {
-          return new Position3(this.curLine, this.pos - this.lineStart);
-        }
-      };
-      var pp$32 = Parser3.prototype;
-      var Scope3 = function Scope4(flags) {
-        this.flags = flags;
-        this.var = [];
-        this.lexical = [];
-        this.functions = [];
-      };
-      pp$32.enterScope = function(flags) {
-        this.scopeStack.push(new Scope3(flags));
-      };
-      pp$32.exitScope = function() {
-        this.scopeStack.pop();
-      };
-      pp$32.treatFunctionsAsVarInScope = function(scope) {
-        return scope.flags & SCOPE_FUNCTION2 || !this.inModule && scope.flags & SCOPE_TOP2;
-      };
-      pp$32.declareName = function(name, bindingType, pos) {
-        var redeclared = false;
-        if (bindingType === BIND_LEXICAL2) {
-          var scope = this.currentScope();
-          redeclared = scope.lexical.indexOf(name) > -1 || scope.functions.indexOf(name) > -1 || scope.var.indexOf(name) > -1;
-          scope.lexical.push(name);
-          if (this.inModule && scope.flags & SCOPE_TOP2) {
-            delete this.undefinedExports[name];
-          }
-        } else if (bindingType === BIND_SIMPLE_CATCH2) {
-          var scope$1 = this.currentScope();
-          scope$1.lexical.push(name);
-        } else if (bindingType === BIND_FUNCTION2) {
-          var scope$2 = this.currentScope();
-          if (this.treatFunctionsAsVar) {
-            redeclared = scope$2.lexical.indexOf(name) > -1;
-          } else {
-            redeclared = scope$2.lexical.indexOf(name) > -1 || scope$2.var.indexOf(name) > -1;
-          }
-          scope$2.functions.push(name);
-        } else {
-          for (var i3 = this.scopeStack.length - 1; i3 >= 0; --i3) {
-            var scope$3 = this.scopeStack[i3];
-            if (scope$3.lexical.indexOf(name) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH2 && scope$3.lexical[0] === name) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
-              redeclared = true;
-              break;
-            }
-            scope$3.var.push(name);
-            if (this.inModule && scope$3.flags & SCOPE_TOP2) {
-              delete this.undefinedExports[name];
-            }
-            if (scope$3.flags & SCOPE_VAR2) {
-              break;
-            }
-          }
-        }
-        if (redeclared) {
-          this.raiseRecoverable(pos, "Identifier '" + name + "' has already been declared");
-        }
-      };
-      pp$32.checkLocalExport = function(id) {
-        if (this.scopeStack[0].lexical.indexOf(id.name) === -1 && this.scopeStack[0].var.indexOf(id.name) === -1) {
-          this.undefinedExports[id.name] = id;
-        }
-      };
-      pp$32.currentScope = function() {
-        return this.scopeStack[this.scopeStack.length - 1];
-      };
-      pp$32.currentVarScope = function() {
-        for (var i3 = this.scopeStack.length - 1; ; i3--) {
-          var scope = this.scopeStack[i3];
-          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2)) {
-            return scope;
-          }
-        }
-      };
-      pp$32.currentThisScope = function() {
-        for (var i3 = this.scopeStack.length - 1; ; i3--) {
-          var scope = this.scopeStack[i3];
-          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2) && !(scope.flags & SCOPE_ARROW2)) {
-            return scope;
-          }
-        }
-      };
-      var Node3 = function Node4(parser, pos, loc) {
-        this.type = "";
-        this.start = pos;
-        this.end = 0;
-        if (parser.options.locations) {
-          this.loc = new SourceLocation3(parser, loc);
-        }
-        if (parser.options.directSourceFile) {
-          this.sourceFile = parser.options.directSourceFile;
-        }
-        if (parser.options.ranges) {
-          this.range = [pos, 0];
-        }
-      };
-      var pp$22 = Parser3.prototype;
-      pp$22.startNode = function() {
-        return new Node3(this, this.start, this.startLoc);
-      };
-      pp$22.startNodeAt = function(pos, loc) {
-        return new Node3(this, pos, loc);
-      };
-      function finishNodeAt2(node, type, pos, loc) {
-        node.type = type;
-        node.end = pos;
-        if (this.options.locations) {
-          node.loc.end = loc;
-        }
-        if (this.options.ranges) {
-          node.range[1] = pos;
-        }
-        return node;
-      }
-      pp$22.finishNode = function(node, type) {
-        return finishNodeAt2.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc);
-      };
-      pp$22.finishNodeAt = function(node, type, pos, loc) {
-        return finishNodeAt2.call(this, node, type, pos, loc);
-      };
-      pp$22.copyNode = function(node) {
-        var newNode = new Node3(this, node.start, this.startLoc);
-        for (var prop in node) {
-          newNode[prop] = node[prop];
-        }
-        return newNode;
-      };
-      var scriptValuesAddedInUnicode2 = "Berf Beria_Erfe Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sidetic Sidt Sunu Sunuwar Tai_Yo Tayo Todhri Todr Tolong_Siki Tols Tulu_Tigalari Tutg Unknown Zzzz";
-      var ecma9BinaryProperties2 = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
-      var ecma10BinaryProperties2 = ecma9BinaryProperties2 + " Extended_Pictographic";
-      var ecma11BinaryProperties2 = ecma10BinaryProperties2;
-      var ecma12BinaryProperties2 = ecma11BinaryProperties2 + " EBase EComp EMod EPres ExtPict";
-      var ecma13BinaryProperties2 = ecma12BinaryProperties2;
-      var ecma14BinaryProperties2 = ecma13BinaryProperties2;
-      var unicodeBinaryProperties2 = {
-        9: ecma9BinaryProperties2,
-        10: ecma10BinaryProperties2,
-        11: ecma11BinaryProperties2,
-        12: ecma12BinaryProperties2,
-        13: ecma13BinaryProperties2,
-        14: ecma14BinaryProperties2
-      };
-      var ecma14BinaryPropertiesOfStrings2 = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji";
-      var unicodeBinaryPropertiesOfStrings2 = {
-        9: "",
-        10: "",
-        11: "",
-        12: "",
-        13: "",
-        14: ecma14BinaryPropertiesOfStrings2
-      };
-      var unicodeGeneralCategoryValues2 = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
-      var ecma9ScriptValues2 = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
-      var ecma10ScriptValues2 = ecma9ScriptValues2 + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
-      var ecma11ScriptValues2 = ecma10ScriptValues2 + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
-      var ecma12ScriptValues2 = ecma11ScriptValues2 + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi";
-      var ecma13ScriptValues2 = ecma12ScriptValues2 + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith";
-      var ecma14ScriptValues2 = ecma13ScriptValues2 + " " + scriptValuesAddedInUnicode2;
-      var unicodeScriptValues2 = {
-        9: ecma9ScriptValues2,
-        10: ecma10ScriptValues2,
-        11: ecma11ScriptValues2,
-        12: ecma12ScriptValues2,
-        13: ecma13ScriptValues2,
-        14: ecma14ScriptValues2
-      };
-      var data2 = {};
-      function buildUnicodeData2(ecmaVersion3) {
-        var d = data2[ecmaVersion3] = {
-          binary: wordsRegexp2(unicodeBinaryProperties2[ecmaVersion3] + " " + unicodeGeneralCategoryValues2),
-          binaryOfStrings: wordsRegexp2(unicodeBinaryPropertiesOfStrings2[ecmaVersion3]),
-          nonBinary: {
-            General_Category: wordsRegexp2(unicodeGeneralCategoryValues2),
-            Script: wordsRegexp2(unicodeScriptValues2[ecmaVersion3])
-          }
-        };
-        d.nonBinary.Script_Extensions = d.nonBinary.Script;
-        d.nonBinary.gc = d.nonBinary.General_Category;
-        d.nonBinary.sc = d.nonBinary.Script;
-        d.nonBinary.scx = d.nonBinary.Script_Extensions;
-      }
-      for (var i2 = 0, list2 = [9, 10, 11, 12, 13, 14]; i2 < list2.length; i2 += 1) {
-        var ecmaVersion2 = list2[i2];
-        buildUnicodeData2(ecmaVersion2);
-      }
-      var pp$12 = Parser3.prototype;
-      var BranchID3 = function BranchID4(parent, base) {
-        this.parent = parent;
-        this.base = base || this;
-      };
-      BranchID3.prototype.separatedFrom = function separatedFrom2(alt) {
-        for (var self2 = this; self2; self2 = self2.parent) {
-          for (var other = alt; other; other = other.parent) {
-            if (self2.base === other.base && self2 !== other) {
-              return true;
-            }
-          }
-        }
-        return false;
-      };
-      BranchID3.prototype.sibling = function sibling2() {
-        return new BranchID3(this.parent, this.base);
-      };
-      var RegExpValidationState3 = function RegExpValidationState4(parser) {
-        this.parser = parser;
-        this.validFlags = "gim" + (parser.options.ecmaVersion >= 6 ? "uy" : "") + (parser.options.ecmaVersion >= 9 ? "s" : "") + (parser.options.ecmaVersion >= 13 ? "d" : "") + (parser.options.ecmaVersion >= 15 ? "v" : "");
-        this.unicodeProperties = data2[parser.options.ecmaVersion >= 14 ? 14 : parser.options.ecmaVersion];
-        this.source = "";
-        this.flags = "";
-        this.start = 0;
-        this.switchU = false;
-        this.switchV = false;
-        this.switchN = false;
-        this.pos = 0;
-        this.lastIntValue = 0;
-        this.lastStringValue = "";
-        this.lastAssertionIsQuantifiable = false;
-        this.numCapturingParens = 0;
-        this.maxBackReference = 0;
-        this.groupNames = /* @__PURE__ */ Object.create(null);
-        this.backReferenceNames = [];
-        this.branchID = null;
-      };
-      RegExpValidationState3.prototype.reset = function reset2(start, pattern, flags) {
-        var unicodeSets = flags.indexOf("v") !== -1;
-        var unicode = flags.indexOf("u") !== -1;
-        this.start = start | 0;
-        this.source = pattern + "";
-        this.flags = flags;
-        if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
-          this.switchU = true;
-          this.switchV = true;
-          this.switchN = true;
-        } else {
-          this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
-          this.switchV = false;
-          this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
-        }
-      };
-      RegExpValidationState3.prototype.raise = function raise2(message) {
-        this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
-      };
-      RegExpValidationState3.prototype.at = function at2(i3, forceU) {
-        if (forceU === void 0) forceU = false;
-        var s = this.source;
-        var l = s.length;
-        if (i3 >= l) {
-          return -1;
-        }
-        var c = s.charCodeAt(i3);
-        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i3 + 1 >= l) {
-          return c;
-        }
-        var next = s.charCodeAt(i3 + 1);
-        return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
-      };
-      RegExpValidationState3.prototype.nextIndex = function nextIndex2(i3, forceU) {
-        if (forceU === void 0) forceU = false;
-        var s = this.source;
-        var l = s.length;
-        if (i3 >= l) {
-          return l;
-        }
-        var c = s.charCodeAt(i3), next;
-        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i3 + 1 >= l || (next = s.charCodeAt(i3 + 1)) < 56320 || next > 57343) {
-          return i3 + 1;
-        }
-        return i3 + 2;
-      };
-      RegExpValidationState3.prototype.current = function current2(forceU) {
-        if (forceU === void 0) forceU = false;
-        return this.at(this.pos, forceU);
-      };
-      RegExpValidationState3.prototype.lookahead = function lookahead2(forceU) {
-        if (forceU === void 0) forceU = false;
-        return this.at(this.nextIndex(this.pos, forceU), forceU);
-      };
-      RegExpValidationState3.prototype.advance = function advance2(forceU) {
-        if (forceU === void 0) forceU = false;
-        this.pos = this.nextIndex(this.pos, forceU);
-      };
-      RegExpValidationState3.prototype.eat = function eat2(ch, forceU) {
-        if (forceU === void 0) forceU = false;
-        if (this.current(forceU) === ch) {
-          this.advance(forceU);
-          return true;
-        }
-        return false;
-      };
-      RegExpValidationState3.prototype.eatChars = function eatChars2(chs, forceU) {
-        if (forceU === void 0) forceU = false;
-        var pos = this.pos;
-        for (var i3 = 0, list3 = chs; i3 < list3.length; i3 += 1) {
-          var ch = list3[i3];
-          var current2 = this.at(pos, forceU);
-          if (current2 === -1 || current2 !== ch) {
-            return false;
-          }
-          pos = this.nextIndex(pos, forceU);
-        }
-        this.pos = pos;
-        return true;
-      };
-      pp$12.validateRegExpFlags = function(state) {
-        var validFlags = state.validFlags;
-        var flags = state.flags;
-        var u = false;
-        var v = false;
-        for (var i3 = 0; i3 < flags.length; i3++) {
-          var flag = flags.charAt(i3);
-          if (validFlags.indexOf(flag) === -1) {
-            this.raise(state.start, "Invalid regular expression flag");
-          }
-          if (flags.indexOf(flag, i3 + 1) > -1) {
-            this.raise(state.start, "Duplicate regular expression flag");
-          }
-          if (flag === "u") {
-            u = true;
-          }
-          if (flag === "v") {
-            v = true;
-          }
-        }
-        if (this.options.ecmaVersion >= 15 && u && v) {
-          this.raise(state.start, "Invalid regular expression flag");
-        }
-      };
-      function hasProp2(obj) {
-        for (var _ in obj) {
-          return true;
-        }
-        return false;
-      }
-      pp$12.validateRegExpPattern = function(state) {
-        this.regexp_pattern(state);
-        if (!state.switchN && this.options.ecmaVersion >= 9 && hasProp2(state.groupNames)) {
-          state.switchN = true;
-          this.regexp_pattern(state);
-        }
-      };
-      pp$12.regexp_pattern = function(state) {
-        state.pos = 0;
-        state.lastIntValue = 0;
-        state.lastStringValue = "";
-        state.lastAssertionIsQuantifiable = false;
-        state.numCapturingParens = 0;
-        state.maxBackReference = 0;
-        state.groupNames = /* @__PURE__ */ Object.create(null);
-        state.backReferenceNames.length = 0;
-        state.branchID = null;
-        this.regexp_disjunction(state);
-        if (state.pos !== state.source.length) {
-          if (state.eat(
-            41
-            /* ) */
-          )) {
-            state.raise("Unmatched ')'");
-          }
-          if (state.eat(
-            93
-            /* ] */
-          ) || state.eat(
-            125
-            /* } */
-          )) {
-            state.raise("Lone quantifier brackets");
-          }
-        }
-        if (state.maxBackReference > state.numCapturingParens) {
-          state.raise("Invalid escape");
-        }
-        for (var i3 = 0, list3 = state.backReferenceNames; i3 < list3.length; i3 += 1) {
-          var name = list3[i3];
-          if (!state.groupNames[name]) {
-            state.raise("Invalid named capture referenced");
-          }
-        }
-      };
-      pp$12.regexp_disjunction = function(state) {
-        var trackDisjunction = this.options.ecmaVersion >= 16;
-        if (trackDisjunction) {
-          state.branchID = new BranchID3(state.branchID, null);
-        }
-        this.regexp_alternative(state);
-        while (state.eat(
-          124
-          /* | */
-        )) {
-          if (trackDisjunction) {
-            state.branchID = state.branchID.sibling();
-          }
-          this.regexp_alternative(state);
-        }
-        if (trackDisjunction) {
-          state.branchID = state.branchID.parent;
-        }
-        if (this.regexp_eatQuantifier(state, true)) {
-          state.raise("Nothing to repeat");
-        }
-        if (state.eat(
-          123
-          /* { */
-        )) {
-          state.raise("Lone quantifier brackets");
-        }
-      };
-      pp$12.regexp_alternative = function(state) {
-        while (state.pos < state.source.length && this.regexp_eatTerm(state)) {
-        }
-      };
-      pp$12.regexp_eatTerm = function(state) {
-        if (this.regexp_eatAssertion(state)) {
-          if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
-            if (state.switchU) {
-              state.raise("Invalid quantifier");
-            }
-          }
-          return true;
-        }
-        if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
-          this.regexp_eatQuantifier(state);
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatAssertion = function(state) {
-        var start = state.pos;
-        state.lastAssertionIsQuantifiable = false;
-        if (state.eat(
-          94
-          /* ^ */
-        ) || state.eat(
-          36
-          /* $ */
-        )) {
-          return true;
-        }
-        if (state.eat(
-          92
-          /* \ */
-        )) {
-          if (state.eat(
-            66
-            /* B */
-          ) || state.eat(
-            98
-            /* b */
-          )) {
-            return true;
-          }
-          state.pos = start;
-        }
-        if (state.eat(
-          40
-          /* ( */
-        ) && state.eat(
-          63
-          /* ? */
-        )) {
-          var lookbehind = false;
-          if (this.options.ecmaVersion >= 9) {
-            lookbehind = state.eat(
-              60
-              /* < */
-            );
-          }
-          if (state.eat(
-            61
-            /* = */
-          ) || state.eat(
-            33
-            /* ! */
-          )) {
-            this.regexp_disjunction(state);
-            if (!state.eat(
-              41
-              /* ) */
-            )) {
-              state.raise("Unterminated group");
-            }
-            state.lastAssertionIsQuantifiable = !lookbehind;
-            return true;
-          }
-        }
-        state.pos = start;
-        return false;
-      };
-      pp$12.regexp_eatQuantifier = function(state, noError) {
-        if (noError === void 0) noError = false;
-        if (this.regexp_eatQuantifierPrefix(state, noError)) {
-          state.eat(
-            63
-            /* ? */
-          );
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatQuantifierPrefix = function(state, noError) {
-        return state.eat(
-          42
-          /* * */
-        ) || state.eat(
-          43
-          /* + */
-        ) || state.eat(
-          63
-          /* ? */
-        ) || this.regexp_eatBracedQuantifier(state, noError);
-      };
-      pp$12.regexp_eatBracedQuantifier = function(state, noError) {
-        var start = state.pos;
-        if (state.eat(
-          123
-          /* { */
-        )) {
-          var min = 0, max = -1;
-          if (this.regexp_eatDecimalDigits(state)) {
-            min = state.lastIntValue;
-            if (state.eat(
-              44
-              /* , */
-            ) && this.regexp_eatDecimalDigits(state)) {
-              max = state.lastIntValue;
-            }
-            if (state.eat(
-              125
-              /* } */
-            )) {
-              if (max !== -1 && max < min && !noError) {
-                state.raise("numbers out of order in {} quantifier");
-              }
-              return true;
-            }
-          }
-          if (state.switchU && !noError) {
-            state.raise("Incomplete quantifier");
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatAtom = function(state) {
-        return this.regexp_eatPatternCharacters(state) || state.eat(
-          46
-          /* . */
-        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state);
-      };
-      pp$12.regexp_eatReverseSolidusAtomEscape = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          92
-          /* \ */
-        )) {
-          if (this.regexp_eatAtomEscape(state)) {
-            return true;
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatUncapturingGroup = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          40
-          /* ( */
-        )) {
-          if (state.eat(
-            63
-            /* ? */
-          )) {
-            if (this.options.ecmaVersion >= 16) {
-              var addModifiers = this.regexp_eatModifiers(state);
-              var hasHyphen = state.eat(
-                45
-                /* - */
-              );
-              if (addModifiers || hasHyphen) {
-                for (var i3 = 0; i3 < addModifiers.length; i3++) {
-                  var modifier = addModifiers.charAt(i3);
-                  if (addModifiers.indexOf(modifier, i3 + 1) > -1) {
-                    state.raise("Duplicate regular expression modifiers");
-                  }
-                }
-                if (hasHyphen) {
-                  var removeModifiers = this.regexp_eatModifiers(state);
-                  if (!addModifiers && !removeModifiers && state.current() === 58) {
-                    state.raise("Invalid regular expression modifiers");
-                  }
-                  for (var i$1 = 0; i$1 < removeModifiers.length; i$1++) {
-                    var modifier$1 = removeModifiers.charAt(i$1);
-                    if (removeModifiers.indexOf(modifier$1, i$1 + 1) > -1 || addModifiers.indexOf(modifier$1) > -1) {
-                      state.raise("Duplicate regular expression modifiers");
-                    }
-                  }
-                }
-              }
-            }
-            if (state.eat(
-              58
-              /* : */
-            )) {
-              this.regexp_disjunction(state);
-              if (state.eat(
-                41
-                /* ) */
-              )) {
-                return true;
-              }
-              state.raise("Unterminated group");
-            }
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatCapturingGroup = function(state) {
-        if (state.eat(
-          40
-          /* ( */
-        )) {
-          if (this.options.ecmaVersion >= 9) {
-            this.regexp_groupSpecifier(state);
-          } else if (state.current() === 63) {
-            state.raise("Invalid group");
-          }
-          this.regexp_disjunction(state);
-          if (state.eat(
-            41
-            /* ) */
-          )) {
-            state.numCapturingParens += 1;
-            return true;
-          }
-          state.raise("Unterminated group");
-        }
-        return false;
-      };
-      pp$12.regexp_eatModifiers = function(state) {
-        var modifiers = "";
-        var ch = 0;
-        while ((ch = state.current()) !== -1 && isRegularExpressionModifier2(ch)) {
-          modifiers += codePointToString2(ch);
-          state.advance();
-        }
-        return modifiers;
-      };
-      function isRegularExpressionModifier2(ch) {
-        return ch === 105 || ch === 109 || ch === 115;
-      }
-      pp$12.regexp_eatExtendedAtom = function(state) {
-        return state.eat(
-          46
-          /* . */
-        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state) || this.regexp_eatInvalidBracedQuantifier(state) || this.regexp_eatExtendedPatternCharacter(state);
-      };
-      pp$12.regexp_eatInvalidBracedQuantifier = function(state) {
-        if (this.regexp_eatBracedQuantifier(state, true)) {
-          state.raise("Nothing to repeat");
-        }
-        return false;
-      };
-      pp$12.regexp_eatSyntaxCharacter = function(state) {
-        var ch = state.current();
-        if (isSyntaxCharacter2(ch)) {
-          state.lastIntValue = ch;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      function isSyntaxCharacter2(ch) {
-        return ch === 36 || ch >= 40 && ch <= 43 || ch === 46 || ch === 63 || ch >= 91 && ch <= 94 || ch >= 123 && ch <= 125;
-      }
-      pp$12.regexp_eatPatternCharacters = function(state) {
-        var start = state.pos;
-        var ch = 0;
-        while ((ch = state.current()) !== -1 && !isSyntaxCharacter2(ch)) {
-          state.advance();
-        }
-        return state.pos !== start;
-      };
-      pp$12.regexp_eatExtendedPatternCharacter = function(state) {
-        var ch = state.current();
-        if (ch !== -1 && ch !== 36 && !(ch >= 40 && ch <= 43) && ch !== 46 && ch !== 63 && ch !== 91 && ch !== 94 && ch !== 124) {
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_groupSpecifier = function(state) {
-        if (state.eat(
-          63
-          /* ? */
-        )) {
-          if (!this.regexp_eatGroupName(state)) {
-            state.raise("Invalid group");
-          }
-          var trackDisjunction = this.options.ecmaVersion >= 16;
-          var known = state.groupNames[state.lastStringValue];
-          if (known) {
-            if (trackDisjunction) {
-              for (var i3 = 0, list3 = known; i3 < list3.length; i3 += 1) {
-                var altID = list3[i3];
-                if (!altID.separatedFrom(state.branchID)) {
-                  state.raise("Duplicate capture group name");
-                }
-              }
-            } else {
-              state.raise("Duplicate capture group name");
-            }
-          }
-          if (trackDisjunction) {
-            (known || (state.groupNames[state.lastStringValue] = [])).push(state.branchID);
-          } else {
-            state.groupNames[state.lastStringValue] = true;
-          }
-        }
-      };
-      pp$12.regexp_eatGroupName = function(state) {
-        state.lastStringValue = "";
-        if (state.eat(
-          60
-          /* < */
-        )) {
-          if (this.regexp_eatRegExpIdentifierName(state) && state.eat(
-            62
-            /* > */
-          )) {
-            return true;
-          }
-          state.raise("Invalid capture group name");
-        }
-        return false;
-      };
-      pp$12.regexp_eatRegExpIdentifierName = function(state) {
-        state.lastStringValue = "";
-        if (this.regexp_eatRegExpIdentifierStart(state)) {
-          state.lastStringValue += codePointToString2(state.lastIntValue);
-          while (this.regexp_eatRegExpIdentifierPart(state)) {
-            state.lastStringValue += codePointToString2(state.lastIntValue);
-          }
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatRegExpIdentifierStart = function(state) {
-        var start = state.pos;
-        var forceU = this.options.ecmaVersion >= 11;
-        var ch = state.current(forceU);
-        state.advance(forceU);
-        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
-          ch = state.lastIntValue;
-        }
-        if (isRegExpIdentifierStart2(ch)) {
-          state.lastIntValue = ch;
-          return true;
-        }
-        state.pos = start;
-        return false;
-      };
-      function isRegExpIdentifierStart2(ch) {
-        return isIdentifierStart2(ch, true) || ch === 36 || ch === 95;
-      }
-      pp$12.regexp_eatRegExpIdentifierPart = function(state) {
-        var start = state.pos;
-        var forceU = this.options.ecmaVersion >= 11;
-        var ch = state.current(forceU);
-        state.advance(forceU);
-        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
-          ch = state.lastIntValue;
-        }
-        if (isRegExpIdentifierPart2(ch)) {
-          state.lastIntValue = ch;
-          return true;
-        }
-        state.pos = start;
-        return false;
-      };
-      function isRegExpIdentifierPart2(ch) {
-        return isIdentifierChar2(ch, true) || ch === 36 || ch === 95 || ch === 8204 || ch === 8205;
-      }
-      pp$12.regexp_eatAtomEscape = function(state) {
-        if (this.regexp_eatBackReference(state) || this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state) || state.switchN && this.regexp_eatKGroupName(state)) {
-          return true;
-        }
-        if (state.switchU) {
-          if (state.current() === 99) {
-            state.raise("Invalid unicode escape");
-          }
-          state.raise("Invalid escape");
-        }
-        return false;
-      };
-      pp$12.regexp_eatBackReference = function(state) {
-        var start = state.pos;
-        if (this.regexp_eatDecimalEscape(state)) {
-          var n = state.lastIntValue;
-          if (state.switchU) {
-            if (n > state.maxBackReference) {
-              state.maxBackReference = n;
-            }
-            return true;
-          }
-          if (n <= state.numCapturingParens) {
-            return true;
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatKGroupName = function(state) {
-        if (state.eat(
-          107
-          /* k */
-        )) {
-          if (this.regexp_eatGroupName(state)) {
-            state.backReferenceNames.push(state.lastStringValue);
-            return true;
-          }
-          state.raise("Invalid named reference");
-        }
-        return false;
-      };
-      pp$12.regexp_eatCharacterEscape = function(state) {
-        return this.regexp_eatControlEscape(state) || this.regexp_eatCControlLetter(state) || this.regexp_eatZero(state) || this.regexp_eatHexEscapeSequence(state) || this.regexp_eatRegExpUnicodeEscapeSequence(state, false) || !state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state) || this.regexp_eatIdentityEscape(state);
-      };
-      pp$12.regexp_eatCControlLetter = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          99
-          /* c */
-        )) {
-          if (this.regexp_eatControlLetter(state)) {
-            return true;
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatZero = function(state) {
-        if (state.current() === 48 && !isDecimalDigit2(state.lookahead())) {
-          state.lastIntValue = 0;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatControlEscape = function(state) {
-        var ch = state.current();
-        if (ch === 116) {
-          state.lastIntValue = 9;
-          state.advance();
-          return true;
-        }
-        if (ch === 110) {
-          state.lastIntValue = 10;
-          state.advance();
-          return true;
-        }
-        if (ch === 118) {
-          state.lastIntValue = 11;
-          state.advance();
-          return true;
-        }
-        if (ch === 102) {
-          state.lastIntValue = 12;
-          state.advance();
-          return true;
-        }
-        if (ch === 114) {
-          state.lastIntValue = 13;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatControlLetter = function(state) {
-        var ch = state.current();
-        if (isControlLetter2(ch)) {
-          state.lastIntValue = ch % 32;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      function isControlLetter2(ch) {
-        return ch >= 65 && ch <= 90 || ch >= 97 && ch <= 122;
-      }
-      pp$12.regexp_eatRegExpUnicodeEscapeSequence = function(state, forceU) {
-        if (forceU === void 0) forceU = false;
-        var start = state.pos;
-        var switchU = forceU || state.switchU;
-        if (state.eat(
-          117
-          /* u */
-        )) {
-          if (this.regexp_eatFixedHexDigits(state, 4)) {
-            var lead = state.lastIntValue;
-            if (switchU && lead >= 55296 && lead <= 56319) {
-              var leadSurrogateEnd = state.pos;
-              if (state.eat(
-                92
-                /* \ */
-              ) && state.eat(
-                117
-                /* u */
-              ) && this.regexp_eatFixedHexDigits(state, 4)) {
-                var trail = state.lastIntValue;
-                if (trail >= 56320 && trail <= 57343) {
-                  state.lastIntValue = (lead - 55296) * 1024 + (trail - 56320) + 65536;
-                  return true;
-                }
-              }
-              state.pos = leadSurrogateEnd;
-              state.lastIntValue = lead;
-            }
-            return true;
-          }
-          if (switchU && state.eat(
-            123
-            /* { */
-          ) && this.regexp_eatHexDigits(state) && state.eat(
-            125
-            /* } */
-          ) && isValidUnicode2(state.lastIntValue)) {
-            return true;
-          }
-          if (switchU) {
-            state.raise("Invalid unicode escape");
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      function isValidUnicode2(ch) {
-        return ch >= 0 && ch <= 1114111;
-      }
-      pp$12.regexp_eatIdentityEscape = function(state) {
-        if (state.switchU) {
-          if (this.regexp_eatSyntaxCharacter(state)) {
-            return true;
-          }
-          if (state.eat(
-            47
-            /* / */
-          )) {
-            state.lastIntValue = 47;
-            return true;
-          }
-          return false;
-        }
-        var ch = state.current();
-        if (ch !== 99 && (!state.switchN || ch !== 107)) {
-          state.lastIntValue = ch;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatDecimalEscape = function(state) {
-        state.lastIntValue = 0;
-        var ch = state.current();
-        if (ch >= 49 && ch <= 57) {
-          do {
-            state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
-            state.advance();
-          } while ((ch = state.current()) >= 48 && ch <= 57);
-          return true;
-        }
-        return false;
-      };
-      var CharSetNone2 = 0;
-      var CharSetOk2 = 1;
-      var CharSetString2 = 2;
-      pp$12.regexp_eatCharacterClassEscape = function(state) {
-        var ch = state.current();
-        if (isCharacterClassEscape2(ch)) {
-          state.lastIntValue = -1;
-          state.advance();
-          return CharSetOk2;
-        }
-        var negate = false;
-        if (state.switchU && this.options.ecmaVersion >= 9 && ((negate = ch === 80) || ch === 112)) {
-          state.lastIntValue = -1;
-          state.advance();
-          var result;
-          if (state.eat(
-            123
-            /* { */
-          ) && (result = this.regexp_eatUnicodePropertyValueExpression(state)) && state.eat(
-            125
-            /* } */
-          )) {
-            if (negate && result === CharSetString2) {
-              state.raise("Invalid property name");
-            }
-            return result;
-          }
-          state.raise("Invalid property name");
-        }
-        return CharSetNone2;
-      };
-      function isCharacterClassEscape2(ch) {
-        return ch === 100 || ch === 68 || ch === 115 || ch === 83 || ch === 119 || ch === 87;
-      }
-      pp$12.regexp_eatUnicodePropertyValueExpression = function(state) {
-        var start = state.pos;
-        if (this.regexp_eatUnicodePropertyName(state) && state.eat(
-          61
-          /* = */
-        )) {
-          var name = state.lastStringValue;
-          if (this.regexp_eatUnicodePropertyValue(state)) {
-            var value = state.lastStringValue;
-            this.regexp_validateUnicodePropertyNameAndValue(state, name, value);
-            return CharSetOk2;
-          }
-        }
-        state.pos = start;
-        if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
-          var nameOrValue = state.lastStringValue;
-          return this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
-        }
-        return CharSetNone2;
-      };
-      pp$12.regexp_validateUnicodePropertyNameAndValue = function(state, name, value) {
-        if (!hasOwn2(state.unicodeProperties.nonBinary, name)) {
-          state.raise("Invalid property name");
-        }
-        if (!state.unicodeProperties.nonBinary[name].test(value)) {
-          state.raise("Invalid property value");
-        }
-      };
-      pp$12.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
-        if (state.unicodeProperties.binary.test(nameOrValue)) {
-          return CharSetOk2;
-        }
-        if (state.switchV && state.unicodeProperties.binaryOfStrings.test(nameOrValue)) {
-          return CharSetString2;
-        }
-        state.raise("Invalid property name");
-      };
-      pp$12.regexp_eatUnicodePropertyName = function(state) {
-        var ch = 0;
-        state.lastStringValue = "";
-        while (isUnicodePropertyNameCharacter2(ch = state.current())) {
-          state.lastStringValue += codePointToString2(ch);
-          state.advance();
-        }
-        return state.lastStringValue !== "";
-      };
-      function isUnicodePropertyNameCharacter2(ch) {
-        return isControlLetter2(ch) || ch === 95;
-      }
-      pp$12.regexp_eatUnicodePropertyValue = function(state) {
-        var ch = 0;
-        state.lastStringValue = "";
-        while (isUnicodePropertyValueCharacter2(ch = state.current())) {
-          state.lastStringValue += codePointToString2(ch);
-          state.advance();
-        }
-        return state.lastStringValue !== "";
-      };
-      function isUnicodePropertyValueCharacter2(ch) {
-        return isUnicodePropertyNameCharacter2(ch) || isDecimalDigit2(ch);
-      }
-      pp$12.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
-        return this.regexp_eatUnicodePropertyValue(state);
-      };
-      pp$12.regexp_eatCharacterClass = function(state) {
-        if (state.eat(
-          91
-          /* [ */
-        )) {
-          var negate = state.eat(
-            94
-            /* ^ */
-          );
-          var result = this.regexp_classContents(state);
-          if (!state.eat(
-            93
-            /* ] */
-          )) {
-            state.raise("Unterminated character class");
-          }
-          if (negate && result === CharSetString2) {
-            state.raise("Negated character class may contain strings");
-          }
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_classContents = function(state) {
-        if (state.current() === 93) {
-          return CharSetOk2;
-        }
-        if (state.switchV) {
-          return this.regexp_classSetExpression(state);
-        }
-        this.regexp_nonEmptyClassRanges(state);
-        return CharSetOk2;
-      };
-      pp$12.regexp_nonEmptyClassRanges = function(state) {
-        while (this.regexp_eatClassAtom(state)) {
-          var left = state.lastIntValue;
-          if (state.eat(
-            45
-            /* - */
-          ) && this.regexp_eatClassAtom(state)) {
-            var right = state.lastIntValue;
-            if (state.switchU && (left === -1 || right === -1)) {
-              state.raise("Invalid character class");
-            }
-            if (left !== -1 && right !== -1 && left > right) {
-              state.raise("Range out of order in character class");
-            }
-          }
-        }
-      };
-      pp$12.regexp_eatClassAtom = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          92
-          /* \ */
-        )) {
-          if (this.regexp_eatClassEscape(state)) {
-            return true;
-          }
-          if (state.switchU) {
-            var ch$1 = state.current();
-            if (ch$1 === 99 || isOctalDigit2(ch$1)) {
-              state.raise("Invalid class escape");
-            }
-            state.raise("Invalid escape");
-          }
-          state.pos = start;
-        }
-        var ch = state.current();
-        if (ch !== 93) {
-          state.lastIntValue = ch;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatClassEscape = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          98
-          /* b */
-        )) {
-          state.lastIntValue = 8;
-          return true;
-        }
-        if (state.switchU && state.eat(
-          45
-          /* - */
-        )) {
-          state.lastIntValue = 45;
-          return true;
-        }
-        if (!state.switchU && state.eat(
-          99
-          /* c */
-        )) {
-          if (this.regexp_eatClassControlLetter(state)) {
-            return true;
-          }
-          state.pos = start;
-        }
-        return this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state);
-      };
-      pp$12.regexp_classSetExpression = function(state) {
-        var result = CharSetOk2, subResult;
-        if (this.regexp_eatClassSetRange(state)) ;
-        else if (subResult = this.regexp_eatClassSetOperand(state)) {
-          if (subResult === CharSetString2) {
-            result = CharSetString2;
-          }
-          var start = state.pos;
-          while (state.eatChars(
-            [38, 38]
-            /* && */
-          )) {
-            if (state.current() !== 38 && (subResult = this.regexp_eatClassSetOperand(state))) {
-              if (subResult !== CharSetString2) {
-                result = CharSetOk2;
-              }
-              continue;
-            }
-            state.raise("Invalid character in character class");
-          }
-          if (start !== state.pos) {
-            return result;
-          }
-          while (state.eatChars(
-            [45, 45]
-            /* -- */
-          )) {
-            if (this.regexp_eatClassSetOperand(state)) {
-              continue;
-            }
-            state.raise("Invalid character in character class");
-          }
-          if (start !== state.pos) {
-            return result;
-          }
-        } else {
-          state.raise("Invalid character in character class");
-        }
-        for (; ; ) {
-          if (this.regexp_eatClassSetRange(state)) {
-            continue;
-          }
-          subResult = this.regexp_eatClassSetOperand(state);
-          if (!subResult) {
-            return result;
-          }
-          if (subResult === CharSetString2) {
-            result = CharSetString2;
-          }
-        }
-      };
-      pp$12.regexp_eatClassSetRange = function(state) {
-        var start = state.pos;
-        if (this.regexp_eatClassSetCharacter(state)) {
-          var left = state.lastIntValue;
-          if (state.eat(
-            45
-            /* - */
-          ) && this.regexp_eatClassSetCharacter(state)) {
-            var right = state.lastIntValue;
-            if (left !== -1 && right !== -1 && left > right) {
-              state.raise("Range out of order in character class");
-            }
-            return true;
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatClassSetOperand = function(state) {
-        if (this.regexp_eatClassSetCharacter(state)) {
-          return CharSetOk2;
-        }
-        return this.regexp_eatClassStringDisjunction(state) || this.regexp_eatNestedClass(state);
-      };
-      pp$12.regexp_eatNestedClass = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          91
-          /* [ */
-        )) {
-          var negate = state.eat(
-            94
-            /* ^ */
-          );
-          var result = this.regexp_classContents(state);
-          if (state.eat(
-            93
-            /* ] */
-          )) {
-            if (negate && result === CharSetString2) {
-              state.raise("Negated character class may contain strings");
-            }
-            return result;
-          }
-          state.pos = start;
-        }
-        if (state.eat(
-          92
-          /* \ */
-        )) {
-          var result$1 = this.regexp_eatCharacterClassEscape(state);
-          if (result$1) {
-            return result$1;
-          }
-          state.pos = start;
-        }
-        return null;
-      };
-      pp$12.regexp_eatClassStringDisjunction = function(state) {
-        var start = state.pos;
-        if (state.eatChars(
-          [92, 113]
-          /* \q */
-        )) {
-          if (state.eat(
-            123
-            /* { */
-          )) {
-            var result = this.regexp_classStringDisjunctionContents(state);
-            if (state.eat(
-              125
-              /* } */
-            )) {
-              return result;
-            }
-          } else {
-            state.raise("Invalid escape");
-          }
-          state.pos = start;
-        }
-        return null;
-      };
-      pp$12.regexp_classStringDisjunctionContents = function(state) {
-        var result = this.regexp_classString(state);
-        while (state.eat(
-          124
-          /* | */
-        )) {
-          if (this.regexp_classString(state) === CharSetString2) {
-            result = CharSetString2;
-          }
-        }
-        return result;
-      };
-      pp$12.regexp_classString = function(state) {
-        var count = 0;
-        while (this.regexp_eatClassSetCharacter(state)) {
-          count++;
-        }
-        return count === 1 ? CharSetOk2 : CharSetString2;
-      };
-      pp$12.regexp_eatClassSetCharacter = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          92
-          /* \ */
-        )) {
-          if (this.regexp_eatCharacterEscape(state) || this.regexp_eatClassSetReservedPunctuator(state)) {
-            return true;
-          }
-          if (state.eat(
-            98
-            /* b */
-          )) {
-            state.lastIntValue = 8;
-            return true;
-          }
-          state.pos = start;
-          return false;
-        }
-        var ch = state.current();
-        if (ch < 0 || ch === state.lookahead() && isClassSetReservedDoublePunctuatorCharacter2(ch)) {
-          return false;
-        }
-        if (isClassSetSyntaxCharacter2(ch)) {
-          return false;
-        }
-        state.advance();
-        state.lastIntValue = ch;
-        return true;
-      };
-      function isClassSetReservedDoublePunctuatorCharacter2(ch) {
-        return ch === 33 || ch >= 35 && ch <= 38 || ch >= 42 && ch <= 44 || ch === 46 || ch >= 58 && ch <= 64 || ch === 94 || ch === 96 || ch === 126;
-      }
-      function isClassSetSyntaxCharacter2(ch) {
-        return ch === 40 || ch === 41 || ch === 45 || ch === 47 || ch >= 91 && ch <= 93 || ch >= 123 && ch <= 125;
-      }
-      pp$12.regexp_eatClassSetReservedPunctuator = function(state) {
-        var ch = state.current();
-        if (isClassSetReservedPunctuator2(ch)) {
-          state.lastIntValue = ch;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      function isClassSetReservedPunctuator2(ch) {
-        return ch === 33 || ch === 35 || ch === 37 || ch === 38 || ch === 44 || ch === 45 || ch >= 58 && ch <= 62 || ch === 64 || ch === 96 || ch === 126;
-      }
-      pp$12.regexp_eatClassControlLetter = function(state) {
-        var ch = state.current();
-        if (isDecimalDigit2(ch) || ch === 95) {
-          state.lastIntValue = ch % 32;
-          state.advance();
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatHexEscapeSequence = function(state) {
-        var start = state.pos;
-        if (state.eat(
-          120
-          /* x */
-        )) {
-          if (this.regexp_eatFixedHexDigits(state, 2)) {
-            return true;
-          }
-          if (state.switchU) {
-            state.raise("Invalid escape");
-          }
-          state.pos = start;
-        }
-        return false;
-      };
-      pp$12.regexp_eatDecimalDigits = function(state) {
-        var start = state.pos;
-        var ch = 0;
-        state.lastIntValue = 0;
-        while (isDecimalDigit2(ch = state.current())) {
-          state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
-          state.advance();
-        }
-        return state.pos !== start;
-      };
-      function isDecimalDigit2(ch) {
-        return ch >= 48 && ch <= 57;
-      }
-      pp$12.regexp_eatHexDigits = function(state) {
-        var start = state.pos;
-        var ch = 0;
-        state.lastIntValue = 0;
-        while (isHexDigit2(ch = state.current())) {
-          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
-          state.advance();
-        }
-        return state.pos !== start;
-      };
-      function isHexDigit2(ch) {
-        return ch >= 48 && ch <= 57 || ch >= 65 && ch <= 70 || ch >= 97 && ch <= 102;
-      }
-      function hexToInt2(ch) {
-        if (ch >= 65 && ch <= 70) {
-          return 10 + (ch - 65);
-        }
-        if (ch >= 97 && ch <= 102) {
-          return 10 + (ch - 97);
-        }
-        return ch - 48;
-      }
-      pp$12.regexp_eatLegacyOctalEscapeSequence = function(state) {
-        if (this.regexp_eatOctalDigit(state)) {
-          var n1 = state.lastIntValue;
-          if (this.regexp_eatOctalDigit(state)) {
-            var n2 = state.lastIntValue;
-            if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
-              state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
-            } else {
-              state.lastIntValue = n1 * 8 + n2;
-            }
-          } else {
-            state.lastIntValue = n1;
-          }
-          return true;
-        }
-        return false;
-      };
-      pp$12.regexp_eatOctalDigit = function(state) {
-        var ch = state.current();
-        if (isOctalDigit2(ch)) {
-          state.lastIntValue = ch - 48;
-          state.advance();
-          return true;
-        }
-        state.lastIntValue = 0;
-        return false;
-      };
-      function isOctalDigit2(ch) {
-        return ch >= 48 && ch <= 55;
-      }
-      pp$12.regexp_eatFixedHexDigits = function(state, length) {
-        var start = state.pos;
-        state.lastIntValue = 0;
-        for (var i3 = 0; i3 < length; ++i3) {
-          var ch = state.current();
-          if (!isHexDigit2(ch)) {
-            state.pos = start;
-            return false;
-          }
-          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
-          state.advance();
-        }
-        return true;
-      };
-      var Token3 = function Token4(p) {
-        this.type = p.type;
-        this.value = p.value;
-        this.start = p.start;
-        this.end = p.end;
-        if (p.options.locations) {
-          this.loc = new SourceLocation3(p, p.startLoc, p.endLoc);
-        }
-        if (p.options.ranges) {
-          this.range = [p.start, p.end];
-        }
-      };
-      var pp2 = Parser3.prototype;
-      pp2.next = function(ignoreEscapeSequenceInKeyword) {
-        if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
-          this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
-        }
-        if (this.options.onToken) {
-          this.options.onToken(new Token3(this));
-        }
-        this.lastTokEnd = this.end;
-        this.lastTokStart = this.start;
-        this.lastTokEndLoc = this.endLoc;
-        this.lastTokStartLoc = this.startLoc;
-        this.nextToken();
-      };
-      pp2.getToken = function() {
-        this.next();
-        return new Token3(this);
-      };
-      if (typeof Symbol !== "undefined") {
-        pp2[Symbol.iterator] = function() {
-          var this$1$1 = this;
-          return {
-            next: function() {
-              var token = this$1$1.getToken();
-              return {
-                done: token.type === types$12.eof,
-                value: token
-              };
-            }
-          };
-        };
-      }
-      pp2.nextToken = function() {
-        var curContext = this.curContext();
-        if (!curContext || !curContext.preserveSpace) {
-          this.skipSpace();
-        }
-        this.start = this.pos;
-        if (this.options.locations) {
-          this.startLoc = this.curPosition();
-        }
-        if (this.pos >= this.input.length) {
-          return this.finishToken(types$12.eof);
-        }
-        if (curContext.override) {
-          return curContext.override(this);
-        } else {
-          this.readToken(this.fullCharCodeAtPos());
-        }
-      };
-      pp2.readToken = function(code) {
-        if (isIdentifierStart2(code, this.options.ecmaVersion >= 6) || code === 92) {
-          return this.readWord();
-        }
-        return this.getTokenFromCode(code);
-      };
-      pp2.fullCharCodeAt = function(pos) {
-        var code = this.input.charCodeAt(pos);
-        if (code <= 55295 || code >= 56320) {
-          return code;
-        }
-        var next = this.input.charCodeAt(pos + 1);
-        return next <= 56319 || next >= 57344 ? code : (code << 10) + next - 56613888;
-      };
-      pp2.fullCharCodeAtPos = function() {
-        return this.fullCharCodeAt(this.pos);
-      };
-      pp2.skipBlockComment = function() {
-        var startLoc = this.options.onComment && this.curPosition();
-        var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
-        if (end === -1) {
-          this.raise(this.pos - 2, "Unterminated comment");
-        }
-        this.pos = end + 2;
-        if (this.options.locations) {
-          for (var nextBreak = void 0, pos = start; (nextBreak = nextLineBreak2(this.input, pos, this.pos)) > -1; ) {
-            ++this.curLine;
-            pos = this.lineStart = nextBreak;
-          }
-        }
-        if (this.options.onComment) {
-          this.options.onComment(
-            true,
-            this.input.slice(start + 2, end),
-            start,
-            this.pos,
-            startLoc,
-            this.curPosition()
-          );
-        }
-      };
-      pp2.skipLineComment = function(startSkip) {
-        var start = this.pos;
-        var startLoc = this.options.onComment && this.curPosition();
-        var ch = this.input.charCodeAt(this.pos += startSkip);
-        while (this.pos < this.input.length && !isNewLine2(ch)) {
-          ch = this.input.charCodeAt(++this.pos);
-        }
-        if (this.options.onComment) {
-          this.options.onComment(
-            false,
-            this.input.slice(start + startSkip, this.pos),
-            start,
-            this.pos,
-            startLoc,
-            this.curPosition()
-          );
-        }
-      };
-      pp2.skipSpace = function() {
-        loop: while (this.pos < this.input.length) {
-          var ch = this.input.charCodeAt(this.pos);
-          switch (ch) {
-            case 32:
-            case 160:
-              ++this.pos;
-              break;
-            case 13:
-              if (this.input.charCodeAt(this.pos + 1) === 10) {
-                ++this.pos;
-              }
-            case 10:
-            case 8232:
-            case 8233:
-              ++this.pos;
-              if (this.options.locations) {
-                ++this.curLine;
-                this.lineStart = this.pos;
-              }
-              break;
-            case 47:
-              switch (this.input.charCodeAt(this.pos + 1)) {
-                case 42:
-                  this.skipBlockComment();
-                  break;
-                case 47:
-                  this.skipLineComment(2);
-                  break;
-                default:
-                  break loop;
-              }
-              break;
-            default:
-              if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace2.test(String.fromCharCode(ch))) {
-                ++this.pos;
-              } else {
-                break loop;
-              }
-          }
-        }
-      };
-      pp2.finishToken = function(type, val) {
-        this.end = this.pos;
-        if (this.options.locations) {
-          this.endLoc = this.curPosition();
-        }
-        var prevType = this.type;
-        this.type = type;
-        this.value = val;
-        this.updateContext(prevType);
-      };
-      pp2.readToken_dot = function() {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (next >= 48 && next <= 57) {
-          return this.readNumber(true);
-        }
-        var next2 = this.input.charCodeAt(this.pos + 2);
-        if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) {
-          this.pos += 3;
-          return this.finishToken(types$12.ellipsis);
-        } else {
-          ++this.pos;
-          return this.finishToken(types$12.dot);
-        }
-      };
-      pp2.readToken_slash = function() {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (this.exprAllowed) {
-          ++this.pos;
-          return this.readRegexp();
-        }
-        if (next === 61) {
-          return this.finishOp(types$12.assign, 2);
-        }
-        return this.finishOp(types$12.slash, 1);
-      };
-      pp2.readToken_mult_modulo_exp = function(code) {
-        var next = this.input.charCodeAt(this.pos + 1);
-        var size = 1;
-        var tokentype = code === 42 ? types$12.star : types$12.modulo;
-        if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
-          ++size;
-          tokentype = types$12.starstar;
-          next = this.input.charCodeAt(this.pos + 2);
-        }
-        if (next === 61) {
-          return this.finishOp(types$12.assign, size + 1);
-        }
-        return this.finishOp(tokentype, size);
-      };
-      pp2.readToken_pipe_amp = function(code) {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (next === code) {
-          if (this.options.ecmaVersion >= 12) {
-            var next2 = this.input.charCodeAt(this.pos + 2);
-            if (next2 === 61) {
-              return this.finishOp(types$12.assign, 3);
-            }
-          }
-          return this.finishOp(code === 124 ? types$12.logicalOR : types$12.logicalAND, 2);
-        }
-        if (next === 61) {
-          return this.finishOp(types$12.assign, 2);
-        }
-        return this.finishOp(code === 124 ? types$12.bitwiseOR : types$12.bitwiseAND, 1);
-      };
-      pp2.readToken_caret = function() {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (next === 61) {
-          return this.finishOp(types$12.assign, 2);
-        }
-        return this.finishOp(types$12.bitwiseXOR, 1);
-      };
-      pp2.readToken_plus_min = function(code) {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (next === code) {
-          if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || lineBreak2.test(this.input.slice(this.lastTokEnd, this.pos)))) {
-            this.skipLineComment(3);
-            this.skipSpace();
-            return this.nextToken();
-          }
-          return this.finishOp(types$12.incDec, 2);
-        }
-        if (next === 61) {
-          return this.finishOp(types$12.assign, 2);
-        }
-        return this.finishOp(types$12.plusMin, 1);
-      };
-      pp2.readToken_lt_gt = function(code) {
-        var next = this.input.charCodeAt(this.pos + 1);
-        var size = 1;
-        if (next === code) {
-          size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
-          if (this.input.charCodeAt(this.pos + size) === 61) {
-            return this.finishOp(types$12.assign, size + 1);
-          }
-          return this.finishOp(types$12.bitShift, size);
-        }
-        if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45) {
-          this.skipLineComment(4);
-          this.skipSpace();
-          return this.nextToken();
-        }
-        if (next === 61) {
-          size = 2;
-        }
-        return this.finishOp(types$12.relational, size);
-      };
-      pp2.readToken_eq_excl = function(code) {
-        var next = this.input.charCodeAt(this.pos + 1);
-        if (next === 61) {
-          return this.finishOp(types$12.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2);
-        }
-        if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) {
-          this.pos += 2;
-          return this.finishToken(types$12.arrow);
-        }
-        return this.finishOp(code === 61 ? types$12.eq : types$12.prefix, 1);
-      };
-      pp2.readToken_question = function() {
-        var ecmaVersion3 = this.options.ecmaVersion;
-        if (ecmaVersion3 >= 11) {
-          var next = this.input.charCodeAt(this.pos + 1);
-          if (next === 46) {
-            var next2 = this.input.charCodeAt(this.pos + 2);
-            if (next2 < 48 || next2 > 57) {
-              return this.finishOp(types$12.questionDot, 2);
-            }
-          }
-          if (next === 63) {
-            if (ecmaVersion3 >= 12) {
-              var next2$1 = this.input.charCodeAt(this.pos + 2);
-              if (next2$1 === 61) {
-                return this.finishOp(types$12.assign, 3);
-              }
-            }
-            return this.finishOp(types$12.coalesce, 2);
-          }
-        }
-        return this.finishOp(types$12.question, 1);
-      };
-      pp2.readToken_numberSign = function() {
-        var ecmaVersion3 = this.options.ecmaVersion;
-        var code = 35;
-        if (ecmaVersion3 >= 13) {
-          ++this.pos;
-          code = this.fullCharCodeAtPos();
-          if (isIdentifierStart2(code, true) || code === 92) {
-            return this.finishToken(types$12.privateId, this.readWord1());
-          }
-        }
-        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
-      };
-      pp2.getTokenFromCode = function(code) {
-        switch (code) {
-          // The interpretation of a dot depends on whether it is followed
-          // by a digit or another two dots.
-          case 46:
-            return this.readToken_dot();
-          // Punctuation tokens.
-          case 40:
-            ++this.pos;
-            return this.finishToken(types$12.parenL);
-          case 41:
-            ++this.pos;
-            return this.finishToken(types$12.parenR);
-          case 59:
-            ++this.pos;
-            return this.finishToken(types$12.semi);
-          case 44:
-            ++this.pos;
-            return this.finishToken(types$12.comma);
-          case 91:
-            ++this.pos;
-            return this.finishToken(types$12.bracketL);
-          case 93:
-            ++this.pos;
-            return this.finishToken(types$12.bracketR);
-          case 123:
-            ++this.pos;
-            return this.finishToken(types$12.braceL);
-          case 125:
-            ++this.pos;
-            return this.finishToken(types$12.braceR);
-          case 58:
-            ++this.pos;
-            return this.finishToken(types$12.colon);
-          case 96:
-            if (this.options.ecmaVersion < 6) {
-              break;
-            }
-            ++this.pos;
-            return this.finishToken(types$12.backQuote);
-          case 48:
-            var next = this.input.charCodeAt(this.pos + 1);
-            if (next === 120 || next === 88) {
-              return this.readRadixNumber(16);
-            }
-            if (this.options.ecmaVersion >= 6) {
-              if (next === 111 || next === 79) {
-                return this.readRadixNumber(8);
-              }
-              if (next === 98 || next === 66) {
-                return this.readRadixNumber(2);
-              }
-            }
-          // Anything else beginning with a digit is an integer, octal
-          // number, or float.
-          case 49:
-          case 50:
-          case 51:
-          case 52:
-          case 53:
-          case 54:
-          case 55:
-          case 56:
-          case 57:
-            return this.readNumber(false);
-          // Quotes produce strings.
-          case 34:
-          case 39:
-            return this.readString(code);
-          // Operators are parsed inline in tiny state machines. '=' (61) is
-          // often referred to. `finishOp` simply skips the amount of
-          // characters it is given as second argument, and returns a token
-          // of the type given by its first argument.
-          case 47:
-            return this.readToken_slash();
-          case 37:
-          case 42:
-            return this.readToken_mult_modulo_exp(code);
-          case 124:
-          case 38:
-            return this.readToken_pipe_amp(code);
-          case 94:
-            return this.readToken_caret();
-          case 43:
-          case 45:
-            return this.readToken_plus_min(code);
-          case 60:
-          case 62:
-            return this.readToken_lt_gt(code);
-          case 61:
-          case 33:
-            return this.readToken_eq_excl(code);
-          case 63:
-            return this.readToken_question();
-          case 126:
-            return this.finishOp(types$12.prefix, 1);
-          case 35:
-            return this.readToken_numberSign();
-        }
-        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
-      };
-      pp2.finishOp = function(type, size) {
-        var str = this.input.slice(this.pos, this.pos + size);
-        this.pos += size;
-        return this.finishToken(type, str);
-      };
-      pp2.readRegexp = function() {
-        var escaped, inClass, start = this.pos;
-        for (; ; ) {
-          if (this.pos >= this.input.length) {
-            this.raise(start, "Unterminated regular expression");
-          }
-          var ch = this.input.charAt(this.pos);
-          if (lineBreak2.test(ch)) {
-            this.raise(start, "Unterminated regular expression");
-          }
-          if (!escaped) {
-            if (ch === "[") {
-              inClass = true;
-            } else if (ch === "]" && inClass) {
-              inClass = false;
-            } else if (ch === "/" && !inClass) {
-              break;
-            }
-            escaped = ch === "\\";
-          } else {
-            escaped = false;
-          }
-          ++this.pos;
-        }
-        var pattern = this.input.slice(start, this.pos);
-        ++this.pos;
-        var flagsStart = this.pos;
-        var flags = this.readWord1();
-        if (this.containsEsc) {
-          this.unexpected(flagsStart);
-        }
-        var state = this.regexpState || (this.regexpState = new RegExpValidationState3(this));
-        state.reset(start, pattern, flags);
-        this.validateRegExpFlags(state);
-        this.validateRegExpPattern(state);
-        var value = null;
-        try {
-          value = new RegExp(pattern, flags);
-        } catch (e) {
-        }
-        return this.finishToken(types$12.regexp, { pattern, flags, value });
-      };
-      pp2.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
-        var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
-        var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
-        var start = this.pos, total = 0, lastCode = 0;
-        for (var i3 = 0, e = len == null ? Infinity : len; i3 < e; ++i3, ++this.pos) {
-          var code = this.input.charCodeAt(this.pos), val = void 0;
-          if (allowSeparators && code === 95) {
-            if (isLegacyOctalNumericLiteral) {
-              this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals");
-            }
-            if (lastCode === 95) {
-              this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
-            }
-            if (i3 === 0) {
-              this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
-            }
-            lastCode = code;
-            continue;
-          }
-          if (code >= 97) {
-            val = code - 97 + 10;
-          } else if (code >= 65) {
-            val = code - 65 + 10;
-          } else if (code >= 48 && code <= 57) {
-            val = code - 48;
-          } else {
-            val = Infinity;
-          }
-          if (val >= radix) {
-            break;
-          }
-          lastCode = code;
-          total = total * radix + val;
-        }
-        if (allowSeparators && lastCode === 95) {
-          this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits");
-        }
-        if (this.pos === start || len != null && this.pos - start !== len) {
-          return null;
-        }
-        return total;
-      };
-      function stringToNumber2(str, isLegacyOctalNumericLiteral) {
-        if (isLegacyOctalNumericLiteral) {
-          return parseInt(str, 8);
-        }
-        return parseFloat(str.replace(/_/g, ""));
-      }
-      function stringToBigInt2(str) {
-        if (typeof BigInt !== "function") {
-          return null;
-        }
-        return BigInt(str.replace(/_/g, ""));
-      }
-      pp2.readRadixNumber = function(radix) {
-        var start = this.pos;
-        this.pos += 2;
-        var val = this.readInt(radix);
-        if (val == null) {
-          this.raise(this.start + 2, "Expected number in radix " + radix);
-        }
-        if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
-          val = stringToBigInt2(this.input.slice(start, this.pos));
-          ++this.pos;
-        } else if (isIdentifierStart2(this.fullCharCodeAtPos())) {
-          this.raise(this.pos, "Identifier directly after number");
-        }
-        return this.finishToken(types$12.num, val);
-      };
-      pp2.readNumber = function(startsWithDot) {
-        var start = this.pos;
-        if (!startsWithDot && this.readInt(10, void 0, true) === null) {
-          this.raise(start, "Invalid number");
-        }
-        var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
-        if (octal && this.strict) {
-          this.raise(start, "Invalid number");
-        }
-        var next = this.input.charCodeAt(this.pos);
-        if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
-          var val$1 = stringToBigInt2(this.input.slice(start, this.pos));
-          ++this.pos;
-          if (isIdentifierStart2(this.fullCharCodeAtPos())) {
-            this.raise(this.pos, "Identifier directly after number");
-          }
-          return this.finishToken(types$12.num, val$1);
-        }
-        if (octal && /[89]/.test(this.input.slice(start, this.pos))) {
-          octal = false;
-        }
-        if (next === 46 && !octal) {
-          ++this.pos;
-          this.readInt(10);
-          next = this.input.charCodeAt(this.pos);
-        }
-        if ((next === 69 || next === 101) && !octal) {
-          next = this.input.charCodeAt(++this.pos);
-          if (next === 43 || next === 45) {
-            ++this.pos;
-          }
-          if (this.readInt(10) === null) {
-            this.raise(start, "Invalid number");
-          }
-        }
-        if (isIdentifierStart2(this.fullCharCodeAtPos())) {
-          this.raise(this.pos, "Identifier directly after number");
-        }
-        var val = stringToNumber2(this.input.slice(start, this.pos), octal);
-        return this.finishToken(types$12.num, val);
-      };
-      pp2.readCodePoint = function() {
-        var ch = this.input.charCodeAt(this.pos), code;
-        if (ch === 123) {
-          if (this.options.ecmaVersion < 6) {
-            this.unexpected();
-          }
-          var codePos = ++this.pos;
-          code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
-          ++this.pos;
-          if (code > 1114111) {
-            this.invalidStringToken(codePos, "Code point out of bounds");
-          }
-        } else {
-          code = this.readHexChar(4);
-        }
-        return code;
-      };
-      pp2.readString = function(quote) {
-        var out = "", chunkStart = ++this.pos;
-        for (; ; ) {
-          if (this.pos >= this.input.length) {
-            this.raise(this.start, "Unterminated string constant");
-          }
-          var ch = this.input.charCodeAt(this.pos);
-          if (ch === quote) {
-            break;
-          }
-          if (ch === 92) {
-            out += this.input.slice(chunkStart, this.pos);
-            out += this.readEscapedChar(false);
-            chunkStart = this.pos;
-          } else if (ch === 8232 || ch === 8233) {
-            if (this.options.ecmaVersion < 10) {
-              this.raise(this.start, "Unterminated string constant");
-            }
-            ++this.pos;
-            if (this.options.locations) {
-              this.curLine++;
-              this.lineStart = this.pos;
-            }
-          } else {
-            if (isNewLine2(ch)) {
-              this.raise(this.start, "Unterminated string constant");
-            }
-            ++this.pos;
-          }
-        }
-        out += this.input.slice(chunkStart, this.pos++);
-        return this.finishToken(types$12.string, out);
-      };
-      var INVALID_TEMPLATE_ESCAPE_ERROR2 = {};
-      pp2.tryReadTemplateToken = function() {
-        this.inTemplateElement = true;
-        try {
-          this.readTmplToken();
-        } catch (err) {
-          if (err === INVALID_TEMPLATE_ESCAPE_ERROR2) {
-            this.readInvalidTemplateToken();
-          } else {
-            throw err;
-          }
-        }
-        this.inTemplateElement = false;
-      };
-      pp2.invalidStringToken = function(position, message) {
-        if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
-          throw INVALID_TEMPLATE_ESCAPE_ERROR2;
-        } else {
-          this.raise(position, message);
-        }
-      };
-      pp2.readTmplToken = function() {
-        var out = "", chunkStart = this.pos;
-        for (; ; ) {
-          if (this.pos >= this.input.length) {
-            this.raise(this.start, "Unterminated template");
-          }
-          var ch = this.input.charCodeAt(this.pos);
-          if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) {
-            if (this.pos === this.start && (this.type === types$12.template || this.type === types$12.invalidTemplate)) {
-              if (ch === 36) {
-                this.pos += 2;
-                return this.finishToken(types$12.dollarBraceL);
-              } else {
-                ++this.pos;
-                return this.finishToken(types$12.backQuote);
-              }
-            }
-            out += this.input.slice(chunkStart, this.pos);
-            return this.finishToken(types$12.template, out);
-          }
-          if (ch === 92) {
-            out += this.input.slice(chunkStart, this.pos);
-            out += this.readEscapedChar(true);
-            chunkStart = this.pos;
-          } else if (isNewLine2(ch)) {
-            out += this.input.slice(chunkStart, this.pos);
-            ++this.pos;
-            switch (ch) {
-              case 13:
-                if (this.input.charCodeAt(this.pos) === 10) {
-                  ++this.pos;
-                }
-              case 10:
-                out += "\n";
-                break;
-              default:
-                out += String.fromCharCode(ch);
-                break;
-            }
-            if (this.options.locations) {
-              ++this.curLine;
-              this.lineStart = this.pos;
-            }
-            chunkStart = this.pos;
-          } else {
-            ++this.pos;
-          }
-        }
-      };
-      pp2.readInvalidTemplateToken = function() {
-        for (; this.pos < this.input.length; this.pos++) {
-          switch (this.input[this.pos]) {
-            case "\\":
-              ++this.pos;
-              break;
-            case "$":
-              if (this.input[this.pos + 1] !== "{") {
-                break;
-              }
-            // fall through
-            case "`":
-              return this.finishToken(types$12.invalidTemplate, this.input.slice(this.start, this.pos));
-            case "\r":
-              if (this.input[this.pos + 1] === "\n") {
-                ++this.pos;
-              }
-            // fall through
-            case "\n":
-            case "\u2028":
-            case "\u2029":
-              ++this.curLine;
-              this.lineStart = this.pos + 1;
-              break;
-          }
-        }
-        this.raise(this.start, "Unterminated template");
-      };
-      pp2.readEscapedChar = function(inTemplate) {
-        var ch = this.input.charCodeAt(++this.pos);
-        ++this.pos;
-        switch (ch) {
-          case 110:
-            return "\n";
-          // 'n' -> '\n'
-          case 114:
-            return "\r";
-          // 'r' -> '\r'
-          case 120:
-            return String.fromCharCode(this.readHexChar(2));
-          // 'x'
-          case 117:
-            return codePointToString2(this.readCodePoint());
-          // 'u'
-          case 116:
-            return "	";
-          // 't' -> '\t'
-          case 98:
-            return "\b";
-          // 'b' -> '\b'
-          case 118:
-            return "\v";
-          // 'v' -> '\u000b'
-          case 102:
-            return "\f";
-          // 'f' -> '\f'
-          case 13:
-            if (this.input.charCodeAt(this.pos) === 10) {
-              ++this.pos;
-            }
-          // '\r\n'
-          case 10:
-            if (this.options.locations) {
-              this.lineStart = this.pos;
-              ++this.curLine;
-            }
-            return "";
-          case 56:
-          case 57:
-            if (this.strict) {
-              this.invalidStringToken(
-                this.pos - 1,
-                "Invalid escape sequence"
-              );
-            }
-            if (inTemplate) {
-              var codePos = this.pos - 1;
-              this.invalidStringToken(
-                codePos,
-                "Invalid escape sequence in template string"
-              );
-            }
-          default:
-            if (ch >= 48 && ch <= 55) {
-              var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
-              var octal = parseInt(octalStr, 8);
-              if (octal > 255) {
-                octalStr = octalStr.slice(0, -1);
-                octal = parseInt(octalStr, 8);
-              }
-              this.pos += octalStr.length - 1;
-              ch = this.input.charCodeAt(this.pos);
-              if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
-                this.invalidStringToken(
-                  this.pos - 1 - octalStr.length,
-                  inTemplate ? "Octal literal in template string" : "Octal literal in strict mode"
-                );
-              }
-              return String.fromCharCode(octal);
-            }
-            if (isNewLine2(ch)) {
-              if (this.options.locations) {
-                this.lineStart = this.pos;
-                ++this.curLine;
-              }
-              return "";
-            }
-            return String.fromCharCode(ch);
-        }
-      };
-      pp2.readHexChar = function(len) {
-        var codePos = this.pos;
-        var n = this.readInt(16, len);
-        if (n === null) {
-          this.invalidStringToken(codePos, "Bad character escape sequence");
-        }
-        return n;
-      };
-      pp2.readWord1 = function() {
-        this.containsEsc = false;
-        var word = "", first = true, chunkStart = this.pos;
-        var astral = this.options.ecmaVersion >= 6;
-        while (this.pos < this.input.length) {
-          var ch = this.fullCharCodeAtPos();
-          if (isIdentifierChar2(ch, astral)) {
-            this.pos += ch <= 65535 ? 1 : 2;
-          } else if (ch === 92) {
-            this.containsEsc = true;
-            word += this.input.slice(chunkStart, this.pos);
-            var escStart = this.pos;
-            if (this.input.charCodeAt(++this.pos) !== 117) {
-              this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX");
-            }
-            ++this.pos;
-            var esc = this.readCodePoint();
-            if (!(first ? isIdentifierStart2 : isIdentifierChar2)(esc, astral)) {
-              this.invalidStringToken(escStart, "Invalid Unicode escape");
-            }
-            word += codePointToString2(esc);
-            chunkStart = this.pos;
-          } else {
-            break;
-          }
-          first = false;
-        }
-        return word + this.input.slice(chunkStart, this.pos);
-      };
-      pp2.readWord = function() {
-        var word = this.readWord1();
-        var type = types$12.name;
-        if (this.keywords.test(word)) {
-          type = keywords2[word];
-        }
-        return this.finishToken(type, word);
-      };
-      var version2 = "8.17.0";
-      Parser3.acorn = {
-        Parser: Parser3,
-        version: version2,
-        defaultOptions: defaultOptions2,
-        Position: Position3,
-        SourceLocation: SourceLocation3,
-        getLineInfo: getLineInfo2,
-        Node: Node3,
-        TokenType: TokenType3,
-        tokTypes: types$12,
-        keywordTypes: keywords2,
-        TokContext: TokContext3,
-        tokContexts: types2,
-        isIdentifierChar: isIdentifierChar2,
-        isIdentifierStart: isIdentifierStart2,
-        Token: Token3,
-        isNewLine: isNewLine2,
-        lineBreak: lineBreak2,
-        lineBreakG: lineBreakG2,
-        nonASCIIwhitespace: nonASCIIwhitespace2
-      };
-      function parse4(input, options) {
-        return Parser3.parse(input, options);
-      }
-      function parseExpressionAt2(input, pos, options) {
-        return Parser3.parseExpressionAt(input, pos, options);
-      }
-      function tokenizer2(input, options) {
-        return Parser3.tokenizer(input, options);
-      }
-      exports2.Node = Node3;
-      exports2.Parser = Parser3;
-      exports2.Position = Position3;
-      exports2.SourceLocation = SourceLocation3;
-      exports2.TokContext = TokContext3;
-      exports2.Token = Token3;
-      exports2.TokenType = TokenType3;
-      exports2.defaultOptions = defaultOptions2;
-      exports2.getLineInfo = getLineInfo2;
-      exports2.isIdentifierChar = isIdentifierChar2;
-      exports2.isIdentifierStart = isIdentifierStart2;
-      exports2.isNewLine = isNewLine2;
-      exports2.keywordTypes = keywords2;
-      exports2.lineBreak = lineBreak2;
-      exports2.lineBreakG = lineBreakG2;
-      exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
-      exports2.parse = parse4;
-      exports2.parseExpressionAt = parseExpressionAt2;
-      exports2.tokContexts = types2;
-      exports2.tokTypes = types$12;
-      exports2.tokenizer = tokenizer2;
-      exports2.version = version2;
-    }));
-  }
-});
-
-// node_modules/acorn-walk/dist/walk.js
-var require_walk = __commonJS({
-  "node_modules/acorn-walk/dist/walk.js"(exports, module) {
-    (function(global, factory) {
-      typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory((global.acorn = global.acorn || {}, global.acorn.walk = {})));
-    })(exports, (function(exports2) {
-      "use strict";
-      function simple(node, visitors, baseVisitor, state, override) {
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        (function c(node2, st, override2) {
-          var type = override2 || node2.type;
-          visitNode(baseVisitor, type, node2, st, c);
-          if (visitors[type]) {
-            visitors[type](node2, st);
-          }
-        })(node, state, override);
-      }
-      function ancestor(node, visitors, baseVisitor, state, override) {
-        var ancestors = [];
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        (function c(node2, st, override2) {
-          var type = override2 || node2.type;
-          var isNew = node2 !== ancestors[ancestors.length - 1];
-          if (isNew) {
-            ancestors.push(node2);
-          }
-          visitNode(baseVisitor, type, node2, st, c);
-          if (visitors[type]) {
-            visitors[type](node2, st || ancestors, ancestors);
-          }
-          if (isNew) {
-            ancestors.pop();
-          }
-        })(node, state, override);
-      }
-      function recursive(node, state, funcs, baseVisitor, override) {
-        var visitor = funcs ? make(funcs, baseVisitor || void 0) : baseVisitor;
-        (function c(node2, st, override2) {
-          visitor[override2 || node2.type](node2, st, c);
-        })(node, state, override);
-      }
-      function makeTest(test) {
-        if (typeof test === "string") {
-          return function(type) {
-            return type === test;
-          };
-        } else if (!test) {
-          return function() {
-            return true;
-          };
-        } else {
-          return test;
-        }
-      }
-      var Found = function Found2(node, state) {
-        this.node = node;
-        this.state = state;
-      };
-      function full(node, callback, baseVisitor, state, override) {
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        var last;
-        (function c(node2, st, override2) {
-          var type = override2 || node2.type;
-          visitNode(baseVisitor, type, node2, st, c);
-          if (last !== node2) {
-            callback(node2, st, type);
-            last = node2;
-          }
-        })(node, state, override);
-      }
-      function fullAncestor(node, callback, baseVisitor, state) {
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        var ancestors = [], last;
-        (function c(node2, st, override) {
-          var type = override || node2.type;
-          var isNew = node2 !== ancestors[ancestors.length - 1];
-          if (isNew) {
-            ancestors.push(node2);
-          }
-          visitNode(baseVisitor, type, node2, st, c);
-          if (last !== node2) {
-            callback(node2, st || ancestors, ancestors, type);
-            last = node2;
-          }
-          if (isNew) {
-            ancestors.pop();
-          }
-        })(node, state);
-      }
-      function findNodeAt(node, start, end, test, baseVisitor, state) {
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        test = makeTest(test);
-        try {
-          (function c(node2, st, override) {
-            var type = override || node2.type;
-            if ((start == null || node2.start <= start) && (end == null || node2.end >= end)) {
-              visitNode(baseVisitor, type, node2, st, c);
-            }
-            if ((start == null || node2.start === start) && (end == null || node2.end === end) && test(type, node2)) {
-              throw new Found(node2, st);
-            }
-          })(node, state);
-        } catch (e) {
-          if (e instanceof Found) {
-            return e;
-          }
-          throw e;
-        }
-      }
-      function findNodeAround(node, pos, test, baseVisitor, state) {
-        test = makeTest(test);
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        try {
-          (function c(node2, st, override) {
-            var type = override || node2.type;
-            if (node2.start > pos || node2.end < pos) {
-              return;
-            }
-            visitNode(baseVisitor, type, node2, st, c);
-            if (test(type, node2)) {
-              throw new Found(node2, st);
-            }
-          })(node, state);
-        } catch (e) {
-          if (e instanceof Found) {
-            return e;
-          }
-          throw e;
-        }
-      }
-      function findNodeAfter(node, pos, test, baseVisitor, state) {
-        test = makeTest(test);
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        try {
-          (function c(node2, st, override) {
-            if (node2.end < pos) {
-              return;
-            }
-            var type = override || node2.type;
-            if (node2.start >= pos && test(type, node2)) {
-              throw new Found(node2, st);
-            }
-            visitNode(baseVisitor, type, node2, st, c);
-          })(node, state);
-        } catch (e) {
-          if (e instanceof Found) {
-            return e;
-          }
-          throw e;
-        }
-      }
-      function findNodeBefore(node, pos, test, baseVisitor, state) {
-        test = makeTest(test);
-        if (!baseVisitor) {
-          baseVisitor = base;
-        }
-        var max;
-        (function c(node2, st, override) {
-          if (node2.start > pos) {
-            return;
-          }
-          var type = override || node2.type;
-          if (node2.end <= pos && (!max || max.node.end < node2.end) && test(type, node2)) {
-            max = new Found(node2, st);
-          }
-          visitNode(baseVisitor, type, node2, st, c);
-        })(node, state);
-        return max;
-      }
-      function make(funcs, baseVisitor) {
-        var visitor = Object.create(baseVisitor || base);
-        for (var type in funcs) {
-          visitor[type] = funcs[type];
-        }
-        return visitor;
-      }
-      function skipThrough(node, st, c) {
-        c(node, st);
-      }
-      function ignore(_node, _st, _c) {
-      }
-      function visitNode(baseVisitor, type, node, st, c) {
-        if (baseVisitor[type] == null) {
-          throw new Error("No walker function defined for node type " + type);
-        }
-        baseVisitor[type](node, st, c);
-      }
-      var base = {};
-      base.Program = base.BlockStatement = base.StaticBlock = function(node, st, c) {
-        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
-          var stmt = list2[i2];
-          c(stmt, st, "Statement");
-        }
-      };
-      base.Statement = skipThrough;
-      base.EmptyStatement = ignore;
-      base.ExpressionStatement = base.ParenthesizedExpression = base.ChainExpression = function(node, st, c) {
-        return c(node.expression, st, "Expression");
-      };
-      base.IfStatement = function(node, st, c) {
-        c(node.test, st, "Expression");
-        c(node.consequent, st, "Statement");
-        if (node.alternate) {
-          c(node.alternate, st, "Statement");
-        }
-      };
-      base.LabeledStatement = function(node, st, c) {
-        return c(node.body, st, "Statement");
-      };
-      base.BreakStatement = base.ContinueStatement = ignore;
-      base.WithStatement = function(node, st, c) {
-        c(node.object, st, "Expression");
-        c(node.body, st, "Statement");
-      };
-      base.SwitchStatement = function(node, st, c) {
-        c(node.discriminant, st, "Expression");
-        for (var i2 = 0, list2 = node.cases; i2 < list2.length; i2 += 1) {
-          var cs = list2[i2];
-          c(cs, st);
-        }
-      };
-      base.SwitchCase = function(node, st, c) {
-        if (node.test) {
-          c(node.test, st, "Expression");
-        }
-        for (var i2 = 0, list2 = node.consequent; i2 < list2.length; i2 += 1) {
-          var cons = list2[i2];
-          c(cons, st, "Statement");
-        }
-      };
-      base.ReturnStatement = base.YieldExpression = base.AwaitExpression = function(node, st, c) {
-        if (node.argument) {
-          c(node.argument, st, "Expression");
-        }
-      };
-      base.ThrowStatement = base.SpreadElement = function(node, st, c) {
-        return c(node.argument, st, "Expression");
-      };
-      base.TryStatement = function(node, st, c) {
-        c(node.block, st, "Statement");
-        if (node.handler) {
-          c(node.handler, st);
-        }
-        if (node.finalizer) {
-          c(node.finalizer, st, "Statement");
-        }
-      };
-      base.CatchClause = function(node, st, c) {
-        if (node.param) {
-          c(node.param, st, "Pattern");
-        }
-        c(node.body, st, "Statement");
-      };
-      base.WhileStatement = base.DoWhileStatement = function(node, st, c) {
-        c(node.test, st, "Expression");
-        c(node.body, st, "Statement");
-      };
-      base.ForStatement = function(node, st, c) {
-        if (node.init) {
-          c(node.init, st, "ForInit");
-        }
-        if (node.test) {
-          c(node.test, st, "Expression");
-        }
-        if (node.update) {
-          c(node.update, st, "Expression");
-        }
-        c(node.body, st, "Statement");
-      };
-      base.ForInStatement = base.ForOfStatement = function(node, st, c) {
-        c(node.left, st, "ForInit");
-        c(node.right, st, "Expression");
-        c(node.body, st, "Statement");
-      };
-      base.ForInit = function(node, st, c) {
-        if (node.type === "VariableDeclaration") {
-          c(node, st);
-        } else {
-          c(node, st, "Expression");
-        }
-      };
-      base.DebuggerStatement = ignore;
-      base.FunctionDeclaration = function(node, st, c) {
-        return c(node, st, "Function");
-      };
-      base.VariableDeclaration = function(node, st, c) {
-        for (var i2 = 0, list2 = node.declarations; i2 < list2.length; i2 += 1) {
-          var decl = list2[i2];
-          c(decl, st);
-        }
-      };
-      base.VariableDeclarator = function(node, st, c) {
-        c(node.id, st, "Pattern");
-        if (node.init) {
-          c(node.init, st, "Expression");
-        }
-      };
-      base.Function = function(node, st, c) {
-        if (node.id) {
-          c(node.id, st, "Pattern");
-        }
-        for (var i2 = 0, list2 = node.params; i2 < list2.length; i2 += 1) {
-          var param = list2[i2];
-          c(param, st, "Pattern");
-        }
-        c(node.body, st, node.expression ? "Expression" : "Statement");
-      };
-      base.Pattern = function(node, st, c) {
-        if (node.type === "Identifier") {
-          c(node, st, "VariablePattern");
-        } else if (node.type === "MemberExpression") {
-          c(node, st, "MemberPattern");
-        } else {
-          c(node, st);
-        }
-      };
-      base.VariablePattern = ignore;
-      base.MemberPattern = skipThrough;
-      base.RestElement = function(node, st, c) {
-        return c(node.argument, st, "Pattern");
-      };
-      base.ArrayPattern = function(node, st, c) {
-        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
-          if (elt) {
-            c(elt, st, "Pattern");
-          }
-        }
-      };
-      base.ObjectPattern = function(node, st, c) {
-        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
-          var prop = list2[i2];
-          if (prop.type === "Property") {
-            if (prop.computed) {
-              c(prop.key, st, "Expression");
-            }
-            c(prop.value, st, "Pattern");
-          } else if (prop.type === "RestElement") {
-            c(prop.argument, st, "Pattern");
-          }
-        }
-      };
-      base.Expression = skipThrough;
-      base.ThisExpression = base.Super = base.MetaProperty = ignore;
-      base.ArrayExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
-          if (elt) {
-            c(elt, st, "Expression");
-          }
-        }
-      };
-      base.ObjectExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
-          var prop = list2[i2];
-          c(prop, st);
-        }
-      };
-      base.FunctionExpression = base.ArrowFunctionExpression = base.FunctionDeclaration;
-      base.SequenceExpression = function(node, st, c) {
-        for (var i2 = 0, list2 = node.expressions; i2 < list2.length; i2 += 1) {
-          var expr = list2[i2];
-          c(expr, st, "Expression");
-        }
-      };
-      base.TemplateLiteral = function(node, st, c) {
-        for (var i2 = 0, list2 = node.quasis; i2 < list2.length; i2 += 1) {
-          var quasi = list2[i2];
-          c(quasi, st);
-        }
-        for (var i$1 = 0, list$1 = node.expressions; i$1 < list$1.length; i$1 += 1) {
-          var expr = list$1[i$1];
-          c(expr, st, "Expression");
-        }
-      };
-      base.TemplateElement = ignore;
-      base.UnaryExpression = base.UpdateExpression = function(node, st, c) {
-        c(node.argument, st, "Expression");
-      };
-      base.BinaryExpression = base.LogicalExpression = function(node, st, c) {
-        c(node.left, st, "Expression");
-        c(node.right, st, "Expression");
-      };
-      base.AssignmentExpression = base.AssignmentPattern = function(node, st, c) {
-        c(node.left, st, "Pattern");
-        c(node.right, st, "Expression");
-      };
-      base.ConditionalExpression = function(node, st, c) {
-        c(node.test, st, "Expression");
-        c(node.consequent, st, "Expression");
-        c(node.alternate, st, "Expression");
-      };
-      base.NewExpression = base.CallExpression = function(node, st, c) {
-        c(node.callee, st, "Expression");
-        if (node.arguments) {
-          for (var i2 = 0, list2 = node.arguments; i2 < list2.length; i2 += 1) {
-            var arg = list2[i2];
-            c(arg, st, "Expression");
-          }
-        }
-      };
-      base.MemberExpression = function(node, st, c) {
-        c(node.object, st, "Expression");
-        if (node.computed) {
-          c(node.property, st, "Expression");
-        }
-      };
-      base.ExportNamedDeclaration = base.ExportDefaultDeclaration = function(node, st, c) {
-        if (node.declaration) {
-          c(node.declaration, st, node.type === "ExportNamedDeclaration" || node.declaration.id ? "Statement" : "Expression");
-        }
-        if (node.source) {
-          c(node.source, st, "Expression");
-        }
-        if (node.attributes) {
-          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
-            var attr = list2[i2];
-            c(attr, st);
-          }
-        }
-      };
-      base.ExportAllDeclaration = function(node, st, c) {
-        if (node.exported) {
-          c(node.exported, st);
-        }
-        c(node.source, st, "Expression");
-        if (node.attributes) {
-          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
-            var attr = list2[i2];
-            c(attr, st);
-          }
-        }
-      };
-      base.ImportAttribute = function(node, st, c) {
-        c(node.value, st, "Expression");
-      };
-      base.ImportDeclaration = function(node, st, c) {
-        for (var i2 = 0, list2 = node.specifiers; i2 < list2.length; i2 += 1) {
-          var spec = list2[i2];
-          c(spec, st);
-        }
-        c(node.source, st, "Expression");
-        if (node.attributes) {
-          for (var i$1 = 0, list$1 = node.attributes; i$1 < list$1.length; i$1 += 1) {
-            var attr = list$1[i$1];
-            c(attr, st);
-          }
-        }
-      };
-      base.ImportExpression = function(node, st, c) {
-        c(node.source, st, "Expression");
-        if (node.options) {
-          c(node.options, st, "Expression");
-        }
-      };
-      base.ImportSpecifier = base.ImportDefaultSpecifier = base.ImportNamespaceSpecifier = base.Identifier = base.PrivateIdentifier = base.Literal = ignore;
-      base.TaggedTemplateExpression = function(node, st, c) {
-        c(node.tag, st, "Expression");
-        c(node.quasi, st, "Expression");
-      };
-      base.ClassDeclaration = base.ClassExpression = function(node, st, c) {
-        return c(node, st, "Class");
-      };
-      base.Class = function(node, st, c) {
-        if (node.id) {
-          c(node.id, st, "Pattern");
-        }
-        if (node.superClass) {
-          c(node.superClass, st, "Expression");
-        }
-        c(node.body, st);
-      };
-      base.ClassBody = function(node, st, c) {
-        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
-          var elt = list2[i2];
-          c(elt, st);
-        }
-      };
-      base.MethodDefinition = base.PropertyDefinition = base.Property = function(node, st, c) {
-        if (node.computed) {
-          c(node.key, st, "Expression");
-        }
-        if (node.value) {
-          c(node.value, st, "Expression");
-        }
-      };
-      exports2.ancestor = ancestor;
-      exports2.base = base;
-      exports2.findNodeAfter = findNodeAfter;
-      exports2.findNodeAround = findNodeAround;
-      exports2.findNodeAt = findNodeAt;
-      exports2.findNodeBefore = findNodeBefore;
-      exports2.full = full;
-      exports2.fullAncestor = fullAncestor;
-      exports2.make = make;
-      exports2.recursive = recursive;
-      exports2.simple = simple;
-    }));
-  }
-});
-
-// node_modules/acorn-globals/index.js
-var require_acorn_globals = __commonJS({
-  "node_modules/acorn-globals/index.js"(exports, module) {
-    "use strict";
-    var acorn = require_acorn();
-    var walk = require_walk();
-    function isScope(node) {
-      return node.type === "FunctionExpression" || node.type === "FunctionDeclaration" || node.type === "ArrowFunctionExpression" || node.type === "Program";
-    }
-    function isBlockScope(node) {
-      return node.type === "BlockStatement" || node.type === "SwitchStatement" || isScope(node);
-    }
-    function declaresArguments(node) {
-      return node.type === "FunctionExpression" || node.type === "FunctionDeclaration";
-    }
-    function reallyParse(source, options) {
-      var parseOptions = Object.assign(
-        {
-          allowReturnOutsideFunction: true,
-          allowImportExportEverywhere: true,
-          allowHashBang: true,
-          ecmaVersion: "latest"
-        },
-        options
-      );
-      return acorn.parse(source, parseOptions);
-    }
-    module.exports = findGlobals;
-    module.exports.parse = reallyParse;
-    function findGlobals(source, options) {
-      options = options || {};
-      var globals = [];
-      var ast;
-      if (typeof source === "string") {
-        ast = reallyParse(source, options);
-      } else {
-        ast = source;
-      }
-      if (!(ast && typeof ast === "object" && ast.type === "Program")) {
-        throw new TypeError("Source must be either a string of JavaScript or an acorn AST");
-      }
-      var declareFunction = function(node) {
-        var fn = node;
-        fn.locals = fn.locals || /* @__PURE__ */ Object.create(null);
-        node.params.forEach(function(node2) {
-          declarePattern(node2, fn);
-        });
-        if (node.id) {
-          fn.locals[node.id.name] = true;
-        }
-      };
-      var declareClass = function(node) {
-        node.locals = node.locals || /* @__PURE__ */ Object.create(null);
-        if (node.id) {
-          node.locals[node.id.name] = true;
-        }
-      };
-      var declarePattern = function(node, parent) {
-        switch (node.type) {
-          case "Identifier":
-            parent.locals[node.name] = true;
-            break;
-          case "ObjectPattern":
-            node.properties.forEach(function(node2) {
-              declarePattern(node2.value || node2.argument, parent);
-            });
-            break;
-          case "ArrayPattern":
-            node.elements.forEach(function(node2) {
-              if (node2) declarePattern(node2, parent);
-            });
-            break;
-          case "RestElement":
-            declarePattern(node.argument, parent);
-            break;
-          case "AssignmentPattern":
-            declarePattern(node.left, parent);
-            break;
-          // istanbul ignore next
-          default:
-            throw new Error("Unrecognized pattern type: " + node.type);
-        }
-      };
-      var declareModuleSpecifier = function(node, parents) {
-        ast.locals = ast.locals || /* @__PURE__ */ Object.create(null);
-        ast.locals[node.local.name] = true;
-      };
-      walk.ancestor(ast, {
-        "VariableDeclaration": function(node, parents) {
-          var parent = null;
-          for (var i2 = parents.length - 1; i2 >= 0 && parent === null; i2--) {
-            if (node.kind === "var" ? isScope(parents[i2]) : isBlockScope(parents[i2])) {
-              parent = parents[i2];
-            }
-          }
-          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
-          node.declarations.forEach(function(declaration) {
-            declarePattern(declaration.id, parent);
-          });
-        },
-        "FunctionDeclaration": function(node, parents) {
-          var parent = null;
-          for (var i2 = parents.length - 2; i2 >= 0 && parent === null; i2--) {
-            if (isScope(parents[i2])) {
-              parent = parents[i2];
-            }
-          }
-          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
-          if (node.id) {
-            parent.locals[node.id.name] = true;
-          }
-          declareFunction(node);
-        },
-        "Function": declareFunction,
-        "ClassDeclaration": function(node, parents) {
-          var parent = null;
-          for (var i2 = parents.length - 2; i2 >= 0 && parent === null; i2--) {
-            if (isBlockScope(parents[i2])) {
-              parent = parents[i2];
-            }
-          }
-          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
-          if (node.id) {
-            parent.locals[node.id.name] = true;
-          }
-          declareClass(node);
-        },
-        "Class": declareClass,
-        "TryStatement": function(node) {
-          if (node.handler === null || node.handler.param === null) return;
-          node.handler.locals = node.handler.locals || /* @__PURE__ */ Object.create(null);
-          declarePattern(node.handler.param, node.handler);
-        },
-        "ImportDefaultSpecifier": declareModuleSpecifier,
-        "ImportSpecifier": declareModuleSpecifier,
-        "ImportNamespaceSpecifier": declareModuleSpecifier
-      });
-      function identifier(node, parents) {
-        var name = node.name;
-        if (name === "undefined") return;
-        for (var i2 = 0; i2 < parents.length; i2++) {
-          if (name === "arguments" && declaresArguments(parents[i2])) {
-            return;
-          }
-          if (parents[i2].locals && name in parents[i2].locals) {
-            return;
-          }
-        }
-        node.parents = parents.slice();
-        globals.push(node);
-      }
-      walk.ancestor(ast, {
-        "VariablePattern": identifier,
-        "Identifier": identifier,
-        "ThisExpression": function(node, parents) {
-          for (var i2 = 0; i2 < parents.length; i2++) {
-            var parent = parents[i2];
-            if (parent.type === "FunctionExpression" || parent.type === "FunctionDeclaration") {
-              return;
-            }
-            if (parent.type === "PropertyDefinition" && parents[i2 + 1] === parent.value) {
-              return;
-            }
-          }
-          node.parents = parents.slice();
-          globals.push(node);
-        }
-      });
-      var groupedGlobals = /* @__PURE__ */ Object.create(null);
-      globals.forEach(function(node) {
-        var name = node.type === "ThisExpression" ? "this" : node.name;
-        groupedGlobals[name] = groupedGlobals[name] || [];
-        groupedGlobals[name].push(node);
-      });
-      return Object.keys(groupedGlobals).sort().map(function(name) {
-        return { name, nodes: groupedGlobals[name] };
-      });
-    }
-  }
-});
-
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS({
   "node_modules/ajv/dist/compile/codegen/code.js"(exports) {
@@ -13815,6 +7418,6403 @@ var require__ = __commonJS({
   }
 });
 
+// node_modules/acorn/dist/acorn.js
+var require_acorn = __commonJS({
+  "node_modules/acorn/dist/acorn.js"(exports, module) {
+    (function(global, factory) {
+      typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory(global.acorn = {}));
+    })(exports, (function(exports2) {
+      "use strict";
+      var astralIdentifierCodes2 = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
+      var astralIdentifierStartCodes2 = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 8, 70, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 57, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 200, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 261, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 110, 18, 195, 2637, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7381, 42, 31, 98, 114, 8702, 3, 2, 6, 2, 1, 2, 290, 16, 0, 30, 2, 3, 0, 15, 3, 9, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 339, 3, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 30, 7, 5, 262, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4381, 3, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489];
+      var nonASCIIidentifierChars2 = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B55-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1ADD\u1AE0-\u1AEB\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
+      var nonASCIIidentifierStartChars2 = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0560-\u0588\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088F\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5C\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDC-\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7DC\uA7F1-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC";
+      var reservedWords2 = {
+        3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
+        5: "class enum extends super const export import",
+        6: "enum",
+        strict: "implements interface let package private protected public static yield",
+        strictBind: "eval arguments"
+      };
+      var ecma5AndLessKeywords2 = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
+      var keywords$12 = {
+        5: ecma5AndLessKeywords2,
+        "5module": ecma5AndLessKeywords2 + " export import",
+        6: ecma5AndLessKeywords2 + " const class extends export import super"
+      };
+      var keywordRelationalOperator2 = /^in(stanceof)?$/;
+      var nonASCIIidentifierStart2 = new RegExp("[" + nonASCIIidentifierStartChars2 + "]");
+      var nonASCIIidentifier2 = new RegExp("[" + nonASCIIidentifierStartChars2 + nonASCIIidentifierChars2 + "]");
+      function isInAstralSet2(code, set) {
+        var pos = 65536;
+        for (var i3 = 0; i3 < set.length; i3 += 2) {
+          pos += set[i3];
+          if (pos > code) {
+            return false;
+          }
+          pos += set[i3 + 1];
+          if (pos >= code) {
+            return true;
+          }
+        }
+        return false;
+      }
+      function isIdentifierStart2(code, astral) {
+        if (code < 65) {
+          return code === 36;
+        }
+        if (code < 91) {
+          return true;
+        }
+        if (code < 97) {
+          return code === 95;
+        }
+        if (code < 123) {
+          return true;
+        }
+        if (code <= 65535) {
+          return code >= 170 && nonASCIIidentifierStart2.test(String.fromCharCode(code));
+        }
+        if (astral === false) {
+          return false;
+        }
+        return isInAstralSet2(code, astralIdentifierStartCodes2);
+      }
+      function isIdentifierChar2(code, astral) {
+        if (code < 48) {
+          return code === 36;
+        }
+        if (code < 58) {
+          return true;
+        }
+        if (code < 65) {
+          return false;
+        }
+        if (code < 91) {
+          return true;
+        }
+        if (code < 97) {
+          return code === 95;
+        }
+        if (code < 123) {
+          return true;
+        }
+        if (code <= 65535) {
+          return code >= 170 && nonASCIIidentifier2.test(String.fromCharCode(code));
+        }
+        if (astral === false) {
+          return false;
+        }
+        return isInAstralSet2(code, astralIdentifierStartCodes2) || isInAstralSet2(code, astralIdentifierCodes2);
+      }
+      var TokenType3 = function TokenType4(label, conf) {
+        if (conf === void 0) conf = {};
+        this.label = label;
+        this.keyword = conf.keyword;
+        this.beforeExpr = !!conf.beforeExpr;
+        this.startsExpr = !!conf.startsExpr;
+        this.isLoop = !!conf.isLoop;
+        this.isAssign = !!conf.isAssign;
+        this.prefix = !!conf.prefix;
+        this.postfix = !!conf.postfix;
+        this.binop = conf.binop || null;
+        this.updateContext = null;
+      };
+      function binop2(name, prec) {
+        return new TokenType3(name, { beforeExpr: true, binop: prec });
+      }
+      var beforeExpr2 = { beforeExpr: true }, startsExpr2 = { startsExpr: true };
+      var keywords2 = {};
+      function kw2(name, options) {
+        if (options === void 0) options = {};
+        options.keyword = name;
+        return keywords2[name] = new TokenType3(name, options);
+      }
+      var types$12 = {
+        num: new TokenType3("num", startsExpr2),
+        regexp: new TokenType3("regexp", startsExpr2),
+        string: new TokenType3("string", startsExpr2),
+        name: new TokenType3("name", startsExpr2),
+        privateId: new TokenType3("privateId", startsExpr2),
+        eof: new TokenType3("eof"),
+        // Punctuation token types.
+        bracketL: new TokenType3("[", { beforeExpr: true, startsExpr: true }),
+        bracketR: new TokenType3("]"),
+        braceL: new TokenType3("{", { beforeExpr: true, startsExpr: true }),
+        braceR: new TokenType3("}"),
+        parenL: new TokenType3("(", { beforeExpr: true, startsExpr: true }),
+        parenR: new TokenType3(")"),
+        comma: new TokenType3(",", beforeExpr2),
+        semi: new TokenType3(";", beforeExpr2),
+        colon: new TokenType3(":", beforeExpr2),
+        dot: new TokenType3("."),
+        question: new TokenType3("?", beforeExpr2),
+        questionDot: new TokenType3("?."),
+        arrow: new TokenType3("=>", beforeExpr2),
+        template: new TokenType3("template"),
+        invalidTemplate: new TokenType3("invalidTemplate"),
+        ellipsis: new TokenType3("...", beforeExpr2),
+        backQuote: new TokenType3("`", startsExpr2),
+        dollarBraceL: new TokenType3("${", { beforeExpr: true, startsExpr: true }),
+        // Operators. These carry several kinds of properties to help the
+        // parser use them properly (the presence of these properties is
+        // what categorizes them as operators).
+        //
+        // `binop`, when present, specifies that this operator is a binary
+        // operator, and will refer to its precedence.
+        //
+        // `prefix` and `postfix` mark the operator as a prefix or postfix
+        // unary operator.
+        //
+        // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
+        // binary operators with a very low precedence, that should result
+        // in AssignmentExpression nodes.
+        eq: new TokenType3("=", { beforeExpr: true, isAssign: true }),
+        assign: new TokenType3("_=", { beforeExpr: true, isAssign: true }),
+        incDec: new TokenType3("++/--", { prefix: true, postfix: true, startsExpr: true }),
+        prefix: new TokenType3("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
+        logicalOR: binop2("||", 1),
+        logicalAND: binop2("&&", 2),
+        bitwiseOR: binop2("|", 3),
+        bitwiseXOR: binop2("^", 4),
+        bitwiseAND: binop2("&", 5),
+        equality: binop2("==/!=/===/!==", 6),
+        relational: binop2("</>/<=/>=", 7),
+        bitShift: binop2("<</>>/>>>", 8),
+        plusMin: new TokenType3("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
+        modulo: binop2("%", 10),
+        star: binop2("*", 10),
+        slash: binop2("/", 10),
+        starstar: new TokenType3("**", { beforeExpr: true }),
+        coalesce: binop2("??", 1),
+        // Keyword token types.
+        _break: kw2("break"),
+        _case: kw2("case", beforeExpr2),
+        _catch: kw2("catch"),
+        _continue: kw2("continue"),
+        _debugger: kw2("debugger"),
+        _default: kw2("default", beforeExpr2),
+        _do: kw2("do", { isLoop: true, beforeExpr: true }),
+        _else: kw2("else", beforeExpr2),
+        _finally: kw2("finally"),
+        _for: kw2("for", { isLoop: true }),
+        _function: kw2("function", startsExpr2),
+        _if: kw2("if"),
+        _return: kw2("return", beforeExpr2),
+        _switch: kw2("switch"),
+        _throw: kw2("throw", beforeExpr2),
+        _try: kw2("try"),
+        _var: kw2("var"),
+        _const: kw2("const"),
+        _while: kw2("while", { isLoop: true }),
+        _with: kw2("with"),
+        _new: kw2("new", { beforeExpr: true, startsExpr: true }),
+        _this: kw2("this", startsExpr2),
+        _super: kw2("super", startsExpr2),
+        _class: kw2("class", startsExpr2),
+        _extends: kw2("extends", beforeExpr2),
+        _export: kw2("export"),
+        _import: kw2("import", startsExpr2),
+        _null: kw2("null", startsExpr2),
+        _true: kw2("true", startsExpr2),
+        _false: kw2("false", startsExpr2),
+        _in: kw2("in", { beforeExpr: true, binop: 7 }),
+        _instanceof: kw2("instanceof", { beforeExpr: true, binop: 7 }),
+        _typeof: kw2("typeof", { beforeExpr: true, prefix: true, startsExpr: true }),
+        _void: kw2("void", { beforeExpr: true, prefix: true, startsExpr: true }),
+        _delete: kw2("delete", { beforeExpr: true, prefix: true, startsExpr: true })
+      };
+      var lineBreak2 = /\r\n?|\n|\u2028|\u2029/;
+      var lineBreakG2 = new RegExp(lineBreak2.source, "g");
+      function isNewLine2(code) {
+        return code === 10 || code === 13 || code === 8232 || code === 8233;
+      }
+      function nextLineBreak2(code, from, end) {
+        if (end === void 0) end = code.length;
+        for (var i3 = from; i3 < end; i3++) {
+          var next = code.charCodeAt(i3);
+          if (isNewLine2(next)) {
+            return i3 < end - 1 && next === 13 && code.charCodeAt(i3 + 1) === 10 ? i3 + 2 : i3 + 1;
+          }
+        }
+        return -1;
+      }
+      var nonASCIIwhitespace2 = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
+      var skipWhiteSpace2 = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+      var ref2 = Object.prototype;
+      var hasOwnProperty2 = ref2.hasOwnProperty;
+      var toString2 = ref2.toString;
+      var hasOwn2 = Object.hasOwn || (function(obj, propName) {
+        return hasOwnProperty2.call(obj, propName);
+      });
+      var isArray2 = Array.isArray || (function(obj) {
+        return toString2.call(obj) === "[object Array]";
+      });
+      var regexpCache2 = /* @__PURE__ */ Object.create(null);
+      function wordsRegexp2(words) {
+        return regexpCache2[words] || (regexpCache2[words] = new RegExp("^(?:" + words.replace(/ /g, "|") + ")$"));
+      }
+      function codePointToString2(code) {
+        if (code <= 65535) {
+          return String.fromCharCode(code);
+        }
+        code -= 65536;
+        return String.fromCharCode((code >> 10) + 55296, (code & 1023) + 56320);
+      }
+      var loneSurrogate2 = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/;
+      var Position3 = function Position4(line, col) {
+        this.line = line;
+        this.column = col;
+      };
+      Position3.prototype.offset = function offset2(n) {
+        return new Position3(this.line, this.column + n);
+      };
+      var SourceLocation3 = function SourceLocation4(p, start, end) {
+        this.start = start;
+        this.end = end;
+        if (p.sourceFile !== null) {
+          this.source = p.sourceFile;
+        }
+      };
+      function getLineInfo2(input, offset2) {
+        for (var line = 1, cur = 0; ; ) {
+          var nextBreak = nextLineBreak2(input, cur, offset2);
+          if (nextBreak < 0) {
+            return new Position3(line, offset2 - cur);
+          }
+          ++line;
+          cur = nextBreak;
+        }
+      }
+      var defaultOptions2 = {
+        // `ecmaVersion` indicates the ECMAScript version to parse. Must be
+        // either 3, 5, 6 (or 2015), 7 (2016), 8 (2017), 9 (2018), 10
+        // (2019), 11 (2020), 12 (2021), 13 (2022), 14 (2023), or `"latest"`
+        // (the latest version the library supports). This influences
+        // support for strict mode, the set of reserved words, and support
+        // for new syntax features.
+        ecmaVersion: null,
+        // `sourceType` indicates the mode the code should be parsed in.
+        // Can be either `"script"`, `"module"` or `"commonjs"`. This influences global
+        // strict mode and parsing of `import` and `export` declarations.
+        sourceType: "script",
+        // When set to true, enable strict parsing mode even if `sourceType`
+        // is `"script"`.
+        strict: false,
+        // `onInsertedSemicolon` can be a callback that will be called when
+        // a semicolon is automatically inserted. It will be passed the
+        // position of the inserted semicolon as an offset, and if
+        // `locations` is enabled, it is given the location as a `{line,
+        // column}` object as second argument.
+        onInsertedSemicolon: null,
+        // `onTrailingComma` is similar to `onInsertedSemicolon`, but for
+        // trailing commas.
+        onTrailingComma: null,
+        // By default, reserved words are only enforced if ecmaVersion >= 5.
+        // Set `allowReserved` to a boolean value to explicitly turn this on
+        // an off. When this option has the value "never", reserved words
+        // and keywords can also not be used as property names.
+        allowReserved: null,
+        // When enabled, a return at the top level is not considered an
+        // error.
+        allowReturnOutsideFunction: false,
+        // When enabled, import/export statements are not constrained to
+        // appearing at the top of the program, and an import.meta expression
+        // in a script isn't considered an error.
+        allowImportExportEverywhere: false,
+        // By default, await identifiers are allowed to appear at the top-level scope only if ecmaVersion >= 2022.
+        // When enabled, await identifiers are allowed to appear at the top-level scope,
+        // but they are still not allowed in non-async functions.
+        allowAwaitOutsideFunction: null,
+        // When enabled, super identifiers are not constrained to
+        // appearing in methods and do not raise an error when they appear elsewhere.
+        allowSuperOutsideMethod: null,
+        // When enabled, hashbang directive in the beginning of file is
+        // allowed and treated as a line comment. Enabled by default when
+        // `ecmaVersion` >= 2023.
+        allowHashBang: false,
+        // By default, the parser will verify that private properties are
+        // only used in places where they are valid and have been declared.
+        // Set this to false to turn such checks off.
+        checkPrivateFields: true,
+        // When `locations` is on, `loc` properties holding objects with
+        // `start` and `end` properties in `{line, column}` form (with
+        // line being 1-based and column 0-based) will be attached to the
+        // nodes.
+        locations: false,
+        // A function can be passed as `onToken` option, which will
+        // cause Acorn to call that function with object in the same
+        // format as tokens returned from `tokenizer().getToken()`. Note
+        // that you are not allowed to call the parser from the
+        // callback—that will corrupt its internal state.
+        onToken: null,
+        // A function can be passed as `onComment` option, which will
+        // cause Acorn to call that function with `(block, text, start,
+        // end)` parameters whenever a comment is skipped. `block` is a
+        // boolean indicating whether this is a block (`/* */`) comment,
+        // `text` is the content of the comment, and `start` and `end` are
+        // character offsets that denote the start and end of the comment.
+        // When the `locations` option is on, two more parameters are
+        // passed, the full `{line, column}` locations of the start and
+        // end of the comments. Note that you are not allowed to call the
+        // parser from the callback—that will corrupt its internal state.
+        // When this option has an array as value, objects representing the
+        // comments are pushed to it.
+        onComment: null,
+        // Nodes have their start and end characters offsets recorded in
+        // `start` and `end` properties (directly on the node, rather than
+        // the `loc` object, which holds line/column data. To also add a
+        // [semi-standardized][range] `range` property holding a `[start,
+        // end]` array with the same numbers, set the `ranges` option to
+        // `true`.
+        //
+        // [range]: https://bugzilla.mozilla.org/show_bug.cgi?id=745678
+        ranges: false,
+        // It is possible to parse multiple files into a single AST by
+        // passing the tree produced by parsing the first file as
+        // `program` option in subsequent parses. This will add the
+        // toplevel forms of the parsed file to the `Program` (top) node
+        // of an existing parse tree.
+        program: null,
+        // When `locations` is on, you can pass this to record the source
+        // file in every node's `loc` object.
+        sourceFile: null,
+        // This value, if given, is stored in every node, whether
+        // `locations` is on or off.
+        directSourceFile: null,
+        // When enabled, parenthesized expressions are represented by
+        // (non-standard) ParenthesizedExpression nodes
+        preserveParens: false
+      };
+      var warnedAboutEcmaVersion2 = false;
+      function getOptions2(opts) {
+        var options = {};
+        for (var opt in defaultOptions2) {
+          options[opt] = opts && hasOwn2(opts, opt) ? opts[opt] : defaultOptions2[opt];
+        }
+        if (options.ecmaVersion === "latest") {
+          options.ecmaVersion = 1e8;
+        } else if (options.ecmaVersion == null) {
+          if (!warnedAboutEcmaVersion2 && typeof console === "object" && console.warn) {
+            warnedAboutEcmaVersion2 = true;
+            console.warn("Since Acorn 8.0.0, options.ecmaVersion is required.\nDefaulting to 2020, but this will stop working in the future.");
+          }
+          options.ecmaVersion = 11;
+        } else if (options.ecmaVersion >= 2015) {
+          options.ecmaVersion -= 2009;
+        }
+        if (options.allowReserved == null) {
+          options.allowReserved = options.ecmaVersion < 5;
+        }
+        if (!opts || opts.allowHashBang == null) {
+          options.allowHashBang = options.ecmaVersion >= 14;
+        }
+        if (isArray2(options.onToken)) {
+          var tokens = options.onToken;
+          options.onToken = function(token) {
+            return tokens.push(token);
+          };
+        }
+        if (isArray2(options.onComment)) {
+          options.onComment = pushComment2(options, options.onComment);
+        }
+        if (options.sourceType === "commonjs" && options.allowAwaitOutsideFunction) {
+          throw new Error("Cannot use allowAwaitOutsideFunction with sourceType: commonjs");
+        }
+        return options;
+      }
+      function pushComment2(options, array) {
+        return function(block, text, start, end, startLoc, endLoc) {
+          var comment = {
+            type: block ? "Block" : "Line",
+            value: text,
+            start,
+            end
+          };
+          if (options.locations) {
+            comment.loc = new SourceLocation3(this, startLoc, endLoc);
+          }
+          if (options.ranges) {
+            comment.range = [start, end];
+          }
+          array.push(comment);
+        };
+      }
+      var SCOPE_TOP2 = 1, SCOPE_FUNCTION2 = 2, SCOPE_ASYNC2 = 4, SCOPE_GENERATOR2 = 8, SCOPE_ARROW2 = 16, SCOPE_SIMPLE_CATCH2 = 32, SCOPE_SUPER2 = 64, SCOPE_DIRECT_SUPER2 = 128, SCOPE_CLASS_STATIC_BLOCK2 = 256, SCOPE_CLASS_FIELD_INIT2 = 512, SCOPE_SWITCH2 = 1024, SCOPE_VAR2 = SCOPE_TOP2 | SCOPE_FUNCTION2 | SCOPE_CLASS_STATIC_BLOCK2;
+      function functionFlags2(async, generator) {
+        return SCOPE_FUNCTION2 | (async ? SCOPE_ASYNC2 : 0) | (generator ? SCOPE_GENERATOR2 : 0);
+      }
+      var BIND_NONE2 = 0, BIND_VAR2 = 1, BIND_LEXICAL2 = 2, BIND_FUNCTION2 = 3, BIND_SIMPLE_CATCH2 = 4, BIND_OUTSIDE2 = 5;
+      var Parser3 = function Parser4(options, input, startPos) {
+        this.options = options = getOptions2(options);
+        this.sourceFile = options.sourceFile;
+        this.keywords = wordsRegexp2(keywords$12[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
+        var reserved = "";
+        if (options.allowReserved !== true) {
+          reserved = reservedWords2[options.ecmaVersion >= 6 ? 6 : options.ecmaVersion === 5 ? 5 : 3];
+          if (options.sourceType === "module") {
+            reserved += " await";
+          }
+        }
+        this.reservedWords = wordsRegexp2(reserved);
+        var reservedStrict = (reserved ? reserved + " " : "") + reservedWords2.strict;
+        this.reservedWordsStrict = wordsRegexp2(reservedStrict);
+        this.reservedWordsStrictBind = wordsRegexp2(reservedStrict + " " + reservedWords2.strictBind);
+        this.input = String(input);
+        this.containsEsc = false;
+        if (startPos) {
+          this.pos = startPos;
+          this.lineStart = this.input.lastIndexOf("\n", startPos - 1) + 1;
+          this.curLine = this.input.slice(0, this.lineStart).split(lineBreak2).length;
+        } else {
+          this.pos = this.lineStart = 0;
+          this.curLine = 1;
+        }
+        this.type = types$12.eof;
+        this.value = null;
+        this.start = this.end = this.pos;
+        this.startLoc = this.endLoc = this.curPosition();
+        this.lastTokEndLoc = this.lastTokStartLoc = null;
+        this.lastTokStart = this.lastTokEnd = this.pos;
+        this.context = this.initialContext();
+        this.exprAllowed = true;
+        this.inModule = options.sourceType === "module";
+        this.strict = this.inModule || options.strict === true || this.strictDirective(this.pos);
+        this.potentialArrowAt = -1;
+        this.potentialArrowInForAwait = false;
+        this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
+        this.labels = [];
+        this.undefinedExports = /* @__PURE__ */ Object.create(null);
+        if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!") {
+          this.skipLineComment(2);
+        }
+        this.scopeStack = [];
+        this.enterScope(
+          this.options.sourceType === "commonjs" ? SCOPE_FUNCTION2 : SCOPE_TOP2
+        );
+        this.regexpState = null;
+        this.privateNameStack = [];
+      };
+      var prototypeAccessors2 = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
+      Parser3.prototype.parse = function parse5() {
+        var this$1$1 = this;
+        var node = this.options.program || this.startNode();
+        this.nextToken();
+        return this.catchStackOverflow(function() {
+          return this$1$1.parseTopLevel(node);
+        });
+      };
+      prototypeAccessors2.inFunction.get = function() {
+        return (this.currentVarScope().flags & SCOPE_FUNCTION2) > 0;
+      };
+      prototypeAccessors2.inGenerator.get = function() {
+        return (this.currentVarScope().flags & SCOPE_GENERATOR2) > 0;
+      };
+      prototypeAccessors2.inAsync.get = function() {
+        return (this.currentVarScope().flags & SCOPE_ASYNC2) > 0;
+      };
+      prototypeAccessors2.canAwait.get = function() {
+        for (var i3 = this.scopeStack.length - 1; i3 >= 0; i3--) {
+          var ref3 = this.scopeStack[i3];
+          var flags = ref3.flags;
+          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2)) {
+            return false;
+          }
+          if (flags & SCOPE_FUNCTION2) {
+            return (flags & SCOPE_ASYNC2) > 0;
+          }
+        }
+        return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+      };
+      prototypeAccessors2.allowReturn.get = function() {
+        if (this.inFunction) {
+          return true;
+        }
+        if (this.options.allowReturnOutsideFunction && this.currentVarScope().flags & SCOPE_TOP2) {
+          return true;
+        }
+        return false;
+      };
+      prototypeAccessors2.allowSuper.get = function() {
+        var ref3 = this.currentThisScope();
+        var flags = ref3.flags;
+        return (flags & SCOPE_SUPER2) > 0 || this.options.allowSuperOutsideMethod;
+      };
+      prototypeAccessors2.allowDirectSuper.get = function() {
+        return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER2) > 0;
+      };
+      prototypeAccessors2.treatFunctionsAsVar.get = function() {
+        return this.treatFunctionsAsVarInScope(this.currentScope());
+      };
+      prototypeAccessors2.allowNewDotTarget.get = function() {
+        for (var i3 = this.scopeStack.length - 1; i3 >= 0; i3--) {
+          var ref3 = this.scopeStack[i3];
+          var flags = ref3.flags;
+          if (flags & (SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_CLASS_FIELD_INIT2) || flags & SCOPE_FUNCTION2 && !(flags & SCOPE_ARROW2)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      prototypeAccessors2.allowUsing.get = function() {
+        var ref3 = this.currentScope();
+        var flags = ref3.flags;
+        if (flags & SCOPE_SWITCH2) {
+          return false;
+        }
+        if (!this.inModule && flags & SCOPE_TOP2) {
+          return false;
+        }
+        return true;
+      };
+      prototypeAccessors2.inClassStaticBlock.get = function() {
+        return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK2) > 0;
+      };
+      Parser3.extend = function extend2() {
+        var plugins = [], len = arguments.length;
+        while (len--) plugins[len] = arguments[len];
+        var cls = this;
+        for (var i3 = 0; i3 < plugins.length; i3++) {
+          cls = plugins[i3](cls);
+        }
+        return cls;
+      };
+      Parser3.parse = function parse5(input, options) {
+        return new this(options, input).parse();
+      };
+      Parser3.parseExpressionAt = function parseExpressionAt3(input, pos, options) {
+        var parser = new this(options, input, pos);
+        parser.nextToken();
+        return parser.parseExpression();
+      };
+      Parser3.tokenizer = function tokenizer3(input, options) {
+        return new this(options, input);
+      };
+      Object.defineProperties(Parser3.prototype, prototypeAccessors2);
+      var pp$92 = Parser3.prototype;
+      var literal2 = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
+      pp$92.strictDirective = function(start) {
+        if (this.options.ecmaVersion < 5) {
+          return false;
+        }
+        for (; ; ) {
+          skipWhiteSpace2.lastIndex = start;
+          start += skipWhiteSpace2.exec(this.input)[0].length;
+          var match = literal2.exec(this.input.slice(start));
+          if (!match) {
+            return false;
+          }
+          if ((match[1] || match[2]) === "use strict") {
+            skipWhiteSpace2.lastIndex = start + match[0].length;
+            var spaceAfter = skipWhiteSpace2.exec(this.input), end = spaceAfter.index + spaceAfter[0].length;
+            var next = this.input.charAt(end);
+            return next === ";" || next === "}" || lineBreak2.test(spaceAfter[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(next) || next === "!" && this.input.charAt(end + 1) === "=");
+          }
+          start += match[0].length;
+          skipWhiteSpace2.lastIndex = start;
+          start += skipWhiteSpace2.exec(this.input)[0].length;
+          if (this.input[start] === ";") {
+            start++;
+          }
+        }
+      };
+      pp$92.eat = function(type) {
+        if (this.type === type) {
+          this.next();
+          return true;
+        } else {
+          return false;
+        }
+      };
+      pp$92.isContextual = function(name) {
+        return this.type === types$12.name && this.value === name && !this.containsEsc;
+      };
+      pp$92.eatContextual = function(name) {
+        if (!this.isContextual(name)) {
+          return false;
+        }
+        this.next();
+        return true;
+      };
+      pp$92.catchStackOverflow = function(f) {
+        try {
+          return f();
+        } catch (e) {
+          if (e instanceof Error && (/\bstack\b.*\b(exceeded|overflow)\b/i.test(e.message) || /\btoo much recursion\b/i.test(e.message))) {
+            this.raise(this.start, "Not enough stack space to parse input");
+          } else {
+            throw e;
+          }
+        }
+      };
+      pp$92.expectContextual = function(name) {
+        if (!this.eatContextual(name)) {
+          this.unexpected();
+        }
+      };
+      pp$92.canInsertSemicolon = function() {
+        return this.type === types$12.eof || this.type === types$12.braceR || lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+      };
+      pp$92.insertSemicolon = function() {
+        if (this.canInsertSemicolon()) {
+          if (this.options.onInsertedSemicolon) {
+            this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc);
+          }
+          return true;
+        }
+      };
+      pp$92.semicolon = function() {
+        if (!this.eat(types$12.semi) && !this.insertSemicolon()) {
+          this.unexpected();
+        }
+      };
+      pp$92.afterTrailingComma = function(tokType, notNext) {
+        if (this.type === tokType) {
+          if (this.options.onTrailingComma) {
+            this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc);
+          }
+          if (!notNext) {
+            this.next();
+          }
+          return true;
+        }
+      };
+      pp$92.expect = function(type) {
+        this.eat(type) || this.unexpected();
+      };
+      pp$92.unexpected = function(pos) {
+        this.raise(pos != null ? pos : this.start, "Unexpected token");
+      };
+      var DestructuringErrors3 = function DestructuringErrors4() {
+        this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+      };
+      pp$92.checkPatternErrors = function(refDestructuringErrors, isAssign) {
+        if (!refDestructuringErrors) {
+          return;
+        }
+        if (refDestructuringErrors.trailingComma > -1) {
+          this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element");
+        }
+        var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
+        if (parens > -1) {
+          this.raiseRecoverable(parens, isAssign ? "Assigning to rvalue" : "Parenthesized pattern");
+        }
+      };
+      pp$92.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
+        if (!refDestructuringErrors) {
+          return false;
+        }
+        var shorthandAssign = refDestructuringErrors.shorthandAssign;
+        var doubleProto = refDestructuringErrors.doubleProto;
+        if (!andThrow) {
+          return shorthandAssign >= 0 || doubleProto >= 0;
+        }
+        if (shorthandAssign >= 0) {
+          this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns");
+        }
+        if (doubleProto >= 0) {
+          this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property");
+        }
+      };
+      pp$92.checkYieldAwaitInDefaultParams = function() {
+        if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos)) {
+          this.raise(this.yieldPos, "Yield expression cannot be a default value");
+        }
+        if (this.awaitPos) {
+          this.raise(this.awaitPos, "Await expression cannot be a default value");
+        }
+      };
+      pp$92.isSimpleAssignTarget = function(expr) {
+        if (expr.type === "ParenthesizedExpression") {
+          return this.isSimpleAssignTarget(expr.expression);
+        }
+        return expr.type === "Identifier" || expr.type === "MemberExpression";
+      };
+      var pp$82 = Parser3.prototype;
+      pp$82.parseTopLevel = function(node) {
+        var exports$1 = /* @__PURE__ */ Object.create(null);
+        if (!node.body) {
+          node.body = [];
+        }
+        while (this.type !== types$12.eof) {
+          var stmt = this.parseStatement(null, true, exports$1);
+          node.body.push(stmt);
+        }
+        if (this.inModule) {
+          for (var i3 = 0, list3 = Object.keys(this.undefinedExports); i3 < list3.length; i3 += 1) {
+            var name = list3[i3];
+            this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+          }
+        }
+        this.adaptDirectivePrologue(node.body);
+        this.next();
+        node.sourceType = this.options.sourceType === "commonjs" ? "script" : this.options.sourceType;
+        return this.finishNode(node, "Program");
+      };
+      var loopLabel2 = { kind: "loop" }, switchLabel2 = { kind: "switch" };
+      pp$82.isLet = function(context) {
+        if (this.options.ecmaVersion < 6 || !this.isContextual("let")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length, nextCh = this.fullCharCodeAt(next);
+        if (nextCh === 91 || nextCh === 92) {
+          return true;
+        }
+        if (context) {
+          return false;
+        }
+        if (nextCh === 123) {
+          return true;
+        }
+        if (isIdentifierStart2(nextCh)) {
+          var start = next;
+          do {
+            next += nextCh <= 65535 ? 1 : 2;
+          } while (isIdentifierChar2(nextCh = this.fullCharCodeAt(next)));
+          if (nextCh === 92) {
+            return true;
+          }
+          var ident = this.input.slice(start, next);
+          if (!keywordRelationalOperator2.test(ident)) {
+            return true;
+          }
+        }
+        return false;
+      };
+      pp$82.isAsyncFunction = function() {
+        if (this.options.ecmaVersion < 8 || !this.isContextual("async")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length, after;
+        return !lineBreak2.test(this.input.slice(this.pos, next)) && this.input.slice(next, next + 8) === "function" && (next + 8 === this.input.length || !(isIdentifierChar2(after = this.fullCharCodeAt(next + 8)) || after === 92));
+      };
+      pp$82.isUsingKeyword = function(isAwaitUsing, isFor) {
+        if (this.options.ecmaVersion < 17 || !this.isContextual(isAwaitUsing ? "await" : "using")) {
+          return false;
+        }
+        skipWhiteSpace2.lastIndex = this.pos;
+        var skip = skipWhiteSpace2.exec(this.input);
+        var next = this.pos + skip[0].length;
+        if (lineBreak2.test(this.input.slice(this.pos, next))) {
+          return false;
+        }
+        if (isAwaitUsing) {
+          var usingEndPos = next + 5, after;
+          if (this.input.slice(next, usingEndPos) !== "using" || usingEndPos === this.input.length || isIdentifierChar2(after = this.fullCharCodeAt(usingEndPos)) || after === 92) {
+            return false;
+          }
+          skipWhiteSpace2.lastIndex = usingEndPos;
+          var skipAfterUsing = skipWhiteSpace2.exec(this.input);
+          next = usingEndPos + skipAfterUsing[0].length;
+          if (skipAfterUsing && lineBreak2.test(this.input.slice(usingEndPos, next))) {
+            return false;
+          }
+        }
+        var ch = this.fullCharCodeAt(next);
+        if (!isIdentifierStart2(ch) && ch !== 92) {
+          return false;
+        }
+        var idStart = next;
+        do {
+          next += ch <= 65535 ? 1 : 2;
+        } while (isIdentifierChar2(ch = this.fullCharCodeAt(next)));
+        if (ch === 92) {
+          return true;
+        }
+        var id = this.input.slice(idStart, next);
+        if (keywordRelationalOperator2.test(id)) {
+          return false;
+        }
+        if (isFor && !isAwaitUsing && id === "of") {
+          skipWhiteSpace2.lastIndex = next;
+          var skipAfterOf = skipWhiteSpace2.exec(this.input);
+          next = next + skipAfterOf[0].length;
+          if (this.input.charCodeAt(next) !== 61 || // Check for ==, === and => operators
+          (ch = this.input.charCodeAt(next + 1)) === 61 || ch === 62) {
+            return false;
+          }
+        }
+        return true;
+      };
+      pp$82.isAwaitUsing = function(isFor) {
+        return this.isUsingKeyword(true, isFor);
+      };
+      pp$82.isUsing = function(isFor) {
+        return this.isUsingKeyword(false, isFor);
+      };
+      pp$82.parseStatement = function(context, topLevel, exports$1) {
+        var starttype = this.type, node = this.startNode(), kind;
+        if (this.isLet(context)) {
+          starttype = types$12._var;
+          kind = "let";
+        }
+        switch (starttype) {
+          case types$12._break:
+          case types$12._continue:
+            return this.parseBreakContinueStatement(node, starttype.keyword);
+          case types$12._debugger:
+            return this.parseDebuggerStatement(node);
+          case types$12._do:
+            return this.parseDoStatement(node);
+          case types$12._for:
+            return this.parseForStatement(node);
+          case types$12._function:
+            if (context && (this.strict || context !== "if" && context !== "label") && this.options.ecmaVersion >= 6) {
+              this.unexpected();
+            }
+            return this.parseFunctionStatement(node, false, !context);
+          case types$12._class:
+            if (context) {
+              this.unexpected();
+            }
+            return this.parseClass(node, true);
+          case types$12._if:
+            return this.parseIfStatement(node);
+          case types$12._return:
+            return this.parseReturnStatement(node);
+          case types$12._switch:
+            return this.parseSwitchStatement(node);
+          case types$12._throw:
+            return this.parseThrowStatement(node);
+          case types$12._try:
+            return this.parseTryStatement(node);
+          case types$12._const:
+          case types$12._var:
+            kind = kind || this.value;
+            if (context && kind !== "var") {
+              this.unexpected();
+            }
+            return this.parseVarStatement(node, kind);
+          case types$12._while:
+            return this.parseWhileStatement(node);
+          case types$12._with:
+            return this.parseWithStatement(node);
+          case types$12.braceL:
+            return this.parseBlock(true, node);
+          case types$12.semi:
+            return this.parseEmptyStatement(node);
+          case types$12._export:
+          case types$12._import:
+            if (this.options.ecmaVersion > 10 && starttype === types$12._import) {
+              skipWhiteSpace2.lastIndex = this.pos;
+              var skip = skipWhiteSpace2.exec(this.input);
+              var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+              if (nextCh === 40 || nextCh === 46) {
+                return this.parseExpressionStatement(node, this.parseExpression());
+              }
+            }
+            if (!this.options.allowImportExportEverywhere) {
+              if (!topLevel) {
+                this.raise(this.start, "'import' and 'export' may only appear at the top level");
+              }
+              if (!this.inModule) {
+                this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'");
+              }
+            }
+            return starttype === types$12._import ? this.parseImport(node) : this.parseExport(node, exports$1);
+          // If the statement does not start with a statement keyword or a
+          // brace, it's an ExpressionStatement or LabeledStatement. We
+          // simply start parsing an expression, and afterwards, if the
+          // next token is a colon and the expression was a simple
+          // Identifier node, we switch to interpreting it as a label.
+          default:
+            if (this.isAsyncFunction()) {
+              if (context) {
+                this.unexpected();
+              }
+              this.next();
+              return this.parseFunctionStatement(node, true, !context);
+            }
+            var usingKind = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+            if (usingKind) {
+              if (!this.allowUsing) {
+                this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement");
+              }
+              if (context) {
+                this.raise(this.start, "Using declaration is not allowed in single-statement positions");
+              }
+              if (usingKind === "await using") {
+                if (!this.canAwait) {
+                  this.raise(this.start, "Await using cannot appear outside of async function");
+                }
+                this.next();
+              }
+              this.next();
+              this.parseVar(node, false, usingKind);
+              this.semicolon();
+              return this.finishNode(node, "VariableDeclaration");
+            }
+            var maybeName = this.value, expr = this.parseExpression();
+            if (starttype === types$12.name && expr.type === "Identifier" && this.eat(types$12.colon)) {
+              return this.parseLabeledStatement(node, maybeName, expr, context);
+            } else {
+              return this.parseExpressionStatement(node, expr);
+            }
+        }
+      };
+      pp$82.parseBreakContinueStatement = function(node, keyword) {
+        var isBreak = keyword === "break";
+        this.next();
+        if (this.eat(types$12.semi) || this.insertSemicolon()) {
+          node.label = null;
+        } else if (this.type !== types$12.name) {
+          this.unexpected();
+        } else {
+          node.label = this.parseIdent();
+          this.semicolon();
+        }
+        var i3 = 0;
+        for (; i3 < this.labels.length; ++i3) {
+          var lab = this.labels[i3];
+          if (node.label == null || lab.name === node.label.name) {
+            if (lab.kind != null && (isBreak || lab.kind === "loop")) {
+              break;
+            }
+            if (node.label && isBreak) {
+              break;
+            }
+          }
+        }
+        if (i3 === this.labels.length) {
+          this.raise(node.start, "Unsyntactic " + keyword);
+        }
+        return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
+      };
+      pp$82.parseDebuggerStatement = function(node) {
+        this.next();
+        this.semicolon();
+        return this.finishNode(node, "DebuggerStatement");
+      };
+      pp$82.parseDoStatement = function(node) {
+        this.next();
+        this.labels.push(loopLabel2);
+        node.body = this.parseStatement("do");
+        this.labels.pop();
+        this.expect(types$12._while);
+        node.test = this.parseParenExpression();
+        if (this.options.ecmaVersion >= 6) {
+          this.eat(types$12.semi);
+        } else {
+          this.semicolon();
+        }
+        return this.finishNode(node, "DoWhileStatement");
+      };
+      pp$82.parseForStatement = function(node) {
+        this.next();
+        var awaitAt = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+        this.labels.push(loopLabel2);
+        this.enterScope(0);
+        this.expect(types$12.parenL);
+        if (this.type === types$12.semi) {
+          if (awaitAt > -1) {
+            this.unexpected(awaitAt);
+          }
+          return this.parseFor(node, null);
+        }
+        var isLet = this.isLet();
+        if (this.type === types$12._var || this.type === types$12._const || isLet) {
+          var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
+          this.next();
+          this.parseVar(init$1, true, kind);
+          this.finishNode(init$1, "VariableDeclaration");
+          return this.parseForAfterInit(node, init$1, awaitAt);
+        }
+        var startsWithLet = this.isContextual("let"), isForOf = false;
+        var usingKind = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+        if (usingKind) {
+          var init$2 = this.startNode();
+          this.next();
+          if (usingKind === "await using") {
+            if (!this.canAwait) {
+              this.raise(this.start, "Await using cannot appear outside of async function");
+            }
+            this.next();
+          }
+          this.parseVar(init$2, true, usingKind);
+          this.finishNode(init$2, "VariableDeclaration");
+          return this.parseForAfterInit(node, init$2, awaitAt);
+        }
+        var containsEsc = this.containsEsc;
+        var refDestructuringErrors = new DestructuringErrors3();
+        var initPos = this.start;
+        var init = awaitAt > -1 ? this.parseExprSubscripts(refDestructuringErrors, "await") : this.parseExpression(true, refDestructuringErrors);
+        if (this.type === types$12._in || (isForOf = this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+          if (awaitAt > -1) {
+            if (this.type === types$12._in) {
+              this.unexpected(awaitAt);
+            }
+            node.await = true;
+          } else if (isForOf && this.options.ecmaVersion >= 8) {
+            if (init.start === initPos && !containsEsc && init.type === "Identifier" && init.name === "async") {
+              this.unexpected();
+            } else if (this.options.ecmaVersion >= 9) {
+              node.await = false;
+            }
+          }
+          if (startsWithLet && isForOf) {
+            this.raise(init.start, "The left-hand side of a for-of loop may not start with 'let'.");
+          }
+          this.toAssignable(init, false, refDestructuringErrors);
+          this.checkLValPattern(init);
+          return this.parseForIn(node, init);
+        } else {
+          this.checkExpressionErrors(refDestructuringErrors, true);
+        }
+        if (awaitAt > -1) {
+          this.unexpected(awaitAt);
+        }
+        return this.parseFor(node, init);
+      };
+      pp$82.parseForAfterInit = function(node, init, awaitAt) {
+        if ((this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && init.declarations.length === 1) {
+          if (this.type === types$12._in) {
+            if ((init.kind === "using" || init.kind === "await using") && !init.declarations[0].init) {
+              this.raise(this.start, "Using declaration is not allowed in for-in loops");
+            }
+            if (this.options.ecmaVersion >= 9 && awaitAt > -1) {
+              this.unexpected(awaitAt);
+            }
+          } else if (this.options.ecmaVersion >= 9) {
+            node.await = awaitAt > -1;
+          }
+          return this.parseForIn(node, init);
+        }
+        if (awaitAt > -1) {
+          this.unexpected(awaitAt);
+        }
+        return this.parseFor(node, init);
+      };
+      pp$82.parseFunctionStatement = function(node, isAsync, declarationPosition) {
+        this.next();
+        return this.parseFunction(node, FUNC_STATEMENT2 | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT2), false, isAsync);
+      };
+      pp$82.parseIfStatement = function(node) {
+        this.next();
+        node.test = this.parseParenExpression();
+        node.consequent = this.parseStatement("if");
+        node.alternate = this.eat(types$12._else) ? this.parseStatement("if") : null;
+        return this.finishNode(node, "IfStatement");
+      };
+      pp$82.parseReturnStatement = function(node) {
+        if (!this.allowReturn) {
+          this.raise(this.start, "'return' outside of function");
+        }
+        this.next();
+        if (this.eat(types$12.semi) || this.insertSemicolon()) {
+          node.argument = null;
+        } else {
+          node.argument = this.parseExpression();
+          this.semicolon();
+        }
+        return this.finishNode(node, "ReturnStatement");
+      };
+      pp$82.parseSwitchStatement = function(node) {
+        this.next();
+        node.discriminant = this.parseParenExpression();
+        node.cases = [];
+        this.expect(types$12.braceL);
+        this.labels.push(switchLabel2);
+        this.enterScope(SCOPE_SWITCH2);
+        var cur;
+        for (var sawDefault = false; this.type !== types$12.braceR; ) {
+          if (this.type === types$12._case || this.type === types$12._default) {
+            var isCase = this.type === types$12._case;
+            if (cur) {
+              this.finishNode(cur, "SwitchCase");
+            }
+            node.cases.push(cur = this.startNode());
+            cur.consequent = [];
+            this.next();
+            if (isCase) {
+              cur.test = this.parseExpression();
+            } else {
+              if (sawDefault) {
+                this.raiseRecoverable(this.lastTokStart, "Multiple default clauses");
+              }
+              sawDefault = true;
+              cur.test = null;
+            }
+            this.expect(types$12.colon);
+          } else {
+            if (!cur) {
+              this.unexpected();
+            }
+            cur.consequent.push(this.parseStatement(null));
+          }
+        }
+        this.exitScope();
+        if (cur) {
+          this.finishNode(cur, "SwitchCase");
+        }
+        this.next();
+        this.labels.pop();
+        return this.finishNode(node, "SwitchStatement");
+      };
+      pp$82.parseThrowStatement = function(node) {
+        this.next();
+        if (lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) {
+          this.raise(this.lastTokEnd, "Illegal newline after throw");
+        }
+        node.argument = this.parseExpression();
+        this.semicolon();
+        return this.finishNode(node, "ThrowStatement");
+      };
+      var empty$12 = [];
+      pp$82.parseCatchClauseParam = function() {
+        var param = this.parseBindingAtom();
+        var simple = param.type === "Identifier";
+        this.enterScope(simple ? SCOPE_SIMPLE_CATCH2 : 0);
+        this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH2 : BIND_LEXICAL2);
+        this.expect(types$12.parenR);
+        return param;
+      };
+      pp$82.parseTryStatement = function(node) {
+        this.next();
+        node.block = this.parseBlock();
+        node.handler = null;
+        if (this.type === types$12._catch) {
+          var clause = this.startNode();
+          this.next();
+          if (this.eat(types$12.parenL)) {
+            clause.param = this.parseCatchClauseParam();
+          } else {
+            if (this.options.ecmaVersion < 10) {
+              this.unexpected();
+            }
+            clause.param = null;
+            this.enterScope(0);
+          }
+          clause.body = this.parseBlock(false);
+          this.exitScope();
+          node.handler = this.finishNode(clause, "CatchClause");
+        }
+        node.finalizer = this.eat(types$12._finally) ? this.parseBlock() : null;
+        if (!node.handler && !node.finalizer) {
+          this.raise(node.start, "Missing catch or finally clause");
+        }
+        return this.finishNode(node, "TryStatement");
+      };
+      pp$82.parseVarStatement = function(node, kind, allowMissingInitializer) {
+        this.next();
+        this.parseVar(node, false, kind, allowMissingInitializer);
+        this.semicolon();
+        return this.finishNode(node, "VariableDeclaration");
+      };
+      pp$82.parseWhileStatement = function(node) {
+        this.next();
+        node.test = this.parseParenExpression();
+        this.labels.push(loopLabel2);
+        node.body = this.parseStatement("while");
+        this.labels.pop();
+        return this.finishNode(node, "WhileStatement");
+      };
+      pp$82.parseWithStatement = function(node) {
+        if (this.strict) {
+          this.raise(this.start, "'with' in strict mode");
+        }
+        this.next();
+        node.object = this.parseParenExpression();
+        node.body = this.parseStatement("with");
+        return this.finishNode(node, "WithStatement");
+      };
+      pp$82.parseEmptyStatement = function(node) {
+        this.next();
+        return this.finishNode(node, "EmptyStatement");
+      };
+      pp$82.parseLabeledStatement = function(node, maybeName, expr, context) {
+        for (var i$1 = 0, list3 = this.labels; i$1 < list3.length; i$1 += 1) {
+          var label = list3[i$1];
+          if (label.name === maybeName) {
+            this.raise(expr.start, "Label '" + maybeName + "' is already declared");
+          }
+        }
+        var kind = this.type.isLoop ? "loop" : this.type === types$12._switch ? "switch" : null;
+        for (var i3 = this.labels.length - 1; i3 >= 0; i3--) {
+          var label$1 = this.labels[i3];
+          if (label$1.statementStart === node.start) {
+            label$1.statementStart = this.start;
+            label$1.kind = kind;
+          } else {
+            break;
+          }
+        }
+        this.labels.push({ name: maybeName, kind, statementStart: this.start });
+        node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
+        this.labels.pop();
+        node.label = expr;
+        return this.finishNode(node, "LabeledStatement");
+      };
+      pp$82.parseExpressionStatement = function(node, expr) {
+        node.expression = expr;
+        this.semicolon();
+        return this.finishNode(node, "ExpressionStatement");
+      };
+      pp$82.parseBlock = function(createNewLexicalScope, node, exitStrict) {
+        if (createNewLexicalScope === void 0) createNewLexicalScope = true;
+        if (node === void 0) node = this.startNode();
+        node.body = [];
+        this.expect(types$12.braceL);
+        if (createNewLexicalScope) {
+          this.enterScope(0);
+        }
+        while (this.type !== types$12.braceR) {
+          var stmt = this.parseStatement(null);
+          node.body.push(stmt);
+        }
+        if (exitStrict) {
+          this.strict = false;
+        }
+        this.next();
+        if (createNewLexicalScope) {
+          this.exitScope();
+        }
+        return this.finishNode(node, "BlockStatement");
+      };
+      pp$82.parseFor = function(node, init) {
+        node.init = init;
+        this.expect(types$12.semi);
+        node.test = this.type === types$12.semi ? null : this.parseExpression();
+        this.expect(types$12.semi);
+        node.update = this.type === types$12.parenR ? null : this.parseExpression();
+        this.expect(types$12.parenR);
+        node.body = this.parseStatement("for");
+        this.exitScope();
+        this.labels.pop();
+        return this.finishNode(node, "ForStatement");
+      };
+      pp$82.parseForIn = function(node, init) {
+        var isForIn = this.type === types$12._in;
+        this.next();
+        if (init.type === "VariableDeclaration" && init.declarations[0].init != null && (!isForIn || this.options.ecmaVersion < 8 || this.strict || init.kind !== "var" || init.declarations[0].id.type !== "Identifier")) {
+          this.raise(
+            init.start,
+            (isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer"
+          );
+        }
+        node.left = init;
+        node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
+        this.expect(types$12.parenR);
+        node.body = this.parseStatement("for");
+        this.exitScope();
+        this.labels.pop();
+        return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement");
+      };
+      pp$82.parseVar = function(node, isFor, kind, allowMissingInitializer) {
+        node.declarations = [];
+        node.kind = kind;
+        for (; ; ) {
+          var decl = this.startNode();
+          this.parseVarId(decl, kind);
+          if (this.eat(types$12.eq)) {
+            decl.init = this.parseMaybeAssign(isFor);
+          } else if (!allowMissingInitializer && kind === "const" && !(this.type === types$12._in || this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+            this.unexpected();
+          } else if (!allowMissingInitializer && (kind === "using" || kind === "await using") && this.options.ecmaVersion >= 17 && this.type !== types$12._in && !this.isContextual("of")) {
+            this.raise(this.lastTokEnd, "Missing initializer in " + kind + " declaration");
+          } else if (!allowMissingInitializer && decl.id.type !== "Identifier" && !(isFor && (this.type === types$12._in || this.isContextual("of")))) {
+            this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
+          } else {
+            decl.init = null;
+          }
+          node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
+          if (!this.eat(types$12.comma)) {
+            break;
+          }
+        }
+        return node;
+      };
+      pp$82.parseVarId = function(decl, kind) {
+        decl.id = kind === "using" || kind === "await using" ? this.parseIdent() : this.parseBindingAtom();
+        this.checkLValPattern(decl.id, kind === "var" ? BIND_VAR2 : BIND_LEXICAL2, false);
+      };
+      var FUNC_STATEMENT2 = 1, FUNC_HANGING_STATEMENT2 = 2, FUNC_NULLABLE_ID2 = 4;
+      pp$82.parseFunction = function(node, statement, allowExpressionBody, isAsync, forInit) {
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
+          if (this.type === types$12.star && statement & FUNC_HANGING_STATEMENT2) {
+            this.unexpected();
+          }
+          node.generator = this.eat(types$12.star);
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        if (statement & FUNC_STATEMENT2) {
+          node.id = statement & FUNC_NULLABLE_ID2 && this.type !== types$12.name ? null : this.parseIdent();
+          if (node.id && !(statement & FUNC_HANGING_STATEMENT2)) {
+            this.checkLValSimple(node.id, this.strict || node.generator || node.async ? this.treatFunctionsAsVar ? BIND_VAR2 : BIND_LEXICAL2 : BIND_FUNCTION2);
+          }
+        }
+        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        this.enterScope(functionFlags2(node.async, node.generator));
+        if (!(statement & FUNC_STATEMENT2)) {
+          node.id = this.type === types$12.name ? this.parseIdent() : null;
+        }
+        this.parseFunctionParams(node);
+        this.parseFunctionBody(node, allowExpressionBody, false, forInit);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, statement & FUNC_STATEMENT2 ? "FunctionDeclaration" : "FunctionExpression");
+      };
+      pp$82.parseFunctionParams = function(node) {
+        this.expect(types$12.parenL);
+        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
+        this.checkYieldAwaitInDefaultParams();
+      };
+      pp$82.parseClass = function(node, isStatement) {
+        this.next();
+        var oldStrict = this.strict;
+        this.strict = true;
+        this.parseClassId(node, isStatement);
+        this.parseClassSuper(node);
+        var privateNameMap = this.enterClassBody();
+        var classBody = this.startNode();
+        var hadConstructor = false;
+        classBody.body = [];
+        this.expect(types$12.braceL);
+        while (this.type !== types$12.braceR) {
+          var element = this.parseClassElement(node.superClass !== null);
+          if (element) {
+            classBody.body.push(element);
+            if (element.type === "MethodDefinition" && element.kind === "constructor") {
+              if (hadConstructor) {
+                this.raiseRecoverable(element.start, "Duplicate constructor in the same class");
+              }
+              hadConstructor = true;
+            } else if (element.key && element.key.type === "PrivateIdentifier" && isPrivateNameConflicted2(privateNameMap, element)) {
+              this.raiseRecoverable(element.key.start, "Identifier '#" + element.key.name + "' has already been declared");
+            }
+          }
+        }
+        this.strict = oldStrict;
+        this.next();
+        node.body = this.finishNode(classBody, "ClassBody");
+        this.exitClassBody();
+        return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
+      };
+      pp$82.parseClassElement = function(constructorAllowsSuper) {
+        if (this.eat(types$12.semi)) {
+          return null;
+        }
+        var ecmaVersion3 = this.options.ecmaVersion;
+        var node = this.startNode();
+        var keyName = "";
+        var isGenerator = false;
+        var isAsync = false;
+        var kind = "method";
+        var isStatic = false;
+        if (this.eatContextual("static")) {
+          if (ecmaVersion3 >= 13 && this.eat(types$12.braceL)) {
+            this.parseClassStaticBlock(node);
+            return node;
+          }
+          if (this.isClassElementNameStart() || this.type === types$12.star) {
+            isStatic = true;
+          } else {
+            keyName = "static";
+          }
+        }
+        node.static = isStatic;
+        if (!keyName && ecmaVersion3 >= 8 && this.eatContextual("async")) {
+          if ((this.isClassElementNameStart() || this.type === types$12.star) && !this.canInsertSemicolon()) {
+            isAsync = true;
+          } else {
+            keyName = "async";
+          }
+        }
+        if (!keyName && (ecmaVersion3 >= 9 || !isAsync) && this.eat(types$12.star)) {
+          isGenerator = true;
+        }
+        if (!keyName && !isAsync && !isGenerator) {
+          var lastValue = this.value;
+          if (this.eatContextual("get") || this.eatContextual("set")) {
+            if (this.isClassElementNameStart()) {
+              kind = lastValue;
+            } else {
+              keyName = lastValue;
+            }
+          }
+        }
+        if (keyName) {
+          node.computed = false;
+          node.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc);
+          node.key.name = keyName;
+          this.finishNode(node.key, "Identifier");
+        } else {
+          this.parseClassElementName(node);
+        }
+        if (ecmaVersion3 < 13 || this.type === types$12.parenL || kind !== "method" || isGenerator || isAsync) {
+          var isConstructor = !node.static && checkKeyName2(node, "constructor");
+          var allowsDirectSuper = isConstructor && constructorAllowsSuper;
+          if (isConstructor && kind !== "method") {
+            this.raise(node.key.start, "Constructor can't have get/set modifier");
+          }
+          node.kind = isConstructor ? "constructor" : kind;
+          this.parseClassMethod(node, isGenerator, isAsync, allowsDirectSuper);
+        } else {
+          this.parseClassField(node);
+        }
+        return node;
+      };
+      pp$82.isClassElementNameStart = function() {
+        return this.type === types$12.name || this.type === types$12.privateId || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword;
+      };
+      pp$82.parseClassElementName = function(element) {
+        if (this.type === types$12.privateId) {
+          if (this.value === "constructor") {
+            this.raise(this.start, "Classes can't have an element named '#constructor'");
+          }
+          element.computed = false;
+          element.key = this.parsePrivateIdent();
+        } else {
+          this.parsePropertyName(element);
+        }
+      };
+      pp$82.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
+        var key = method.key;
+        if (method.kind === "constructor") {
+          if (isGenerator) {
+            this.raise(key.start, "Constructor can't be a generator");
+          }
+          if (isAsync) {
+            this.raise(key.start, "Constructor can't be an async method");
+          }
+        } else if (method.static && checkKeyName2(method, "prototype")) {
+          this.raise(key.start, "Classes may not have a static property named prototype");
+        }
+        var value = method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
+        if (method.kind === "get" && value.params.length !== 0) {
+          this.raiseRecoverable(value.start, "getter should have no params");
+        }
+        if (method.kind === "set" && value.params.length !== 1) {
+          this.raiseRecoverable(value.start, "setter should have exactly one param");
+        }
+        if (method.kind === "set" && value.params[0].type === "RestElement") {
+          this.raiseRecoverable(value.params[0].start, "Setter cannot use rest params");
+        }
+        return this.finishNode(method, "MethodDefinition");
+      };
+      pp$82.parseClassField = function(field) {
+        if (checkKeyName2(field, "constructor")) {
+          this.raise(field.key.start, "Classes can't have a field named 'constructor'");
+        } else if (field.static && checkKeyName2(field, "prototype")) {
+          this.raise(field.key.start, "Classes can't have a static field named 'prototype'");
+        }
+        if (this.eat(types$12.eq)) {
+          this.enterScope(SCOPE_CLASS_FIELD_INIT2 | SCOPE_SUPER2);
+          field.value = this.parseMaybeAssign();
+          this.exitScope();
+        } else {
+          field.value = null;
+        }
+        this.semicolon();
+        return this.finishNode(field, "PropertyDefinition");
+      };
+      pp$82.parseClassStaticBlock = function(node) {
+        node.body = [];
+        var oldLabels = this.labels;
+        this.labels = [];
+        this.enterScope(SCOPE_CLASS_STATIC_BLOCK2 | SCOPE_SUPER2);
+        while (this.type !== types$12.braceR) {
+          var stmt = this.parseStatement(null);
+          node.body.push(stmt);
+        }
+        this.next();
+        this.exitScope();
+        this.labels = oldLabels;
+        return this.finishNode(node, "StaticBlock");
+      };
+      pp$82.parseClassId = function(node, isStatement) {
+        if (this.type === types$12.name) {
+          node.id = this.parseIdent();
+          if (isStatement) {
+            this.checkLValSimple(node.id, BIND_LEXICAL2, false);
+          }
+        } else {
+          if (isStatement === true) {
+            this.unexpected();
+          }
+          node.id = null;
+        }
+      };
+      pp$82.parseClassSuper = function(node) {
+        node.superClass = this.eat(types$12._extends) ? this.parseExprSubscripts(null, false) : null;
+      };
+      pp$82.enterClassBody = function() {
+        var element = { declared: /* @__PURE__ */ Object.create(null), used: [] };
+        this.privateNameStack.push(element);
+        return element.declared;
+      };
+      pp$82.exitClassBody = function() {
+        var ref3 = this.privateNameStack.pop();
+        var declared = ref3.declared;
+        var used = ref3.used;
+        if (!this.options.checkPrivateFields) {
+          return;
+        }
+        var len = this.privateNameStack.length;
+        var parent = len === 0 ? null : this.privateNameStack[len - 1];
+        for (var i3 = 0; i3 < used.length; ++i3) {
+          var id = used[i3];
+          if (!hasOwn2(declared, id.name)) {
+            if (parent) {
+              parent.used.push(id);
+            } else {
+              this.raiseRecoverable(id.start, "Private field '#" + id.name + "' must be declared in an enclosing class");
+            }
+          }
+        }
+      };
+      function isPrivateNameConflicted2(privateNameMap, element) {
+        var name = element.key.name;
+        var curr = privateNameMap[name];
+        var next = "true";
+        if (element.type === "MethodDefinition" && (element.kind === "get" || element.kind === "set")) {
+          next = (element.static ? "s" : "i") + element.kind;
+        }
+        if (curr === "iget" && next === "iset" || curr === "iset" && next === "iget" || curr === "sget" && next === "sset" || curr === "sset" && next === "sget") {
+          privateNameMap[name] = "true";
+          return false;
+        } else if (!curr) {
+          privateNameMap[name] = next;
+          return false;
+        } else {
+          return true;
+        }
+      }
+      function checkKeyName2(node, name) {
+        var computed = node.computed;
+        var key = node.key;
+        return !computed && (key.type === "Identifier" && key.name === name || key.type === "Literal" && key.value === name);
+      }
+      pp$82.parseExportAllDeclaration = function(node, exports$1) {
+        if (this.options.ecmaVersion >= 11) {
+          if (this.eatContextual("as")) {
+            node.exported = this.parseModuleExportName();
+            this.checkExport(exports$1, node.exported, this.lastTokStart);
+          } else {
+            node.exported = null;
+          }
+        }
+        this.expectContextual("from");
+        if (this.type !== types$12.string) {
+          this.unexpected();
+        }
+        node.source = this.parseExprAtom();
+        if (this.options.ecmaVersion >= 16) {
+          node.attributes = this.parseWithClause();
+        }
+        this.semicolon();
+        return this.finishNode(node, "ExportAllDeclaration");
+      };
+      pp$82.parseExport = function(node, exports$1) {
+        this.next();
+        if (this.eat(types$12.star)) {
+          return this.parseExportAllDeclaration(node, exports$1);
+        }
+        if (this.eat(types$12._default)) {
+          this.checkExport(exports$1, "default", this.lastTokStart);
+          node.declaration = this.parseExportDefaultDeclaration();
+          return this.finishNode(node, "ExportDefaultDeclaration");
+        }
+        if (this.shouldParseExportStatement()) {
+          node.declaration = this.parseExportDeclaration(node);
+          if (node.declaration.type === "VariableDeclaration") {
+            this.checkVariableExport(exports$1, node.declaration.declarations);
+          } else {
+            this.checkExport(exports$1, node.declaration.id, node.declaration.id.start);
+          }
+          node.specifiers = [];
+          node.source = null;
+          if (this.options.ecmaVersion >= 16) {
+            node.attributes = [];
+          }
+        } else {
+          node.declaration = null;
+          node.specifiers = this.parseExportSpecifiers(exports$1);
+          if (this.eatContextual("from")) {
+            if (this.type !== types$12.string) {
+              this.unexpected();
+            }
+            node.source = this.parseExprAtom();
+            if (this.options.ecmaVersion >= 16) {
+              node.attributes = this.parseWithClause();
+            }
+          } else {
+            for (var i3 = 0, list3 = node.specifiers; i3 < list3.length; i3 += 1) {
+              var spec = list3[i3];
+              this.checkUnreserved(spec.local);
+              this.checkLocalExport(spec.local);
+              if (spec.local.type === "Literal") {
+                this.raise(spec.local.start, "A string literal cannot be used as an exported binding without `from`.");
+              }
+            }
+            node.source = null;
+            if (this.options.ecmaVersion >= 16) {
+              node.attributes = [];
+            }
+          }
+          this.semicolon();
+        }
+        return this.finishNode(node, "ExportNamedDeclaration");
+      };
+      pp$82.parseExportDeclaration = function(node) {
+        return this.parseStatement(null);
+      };
+      pp$82.parseExportDefaultDeclaration = function() {
+        var isAsync;
+        if (this.type === types$12._function || (isAsync = this.isAsyncFunction())) {
+          var fNode = this.startNode();
+          this.next();
+          if (isAsync) {
+            this.next();
+          }
+          return this.parseFunction(fNode, FUNC_STATEMENT2 | FUNC_NULLABLE_ID2, false, isAsync);
+        } else if (this.type === types$12._class) {
+          var cNode = this.startNode();
+          return this.parseClass(cNode, "nullableID");
+        } else {
+          var declaration = this.parseMaybeAssign();
+          this.semicolon();
+          return declaration;
+        }
+      };
+      pp$82.checkExport = function(exports$1, name, pos) {
+        if (!exports$1) {
+          return;
+        }
+        if (typeof name !== "string") {
+          name = name.type === "Identifier" ? name.name : name.value;
+        }
+        if (hasOwn2(exports$1, name)) {
+          this.raiseRecoverable(pos, "Duplicate export '" + name + "'");
+        }
+        exports$1[name] = true;
+      };
+      pp$82.checkPatternExport = function(exports$1, pat) {
+        var type = pat.type;
+        if (type === "Identifier") {
+          this.checkExport(exports$1, pat, pat.start);
+        } else if (type === "ObjectPattern") {
+          for (var i3 = 0, list3 = pat.properties; i3 < list3.length; i3 += 1) {
+            var prop = list3[i3];
+            this.checkPatternExport(exports$1, prop);
+          }
+        } else if (type === "ArrayPattern") {
+          for (var i$1 = 0, list$1 = pat.elements; i$1 < list$1.length; i$1 += 1) {
+            var elt = list$1[i$1];
+            if (elt) {
+              this.checkPatternExport(exports$1, elt);
+            }
+          }
+        } else if (type === "Property") {
+          this.checkPatternExport(exports$1, pat.value);
+        } else if (type === "AssignmentPattern") {
+          this.checkPatternExport(exports$1, pat.left);
+        } else if (type === "RestElement") {
+          this.checkPatternExport(exports$1, pat.argument);
+        }
+      };
+      pp$82.checkVariableExport = function(exports$1, decls) {
+        if (!exports$1) {
+          return;
+        }
+        for (var i3 = 0, list3 = decls; i3 < list3.length; i3 += 1) {
+          var decl = list3[i3];
+          this.checkPatternExport(exports$1, decl.id);
+        }
+      };
+      pp$82.shouldParseExportStatement = function() {
+        return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+      };
+      pp$82.parseExportSpecifier = function(exports$1) {
+        var node = this.startNode();
+        node.local = this.parseModuleExportName();
+        node.exported = this.eatContextual("as") ? this.parseModuleExportName() : node.local;
+        this.checkExport(
+          exports$1,
+          node.exported,
+          node.exported.start
+        );
+        return this.finishNode(node, "ExportSpecifier");
+      };
+      pp$82.parseExportSpecifiers = function(exports$1) {
+        var nodes = [], first = true;
+        this.expect(types$12.braceL);
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          nodes.push(this.parseExportSpecifier(exports$1));
+        }
+        return nodes;
+      };
+      pp$82.parseImport = function(node) {
+        this.next();
+        if (this.type === types$12.string) {
+          node.specifiers = empty$12;
+          node.source = this.parseExprAtom();
+        } else {
+          node.specifiers = this.parseImportSpecifiers();
+          this.expectContextual("from");
+          node.source = this.type === types$12.string ? this.parseExprAtom() : this.unexpected();
+        }
+        if (this.options.ecmaVersion >= 16) {
+          node.attributes = this.parseWithClause();
+        }
+        this.semicolon();
+        return this.finishNode(node, "ImportDeclaration");
+      };
+      pp$82.parseImportSpecifier = function() {
+        var node = this.startNode();
+        node.imported = this.parseModuleExportName();
+        if (this.eatContextual("as")) {
+          node.local = this.parseIdent();
+        } else {
+          this.checkUnreserved(node.imported);
+          node.local = node.imported;
+        }
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportSpecifier");
+      };
+      pp$82.parseImportDefaultSpecifier = function() {
+        var node = this.startNode();
+        node.local = this.parseIdent();
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportDefaultSpecifier");
+      };
+      pp$82.parseImportNamespaceSpecifier = function() {
+        var node = this.startNode();
+        this.next();
+        this.expectContextual("as");
+        node.local = this.parseIdent();
+        this.checkLValSimple(node.local, BIND_LEXICAL2);
+        return this.finishNode(node, "ImportNamespaceSpecifier");
+      };
+      pp$82.parseImportSpecifiers = function() {
+        var nodes = [], first = true;
+        if (this.type === types$12.name) {
+          nodes.push(this.parseImportDefaultSpecifier());
+          if (!this.eat(types$12.comma)) {
+            return nodes;
+          }
+        }
+        if (this.type === types$12.star) {
+          nodes.push(this.parseImportNamespaceSpecifier());
+          return nodes;
+        }
+        this.expect(types$12.braceL);
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          nodes.push(this.parseImportSpecifier());
+        }
+        return nodes;
+      };
+      pp$82.parseWithClause = function() {
+        var nodes = [];
+        if (!this.eat(types$12._with)) {
+          return nodes;
+        }
+        this.expect(types$12.braceL);
+        var attributeKeys = {};
+        var first = true;
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var attr = this.parseImportAttribute();
+          var keyName = attr.key.type === "Identifier" ? attr.key.name : attr.key.value;
+          if (hasOwn2(attributeKeys, keyName)) {
+            this.raiseRecoverable(attr.key.start, "Duplicate attribute key '" + keyName + "'");
+          }
+          attributeKeys[keyName] = true;
+          nodes.push(attr);
+        }
+        return nodes;
+      };
+      pp$82.parseImportAttribute = function() {
+        var node = this.startNode();
+        node.key = this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+        this.expect(types$12.colon);
+        if (this.type !== types$12.string) {
+          this.unexpected();
+        }
+        node.value = this.parseExprAtom();
+        return this.finishNode(node, "ImportAttribute");
+      };
+      pp$82.parseModuleExportName = function() {
+        if (this.options.ecmaVersion >= 13 && this.type === types$12.string) {
+          var stringLiteral = this.parseLiteral(this.value);
+          if (loneSurrogate2.test(stringLiteral.value)) {
+            this.raise(stringLiteral.start, "An export name cannot include a lone surrogate.");
+          }
+          return stringLiteral;
+        }
+        return this.parseIdent(true);
+      };
+      pp$82.adaptDirectivePrologue = function(statements) {
+        for (var i3 = 0; i3 < statements.length && this.isDirectiveCandidate(statements[i3]); ++i3) {
+          statements[i3].directive = statements[i3].expression.raw.slice(1, -1);
+        }
+      };
+      pp$82.isDirectiveCandidate = function(statement) {
+        return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && // Reject parenthesized strings.
+        (this.input[statement.start] === '"' || this.input[statement.start] === "'");
+      };
+      var pp$72 = Parser3.prototype;
+      pp$72.toAssignable = function(node, isBinding, refDestructuringErrors) {
+        if (this.options.ecmaVersion >= 6 && node) {
+          switch (node.type) {
+            case "Identifier":
+              if (this.inAsync && node.name === "await") {
+                this.raise(node.start, "Cannot use 'await' as identifier inside an async function");
+              }
+              break;
+            case "ObjectPattern":
+            case "ArrayPattern":
+            case "AssignmentPattern":
+            case "RestElement":
+              break;
+            case "ObjectExpression":
+              node.type = "ObjectPattern";
+              if (refDestructuringErrors) {
+                this.checkPatternErrors(refDestructuringErrors, true);
+              }
+              for (var i3 = 0, list3 = node.properties; i3 < list3.length; i3 += 1) {
+                var prop = list3[i3];
+                this.toAssignable(prop, isBinding);
+                if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
+                  this.raise(prop.argument.start, "Unexpected token");
+                }
+              }
+              break;
+            case "Property":
+              if (node.kind !== "init") {
+                this.raise(node.key.start, "Object pattern can't contain getter or setter");
+              }
+              this.toAssignable(node.value, isBinding);
+              break;
+            case "ArrayExpression":
+              node.type = "ArrayPattern";
+              if (refDestructuringErrors) {
+                this.checkPatternErrors(refDestructuringErrors, true);
+              }
+              this.toAssignableList(node.elements, isBinding);
+              break;
+            case "SpreadElement":
+              node.type = "RestElement";
+              this.toAssignable(node.argument, isBinding);
+              if (node.argument.type === "AssignmentPattern") {
+                this.raise(node.argument.start, "Rest elements cannot have a default value");
+              }
+              break;
+            case "AssignmentExpression":
+              if (node.operator !== "=") {
+                this.raise(node.left.end, "Only '=' operator can be used for specifying default value.");
+              }
+              node.type = "AssignmentPattern";
+              delete node.operator;
+              this.toAssignable(node.left, isBinding);
+              break;
+            case "ParenthesizedExpression":
+              this.toAssignable(node.expression, isBinding, refDestructuringErrors);
+              break;
+            case "ChainExpression":
+              this.raiseRecoverable(node.start, "Optional chaining cannot appear in left-hand side");
+              break;
+            case "MemberExpression":
+              if (!isBinding) {
+                break;
+              }
+            default:
+              this.raise(node.start, "Assigning to rvalue");
+          }
+        } else if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        return node;
+      };
+      pp$72.toAssignableList = function(exprList, isBinding) {
+        var end = exprList.length;
+        for (var i3 = 0; i3 < end; i3++) {
+          var elt = exprList[i3];
+          if (elt) {
+            this.toAssignable(elt, isBinding);
+          }
+        }
+        if (end) {
+          var last = exprList[end - 1];
+          if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier") {
+            this.unexpected(last.argument.start);
+          }
+        }
+        return exprList;
+      };
+      pp$72.parseSpread = function(refDestructuringErrors) {
+        var node = this.startNode();
+        this.next();
+        node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+        return this.finishNode(node, "SpreadElement");
+      };
+      pp$72.parseRestBinding = function() {
+        var node = this.startNode();
+        this.next();
+        if (this.options.ecmaVersion === 6 && this.type !== types$12.name) {
+          this.unexpected();
+        }
+        node.argument = this.parseBindingAtom();
+        return this.finishNode(node, "RestElement");
+      };
+      pp$72.parseBindingAtom = function() {
+        if (this.options.ecmaVersion >= 6) {
+          switch (this.type) {
+            case types$12.bracketL:
+              var node = this.startNode();
+              this.next();
+              node.elements = this.parseBindingList(types$12.bracketR, true, true);
+              return this.finishNode(node, "ArrayPattern");
+            case types$12.braceL:
+              return this.parseObj(true);
+          }
+        }
+        return this.parseIdent();
+      };
+      pp$72.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+        var elts = [], first = true;
+        while (!this.eat(close)) {
+          if (first) {
+            first = false;
+          } else {
+            this.expect(types$12.comma);
+          }
+          if (allowEmpty && this.type === types$12.comma) {
+            elts.push(null);
+          } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+            break;
+          } else if (this.type === types$12.ellipsis) {
+            var rest = this.parseRestBinding();
+            this.parseBindingListItem(rest);
+            elts.push(rest);
+            if (this.type === types$12.comma) {
+              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+            }
+            this.expect(close);
+            break;
+          } else {
+            elts.push(this.parseAssignableListItem(allowModifiers));
+          }
+        }
+        return elts;
+      };
+      pp$72.parseAssignableListItem = function(allowModifiers) {
+        var elem = this.parseMaybeDefault(this.start, this.startLoc);
+        this.parseBindingListItem(elem);
+        return elem;
+      };
+      pp$72.parseBindingListItem = function(param) {
+        return param;
+      };
+      pp$72.parseMaybeDefault = function(startPos, startLoc, left) {
+        left = left || this.parseBindingAtom();
+        if (this.options.ecmaVersion < 6 || !this.eat(types$12.eq)) {
+          return left;
+        }
+        var node = this.startNodeAt(startPos, startLoc);
+        node.left = left;
+        node.right = this.parseMaybeAssign();
+        return this.finishNode(node, "AssignmentPattern");
+      };
+      pp$72.checkLValSimple = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        var isBind = bindingType !== BIND_NONE2;
+        switch (expr.type) {
+          case "Identifier":
+            if (this.strict && this.reservedWordsStrictBind.test(expr.name)) {
+              this.raiseRecoverable(expr.start, (isBind ? "Binding " : "Assigning to ") + expr.name + " in strict mode");
+            }
+            if (isBind) {
+              if (bindingType === BIND_LEXICAL2 && expr.name === "let") {
+                this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name");
+              }
+              if (checkClashes) {
+                if (hasOwn2(checkClashes, expr.name)) {
+                  this.raiseRecoverable(expr.start, "Argument name clash");
+                }
+                checkClashes[expr.name] = true;
+              }
+              if (bindingType !== BIND_OUTSIDE2) {
+                this.declareName(expr.name, bindingType, expr.start);
+              }
+            }
+            break;
+          case "ChainExpression":
+            this.raiseRecoverable(expr.start, "Optional chaining cannot appear in left-hand side");
+            break;
+          case "MemberExpression":
+            if (isBind) {
+              this.raiseRecoverable(expr.start, "Binding member expression");
+            }
+            break;
+          case "ParenthesizedExpression":
+            if (isBind) {
+              this.raiseRecoverable(expr.start, "Binding parenthesized expression");
+            }
+            return this.checkLValSimple(expr.expression, bindingType, checkClashes);
+          default:
+            this.raise(expr.start, (isBind ? "Binding" : "Assigning to") + " rvalue");
+        }
+      };
+      pp$72.checkLValPattern = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        switch (expr.type) {
+          case "ObjectPattern":
+            for (var i3 = 0, list3 = expr.properties; i3 < list3.length; i3 += 1) {
+              var prop = list3[i3];
+              this.checkLValInnerPattern(prop, bindingType, checkClashes);
+            }
+            break;
+          case "ArrayPattern":
+            for (var i$1 = 0, list$1 = expr.elements; i$1 < list$1.length; i$1 += 1) {
+              var elem = list$1[i$1];
+              if (elem) {
+                this.checkLValInnerPattern(elem, bindingType, checkClashes);
+              }
+            }
+            break;
+          default:
+            this.checkLValSimple(expr, bindingType, checkClashes);
+        }
+      };
+      pp$72.checkLValInnerPattern = function(expr, bindingType, checkClashes) {
+        if (bindingType === void 0) bindingType = BIND_NONE2;
+        switch (expr.type) {
+          case "Property":
+            this.checkLValInnerPattern(expr.value, bindingType, checkClashes);
+            break;
+          case "AssignmentPattern":
+            this.checkLValPattern(expr.left, bindingType, checkClashes);
+            break;
+          case "RestElement":
+            this.checkLValPattern(expr.argument, bindingType, checkClashes);
+            break;
+          default:
+            this.checkLValPattern(expr, bindingType, checkClashes);
+        }
+      };
+      var TokContext3 = function TokContext4(token, isExpr, preserveSpace, override, generator) {
+        this.token = token;
+        this.isExpr = !!isExpr;
+        this.preserveSpace = !!preserveSpace;
+        this.override = override;
+        this.generator = !!generator;
+      };
+      var types2 = {
+        b_stat: new TokContext3("{", false),
+        b_expr: new TokContext3("{", true),
+        b_tmpl: new TokContext3("${", false),
+        p_stat: new TokContext3("(", false),
+        p_expr: new TokContext3("(", true),
+        q_tmpl: new TokContext3("`", true, true, function(p) {
+          return p.tryReadTemplateToken();
+        }),
+        f_stat: new TokContext3("function", false),
+        f_expr: new TokContext3("function", true),
+        f_expr_gen: new TokContext3("function", true, false, null, true),
+        f_gen: new TokContext3("function", false, false, null, true)
+      };
+      var pp$62 = Parser3.prototype;
+      pp$62.initialContext = function() {
+        return [types2.b_stat];
+      };
+      pp$62.curContext = function() {
+        return this.context[this.context.length - 1];
+      };
+      pp$62.braceIsBlock = function(prevType) {
+        var parent = this.curContext();
+        if (parent === types2.f_expr || parent === types2.f_stat) {
+          return true;
+        }
+        if (prevType === types$12.colon && (parent === types2.b_stat || parent === types2.b_expr)) {
+          return !parent.isExpr;
+        }
+        if (prevType === types$12._return || prevType === types$12.name && this.exprAllowed) {
+          return lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+        }
+        if (prevType === types$12._else || prevType === types$12.semi || prevType === types$12.eof || prevType === types$12.parenR || prevType === types$12.arrow) {
+          return true;
+        }
+        if (prevType === types$12.braceL) {
+          return parent === types2.b_stat;
+        }
+        if (prevType === types$12._var || prevType === types$12._const || prevType === types$12.name) {
+          return false;
+        }
+        return !this.exprAllowed;
+      };
+      pp$62.inGeneratorContext = function() {
+        for (var i3 = this.context.length - 1; i3 >= 1; i3--) {
+          var context = this.context[i3];
+          if (context.token === "function") {
+            return context.generator;
+          }
+        }
+        return false;
+      };
+      pp$62.updateContext = function(prevType) {
+        var update, type = this.type;
+        if (type.keyword && prevType === types$12.dot) {
+          this.exprAllowed = false;
+        } else if (update = type.updateContext) {
+          update.call(this, prevType);
+        } else {
+          this.exprAllowed = type.beforeExpr;
+        }
+      };
+      pp$62.overrideContext = function(tokenCtx) {
+        if (this.curContext() !== tokenCtx) {
+          this.context[this.context.length - 1] = tokenCtx;
+        }
+      };
+      types$12.parenR.updateContext = types$12.braceR.updateContext = function() {
+        if (this.context.length === 1) {
+          this.exprAllowed = true;
+          return;
+        }
+        var out = this.context.pop();
+        if (out === types2.b_stat && this.curContext().token === "function") {
+          out = this.context.pop();
+        }
+        this.exprAllowed = !out.isExpr;
+      };
+      types$12.braceL.updateContext = function(prevType) {
+        this.context.push(this.braceIsBlock(prevType) ? types2.b_stat : types2.b_expr);
+        this.exprAllowed = true;
+      };
+      types$12.dollarBraceL.updateContext = function() {
+        this.context.push(types2.b_tmpl);
+        this.exprAllowed = true;
+      };
+      types$12.parenL.updateContext = function(prevType) {
+        var statementParens = prevType === types$12._if || prevType === types$12._for || prevType === types$12._with || prevType === types$12._while;
+        this.context.push(statementParens ? types2.p_stat : types2.p_expr);
+        this.exprAllowed = true;
+      };
+      types$12.incDec.updateContext = function() {
+      };
+      types$12._function.updateContext = types$12._class.updateContext = function(prevType) {
+        if (prevType.beforeExpr && prevType !== types$12._else && !(prevType === types$12.semi && this.curContext() !== types2.p_stat) && !(prevType === types$12._return && lineBreak2.test(this.input.slice(this.lastTokEnd, this.start))) && !((prevType === types$12.colon || prevType === types$12.braceL) && this.curContext() === types2.b_stat)) {
+          this.context.push(types2.f_expr);
+        } else {
+          this.context.push(types2.f_stat);
+        }
+        this.exprAllowed = false;
+      };
+      types$12.colon.updateContext = function() {
+        if (this.curContext().token === "function") {
+          this.context.pop();
+        }
+        this.exprAllowed = true;
+      };
+      types$12.backQuote.updateContext = function() {
+        if (this.curContext() === types2.q_tmpl) {
+          this.context.pop();
+        } else {
+          this.context.push(types2.q_tmpl);
+        }
+        this.exprAllowed = false;
+      };
+      types$12.star.updateContext = function(prevType) {
+        if (prevType === types$12._function) {
+          var index = this.context.length - 1;
+          if (this.context[index] === types2.f_expr) {
+            this.context[index] = types2.f_expr_gen;
+          } else {
+            this.context[index] = types2.f_gen;
+          }
+        }
+        this.exprAllowed = true;
+      };
+      types$12.name.updateContext = function(prevType) {
+        var allowed = false;
+        if (this.options.ecmaVersion >= 6 && prevType !== types$12.dot) {
+          if (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) {
+            allowed = true;
+          }
+        }
+        this.exprAllowed = allowed;
+      };
+      var pp$52 = Parser3.prototype;
+      pp$52.checkPropClash = function(prop, propHash, refDestructuringErrors) {
+        if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
+          return;
+        }
+        if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand)) {
+          return;
+        }
+        var key = prop.key;
+        var name;
+        switch (key.type) {
+          case "Identifier":
+            name = key.name;
+            break;
+          case "Literal":
+            name = String(key.value);
+            break;
+          default:
+            return;
+        }
+        var kind = prop.kind;
+        if (this.options.ecmaVersion >= 6) {
+          if (name === "__proto__" && kind === "init") {
+            if (propHash.proto) {
+              if (refDestructuringErrors) {
+                if (refDestructuringErrors.doubleProto < 0) {
+                  refDestructuringErrors.doubleProto = key.start;
+                }
+              } else {
+                this.raiseRecoverable(key.start, "Redefinition of __proto__ property");
+              }
+            }
+            propHash.proto = true;
+          }
+          return;
+        }
+        name = "$" + name;
+        var other = propHash[name];
+        if (other) {
+          var redefinition;
+          if (kind === "init") {
+            redefinition = this.strict && other.init || other.get || other.set;
+          } else {
+            redefinition = other.init || other[kind];
+          }
+          if (redefinition) {
+            this.raiseRecoverable(key.start, "Redefinition of property");
+          }
+        } else {
+          other = propHash[name] = {
+            init: false,
+            get: false,
+            set: false
+          };
+        }
+        other[kind] = true;
+      };
+      pp$52.parseExpression = function(forInit, refDestructuringErrors) {
+        var this$1$1 = this;
+        return this.catchStackOverflow(function() {
+          var startPos = this$1$1.start, startLoc = this$1$1.startLoc;
+          var expr = this$1$1.parseMaybeAssign(forInit, refDestructuringErrors);
+          if (this$1$1.type === types$12.comma) {
+            var node = this$1$1.startNodeAt(startPos, startLoc);
+            node.expressions = [expr];
+            while (this$1$1.eat(types$12.comma)) {
+              node.expressions.push(this$1$1.parseMaybeAssign(forInit, refDestructuringErrors));
+            }
+            return this$1$1.finishNode(node, "SequenceExpression");
+          }
+          return expr;
+        });
+      };
+      pp$52.parseMaybeAssign = function(forInit, refDestructuringErrors, afterLeftParse) {
+        if (this.isContextual("yield")) {
+          if (this.inGenerator) {
+            return this.parseYield(forInit);
+          } else {
+            this.exprAllowed = false;
+          }
+        }
+        var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldDoubleProto = -1;
+        if (refDestructuringErrors) {
+          oldParenAssign = refDestructuringErrors.parenthesizedAssign;
+          oldTrailingComma = refDestructuringErrors.trailingComma;
+          oldDoubleProto = refDestructuringErrors.doubleProto;
+          refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+        } else {
+          refDestructuringErrors = new DestructuringErrors3();
+          ownDestructuringErrors = true;
+        }
+        var startPos = this.start, startLoc = this.startLoc;
+        if (this.type === types$12.parenL || this.type === types$12.name) {
+          this.potentialArrowAt = this.start;
+          this.potentialArrowInForAwait = forInit === "await";
+        }
+        var left = this.parseMaybeConditional(forInit, refDestructuringErrors);
+        if (afterLeftParse) {
+          left = afterLeftParse.call(this, left, startPos, startLoc);
+        }
+        if (this.type.isAssign) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.operator = this.value;
+          if (this.type === types$12.eq) {
+            left = this.toAssignable(left, false, refDestructuringErrors);
+          }
+          if (!ownDestructuringErrors) {
+            refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = refDestructuringErrors.doubleProto = -1;
+          }
+          if (refDestructuringErrors.shorthandAssign >= left.start) {
+            refDestructuringErrors.shorthandAssign = -1;
+          }
+          if (this.type === types$12.eq) {
+            this.checkLValPattern(left);
+          } else {
+            this.checkLValSimple(left);
+          }
+          node.left = left;
+          this.next();
+          node.right = this.parseMaybeAssign(forInit);
+          if (oldDoubleProto > -1) {
+            refDestructuringErrors.doubleProto = oldDoubleProto;
+          }
+          return this.finishNode(node, "AssignmentExpression");
+        } else {
+          if (ownDestructuringErrors) {
+            this.checkExpressionErrors(refDestructuringErrors, true);
+          }
+        }
+        if (oldParenAssign > -1) {
+          refDestructuringErrors.parenthesizedAssign = oldParenAssign;
+        }
+        if (oldTrailingComma > -1) {
+          refDestructuringErrors.trailingComma = oldTrailingComma;
+        }
+        return left;
+      };
+      pp$52.parseMaybeConditional = function(forInit, refDestructuringErrors) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseExprOps(forInit, refDestructuringErrors);
+        if (this.checkExpressionErrors(refDestructuringErrors)) {
+          return expr;
+        }
+        if (!(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$12.question)) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.test = expr;
+          node.consequent = this.parseMaybeAssign();
+          this.expect(types$12.colon);
+          node.alternate = this.parseMaybeAssign(forInit);
+          return this.finishNode(node, "ConditionalExpression");
+        }
+        return expr;
+      };
+      pp$52.parseExprOps = function(forInit, refDestructuringErrors) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseMaybeUnary(refDestructuringErrors, false, false, forInit);
+        if (this.checkExpressionErrors(refDestructuringErrors)) {
+          return expr;
+        }
+        return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, forInit);
+      };
+      pp$52.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, forInit) {
+        var prec = this.type.binop;
+        if (prec != null && (!forInit || this.type !== types$12._in)) {
+          if (prec > minPrec) {
+            var logical = this.type === types$12.logicalOR || this.type === types$12.logicalAND;
+            var coalesce = this.type === types$12.coalesce;
+            if (coalesce) {
+              prec = types$12.logicalAND.binop;
+            }
+            var op = this.value;
+            this.next();
+            var startPos = this.start, startLoc = this.startLoc;
+            var right = this.parseExprOp(this.parseMaybeUnary(null, false, false, forInit), startPos, startLoc, prec, forInit);
+            var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical || coalesce);
+            if (logical && this.type === types$12.coalesce || coalesce && (this.type === types$12.logicalOR || this.type === types$12.logicalAND)) {
+              this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses");
+            }
+            return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, forInit);
+          }
+        }
+        return left;
+      };
+      pp$52.buildBinary = function(startPos, startLoc, left, right, op, logical) {
+        if (right.type === "PrivateIdentifier") {
+          this.raise(right.start, "Private identifier can only be left side of binary expression");
+        }
+        var node = this.startNodeAt(startPos, startLoc);
+        node.left = left;
+        node.operator = op;
+        node.right = right;
+        return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression");
+      };
+      pp$52.parseMaybeUnary = function(refDestructuringErrors, sawUnary, incDec, forInit) {
+        var startPos = this.start, startLoc = this.startLoc, expr;
+        if (this.isContextual("await") && this.canAwait) {
+          expr = this.parseAwait(forInit);
+          sawUnary = true;
+        } else if (this.type.prefix) {
+          var node = this.startNode(), update = this.type === types$12.incDec;
+          node.operator = this.value;
+          node.prefix = true;
+          this.next();
+          node.argument = this.parseMaybeUnary(null, true, update, forInit);
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          if (update) {
+            this.checkLValSimple(node.argument);
+          } else if (this.strict && node.operator === "delete" && isLocalVariableAccess2(node.argument)) {
+            this.raiseRecoverable(node.start, "Deleting local variable in strict mode");
+          } else if (node.operator === "delete" && isPrivateFieldAccess2(node.argument)) {
+            this.raiseRecoverable(node.start, "Private fields can not be deleted");
+          } else {
+            sawUnary = true;
+          }
+          expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
+        } else if (!sawUnary && this.type === types$12.privateId) {
+          if ((forInit || this.privateNameStack.length === 0) && this.options.checkPrivateFields) {
+            this.unexpected();
+          }
+          expr = this.parsePrivateIdent();
+          if (this.type !== types$12._in) {
+            this.unexpected();
+          }
+        } else {
+          expr = this.parseExprSubscripts(refDestructuringErrors, forInit);
+          if (this.checkExpressionErrors(refDestructuringErrors)) {
+            return expr;
+          }
+          while (this.type.postfix && !this.canInsertSemicolon()) {
+            var node$1 = this.startNodeAt(startPos, startLoc);
+            node$1.operator = this.value;
+            node$1.prefix = false;
+            node$1.argument = expr;
+            this.checkLValSimple(expr);
+            this.next();
+            expr = this.finishNode(node$1, "UpdateExpression");
+          }
+        }
+        if (!incDec && this.eat(types$12.starstar)) {
+          if (sawUnary) {
+            this.unexpected(this.lastTokStart);
+          } else {
+            return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false, false, forInit), "**", false);
+          }
+        } else {
+          return expr;
+        }
+      };
+      function isLocalVariableAccess2(node) {
+        return node.type === "Identifier" || node.type === "ParenthesizedExpression" && isLocalVariableAccess2(node.expression);
+      }
+      function isPrivateFieldAccess2(node) {
+        return node.type === "MemberExpression" && node.property.type === "PrivateIdentifier" || node.type === "ChainExpression" && isPrivateFieldAccess2(node.expression) || node.type === "ParenthesizedExpression" && isPrivateFieldAccess2(node.expression);
+      }
+      pp$52.parseExprSubscripts = function(refDestructuringErrors, forInit) {
+        var startPos = this.start, startLoc = this.startLoc;
+        var expr = this.parseExprAtom(refDestructuringErrors, forInit);
+        if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") {
+          return expr;
+        }
+        var result = this.parseSubscripts(expr, startPos, startLoc, false, forInit);
+        if (refDestructuringErrors && result.type === "MemberExpression") {
+          if (refDestructuringErrors.parenthesizedAssign >= result.start) {
+            refDestructuringErrors.parenthesizedAssign = -1;
+          }
+          if (refDestructuringErrors.parenthesizedBind >= result.start) {
+            refDestructuringErrors.parenthesizedBind = -1;
+          }
+          if (refDestructuringErrors.trailingComma >= result.start) {
+            refDestructuringErrors.trailingComma = -1;
+          }
+        }
+        return result;
+      };
+      pp$52.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
+        var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
+        var optionalChained = false;
+        while (true) {
+          var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+          if (element.optional) {
+            optionalChained = true;
+          }
+          if (element === base || element.type === "ArrowFunctionExpression") {
+            if (optionalChained) {
+              var chainNode = this.startNodeAt(startPos, startLoc);
+              chainNode.expression = element;
+              element = this.finishNode(chainNode, "ChainExpression");
+            }
+            return element;
+          }
+          base = element;
+        }
+      };
+      pp$52.shouldParseAsyncArrow = function() {
+        return !this.canInsertSemicolon() && this.eat(types$12.arrow);
+      };
+      pp$52.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
+        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
+      };
+      pp$52.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+        var optionalSupported = this.options.ecmaVersion >= 11;
+        var optional = optionalSupported && this.eat(types$12.questionDot);
+        if (noCalls && optional) {
+          this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+        }
+        var computed = this.eat(types$12.bracketL);
+        if (computed || optional && this.type !== types$12.parenL && this.type !== types$12.backQuote || this.eat(types$12.dot)) {
+          var node = this.startNodeAt(startPos, startLoc);
+          node.object = base;
+          if (computed) {
+            node.property = this.parseExpression();
+            this.expect(types$12.bracketR);
+          } else if (this.type === types$12.privateId && base.type !== "Super") {
+            node.property = this.parsePrivateIdent();
+          } else {
+            node.property = this.parseIdent(this.options.allowReserved !== "never");
+          }
+          node.computed = !!computed;
+          if (optionalSupported) {
+            node.optional = optional;
+          }
+          base = this.finishNode(node, "MemberExpression");
+        } else if (!noCalls && this.eat(types$12.parenL)) {
+          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+          this.yieldPos = 0;
+          this.awaitPos = 0;
+          this.awaitIdentPos = 0;
+          var exprList = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
+          if (maybeAsyncArrow && !optional && this.shouldParseAsyncArrow()) {
+            this.checkPatternErrors(refDestructuringErrors, false);
+            this.checkYieldAwaitInDefaultParams();
+            if (this.awaitIdentPos > 0) {
+              this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function");
+            }
+            this.yieldPos = oldYieldPos;
+            this.awaitPos = oldAwaitPos;
+            this.awaitIdentPos = oldAwaitIdentPos;
+            return this.parseSubscriptAsyncArrow(startPos, startLoc, exprList, forInit);
+          }
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          this.yieldPos = oldYieldPos || this.yieldPos;
+          this.awaitPos = oldAwaitPos || this.awaitPos;
+          this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
+          var node$1 = this.startNodeAt(startPos, startLoc);
+          node$1.callee = base;
+          node$1.arguments = exprList;
+          if (optionalSupported) {
+            node$1.optional = optional;
+          }
+          base = this.finishNode(node$1, "CallExpression");
+        } else if (this.type === types$12.backQuote) {
+          if (optional || optionalChained) {
+            this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+          }
+          var node$2 = this.startNodeAt(startPos, startLoc);
+          node$2.tag = base;
+          node$2.quasi = this.parseTemplate({ isTagged: true });
+          base = this.finishNode(node$2, "TaggedTemplateExpression");
+        }
+        return base;
+      };
+      pp$52.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
+        if (this.type === types$12.slash) {
+          this.readRegexp();
+        }
+        var node, canBeArrow = this.potentialArrowAt === this.start;
+        switch (this.type) {
+          case types$12._super:
+            if (!this.allowSuper) {
+              this.raise(this.start, "'super' keyword outside a method");
+            }
+            node = this.startNode();
+            this.next();
+            if (this.type === types$12.parenL && !this.allowDirectSuper) {
+              this.raise(node.start, "super() call outside constructor of a subclass");
+            }
+            if (this.type !== types$12.dot && this.type !== types$12.bracketL && this.type !== types$12.parenL) {
+              this.unexpected();
+            }
+            return this.finishNode(node, "Super");
+          case types$12._this:
+            node = this.startNode();
+            this.next();
+            return this.finishNode(node, "ThisExpression");
+          case types$12.name:
+            var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
+            var id = this.parseIdent(false);
+            if (this.options.ecmaVersion >= 8 && !containsEsc && id.name === "async" && !this.canInsertSemicolon() && this.eat(types$12._function)) {
+              this.overrideContext(types2.f_expr);
+              return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true, forInit);
+            }
+            if (canBeArrow && !this.canInsertSemicolon()) {
+              if (this.eat(types$12.arrow)) {
+                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], false, forInit);
+              }
+              if (this.options.ecmaVersion >= 8 && id.name === "async" && this.type === types$12.name && !containsEsc && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) {
+                id = this.parseIdent(false);
+                if (this.canInsertSemicolon() || !this.eat(types$12.arrow)) {
+                  this.unexpected();
+                }
+                return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], true, forInit);
+              }
+            }
+            return id;
+          case types$12.regexp:
+            var value = this.value;
+            node = this.parseLiteral(value.value);
+            node.regex = { pattern: value.pattern, flags: value.flags };
+            return node;
+          case types$12.num:
+          case types$12.string:
+            return this.parseLiteral(this.value);
+          case types$12._null:
+          case types$12._true:
+          case types$12._false:
+            node = this.startNode();
+            node.value = this.type === types$12._null ? null : this.type === types$12._true;
+            node.raw = this.type.keyword;
+            this.next();
+            return this.finishNode(node, "Literal");
+          case types$12.parenL:
+            var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow, forInit);
+            if (refDestructuringErrors) {
+              if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr)) {
+                refDestructuringErrors.parenthesizedAssign = start;
+              }
+              if (refDestructuringErrors.parenthesizedBind < 0) {
+                refDestructuringErrors.parenthesizedBind = start;
+              }
+            }
+            return expr;
+          case types$12.bracketL:
+            node = this.startNode();
+            this.next();
+            node.elements = this.parseExprList(types$12.bracketR, true, true, refDestructuringErrors);
+            return this.finishNode(node, "ArrayExpression");
+          case types$12.braceL:
+            this.overrideContext(types2.b_expr);
+            return this.parseObj(false, refDestructuringErrors);
+          case types$12._function:
+            node = this.startNode();
+            this.next();
+            return this.parseFunction(node, 0);
+          case types$12._class:
+            return this.parseClass(this.startNode(), false);
+          case types$12._new:
+            return this.parseNew();
+          case types$12.backQuote:
+            return this.parseTemplate();
+          case types$12._import:
+            if (this.options.ecmaVersion >= 11) {
+              return this.parseExprImport(forNew);
+            } else {
+              return this.unexpected();
+            }
+          default:
+            return this.parseExprAtomDefault();
+        }
+      };
+      pp$52.parseExprAtomDefault = function() {
+        this.unexpected();
+      };
+      pp$52.parseExprImport = function(forNew) {
+        var node = this.startNode();
+        if (this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword import");
+        }
+        this.next();
+        if (this.type === types$12.parenL && !forNew) {
+          return this.parseDynamicImport(node);
+        } else if (this.type === types$12.dot) {
+          var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+          meta.name = "import";
+          node.meta = this.finishNode(meta, "Identifier");
+          return this.parseImportMeta(node);
+        } else {
+          this.unexpected();
+        }
+      };
+      pp$52.parseDynamicImport = function(node) {
+        this.next();
+        node.source = this.parseMaybeAssign();
+        if (this.options.ecmaVersion >= 16) {
+          if (!this.eat(types$12.parenR)) {
+            this.expect(types$12.comma);
+            if (!this.afterTrailingComma(types$12.parenR)) {
+              node.options = this.parseMaybeAssign();
+              if (!this.eat(types$12.parenR)) {
+                this.expect(types$12.comma);
+                if (!this.afterTrailingComma(types$12.parenR)) {
+                  this.unexpected();
+                }
+              }
+            } else {
+              node.options = null;
+            }
+          } else {
+            node.options = null;
+          }
+        } else {
+          if (!this.eat(types$12.parenR)) {
+            var errorPos = this.start;
+            if (this.eat(types$12.comma) && this.eat(types$12.parenR)) {
+              this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
+            } else {
+              this.unexpected(errorPos);
+            }
+          }
+        }
+        return this.finishNode(node, "ImportExpression");
+      };
+      pp$52.parseImportMeta = function(node) {
+        this.next();
+        var containsEsc = this.containsEsc;
+        node.property = this.parseIdent(true);
+        if (node.property.name !== "meta") {
+          this.raiseRecoverable(node.property.start, "The only valid meta property for import is 'import.meta'");
+        }
+        if (containsEsc) {
+          this.raiseRecoverable(node.start, "'import.meta' must not contain escaped characters");
+        }
+        if (this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere) {
+          this.raiseRecoverable(node.start, "Cannot use 'import.meta' outside a module");
+        }
+        return this.finishNode(node, "MetaProperty");
+      };
+      pp$52.parseLiteral = function(value) {
+        var node = this.startNode();
+        node.value = value;
+        node.raw = this.input.slice(this.start, this.end);
+        if (node.raw.charCodeAt(node.raw.length - 1) === 110) {
+          node.bigint = node.value != null ? node.value.toString() : node.raw.slice(0, -1).replace(/_/g, "");
+        }
+        this.next();
+        return this.finishNode(node, "Literal");
+      };
+      pp$52.parseParenExpression = function() {
+        this.expect(types$12.parenL);
+        var val = this.parseExpression();
+        this.expect(types$12.parenR);
+        return val;
+      };
+      pp$52.shouldParseArrow = function(exprList) {
+        return !this.canInsertSemicolon();
+      };
+      pp$52.parseParenAndDistinguishExpression = function(canBeArrow, forInit) {
+        var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
+        if (this.options.ecmaVersion >= 6) {
+          this.next();
+          var innerStartPos = this.start, innerStartLoc = this.startLoc;
+          var exprList = [], first = true, lastIsComma = false;
+          var refDestructuringErrors = new DestructuringErrors3(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
+          this.yieldPos = 0;
+          this.awaitPos = 0;
+          while (this.type !== types$12.parenR) {
+            first ? first = false : this.expect(types$12.comma);
+            if (allowTrailingComma && this.afterTrailingComma(types$12.parenR, true)) {
+              lastIsComma = true;
+              break;
+            } else if (this.type === types$12.ellipsis) {
+              spreadStart = this.start;
+              exprList.push(this.parseParenItem(this.parseRestBinding()));
+              if (this.type === types$12.comma) {
+                this.raiseRecoverable(
+                  this.start,
+                  "Comma is not permitted after the rest element"
+                );
+              }
+              break;
+            } else {
+              exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
+            }
+          }
+          var innerEndPos = this.lastTokEnd, innerEndLoc = this.lastTokEndLoc;
+          this.expect(types$12.parenR);
+          if (canBeArrow && this.shouldParseArrow(exprList) && this.eat(types$12.arrow)) {
+            this.checkPatternErrors(refDestructuringErrors, false);
+            this.checkYieldAwaitInDefaultParams();
+            this.yieldPos = oldYieldPos;
+            this.awaitPos = oldAwaitPos;
+            return this.parseParenArrowList(startPos, startLoc, exprList, forInit);
+          }
+          if (!exprList.length || lastIsComma) {
+            this.unexpected(this.lastTokStart);
+          }
+          if (spreadStart) {
+            this.unexpected(spreadStart);
+          }
+          this.checkExpressionErrors(refDestructuringErrors, true);
+          this.yieldPos = oldYieldPos || this.yieldPos;
+          this.awaitPos = oldAwaitPos || this.awaitPos;
+          if (exprList.length > 1) {
+            val = this.startNodeAt(innerStartPos, innerStartLoc);
+            val.expressions = exprList;
+            this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
+          } else {
+            val = exprList[0];
+          }
+        } else {
+          val = this.parseParenExpression();
+        }
+        if (this.options.preserveParens) {
+          var par = this.startNodeAt(startPos, startLoc);
+          par.expression = val;
+          return this.finishNode(par, "ParenthesizedExpression");
+        } else {
+          return val;
+        }
+      };
+      pp$52.parseParenItem = function(item) {
+        return item;
+      };
+      pp$52.parseParenArrowList = function(startPos, startLoc, exprList, forInit) {
+        return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, false, forInit);
+      };
+      var empty2 = [];
+      pp$52.parseNew = function() {
+        if (this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+        }
+        var node = this.startNode();
+        this.next();
+        if (this.options.ecmaVersion >= 6 && this.type === types$12.dot) {
+          var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+          meta.name = "new";
+          node.meta = this.finishNode(meta, "Identifier");
+          this.next();
+          var containsEsc = this.containsEsc;
+          node.property = this.parseIdent(true);
+          if (node.property.name !== "target") {
+            this.raiseRecoverable(node.property.start, "The only valid meta property for new is 'new.target'");
+          }
+          if (containsEsc) {
+            this.raiseRecoverable(node.start, "'new.target' must not contain escaped characters");
+          }
+          if (!this.allowNewDotTarget) {
+            this.raiseRecoverable(node.start, "'new.target' can only be used in functions and class static block");
+          }
+          return this.finishNode(node, "MetaProperty");
+        }
+        var startPos = this.start, startLoc = this.startLoc;
+        node.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), startPos, startLoc, true, false);
+        if (node.callee.type === "Super") {
+          this.raiseRecoverable(startPos, "Invalid use of 'super'");
+        }
+        if (this.eat(types$12.parenL)) {
+          node.arguments = this.parseExprList(types$12.parenR, this.options.ecmaVersion >= 8, false);
+        } else {
+          node.arguments = empty2;
+        }
+        return this.finishNode(node, "NewExpression");
+      };
+      pp$52.parseTemplateElement = function(ref3) {
+        var isTagged = ref3.isTagged;
+        var elem = this.startNode();
+        if (this.type === types$12.invalidTemplate) {
+          if (!isTagged) {
+            this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
+          }
+          elem.value = {
+            raw: this.value.replace(/\r\n?/g, "\n"),
+            cooked: null
+          };
+        } else {
+          elem.value = {
+            raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, "\n"),
+            cooked: this.value
+          };
+        }
+        this.next();
+        elem.tail = this.type === types$12.backQuote;
+        return this.finishNode(elem, "TemplateElement");
+      };
+      pp$52.parseTemplate = function(ref3) {
+        if (ref3 === void 0) ref3 = {};
+        var isTagged = ref3.isTagged;
+        if (isTagged === void 0) isTagged = false;
+        var node = this.startNode();
+        this.next();
+        node.expressions = [];
+        var curElt = this.parseTemplateElement({ isTagged });
+        node.quasis = [curElt];
+        while (!curElt.tail) {
+          if (this.type === types$12.eof) {
+            this.raise(this.pos, "Unterminated template literal");
+          }
+          this.expect(types$12.dollarBraceL);
+          node.expressions.push(this.parseExpression());
+          this.expect(types$12.braceR);
+          node.quasis.push(curElt = this.parseTemplateElement({ isTagged }));
+        }
+        this.next();
+        return this.finishNode(node, "TemplateLiteral");
+      };
+      pp$52.isAsyncProp = function(prop) {
+        return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" && (this.type === types$12.name || this.type === types$12.num || this.type === types$12.string || this.type === types$12.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === types$12.star) && !lineBreak2.test(this.input.slice(this.lastTokEnd, this.start));
+      };
+      pp$52.parseObj = function(isPattern, refDestructuringErrors) {
+        var node = this.startNode(), first = true, propHash = {};
+        node.properties = [];
+        this.next();
+        while (!this.eat(types$12.braceR)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types$12.braceR)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var prop = this.parseProperty(isPattern, refDestructuringErrors);
+          if (!isPattern) {
+            this.checkPropClash(prop, propHash, refDestructuringErrors);
+          }
+          node.properties.push(prop);
+        }
+        return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression");
+      };
+      pp$52.parseProperty = function(isPattern, refDestructuringErrors) {
+        var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
+        if (this.options.ecmaVersion >= 9 && this.eat(types$12.ellipsis)) {
+          if (isPattern) {
+            prop.argument = this.parseIdent(false);
+            if (this.type === types$12.comma) {
+              this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+            }
+            return this.finishNode(prop, "RestElement");
+          }
+          prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+          if (this.type === types$12.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
+            refDestructuringErrors.trailingComma = this.start;
+          }
+          return this.finishNode(prop, "SpreadElement");
+        }
+        if (this.options.ecmaVersion >= 6) {
+          prop.method = false;
+          prop.shorthand = false;
+          if (isPattern || refDestructuringErrors) {
+            startPos = this.start;
+            startLoc = this.startLoc;
+          }
+          if (!isPattern) {
+            isGenerator = this.eat(types$12.star);
+          }
+        }
+        var containsEsc = this.containsEsc;
+        this.parsePropertyName(prop);
+        if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
+          isAsync = true;
+          isGenerator = this.options.ecmaVersion >= 9 && this.eat(types$12.star);
+          this.parsePropertyName(prop);
+        } else {
+          isAsync = false;
+        }
+        this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
+        return this.finishNode(prop, "Property");
+      };
+      pp$52.parseGetterSetter = function(prop) {
+        var kind = prop.key.name;
+        this.parsePropertyName(prop);
+        prop.value = this.parseMethod(false);
+        prop.kind = kind;
+        var paramCount = prop.kind === "get" ? 0 : 1;
+        if (prop.value.params.length !== paramCount) {
+          var start = prop.value.start;
+          if (prop.kind === "get") {
+            this.raiseRecoverable(start, "getter should have no params");
+          } else {
+            this.raiseRecoverable(start, "setter should have exactly one param");
+          }
+        } else {
+          if (prop.kind === "set" && prop.value.params[0].type === "RestElement") {
+            this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
+          }
+        }
+      };
+      pp$52.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
+        if ((isGenerator || isAsync) && this.type === types$12.colon) {
+          this.unexpected();
+        }
+        if (this.eat(types$12.colon)) {
+          prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
+          prop.kind = "init";
+        } else if (this.options.ecmaVersion >= 6 && this.type === types$12.parenL) {
+          if (isPattern) {
+            this.unexpected();
+          }
+          prop.method = true;
+          prop.value = this.parseMethod(isGenerator, isAsync);
+          prop.kind = "init";
+        } else if (!isPattern && !containsEsc && this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" && (prop.key.name === "get" || prop.key.name === "set") && (this.type !== types$12.comma && this.type !== types$12.braceR && this.type !== types$12.eq)) {
+          if (isGenerator || isAsync) {
+            this.unexpected();
+          }
+          this.parseGetterSetter(prop);
+        } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+          if (isGenerator || isAsync) {
+            this.unexpected();
+          }
+          this.checkUnreserved(prop.key);
+          if (prop.key.name === "await" && !this.awaitIdentPos) {
+            this.awaitIdentPos = startPos;
+          }
+          if (isPattern) {
+            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+          } else if (this.type === types$12.eq && refDestructuringErrors) {
+            if (refDestructuringErrors.shorthandAssign < 0) {
+              refDestructuringErrors.shorthandAssign = this.start;
+            }
+            prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+          } else {
+            prop.value = this.copyNode(prop.key);
+          }
+          prop.kind = "init";
+          prop.shorthand = true;
+        } else {
+          this.unexpected();
+        }
+      };
+      pp$52.parsePropertyName = function(prop) {
+        if (this.options.ecmaVersion >= 6) {
+          if (this.eat(types$12.bracketL)) {
+            prop.computed = true;
+            prop.key = this.parseMaybeAssign();
+            this.expect(types$12.bracketR);
+            return prop.key;
+          } else {
+            prop.computed = false;
+          }
+        }
+        return prop.key = this.type === types$12.num || this.type === types$12.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+      };
+      pp$52.initFunction = function(node) {
+        node.id = null;
+        if (this.options.ecmaVersion >= 6) {
+          node.generator = node.expression = false;
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = false;
+        }
+      };
+      pp$52.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
+        var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 6) {
+          node.generator = isGenerator;
+        }
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        this.enterScope(functionFlags2(isAsync, node.generator) | SCOPE_SUPER2 | (allowDirectSuper ? SCOPE_DIRECT_SUPER2 : 0));
+        this.expect(types$12.parenL);
+        node.params = this.parseBindingList(types$12.parenR, false, this.options.ecmaVersion >= 8);
+        this.checkYieldAwaitInDefaultParams();
+        this.parseFunctionBody(node, false, true, false);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, "FunctionExpression");
+      };
+      pp$52.parseArrowExpression = function(node, params, isAsync, forInit) {
+        var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+        this.enterScope(functionFlags2(isAsync, false) | SCOPE_ARROW2);
+        this.initFunction(node);
+        if (this.options.ecmaVersion >= 8) {
+          node.async = !!isAsync;
+        }
+        this.yieldPos = 0;
+        this.awaitPos = 0;
+        this.awaitIdentPos = 0;
+        node.params = this.toAssignableList(params, true);
+        this.parseFunctionBody(node, true, false, forInit);
+        this.yieldPos = oldYieldPos;
+        this.awaitPos = oldAwaitPos;
+        this.awaitIdentPos = oldAwaitIdentPos;
+        return this.finishNode(node, "ArrowFunctionExpression");
+      };
+      pp$52.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
+        var isExpression = isArrowFunction && this.type !== types$12.braceL;
+        var oldStrict = this.strict, useStrict = false;
+        if (isExpression) {
+          node.body = this.parseMaybeAssign(forInit);
+          node.expression = true;
+          this.checkParams(node, false);
+        } else {
+          var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
+          if (!oldStrict || nonSimple) {
+            useStrict = this.strictDirective(this.end);
+            if (useStrict && nonSimple) {
+              this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list");
+            }
+          }
+          var oldLabels = this.labels;
+          this.labels = [];
+          if (useStrict) {
+            this.strict = true;
+          }
+          this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
+          if (this.strict && node.id) {
+            this.checkLValSimple(node.id, BIND_OUTSIDE2);
+          }
+          node.body = this.parseBlock(false, void 0, useStrict && !oldStrict);
+          node.expression = false;
+          this.adaptDirectivePrologue(node.body.body);
+          this.labels = oldLabels;
+        }
+        this.exitScope();
+      };
+      pp$52.isSimpleParamList = function(params) {
+        for (var i3 = 0, list3 = params; i3 < list3.length; i3 += 1) {
+          var param = list3[i3];
+          if (param.type !== "Identifier") {
+            return false;
+          }
+        }
+        return true;
+      };
+      pp$52.checkParams = function(node, allowDuplicates) {
+        var nameHash = /* @__PURE__ */ Object.create(null);
+        for (var i3 = 0, list3 = node.params; i3 < list3.length; i3 += 1) {
+          var param = list3[i3];
+          this.checkLValInnerPattern(param, BIND_VAR2, allowDuplicates ? null : nameHash);
+        }
+      };
+      pp$52.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+        var elts = [], first = true;
+        while (!this.eat(close)) {
+          if (!first) {
+            this.expect(types$12.comma);
+            if (allowTrailingComma && this.afterTrailingComma(close)) {
+              break;
+            }
+          } else {
+            first = false;
+          }
+          var elt = void 0;
+          if (allowEmpty && this.type === types$12.comma) {
+            elt = null;
+          } else if (this.type === types$12.ellipsis) {
+            elt = this.parseSpread(refDestructuringErrors);
+            if (refDestructuringErrors && this.type === types$12.comma && refDestructuringErrors.trailingComma < 0) {
+              refDestructuringErrors.trailingComma = this.start;
+            }
+          } else {
+            elt = this.parseMaybeAssign(false, refDestructuringErrors);
+          }
+          elts.push(elt);
+        }
+        return elts;
+      };
+      pp$52.checkUnreserved = function(ref3) {
+        var start = ref3.start;
+        var end = ref3.end;
+        var name = ref3.name;
+        if (this.inGenerator && name === "yield") {
+          this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
+        }
+        if (this.inAsync && name === "await") {
+          this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
+        }
+        if (!(this.currentThisScope().flags & SCOPE_VAR2) && name === "arguments") {
+          this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
+        }
+        if (this.inClassStaticBlock && (name === "arguments" || name === "await")) {
+          this.raise(start, "Cannot use " + name + " in class static initialization block");
+        }
+        if (this.keywords.test(name)) {
+          this.raise(start, "Unexpected keyword '" + name + "'");
+        }
+        if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf("\\") !== -1) {
+          return;
+        }
+        var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+        if (re.test(name)) {
+          if (!this.inAsync && name === "await") {
+            this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
+          }
+          this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
+        }
+      };
+      pp$52.parseIdent = function(liberal) {
+        var node = this.parseIdentNode();
+        this.next(!!liberal);
+        this.finishNode(node, "Identifier");
+        if (!liberal) {
+          this.checkUnreserved(node);
+          if (node.name === "await" && !this.awaitIdentPos) {
+            this.awaitIdentPos = node.start;
+          }
+        }
+        return node;
+      };
+      pp$52.parseIdentNode = function() {
+        var node = this.startNode();
+        if (this.type === types$12.name) {
+          node.name = this.value;
+        } else if (this.type.keyword) {
+          node.name = this.type.keyword;
+          if ((node.name === "class" || node.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
+            this.context.pop();
+          }
+          this.type = types$12.name;
+        } else {
+          this.unexpected();
+        }
+        return node;
+      };
+      pp$52.parsePrivateIdent = function() {
+        var node = this.startNode();
+        if (this.type === types$12.privateId) {
+          node.name = this.value;
+        } else {
+          this.unexpected();
+        }
+        this.next();
+        this.finishNode(node, "PrivateIdentifier");
+        if (this.options.checkPrivateFields) {
+          if (this.privateNameStack.length === 0) {
+            this.raise(node.start, "Private field '#" + node.name + "' must be declared in an enclosing class");
+          } else {
+            this.privateNameStack[this.privateNameStack.length - 1].used.push(node);
+          }
+        }
+        return node;
+      };
+      pp$52.parseYield = function(forInit) {
+        if (!this.yieldPos) {
+          this.yieldPos = this.start;
+        }
+        var node = this.startNode();
+        this.next();
+        if (this.type === types$12.semi || this.canInsertSemicolon() || this.type !== types$12.star && !this.type.startsExpr) {
+          node.delegate = false;
+          node.argument = null;
+        } else {
+          node.delegate = this.eat(types$12.star);
+          node.argument = this.parseMaybeAssign(forInit);
+        }
+        return this.finishNode(node, "YieldExpression");
+      };
+      pp$52.parseAwait = function(forInit) {
+        if (!this.awaitPos) {
+          this.awaitPos = this.start;
+        }
+        var node = this.startNode();
+        this.next();
+        node.argument = this.parseMaybeUnary(null, true, false, forInit);
+        return this.finishNode(node, "AwaitExpression");
+      };
+      var pp$42 = Parser3.prototype;
+      pp$42.raise = function(pos, message) {
+        var loc = getLineInfo2(this.input, pos);
+        message += " (" + loc.line + ":" + loc.column + ")";
+        if (this.sourceFile) {
+          message += " in " + this.sourceFile;
+        }
+        var err = new SyntaxError(message);
+        err.pos = pos;
+        err.loc = loc;
+        err.raisedAt = this.pos;
+        throw err;
+      };
+      pp$42.raiseRecoverable = pp$42.raise;
+      pp$42.curPosition = function() {
+        if (this.options.locations) {
+          return new Position3(this.curLine, this.pos - this.lineStart);
+        }
+      };
+      var pp$32 = Parser3.prototype;
+      var Scope3 = function Scope4(flags) {
+        this.flags = flags;
+        this.var = [];
+        this.lexical = [];
+        this.functions = [];
+      };
+      pp$32.enterScope = function(flags) {
+        this.scopeStack.push(new Scope3(flags));
+      };
+      pp$32.exitScope = function() {
+        this.scopeStack.pop();
+      };
+      pp$32.treatFunctionsAsVarInScope = function(scope) {
+        return scope.flags & SCOPE_FUNCTION2 || !this.inModule && scope.flags & SCOPE_TOP2;
+      };
+      pp$32.declareName = function(name, bindingType, pos) {
+        var redeclared = false;
+        if (bindingType === BIND_LEXICAL2) {
+          var scope = this.currentScope();
+          redeclared = scope.lexical.indexOf(name) > -1 || scope.functions.indexOf(name) > -1 || scope.var.indexOf(name) > -1;
+          scope.lexical.push(name);
+          if (this.inModule && scope.flags & SCOPE_TOP2) {
+            delete this.undefinedExports[name];
+          }
+        } else if (bindingType === BIND_SIMPLE_CATCH2) {
+          var scope$1 = this.currentScope();
+          scope$1.lexical.push(name);
+        } else if (bindingType === BIND_FUNCTION2) {
+          var scope$2 = this.currentScope();
+          if (this.treatFunctionsAsVar) {
+            redeclared = scope$2.lexical.indexOf(name) > -1;
+          } else {
+            redeclared = scope$2.lexical.indexOf(name) > -1 || scope$2.var.indexOf(name) > -1;
+          }
+          scope$2.functions.push(name);
+        } else {
+          for (var i3 = this.scopeStack.length - 1; i3 >= 0; --i3) {
+            var scope$3 = this.scopeStack[i3];
+            if (scope$3.lexical.indexOf(name) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH2 && scope$3.lexical[0] === name) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
+              redeclared = true;
+              break;
+            }
+            scope$3.var.push(name);
+            if (this.inModule && scope$3.flags & SCOPE_TOP2) {
+              delete this.undefinedExports[name];
+            }
+            if (scope$3.flags & SCOPE_VAR2) {
+              break;
+            }
+          }
+        }
+        if (redeclared) {
+          this.raiseRecoverable(pos, "Identifier '" + name + "' has already been declared");
+        }
+      };
+      pp$32.checkLocalExport = function(id) {
+        if (this.scopeStack[0].lexical.indexOf(id.name) === -1 && this.scopeStack[0].var.indexOf(id.name) === -1) {
+          this.undefinedExports[id.name] = id;
+        }
+      };
+      pp$32.currentScope = function() {
+        return this.scopeStack[this.scopeStack.length - 1];
+      };
+      pp$32.currentVarScope = function() {
+        for (var i3 = this.scopeStack.length - 1; ; i3--) {
+          var scope = this.scopeStack[i3];
+          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2)) {
+            return scope;
+          }
+        }
+      };
+      pp$32.currentThisScope = function() {
+        for (var i3 = this.scopeStack.length - 1; ; i3--) {
+          var scope = this.scopeStack[i3];
+          if (scope.flags & (SCOPE_VAR2 | SCOPE_CLASS_FIELD_INIT2 | SCOPE_CLASS_STATIC_BLOCK2) && !(scope.flags & SCOPE_ARROW2)) {
+            return scope;
+          }
+        }
+      };
+      var Node3 = function Node4(parser, pos, loc) {
+        this.type = "";
+        this.start = pos;
+        this.end = 0;
+        if (parser.options.locations) {
+          this.loc = new SourceLocation3(parser, loc);
+        }
+        if (parser.options.directSourceFile) {
+          this.sourceFile = parser.options.directSourceFile;
+        }
+        if (parser.options.ranges) {
+          this.range = [pos, 0];
+        }
+      };
+      var pp$22 = Parser3.prototype;
+      pp$22.startNode = function() {
+        return new Node3(this, this.start, this.startLoc);
+      };
+      pp$22.startNodeAt = function(pos, loc) {
+        return new Node3(this, pos, loc);
+      };
+      function finishNodeAt2(node, type, pos, loc) {
+        node.type = type;
+        node.end = pos;
+        if (this.options.locations) {
+          node.loc.end = loc;
+        }
+        if (this.options.ranges) {
+          node.range[1] = pos;
+        }
+        return node;
+      }
+      pp$22.finishNode = function(node, type) {
+        return finishNodeAt2.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc);
+      };
+      pp$22.finishNodeAt = function(node, type, pos, loc) {
+        return finishNodeAt2.call(this, node, type, pos, loc);
+      };
+      pp$22.copyNode = function(node) {
+        var newNode = new Node3(this, node.start, this.startLoc);
+        for (var prop in node) {
+          newNode[prop] = node[prop];
+        }
+        return newNode;
+      };
+      var scriptValuesAddedInUnicode2 = "Berf Beria_Erfe Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sidetic Sidt Sunu Sunuwar Tai_Yo Tayo Todhri Todr Tolong_Siki Tols Tulu_Tigalari Tutg Unknown Zzzz";
+      var ecma9BinaryProperties2 = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
+      var ecma10BinaryProperties2 = ecma9BinaryProperties2 + " Extended_Pictographic";
+      var ecma11BinaryProperties2 = ecma10BinaryProperties2;
+      var ecma12BinaryProperties2 = ecma11BinaryProperties2 + " EBase EComp EMod EPres ExtPict";
+      var ecma13BinaryProperties2 = ecma12BinaryProperties2;
+      var ecma14BinaryProperties2 = ecma13BinaryProperties2;
+      var unicodeBinaryProperties2 = {
+        9: ecma9BinaryProperties2,
+        10: ecma10BinaryProperties2,
+        11: ecma11BinaryProperties2,
+        12: ecma12BinaryProperties2,
+        13: ecma13BinaryProperties2,
+        14: ecma14BinaryProperties2
+      };
+      var ecma14BinaryPropertiesOfStrings2 = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji";
+      var unicodeBinaryPropertiesOfStrings2 = {
+        9: "",
+        10: "",
+        11: "",
+        12: "",
+        13: "",
+        14: ecma14BinaryPropertiesOfStrings2
+      };
+      var unicodeGeneralCategoryValues2 = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
+      var ecma9ScriptValues2 = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
+      var ecma10ScriptValues2 = ecma9ScriptValues2 + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
+      var ecma11ScriptValues2 = ecma10ScriptValues2 + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
+      var ecma12ScriptValues2 = ecma11ScriptValues2 + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi";
+      var ecma13ScriptValues2 = ecma12ScriptValues2 + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith";
+      var ecma14ScriptValues2 = ecma13ScriptValues2 + " " + scriptValuesAddedInUnicode2;
+      var unicodeScriptValues2 = {
+        9: ecma9ScriptValues2,
+        10: ecma10ScriptValues2,
+        11: ecma11ScriptValues2,
+        12: ecma12ScriptValues2,
+        13: ecma13ScriptValues2,
+        14: ecma14ScriptValues2
+      };
+      var data2 = {};
+      function buildUnicodeData2(ecmaVersion3) {
+        var d = data2[ecmaVersion3] = {
+          binary: wordsRegexp2(unicodeBinaryProperties2[ecmaVersion3] + " " + unicodeGeneralCategoryValues2),
+          binaryOfStrings: wordsRegexp2(unicodeBinaryPropertiesOfStrings2[ecmaVersion3]),
+          nonBinary: {
+            General_Category: wordsRegexp2(unicodeGeneralCategoryValues2),
+            Script: wordsRegexp2(unicodeScriptValues2[ecmaVersion3])
+          }
+        };
+        d.nonBinary.Script_Extensions = d.nonBinary.Script;
+        d.nonBinary.gc = d.nonBinary.General_Category;
+        d.nonBinary.sc = d.nonBinary.Script;
+        d.nonBinary.scx = d.nonBinary.Script_Extensions;
+      }
+      for (var i2 = 0, list2 = [9, 10, 11, 12, 13, 14]; i2 < list2.length; i2 += 1) {
+        var ecmaVersion2 = list2[i2];
+        buildUnicodeData2(ecmaVersion2);
+      }
+      var pp$12 = Parser3.prototype;
+      var BranchID3 = function BranchID4(parent, base) {
+        this.parent = parent;
+        this.base = base || this;
+      };
+      BranchID3.prototype.separatedFrom = function separatedFrom2(alt) {
+        for (var self2 = this; self2; self2 = self2.parent) {
+          for (var other = alt; other; other = other.parent) {
+            if (self2.base === other.base && self2 !== other) {
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+      BranchID3.prototype.sibling = function sibling2() {
+        return new BranchID3(this.parent, this.base);
+      };
+      var RegExpValidationState3 = function RegExpValidationState4(parser) {
+        this.parser = parser;
+        this.validFlags = "gim" + (parser.options.ecmaVersion >= 6 ? "uy" : "") + (parser.options.ecmaVersion >= 9 ? "s" : "") + (parser.options.ecmaVersion >= 13 ? "d" : "") + (parser.options.ecmaVersion >= 15 ? "v" : "");
+        this.unicodeProperties = data2[parser.options.ecmaVersion >= 14 ? 14 : parser.options.ecmaVersion];
+        this.source = "";
+        this.flags = "";
+        this.start = 0;
+        this.switchU = false;
+        this.switchV = false;
+        this.switchN = false;
+        this.pos = 0;
+        this.lastIntValue = 0;
+        this.lastStringValue = "";
+        this.lastAssertionIsQuantifiable = false;
+        this.numCapturingParens = 0;
+        this.maxBackReference = 0;
+        this.groupNames = /* @__PURE__ */ Object.create(null);
+        this.backReferenceNames = [];
+        this.branchID = null;
+      };
+      RegExpValidationState3.prototype.reset = function reset2(start, pattern, flags) {
+        var unicodeSets = flags.indexOf("v") !== -1;
+        var unicode = flags.indexOf("u") !== -1;
+        this.start = start | 0;
+        this.source = pattern + "";
+        this.flags = flags;
+        if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
+          this.switchU = true;
+          this.switchV = true;
+          this.switchN = true;
+        } else {
+          this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
+          this.switchV = false;
+          this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
+        }
+      };
+      RegExpValidationState3.prototype.raise = function raise2(message) {
+        this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
+      };
+      RegExpValidationState3.prototype.at = function at2(i3, forceU) {
+        if (forceU === void 0) forceU = false;
+        var s = this.source;
+        var l = s.length;
+        if (i3 >= l) {
+          return -1;
+        }
+        var c = s.charCodeAt(i3);
+        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i3 + 1 >= l) {
+          return c;
+        }
+        var next = s.charCodeAt(i3 + 1);
+        return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
+      };
+      RegExpValidationState3.prototype.nextIndex = function nextIndex2(i3, forceU) {
+        if (forceU === void 0) forceU = false;
+        var s = this.source;
+        var l = s.length;
+        if (i3 >= l) {
+          return l;
+        }
+        var c = s.charCodeAt(i3), next;
+        if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i3 + 1 >= l || (next = s.charCodeAt(i3 + 1)) < 56320 || next > 57343) {
+          return i3 + 1;
+        }
+        return i3 + 2;
+      };
+      RegExpValidationState3.prototype.current = function current2(forceU) {
+        if (forceU === void 0) forceU = false;
+        return this.at(this.pos, forceU);
+      };
+      RegExpValidationState3.prototype.lookahead = function lookahead2(forceU) {
+        if (forceU === void 0) forceU = false;
+        return this.at(this.nextIndex(this.pos, forceU), forceU);
+      };
+      RegExpValidationState3.prototype.advance = function advance2(forceU) {
+        if (forceU === void 0) forceU = false;
+        this.pos = this.nextIndex(this.pos, forceU);
+      };
+      RegExpValidationState3.prototype.eat = function eat2(ch, forceU) {
+        if (forceU === void 0) forceU = false;
+        if (this.current(forceU) === ch) {
+          this.advance(forceU);
+          return true;
+        }
+        return false;
+      };
+      RegExpValidationState3.prototype.eatChars = function eatChars2(chs, forceU) {
+        if (forceU === void 0) forceU = false;
+        var pos = this.pos;
+        for (var i3 = 0, list3 = chs; i3 < list3.length; i3 += 1) {
+          var ch = list3[i3];
+          var current2 = this.at(pos, forceU);
+          if (current2 === -1 || current2 !== ch) {
+            return false;
+          }
+          pos = this.nextIndex(pos, forceU);
+        }
+        this.pos = pos;
+        return true;
+      };
+      pp$12.validateRegExpFlags = function(state) {
+        var validFlags = state.validFlags;
+        var flags = state.flags;
+        var u = false;
+        var v = false;
+        for (var i3 = 0; i3 < flags.length; i3++) {
+          var flag = flags.charAt(i3);
+          if (validFlags.indexOf(flag) === -1) {
+            this.raise(state.start, "Invalid regular expression flag");
+          }
+          if (flags.indexOf(flag, i3 + 1) > -1) {
+            this.raise(state.start, "Duplicate regular expression flag");
+          }
+          if (flag === "u") {
+            u = true;
+          }
+          if (flag === "v") {
+            v = true;
+          }
+        }
+        if (this.options.ecmaVersion >= 15 && u && v) {
+          this.raise(state.start, "Invalid regular expression flag");
+        }
+      };
+      function hasProp2(obj) {
+        for (var _ in obj) {
+          return true;
+        }
+        return false;
+      }
+      pp$12.validateRegExpPattern = function(state) {
+        this.regexp_pattern(state);
+        if (!state.switchN && this.options.ecmaVersion >= 9 && hasProp2(state.groupNames)) {
+          state.switchN = true;
+          this.regexp_pattern(state);
+        }
+      };
+      pp$12.regexp_pattern = function(state) {
+        state.pos = 0;
+        state.lastIntValue = 0;
+        state.lastStringValue = "";
+        state.lastAssertionIsQuantifiable = false;
+        state.numCapturingParens = 0;
+        state.maxBackReference = 0;
+        state.groupNames = /* @__PURE__ */ Object.create(null);
+        state.backReferenceNames.length = 0;
+        state.branchID = null;
+        this.regexp_disjunction(state);
+        if (state.pos !== state.source.length) {
+          if (state.eat(
+            41
+            /* ) */
+          )) {
+            state.raise("Unmatched ')'");
+          }
+          if (state.eat(
+            93
+            /* ] */
+          ) || state.eat(
+            125
+            /* } */
+          )) {
+            state.raise("Lone quantifier brackets");
+          }
+        }
+        if (state.maxBackReference > state.numCapturingParens) {
+          state.raise("Invalid escape");
+        }
+        for (var i3 = 0, list3 = state.backReferenceNames; i3 < list3.length; i3 += 1) {
+          var name = list3[i3];
+          if (!state.groupNames[name]) {
+            state.raise("Invalid named capture referenced");
+          }
+        }
+      };
+      pp$12.regexp_disjunction = function(state) {
+        var trackDisjunction = this.options.ecmaVersion >= 16;
+        if (trackDisjunction) {
+          state.branchID = new BranchID3(state.branchID, null);
+        }
+        this.regexp_alternative(state);
+        while (state.eat(
+          124
+          /* | */
+        )) {
+          if (trackDisjunction) {
+            state.branchID = state.branchID.sibling();
+          }
+          this.regexp_alternative(state);
+        }
+        if (trackDisjunction) {
+          state.branchID = state.branchID.parent;
+        }
+        if (this.regexp_eatQuantifier(state, true)) {
+          state.raise("Nothing to repeat");
+        }
+        if (state.eat(
+          123
+          /* { */
+        )) {
+          state.raise("Lone quantifier brackets");
+        }
+      };
+      pp$12.regexp_alternative = function(state) {
+        while (state.pos < state.source.length && this.regexp_eatTerm(state)) {
+        }
+      };
+      pp$12.regexp_eatTerm = function(state) {
+        if (this.regexp_eatAssertion(state)) {
+          if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
+            if (state.switchU) {
+              state.raise("Invalid quantifier");
+            }
+          }
+          return true;
+        }
+        if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
+          this.regexp_eatQuantifier(state);
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatAssertion = function(state) {
+        var start = state.pos;
+        state.lastAssertionIsQuantifiable = false;
+        if (state.eat(
+          94
+          /* ^ */
+        ) || state.eat(
+          36
+          /* $ */
+        )) {
+          return true;
+        }
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (state.eat(
+            66
+            /* B */
+          ) || state.eat(
+            98
+            /* b */
+          )) {
+            return true;
+          }
+          state.pos = start;
+        }
+        if (state.eat(
+          40
+          /* ( */
+        ) && state.eat(
+          63
+          /* ? */
+        )) {
+          var lookbehind = false;
+          if (this.options.ecmaVersion >= 9) {
+            lookbehind = state.eat(
+              60
+              /* < */
+            );
+          }
+          if (state.eat(
+            61
+            /* = */
+          ) || state.eat(
+            33
+            /* ! */
+          )) {
+            this.regexp_disjunction(state);
+            if (!state.eat(
+              41
+              /* ) */
+            )) {
+              state.raise("Unterminated group");
+            }
+            state.lastAssertionIsQuantifiable = !lookbehind;
+            return true;
+          }
+        }
+        state.pos = start;
+        return false;
+      };
+      pp$12.regexp_eatQuantifier = function(state, noError) {
+        if (noError === void 0) noError = false;
+        if (this.regexp_eatQuantifierPrefix(state, noError)) {
+          state.eat(
+            63
+            /* ? */
+          );
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatQuantifierPrefix = function(state, noError) {
+        return state.eat(
+          42
+          /* * */
+        ) || state.eat(
+          43
+          /* + */
+        ) || state.eat(
+          63
+          /* ? */
+        ) || this.regexp_eatBracedQuantifier(state, noError);
+      };
+      pp$12.regexp_eatBracedQuantifier = function(state, noError) {
+        var start = state.pos;
+        if (state.eat(
+          123
+          /* { */
+        )) {
+          var min = 0, max = -1;
+          if (this.regexp_eatDecimalDigits(state)) {
+            min = state.lastIntValue;
+            if (state.eat(
+              44
+              /* , */
+            ) && this.regexp_eatDecimalDigits(state)) {
+              max = state.lastIntValue;
+            }
+            if (state.eat(
+              125
+              /* } */
+            )) {
+              if (max !== -1 && max < min && !noError) {
+                state.raise("numbers out of order in {} quantifier");
+              }
+              return true;
+            }
+          }
+          if (state.switchU && !noError) {
+            state.raise("Incomplete quantifier");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatAtom = function(state) {
+        return this.regexp_eatPatternCharacters(state) || state.eat(
+          46
+          /* . */
+        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state);
+      };
+      pp$12.regexp_eatReverseSolidusAtomEscape = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatAtomEscape(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatUncapturingGroup = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          40
+          /* ( */
+        )) {
+          if (state.eat(
+            63
+            /* ? */
+          )) {
+            if (this.options.ecmaVersion >= 16) {
+              var addModifiers = this.regexp_eatModifiers(state);
+              var hasHyphen = state.eat(
+                45
+                /* - */
+              );
+              if (addModifiers || hasHyphen) {
+                for (var i3 = 0; i3 < addModifiers.length; i3++) {
+                  var modifier = addModifiers.charAt(i3);
+                  if (addModifiers.indexOf(modifier, i3 + 1) > -1) {
+                    state.raise("Duplicate regular expression modifiers");
+                  }
+                }
+                if (hasHyphen) {
+                  var removeModifiers = this.regexp_eatModifiers(state);
+                  if (!addModifiers && !removeModifiers && state.current() === 58) {
+                    state.raise("Invalid regular expression modifiers");
+                  }
+                  for (var i$1 = 0; i$1 < removeModifiers.length; i$1++) {
+                    var modifier$1 = removeModifiers.charAt(i$1);
+                    if (removeModifiers.indexOf(modifier$1, i$1 + 1) > -1 || addModifiers.indexOf(modifier$1) > -1) {
+                      state.raise("Duplicate regular expression modifiers");
+                    }
+                  }
+                }
+              }
+            }
+            if (state.eat(
+              58
+              /* : */
+            )) {
+              this.regexp_disjunction(state);
+              if (state.eat(
+                41
+                /* ) */
+              )) {
+                return true;
+              }
+              state.raise("Unterminated group");
+            }
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatCapturingGroup = function(state) {
+        if (state.eat(
+          40
+          /* ( */
+        )) {
+          if (this.options.ecmaVersion >= 9) {
+            this.regexp_groupSpecifier(state);
+          } else if (state.current() === 63) {
+            state.raise("Invalid group");
+          }
+          this.regexp_disjunction(state);
+          if (state.eat(
+            41
+            /* ) */
+          )) {
+            state.numCapturingParens += 1;
+            return true;
+          }
+          state.raise("Unterminated group");
+        }
+        return false;
+      };
+      pp$12.regexp_eatModifiers = function(state) {
+        var modifiers = "";
+        var ch = 0;
+        while ((ch = state.current()) !== -1 && isRegularExpressionModifier2(ch)) {
+          modifiers += codePointToString2(ch);
+          state.advance();
+        }
+        return modifiers;
+      };
+      function isRegularExpressionModifier2(ch) {
+        return ch === 105 || ch === 109 || ch === 115;
+      }
+      pp$12.regexp_eatExtendedAtom = function(state) {
+        return state.eat(
+          46
+          /* . */
+        ) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state) || this.regexp_eatInvalidBracedQuantifier(state) || this.regexp_eatExtendedPatternCharacter(state);
+      };
+      pp$12.regexp_eatInvalidBracedQuantifier = function(state) {
+        if (this.regexp_eatBracedQuantifier(state, true)) {
+          state.raise("Nothing to repeat");
+        }
+        return false;
+      };
+      pp$12.regexp_eatSyntaxCharacter = function(state) {
+        var ch = state.current();
+        if (isSyntaxCharacter2(ch)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isSyntaxCharacter2(ch) {
+        return ch === 36 || ch >= 40 && ch <= 43 || ch === 46 || ch === 63 || ch >= 91 && ch <= 94 || ch >= 123 && ch <= 125;
+      }
+      pp$12.regexp_eatPatternCharacters = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        while ((ch = state.current()) !== -1 && !isSyntaxCharacter2(ch)) {
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      pp$12.regexp_eatExtendedPatternCharacter = function(state) {
+        var ch = state.current();
+        if (ch !== -1 && ch !== 36 && !(ch >= 40 && ch <= 43) && ch !== 46 && ch !== 63 && ch !== 91 && ch !== 94 && ch !== 124) {
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_groupSpecifier = function(state) {
+        if (state.eat(
+          63
+          /* ? */
+        )) {
+          if (!this.regexp_eatGroupName(state)) {
+            state.raise("Invalid group");
+          }
+          var trackDisjunction = this.options.ecmaVersion >= 16;
+          var known = state.groupNames[state.lastStringValue];
+          if (known) {
+            if (trackDisjunction) {
+              for (var i3 = 0, list3 = known; i3 < list3.length; i3 += 1) {
+                var altID = list3[i3];
+                if (!altID.separatedFrom(state.branchID)) {
+                  state.raise("Duplicate capture group name");
+                }
+              }
+            } else {
+              state.raise("Duplicate capture group name");
+            }
+          }
+          if (trackDisjunction) {
+            (known || (state.groupNames[state.lastStringValue] = [])).push(state.branchID);
+          } else {
+            state.groupNames[state.lastStringValue] = true;
+          }
+        }
+      };
+      pp$12.regexp_eatGroupName = function(state) {
+        state.lastStringValue = "";
+        if (state.eat(
+          60
+          /* < */
+        )) {
+          if (this.regexp_eatRegExpIdentifierName(state) && state.eat(
+            62
+            /* > */
+          )) {
+            return true;
+          }
+          state.raise("Invalid capture group name");
+        }
+        return false;
+      };
+      pp$12.regexp_eatRegExpIdentifierName = function(state) {
+        state.lastStringValue = "";
+        if (this.regexp_eatRegExpIdentifierStart(state)) {
+          state.lastStringValue += codePointToString2(state.lastIntValue);
+          while (this.regexp_eatRegExpIdentifierPart(state)) {
+            state.lastStringValue += codePointToString2(state.lastIntValue);
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatRegExpIdentifierStart = function(state) {
+        var start = state.pos;
+        var forceU = this.options.ecmaVersion >= 11;
+        var ch = state.current(forceU);
+        state.advance(forceU);
+        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+          ch = state.lastIntValue;
+        }
+        if (isRegExpIdentifierStart2(ch)) {
+          state.lastIntValue = ch;
+          return true;
+        }
+        state.pos = start;
+        return false;
+      };
+      function isRegExpIdentifierStart2(ch) {
+        return isIdentifierStart2(ch, true) || ch === 36 || ch === 95;
+      }
+      pp$12.regexp_eatRegExpIdentifierPart = function(state) {
+        var start = state.pos;
+        var forceU = this.options.ecmaVersion >= 11;
+        var ch = state.current(forceU);
+        state.advance(forceU);
+        if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+          ch = state.lastIntValue;
+        }
+        if (isRegExpIdentifierPart2(ch)) {
+          state.lastIntValue = ch;
+          return true;
+        }
+        state.pos = start;
+        return false;
+      };
+      function isRegExpIdentifierPart2(ch) {
+        return isIdentifierChar2(ch, true) || ch === 36 || ch === 95 || ch === 8204 || ch === 8205;
+      }
+      pp$12.regexp_eatAtomEscape = function(state) {
+        if (this.regexp_eatBackReference(state) || this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state) || state.switchN && this.regexp_eatKGroupName(state)) {
+          return true;
+        }
+        if (state.switchU) {
+          if (state.current() === 99) {
+            state.raise("Invalid unicode escape");
+          }
+          state.raise("Invalid escape");
+        }
+        return false;
+      };
+      pp$12.regexp_eatBackReference = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatDecimalEscape(state)) {
+          var n = state.lastIntValue;
+          if (state.switchU) {
+            if (n > state.maxBackReference) {
+              state.maxBackReference = n;
+            }
+            return true;
+          }
+          if (n <= state.numCapturingParens) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatKGroupName = function(state) {
+        if (state.eat(
+          107
+          /* k */
+        )) {
+          if (this.regexp_eatGroupName(state)) {
+            state.backReferenceNames.push(state.lastStringValue);
+            return true;
+          }
+          state.raise("Invalid named reference");
+        }
+        return false;
+      };
+      pp$12.regexp_eatCharacterEscape = function(state) {
+        return this.regexp_eatControlEscape(state) || this.regexp_eatCControlLetter(state) || this.regexp_eatZero(state) || this.regexp_eatHexEscapeSequence(state) || this.regexp_eatRegExpUnicodeEscapeSequence(state, false) || !state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state) || this.regexp_eatIdentityEscape(state);
+      };
+      pp$12.regexp_eatCControlLetter = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          99
+          /* c */
+        )) {
+          if (this.regexp_eatControlLetter(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatZero = function(state) {
+        if (state.current() === 48 && !isDecimalDigit2(state.lookahead())) {
+          state.lastIntValue = 0;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatControlEscape = function(state) {
+        var ch = state.current();
+        if (ch === 116) {
+          state.lastIntValue = 9;
+          state.advance();
+          return true;
+        }
+        if (ch === 110) {
+          state.lastIntValue = 10;
+          state.advance();
+          return true;
+        }
+        if (ch === 118) {
+          state.lastIntValue = 11;
+          state.advance();
+          return true;
+        }
+        if (ch === 102) {
+          state.lastIntValue = 12;
+          state.advance();
+          return true;
+        }
+        if (ch === 114) {
+          state.lastIntValue = 13;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatControlLetter = function(state) {
+        var ch = state.current();
+        if (isControlLetter2(ch)) {
+          state.lastIntValue = ch % 32;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isControlLetter2(ch) {
+        return ch >= 65 && ch <= 90 || ch >= 97 && ch <= 122;
+      }
+      pp$12.regexp_eatRegExpUnicodeEscapeSequence = function(state, forceU) {
+        if (forceU === void 0) forceU = false;
+        var start = state.pos;
+        var switchU = forceU || state.switchU;
+        if (state.eat(
+          117
+          /* u */
+        )) {
+          if (this.regexp_eatFixedHexDigits(state, 4)) {
+            var lead = state.lastIntValue;
+            if (switchU && lead >= 55296 && lead <= 56319) {
+              var leadSurrogateEnd = state.pos;
+              if (state.eat(
+                92
+                /* \ */
+              ) && state.eat(
+                117
+                /* u */
+              ) && this.regexp_eatFixedHexDigits(state, 4)) {
+                var trail = state.lastIntValue;
+                if (trail >= 56320 && trail <= 57343) {
+                  state.lastIntValue = (lead - 55296) * 1024 + (trail - 56320) + 65536;
+                  return true;
+                }
+              }
+              state.pos = leadSurrogateEnd;
+              state.lastIntValue = lead;
+            }
+            return true;
+          }
+          if (switchU && state.eat(
+            123
+            /* { */
+          ) && this.regexp_eatHexDigits(state) && state.eat(
+            125
+            /* } */
+          ) && isValidUnicode2(state.lastIntValue)) {
+            return true;
+          }
+          if (switchU) {
+            state.raise("Invalid unicode escape");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      function isValidUnicode2(ch) {
+        return ch >= 0 && ch <= 1114111;
+      }
+      pp$12.regexp_eatIdentityEscape = function(state) {
+        if (state.switchU) {
+          if (this.regexp_eatSyntaxCharacter(state)) {
+            return true;
+          }
+          if (state.eat(
+            47
+            /* / */
+          )) {
+            state.lastIntValue = 47;
+            return true;
+          }
+          return false;
+        }
+        var ch = state.current();
+        if (ch !== 99 && (!state.switchN || ch !== 107)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatDecimalEscape = function(state) {
+        state.lastIntValue = 0;
+        var ch = state.current();
+        if (ch >= 49 && ch <= 57) {
+          do {
+            state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+            state.advance();
+          } while ((ch = state.current()) >= 48 && ch <= 57);
+          return true;
+        }
+        return false;
+      };
+      var CharSetNone2 = 0;
+      var CharSetOk2 = 1;
+      var CharSetString2 = 2;
+      pp$12.regexp_eatCharacterClassEscape = function(state) {
+        var ch = state.current();
+        if (isCharacterClassEscape2(ch)) {
+          state.lastIntValue = -1;
+          state.advance();
+          return CharSetOk2;
+        }
+        var negate = false;
+        if (state.switchU && this.options.ecmaVersion >= 9 && ((negate = ch === 80) || ch === 112)) {
+          state.lastIntValue = -1;
+          state.advance();
+          var result;
+          if (state.eat(
+            123
+            /* { */
+          ) && (result = this.regexp_eatUnicodePropertyValueExpression(state)) && state.eat(
+            125
+            /* } */
+          )) {
+            if (negate && result === CharSetString2) {
+              state.raise("Invalid property name");
+            }
+            return result;
+          }
+          state.raise("Invalid property name");
+        }
+        return CharSetNone2;
+      };
+      function isCharacterClassEscape2(ch) {
+        return ch === 100 || ch === 68 || ch === 115 || ch === 83 || ch === 119 || ch === 87;
+      }
+      pp$12.regexp_eatUnicodePropertyValueExpression = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatUnicodePropertyName(state) && state.eat(
+          61
+          /* = */
+        )) {
+          var name = state.lastStringValue;
+          if (this.regexp_eatUnicodePropertyValue(state)) {
+            var value = state.lastStringValue;
+            this.regexp_validateUnicodePropertyNameAndValue(state, name, value);
+            return CharSetOk2;
+          }
+        }
+        state.pos = start;
+        if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
+          var nameOrValue = state.lastStringValue;
+          return this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
+        }
+        return CharSetNone2;
+      };
+      pp$12.regexp_validateUnicodePropertyNameAndValue = function(state, name, value) {
+        if (!hasOwn2(state.unicodeProperties.nonBinary, name)) {
+          state.raise("Invalid property name");
+        }
+        if (!state.unicodeProperties.nonBinary[name].test(value)) {
+          state.raise("Invalid property value");
+        }
+      };
+      pp$12.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
+        if (state.unicodeProperties.binary.test(nameOrValue)) {
+          return CharSetOk2;
+        }
+        if (state.switchV && state.unicodeProperties.binaryOfStrings.test(nameOrValue)) {
+          return CharSetString2;
+        }
+        state.raise("Invalid property name");
+      };
+      pp$12.regexp_eatUnicodePropertyName = function(state) {
+        var ch = 0;
+        state.lastStringValue = "";
+        while (isUnicodePropertyNameCharacter2(ch = state.current())) {
+          state.lastStringValue += codePointToString2(ch);
+          state.advance();
+        }
+        return state.lastStringValue !== "";
+      };
+      function isUnicodePropertyNameCharacter2(ch) {
+        return isControlLetter2(ch) || ch === 95;
+      }
+      pp$12.regexp_eatUnicodePropertyValue = function(state) {
+        var ch = 0;
+        state.lastStringValue = "";
+        while (isUnicodePropertyValueCharacter2(ch = state.current())) {
+          state.lastStringValue += codePointToString2(ch);
+          state.advance();
+        }
+        return state.lastStringValue !== "";
+      };
+      function isUnicodePropertyValueCharacter2(ch) {
+        return isUnicodePropertyNameCharacter2(ch) || isDecimalDigit2(ch);
+      }
+      pp$12.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
+        return this.regexp_eatUnicodePropertyValue(state);
+      };
+      pp$12.regexp_eatCharacterClass = function(state) {
+        if (state.eat(
+          91
+          /* [ */
+        )) {
+          var negate = state.eat(
+            94
+            /* ^ */
+          );
+          var result = this.regexp_classContents(state);
+          if (!state.eat(
+            93
+            /* ] */
+          )) {
+            state.raise("Unterminated character class");
+          }
+          if (negate && result === CharSetString2) {
+            state.raise("Negated character class may contain strings");
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_classContents = function(state) {
+        if (state.current() === 93) {
+          return CharSetOk2;
+        }
+        if (state.switchV) {
+          return this.regexp_classSetExpression(state);
+        }
+        this.regexp_nonEmptyClassRanges(state);
+        return CharSetOk2;
+      };
+      pp$12.regexp_nonEmptyClassRanges = function(state) {
+        while (this.regexp_eatClassAtom(state)) {
+          var left = state.lastIntValue;
+          if (state.eat(
+            45
+            /* - */
+          ) && this.regexp_eatClassAtom(state)) {
+            var right = state.lastIntValue;
+            if (state.switchU && (left === -1 || right === -1)) {
+              state.raise("Invalid character class");
+            }
+            if (left !== -1 && right !== -1 && left > right) {
+              state.raise("Range out of order in character class");
+            }
+          }
+        }
+      };
+      pp$12.regexp_eatClassAtom = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatClassEscape(state)) {
+            return true;
+          }
+          if (state.switchU) {
+            var ch$1 = state.current();
+            if (ch$1 === 99 || isOctalDigit2(ch$1)) {
+              state.raise("Invalid class escape");
+            }
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        var ch = state.current();
+        if (ch !== 93) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatClassEscape = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          98
+          /* b */
+        )) {
+          state.lastIntValue = 8;
+          return true;
+        }
+        if (state.switchU && state.eat(
+          45
+          /* - */
+        )) {
+          state.lastIntValue = 45;
+          return true;
+        }
+        if (!state.switchU && state.eat(
+          99
+          /* c */
+        )) {
+          if (this.regexp_eatClassControlLetter(state)) {
+            return true;
+          }
+          state.pos = start;
+        }
+        return this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state);
+      };
+      pp$12.regexp_classSetExpression = function(state) {
+        var result = CharSetOk2, subResult;
+        if (this.regexp_eatClassSetRange(state)) ;
+        else if (subResult = this.regexp_eatClassSetOperand(state)) {
+          if (subResult === CharSetString2) {
+            result = CharSetString2;
+          }
+          var start = state.pos;
+          while (state.eatChars(
+            [38, 38]
+            /* && */
+          )) {
+            if (state.current() !== 38 && (subResult = this.regexp_eatClassSetOperand(state))) {
+              if (subResult !== CharSetString2) {
+                result = CharSetOk2;
+              }
+              continue;
+            }
+            state.raise("Invalid character in character class");
+          }
+          if (start !== state.pos) {
+            return result;
+          }
+          while (state.eatChars(
+            [45, 45]
+            /* -- */
+          )) {
+            if (this.regexp_eatClassSetOperand(state)) {
+              continue;
+            }
+            state.raise("Invalid character in character class");
+          }
+          if (start !== state.pos) {
+            return result;
+          }
+        } else {
+          state.raise("Invalid character in character class");
+        }
+        for (; ; ) {
+          if (this.regexp_eatClassSetRange(state)) {
+            continue;
+          }
+          subResult = this.regexp_eatClassSetOperand(state);
+          if (!subResult) {
+            return result;
+          }
+          if (subResult === CharSetString2) {
+            result = CharSetString2;
+          }
+        }
+      };
+      pp$12.regexp_eatClassSetRange = function(state) {
+        var start = state.pos;
+        if (this.regexp_eatClassSetCharacter(state)) {
+          var left = state.lastIntValue;
+          if (state.eat(
+            45
+            /* - */
+          ) && this.regexp_eatClassSetCharacter(state)) {
+            var right = state.lastIntValue;
+            if (left !== -1 && right !== -1 && left > right) {
+              state.raise("Range out of order in character class");
+            }
+            return true;
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatClassSetOperand = function(state) {
+        if (this.regexp_eatClassSetCharacter(state)) {
+          return CharSetOk2;
+        }
+        return this.regexp_eatClassStringDisjunction(state) || this.regexp_eatNestedClass(state);
+      };
+      pp$12.regexp_eatNestedClass = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          91
+          /* [ */
+        )) {
+          var negate = state.eat(
+            94
+            /* ^ */
+          );
+          var result = this.regexp_classContents(state);
+          if (state.eat(
+            93
+            /* ] */
+          )) {
+            if (negate && result === CharSetString2) {
+              state.raise("Negated character class may contain strings");
+            }
+            return result;
+          }
+          state.pos = start;
+        }
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          var result$1 = this.regexp_eatCharacterClassEscape(state);
+          if (result$1) {
+            return result$1;
+          }
+          state.pos = start;
+        }
+        return null;
+      };
+      pp$12.regexp_eatClassStringDisjunction = function(state) {
+        var start = state.pos;
+        if (state.eatChars(
+          [92, 113]
+          /* \q */
+        )) {
+          if (state.eat(
+            123
+            /* { */
+          )) {
+            var result = this.regexp_classStringDisjunctionContents(state);
+            if (state.eat(
+              125
+              /* } */
+            )) {
+              return result;
+            }
+          } else {
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        return null;
+      };
+      pp$12.regexp_classStringDisjunctionContents = function(state) {
+        var result = this.regexp_classString(state);
+        while (state.eat(
+          124
+          /* | */
+        )) {
+          if (this.regexp_classString(state) === CharSetString2) {
+            result = CharSetString2;
+          }
+        }
+        return result;
+      };
+      pp$12.regexp_classString = function(state) {
+        var count = 0;
+        while (this.regexp_eatClassSetCharacter(state)) {
+          count++;
+        }
+        return count === 1 ? CharSetOk2 : CharSetString2;
+      };
+      pp$12.regexp_eatClassSetCharacter = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          92
+          /* \ */
+        )) {
+          if (this.regexp_eatCharacterEscape(state) || this.regexp_eatClassSetReservedPunctuator(state)) {
+            return true;
+          }
+          if (state.eat(
+            98
+            /* b */
+          )) {
+            state.lastIntValue = 8;
+            return true;
+          }
+          state.pos = start;
+          return false;
+        }
+        var ch = state.current();
+        if (ch < 0 || ch === state.lookahead() && isClassSetReservedDoublePunctuatorCharacter2(ch)) {
+          return false;
+        }
+        if (isClassSetSyntaxCharacter2(ch)) {
+          return false;
+        }
+        state.advance();
+        state.lastIntValue = ch;
+        return true;
+      };
+      function isClassSetReservedDoublePunctuatorCharacter2(ch) {
+        return ch === 33 || ch >= 35 && ch <= 38 || ch >= 42 && ch <= 44 || ch === 46 || ch >= 58 && ch <= 64 || ch === 94 || ch === 96 || ch === 126;
+      }
+      function isClassSetSyntaxCharacter2(ch) {
+        return ch === 40 || ch === 41 || ch === 45 || ch === 47 || ch >= 91 && ch <= 93 || ch >= 123 && ch <= 125;
+      }
+      pp$12.regexp_eatClassSetReservedPunctuator = function(state) {
+        var ch = state.current();
+        if (isClassSetReservedPunctuator2(ch)) {
+          state.lastIntValue = ch;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      function isClassSetReservedPunctuator2(ch) {
+        return ch === 33 || ch === 35 || ch === 37 || ch === 38 || ch === 44 || ch === 45 || ch >= 58 && ch <= 62 || ch === 64 || ch === 96 || ch === 126;
+      }
+      pp$12.regexp_eatClassControlLetter = function(state) {
+        var ch = state.current();
+        if (isDecimalDigit2(ch) || ch === 95) {
+          state.lastIntValue = ch % 32;
+          state.advance();
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatHexEscapeSequence = function(state) {
+        var start = state.pos;
+        if (state.eat(
+          120
+          /* x */
+        )) {
+          if (this.regexp_eatFixedHexDigits(state, 2)) {
+            return true;
+          }
+          if (state.switchU) {
+            state.raise("Invalid escape");
+          }
+          state.pos = start;
+        }
+        return false;
+      };
+      pp$12.regexp_eatDecimalDigits = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        state.lastIntValue = 0;
+        while (isDecimalDigit2(ch = state.current())) {
+          state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      function isDecimalDigit2(ch) {
+        return ch >= 48 && ch <= 57;
+      }
+      pp$12.regexp_eatHexDigits = function(state) {
+        var start = state.pos;
+        var ch = 0;
+        state.lastIntValue = 0;
+        while (isHexDigit2(ch = state.current())) {
+          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
+          state.advance();
+        }
+        return state.pos !== start;
+      };
+      function isHexDigit2(ch) {
+        return ch >= 48 && ch <= 57 || ch >= 65 && ch <= 70 || ch >= 97 && ch <= 102;
+      }
+      function hexToInt2(ch) {
+        if (ch >= 65 && ch <= 70) {
+          return 10 + (ch - 65);
+        }
+        if (ch >= 97 && ch <= 102) {
+          return 10 + (ch - 97);
+        }
+        return ch - 48;
+      }
+      pp$12.regexp_eatLegacyOctalEscapeSequence = function(state) {
+        if (this.regexp_eatOctalDigit(state)) {
+          var n1 = state.lastIntValue;
+          if (this.regexp_eatOctalDigit(state)) {
+            var n2 = state.lastIntValue;
+            if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
+              state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
+            } else {
+              state.lastIntValue = n1 * 8 + n2;
+            }
+          } else {
+            state.lastIntValue = n1;
+          }
+          return true;
+        }
+        return false;
+      };
+      pp$12.regexp_eatOctalDigit = function(state) {
+        var ch = state.current();
+        if (isOctalDigit2(ch)) {
+          state.lastIntValue = ch - 48;
+          state.advance();
+          return true;
+        }
+        state.lastIntValue = 0;
+        return false;
+      };
+      function isOctalDigit2(ch) {
+        return ch >= 48 && ch <= 55;
+      }
+      pp$12.regexp_eatFixedHexDigits = function(state, length) {
+        var start = state.pos;
+        state.lastIntValue = 0;
+        for (var i3 = 0; i3 < length; ++i3) {
+          var ch = state.current();
+          if (!isHexDigit2(ch)) {
+            state.pos = start;
+            return false;
+          }
+          state.lastIntValue = 16 * state.lastIntValue + hexToInt2(ch);
+          state.advance();
+        }
+        return true;
+      };
+      var Token3 = function Token4(p) {
+        this.type = p.type;
+        this.value = p.value;
+        this.start = p.start;
+        this.end = p.end;
+        if (p.options.locations) {
+          this.loc = new SourceLocation3(p, p.startLoc, p.endLoc);
+        }
+        if (p.options.ranges) {
+          this.range = [p.start, p.end];
+        }
+      };
+      var pp2 = Parser3.prototype;
+      pp2.next = function(ignoreEscapeSequenceInKeyword) {
+        if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
+          this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
+        }
+        if (this.options.onToken) {
+          this.options.onToken(new Token3(this));
+        }
+        this.lastTokEnd = this.end;
+        this.lastTokStart = this.start;
+        this.lastTokEndLoc = this.endLoc;
+        this.lastTokStartLoc = this.startLoc;
+        this.nextToken();
+      };
+      pp2.getToken = function() {
+        this.next();
+        return new Token3(this);
+      };
+      if (typeof Symbol !== "undefined") {
+        pp2[Symbol.iterator] = function() {
+          var this$1$1 = this;
+          return {
+            next: function() {
+              var token = this$1$1.getToken();
+              return {
+                done: token.type === types$12.eof,
+                value: token
+              };
+            }
+          };
+        };
+      }
+      pp2.nextToken = function() {
+        var curContext = this.curContext();
+        if (!curContext || !curContext.preserveSpace) {
+          this.skipSpace();
+        }
+        this.start = this.pos;
+        if (this.options.locations) {
+          this.startLoc = this.curPosition();
+        }
+        if (this.pos >= this.input.length) {
+          return this.finishToken(types$12.eof);
+        }
+        if (curContext.override) {
+          return curContext.override(this);
+        } else {
+          this.readToken(this.fullCharCodeAtPos());
+        }
+      };
+      pp2.readToken = function(code) {
+        if (isIdentifierStart2(code, this.options.ecmaVersion >= 6) || code === 92) {
+          return this.readWord();
+        }
+        return this.getTokenFromCode(code);
+      };
+      pp2.fullCharCodeAt = function(pos) {
+        var code = this.input.charCodeAt(pos);
+        if (code <= 55295 || code >= 56320) {
+          return code;
+        }
+        var next = this.input.charCodeAt(pos + 1);
+        return next <= 56319 || next >= 57344 ? code : (code << 10) + next - 56613888;
+      };
+      pp2.fullCharCodeAtPos = function() {
+        return this.fullCharCodeAt(this.pos);
+      };
+      pp2.skipBlockComment = function() {
+        var startLoc = this.options.onComment && this.curPosition();
+        var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
+        if (end === -1) {
+          this.raise(this.pos - 2, "Unterminated comment");
+        }
+        this.pos = end + 2;
+        if (this.options.locations) {
+          for (var nextBreak = void 0, pos = start; (nextBreak = nextLineBreak2(this.input, pos, this.pos)) > -1; ) {
+            ++this.curLine;
+            pos = this.lineStart = nextBreak;
+          }
+        }
+        if (this.options.onComment) {
+          this.options.onComment(
+            true,
+            this.input.slice(start + 2, end),
+            start,
+            this.pos,
+            startLoc,
+            this.curPosition()
+          );
+        }
+      };
+      pp2.skipLineComment = function(startSkip) {
+        var start = this.pos;
+        var startLoc = this.options.onComment && this.curPosition();
+        var ch = this.input.charCodeAt(this.pos += startSkip);
+        while (this.pos < this.input.length && !isNewLine2(ch)) {
+          ch = this.input.charCodeAt(++this.pos);
+        }
+        if (this.options.onComment) {
+          this.options.onComment(
+            false,
+            this.input.slice(start + startSkip, this.pos),
+            start,
+            this.pos,
+            startLoc,
+            this.curPosition()
+          );
+        }
+      };
+      pp2.skipSpace = function() {
+        loop: while (this.pos < this.input.length) {
+          var ch = this.input.charCodeAt(this.pos);
+          switch (ch) {
+            case 32:
+            case 160:
+              ++this.pos;
+              break;
+            case 13:
+              if (this.input.charCodeAt(this.pos + 1) === 10) {
+                ++this.pos;
+              }
+            case 10:
+            case 8232:
+            case 8233:
+              ++this.pos;
+              if (this.options.locations) {
+                ++this.curLine;
+                this.lineStart = this.pos;
+              }
+              break;
+            case 47:
+              switch (this.input.charCodeAt(this.pos + 1)) {
+                case 42:
+                  this.skipBlockComment();
+                  break;
+                case 47:
+                  this.skipLineComment(2);
+                  break;
+                default:
+                  break loop;
+              }
+              break;
+            default:
+              if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace2.test(String.fromCharCode(ch))) {
+                ++this.pos;
+              } else {
+                break loop;
+              }
+          }
+        }
+      };
+      pp2.finishToken = function(type, val) {
+        this.end = this.pos;
+        if (this.options.locations) {
+          this.endLoc = this.curPosition();
+        }
+        var prevType = this.type;
+        this.type = type;
+        this.value = val;
+        this.updateContext(prevType);
+      };
+      pp2.readToken_dot = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next >= 48 && next <= 57) {
+          return this.readNumber(true);
+        }
+        var next2 = this.input.charCodeAt(this.pos + 2);
+        if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) {
+          this.pos += 3;
+          return this.finishToken(types$12.ellipsis);
+        } else {
+          ++this.pos;
+          return this.finishToken(types$12.dot);
+        }
+      };
+      pp2.readToken_slash = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (this.exprAllowed) {
+          ++this.pos;
+          return this.readRegexp();
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.slash, 1);
+      };
+      pp2.readToken_mult_modulo_exp = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        var size = 1;
+        var tokentype = code === 42 ? types$12.star : types$12.modulo;
+        if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
+          ++size;
+          tokentype = types$12.starstar;
+          next = this.input.charCodeAt(this.pos + 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, size + 1);
+        }
+        return this.finishOp(tokentype, size);
+      };
+      pp2.readToken_pipe_amp = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === code) {
+          if (this.options.ecmaVersion >= 12) {
+            var next2 = this.input.charCodeAt(this.pos + 2);
+            if (next2 === 61) {
+              return this.finishOp(types$12.assign, 3);
+            }
+          }
+          return this.finishOp(code === 124 ? types$12.logicalOR : types$12.logicalAND, 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(code === 124 ? types$12.bitwiseOR : types$12.bitwiseAND, 1);
+      };
+      pp2.readToken_caret = function() {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.bitwiseXOR, 1);
+      };
+      pp2.readToken_plus_min = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === code) {
+          if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || lineBreak2.test(this.input.slice(this.lastTokEnd, this.pos)))) {
+            this.skipLineComment(3);
+            this.skipSpace();
+            return this.nextToken();
+          }
+          return this.finishOp(types$12.incDec, 2);
+        }
+        if (next === 61) {
+          return this.finishOp(types$12.assign, 2);
+        }
+        return this.finishOp(types$12.plusMin, 1);
+      };
+      pp2.readToken_lt_gt = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        var size = 1;
+        if (next === code) {
+          size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
+          if (this.input.charCodeAt(this.pos + size) === 61) {
+            return this.finishOp(types$12.assign, size + 1);
+          }
+          return this.finishOp(types$12.bitShift, size);
+        }
+        if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45) {
+          this.skipLineComment(4);
+          this.skipSpace();
+          return this.nextToken();
+        }
+        if (next === 61) {
+          size = 2;
+        }
+        return this.finishOp(types$12.relational, size);
+      };
+      pp2.readToken_eq_excl = function(code) {
+        var next = this.input.charCodeAt(this.pos + 1);
+        if (next === 61) {
+          return this.finishOp(types$12.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2);
+        }
+        if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) {
+          this.pos += 2;
+          return this.finishToken(types$12.arrow);
+        }
+        return this.finishOp(code === 61 ? types$12.eq : types$12.prefix, 1);
+      };
+      pp2.readToken_question = function() {
+        var ecmaVersion3 = this.options.ecmaVersion;
+        if (ecmaVersion3 >= 11) {
+          var next = this.input.charCodeAt(this.pos + 1);
+          if (next === 46) {
+            var next2 = this.input.charCodeAt(this.pos + 2);
+            if (next2 < 48 || next2 > 57) {
+              return this.finishOp(types$12.questionDot, 2);
+            }
+          }
+          if (next === 63) {
+            if (ecmaVersion3 >= 12) {
+              var next2$1 = this.input.charCodeAt(this.pos + 2);
+              if (next2$1 === 61) {
+                return this.finishOp(types$12.assign, 3);
+              }
+            }
+            return this.finishOp(types$12.coalesce, 2);
+          }
+        }
+        return this.finishOp(types$12.question, 1);
+      };
+      pp2.readToken_numberSign = function() {
+        var ecmaVersion3 = this.options.ecmaVersion;
+        var code = 35;
+        if (ecmaVersion3 >= 13) {
+          ++this.pos;
+          code = this.fullCharCodeAtPos();
+          if (isIdentifierStart2(code, true) || code === 92) {
+            return this.finishToken(types$12.privateId, this.readWord1());
+          }
+        }
+        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
+      };
+      pp2.getTokenFromCode = function(code) {
+        switch (code) {
+          // The interpretation of a dot depends on whether it is followed
+          // by a digit or another two dots.
+          case 46:
+            return this.readToken_dot();
+          // Punctuation tokens.
+          case 40:
+            ++this.pos;
+            return this.finishToken(types$12.parenL);
+          case 41:
+            ++this.pos;
+            return this.finishToken(types$12.parenR);
+          case 59:
+            ++this.pos;
+            return this.finishToken(types$12.semi);
+          case 44:
+            ++this.pos;
+            return this.finishToken(types$12.comma);
+          case 91:
+            ++this.pos;
+            return this.finishToken(types$12.bracketL);
+          case 93:
+            ++this.pos;
+            return this.finishToken(types$12.bracketR);
+          case 123:
+            ++this.pos;
+            return this.finishToken(types$12.braceL);
+          case 125:
+            ++this.pos;
+            return this.finishToken(types$12.braceR);
+          case 58:
+            ++this.pos;
+            return this.finishToken(types$12.colon);
+          case 96:
+            if (this.options.ecmaVersion < 6) {
+              break;
+            }
+            ++this.pos;
+            return this.finishToken(types$12.backQuote);
+          case 48:
+            var next = this.input.charCodeAt(this.pos + 1);
+            if (next === 120 || next === 88) {
+              return this.readRadixNumber(16);
+            }
+            if (this.options.ecmaVersion >= 6) {
+              if (next === 111 || next === 79) {
+                return this.readRadixNumber(8);
+              }
+              if (next === 98 || next === 66) {
+                return this.readRadixNumber(2);
+              }
+            }
+          // Anything else beginning with a digit is an integer, octal
+          // number, or float.
+          case 49:
+          case 50:
+          case 51:
+          case 52:
+          case 53:
+          case 54:
+          case 55:
+          case 56:
+          case 57:
+            return this.readNumber(false);
+          // Quotes produce strings.
+          case 34:
+          case 39:
+            return this.readString(code);
+          // Operators are parsed inline in tiny state machines. '=' (61) is
+          // often referred to. `finishOp` simply skips the amount of
+          // characters it is given as second argument, and returns a token
+          // of the type given by its first argument.
+          case 47:
+            return this.readToken_slash();
+          case 37:
+          case 42:
+            return this.readToken_mult_modulo_exp(code);
+          case 124:
+          case 38:
+            return this.readToken_pipe_amp(code);
+          case 94:
+            return this.readToken_caret();
+          case 43:
+          case 45:
+            return this.readToken_plus_min(code);
+          case 60:
+          case 62:
+            return this.readToken_lt_gt(code);
+          case 61:
+          case 33:
+            return this.readToken_eq_excl(code);
+          case 63:
+            return this.readToken_question();
+          case 126:
+            return this.finishOp(types$12.prefix, 1);
+          case 35:
+            return this.readToken_numberSign();
+        }
+        this.raise(this.pos, "Unexpected character '" + codePointToString2(code) + "'");
+      };
+      pp2.finishOp = function(type, size) {
+        var str = this.input.slice(this.pos, this.pos + size);
+        this.pos += size;
+        return this.finishToken(type, str);
+      };
+      pp2.readRegexp = function() {
+        var escaped, inClass, start = this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(start, "Unterminated regular expression");
+          }
+          var ch = this.input.charAt(this.pos);
+          if (lineBreak2.test(ch)) {
+            this.raise(start, "Unterminated regular expression");
+          }
+          if (!escaped) {
+            if (ch === "[") {
+              inClass = true;
+            } else if (ch === "]" && inClass) {
+              inClass = false;
+            } else if (ch === "/" && !inClass) {
+              break;
+            }
+            escaped = ch === "\\";
+          } else {
+            escaped = false;
+          }
+          ++this.pos;
+        }
+        var pattern = this.input.slice(start, this.pos);
+        ++this.pos;
+        var flagsStart = this.pos;
+        var flags = this.readWord1();
+        if (this.containsEsc) {
+          this.unexpected(flagsStart);
+        }
+        var state = this.regexpState || (this.regexpState = new RegExpValidationState3(this));
+        state.reset(start, pattern, flags);
+        this.validateRegExpFlags(state);
+        this.validateRegExpPattern(state);
+        var value = null;
+        try {
+          value = new RegExp(pattern, flags);
+        } catch (e) {
+        }
+        return this.finishToken(types$12.regexp, { pattern, flags, value });
+      };
+      pp2.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
+        var allowSeparators = this.options.ecmaVersion >= 12 && len === void 0;
+        var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
+        var start = this.pos, total = 0, lastCode = 0;
+        for (var i3 = 0, e = len == null ? Infinity : len; i3 < e; ++i3, ++this.pos) {
+          var code = this.input.charCodeAt(this.pos), val = void 0;
+          if (allowSeparators && code === 95) {
+            if (isLegacyOctalNumericLiteral) {
+              this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals");
+            }
+            if (lastCode === 95) {
+              this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
+            }
+            if (i3 === 0) {
+              this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
+            }
+            lastCode = code;
+            continue;
+          }
+          if (code >= 97) {
+            val = code - 97 + 10;
+          } else if (code >= 65) {
+            val = code - 65 + 10;
+          } else if (code >= 48 && code <= 57) {
+            val = code - 48;
+          } else {
+            val = Infinity;
+          }
+          if (val >= radix) {
+            break;
+          }
+          lastCode = code;
+          total = total * radix + val;
+        }
+        if (allowSeparators && lastCode === 95) {
+          this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits");
+        }
+        if (this.pos === start || len != null && this.pos - start !== len) {
+          return null;
+        }
+        return total;
+      };
+      function stringToNumber2(str, isLegacyOctalNumericLiteral) {
+        if (isLegacyOctalNumericLiteral) {
+          return parseInt(str, 8);
+        }
+        return parseFloat(str.replace(/_/g, ""));
+      }
+      function stringToBigInt2(str) {
+        if (typeof BigInt !== "function") {
+          return null;
+        }
+        return BigInt(str.replace(/_/g, ""));
+      }
+      pp2.readRadixNumber = function(radix) {
+        var start = this.pos;
+        this.pos += 2;
+        var val = this.readInt(radix);
+        if (val == null) {
+          this.raise(this.start + 2, "Expected number in radix " + radix);
+        }
+        if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
+          val = stringToBigInt2(this.input.slice(start, this.pos));
+          ++this.pos;
+        } else if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+          this.raise(this.pos, "Identifier directly after number");
+        }
+        return this.finishToken(types$12.num, val);
+      };
+      pp2.readNumber = function(startsWithDot) {
+        var start = this.pos;
+        if (!startsWithDot && this.readInt(10, void 0, true) === null) {
+          this.raise(start, "Invalid number");
+        }
+        var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
+        if (octal && this.strict) {
+          this.raise(start, "Invalid number");
+        }
+        var next = this.input.charCodeAt(this.pos);
+        if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
+          var val$1 = stringToBigInt2(this.input.slice(start, this.pos));
+          ++this.pos;
+          if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+            this.raise(this.pos, "Identifier directly after number");
+          }
+          return this.finishToken(types$12.num, val$1);
+        }
+        if (octal && /[89]/.test(this.input.slice(start, this.pos))) {
+          octal = false;
+        }
+        if (next === 46 && !octal) {
+          ++this.pos;
+          this.readInt(10);
+          next = this.input.charCodeAt(this.pos);
+        }
+        if ((next === 69 || next === 101) && !octal) {
+          next = this.input.charCodeAt(++this.pos);
+          if (next === 43 || next === 45) {
+            ++this.pos;
+          }
+          if (this.readInt(10) === null) {
+            this.raise(start, "Invalid number");
+          }
+        }
+        if (isIdentifierStart2(this.fullCharCodeAtPos())) {
+          this.raise(this.pos, "Identifier directly after number");
+        }
+        var val = stringToNumber2(this.input.slice(start, this.pos), octal);
+        return this.finishToken(types$12.num, val);
+      };
+      pp2.readCodePoint = function() {
+        var ch = this.input.charCodeAt(this.pos), code;
+        if (ch === 123) {
+          if (this.options.ecmaVersion < 6) {
+            this.unexpected();
+          }
+          var codePos = ++this.pos;
+          code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
+          ++this.pos;
+          if (code > 1114111) {
+            this.invalidStringToken(codePos, "Code point out of bounds");
+          }
+        } else {
+          code = this.readHexChar(4);
+        }
+        return code;
+      };
+      pp2.readString = function(quote) {
+        var out = "", chunkStart = ++this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(this.start, "Unterminated string constant");
+          }
+          var ch = this.input.charCodeAt(this.pos);
+          if (ch === quote) {
+            break;
+          }
+          if (ch === 92) {
+            out += this.input.slice(chunkStart, this.pos);
+            out += this.readEscapedChar(false);
+            chunkStart = this.pos;
+          } else if (ch === 8232 || ch === 8233) {
+            if (this.options.ecmaVersion < 10) {
+              this.raise(this.start, "Unterminated string constant");
+            }
+            ++this.pos;
+            if (this.options.locations) {
+              this.curLine++;
+              this.lineStart = this.pos;
+            }
+          } else {
+            if (isNewLine2(ch)) {
+              this.raise(this.start, "Unterminated string constant");
+            }
+            ++this.pos;
+          }
+        }
+        out += this.input.slice(chunkStart, this.pos++);
+        return this.finishToken(types$12.string, out);
+      };
+      var INVALID_TEMPLATE_ESCAPE_ERROR2 = {};
+      pp2.tryReadTemplateToken = function() {
+        this.inTemplateElement = true;
+        try {
+          this.readTmplToken();
+        } catch (err) {
+          if (err === INVALID_TEMPLATE_ESCAPE_ERROR2) {
+            this.readInvalidTemplateToken();
+          } else {
+            throw err;
+          }
+        }
+        this.inTemplateElement = false;
+      };
+      pp2.invalidStringToken = function(position, message) {
+        if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
+          throw INVALID_TEMPLATE_ESCAPE_ERROR2;
+        } else {
+          this.raise(position, message);
+        }
+      };
+      pp2.readTmplToken = function() {
+        var out = "", chunkStart = this.pos;
+        for (; ; ) {
+          if (this.pos >= this.input.length) {
+            this.raise(this.start, "Unterminated template");
+          }
+          var ch = this.input.charCodeAt(this.pos);
+          if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) {
+            if (this.pos === this.start && (this.type === types$12.template || this.type === types$12.invalidTemplate)) {
+              if (ch === 36) {
+                this.pos += 2;
+                return this.finishToken(types$12.dollarBraceL);
+              } else {
+                ++this.pos;
+                return this.finishToken(types$12.backQuote);
+              }
+            }
+            out += this.input.slice(chunkStart, this.pos);
+            return this.finishToken(types$12.template, out);
+          }
+          if (ch === 92) {
+            out += this.input.slice(chunkStart, this.pos);
+            out += this.readEscapedChar(true);
+            chunkStart = this.pos;
+          } else if (isNewLine2(ch)) {
+            out += this.input.slice(chunkStart, this.pos);
+            ++this.pos;
+            switch (ch) {
+              case 13:
+                if (this.input.charCodeAt(this.pos) === 10) {
+                  ++this.pos;
+                }
+              case 10:
+                out += "\n";
+                break;
+              default:
+                out += String.fromCharCode(ch);
+                break;
+            }
+            if (this.options.locations) {
+              ++this.curLine;
+              this.lineStart = this.pos;
+            }
+            chunkStart = this.pos;
+          } else {
+            ++this.pos;
+          }
+        }
+      };
+      pp2.readInvalidTemplateToken = function() {
+        for (; this.pos < this.input.length; this.pos++) {
+          switch (this.input[this.pos]) {
+            case "\\":
+              ++this.pos;
+              break;
+            case "$":
+              if (this.input[this.pos + 1] !== "{") {
+                break;
+              }
+            // fall through
+            case "`":
+              return this.finishToken(types$12.invalidTemplate, this.input.slice(this.start, this.pos));
+            case "\r":
+              if (this.input[this.pos + 1] === "\n") {
+                ++this.pos;
+              }
+            // fall through
+            case "\n":
+            case "\u2028":
+            case "\u2029":
+              ++this.curLine;
+              this.lineStart = this.pos + 1;
+              break;
+          }
+        }
+        this.raise(this.start, "Unterminated template");
+      };
+      pp2.readEscapedChar = function(inTemplate) {
+        var ch = this.input.charCodeAt(++this.pos);
+        ++this.pos;
+        switch (ch) {
+          case 110:
+            return "\n";
+          // 'n' -> '\n'
+          case 114:
+            return "\r";
+          // 'r' -> '\r'
+          case 120:
+            return String.fromCharCode(this.readHexChar(2));
+          // 'x'
+          case 117:
+            return codePointToString2(this.readCodePoint());
+          // 'u'
+          case 116:
+            return "	";
+          // 't' -> '\t'
+          case 98:
+            return "\b";
+          // 'b' -> '\b'
+          case 118:
+            return "\v";
+          // 'v' -> '\u000b'
+          case 102:
+            return "\f";
+          // 'f' -> '\f'
+          case 13:
+            if (this.input.charCodeAt(this.pos) === 10) {
+              ++this.pos;
+            }
+          // '\r\n'
+          case 10:
+            if (this.options.locations) {
+              this.lineStart = this.pos;
+              ++this.curLine;
+            }
+            return "";
+          case 56:
+          case 57:
+            if (this.strict) {
+              this.invalidStringToken(
+                this.pos - 1,
+                "Invalid escape sequence"
+              );
+            }
+            if (inTemplate) {
+              var codePos = this.pos - 1;
+              this.invalidStringToken(
+                codePos,
+                "Invalid escape sequence in template string"
+              );
+            }
+          default:
+            if (ch >= 48 && ch <= 55) {
+              var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
+              var octal = parseInt(octalStr, 8);
+              if (octal > 255) {
+                octalStr = octalStr.slice(0, -1);
+                octal = parseInt(octalStr, 8);
+              }
+              this.pos += octalStr.length - 1;
+              ch = this.input.charCodeAt(this.pos);
+              if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
+                this.invalidStringToken(
+                  this.pos - 1 - octalStr.length,
+                  inTemplate ? "Octal literal in template string" : "Octal literal in strict mode"
+                );
+              }
+              return String.fromCharCode(octal);
+            }
+            if (isNewLine2(ch)) {
+              if (this.options.locations) {
+                this.lineStart = this.pos;
+                ++this.curLine;
+              }
+              return "";
+            }
+            return String.fromCharCode(ch);
+        }
+      };
+      pp2.readHexChar = function(len) {
+        var codePos = this.pos;
+        var n = this.readInt(16, len);
+        if (n === null) {
+          this.invalidStringToken(codePos, "Bad character escape sequence");
+        }
+        return n;
+      };
+      pp2.readWord1 = function() {
+        this.containsEsc = false;
+        var word = "", first = true, chunkStart = this.pos;
+        var astral = this.options.ecmaVersion >= 6;
+        while (this.pos < this.input.length) {
+          var ch = this.fullCharCodeAtPos();
+          if (isIdentifierChar2(ch, astral)) {
+            this.pos += ch <= 65535 ? 1 : 2;
+          } else if (ch === 92) {
+            this.containsEsc = true;
+            word += this.input.slice(chunkStart, this.pos);
+            var escStart = this.pos;
+            if (this.input.charCodeAt(++this.pos) !== 117) {
+              this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX");
+            }
+            ++this.pos;
+            var esc = this.readCodePoint();
+            if (!(first ? isIdentifierStart2 : isIdentifierChar2)(esc, astral)) {
+              this.invalidStringToken(escStart, "Invalid Unicode escape");
+            }
+            word += codePointToString2(esc);
+            chunkStart = this.pos;
+          } else {
+            break;
+          }
+          first = false;
+        }
+        return word + this.input.slice(chunkStart, this.pos);
+      };
+      pp2.readWord = function() {
+        var word = this.readWord1();
+        var type = types$12.name;
+        if (this.keywords.test(word)) {
+          type = keywords2[word];
+        }
+        return this.finishToken(type, word);
+      };
+      var version2 = "8.17.0";
+      Parser3.acorn = {
+        Parser: Parser3,
+        version: version2,
+        defaultOptions: defaultOptions2,
+        Position: Position3,
+        SourceLocation: SourceLocation3,
+        getLineInfo: getLineInfo2,
+        Node: Node3,
+        TokenType: TokenType3,
+        tokTypes: types$12,
+        keywordTypes: keywords2,
+        TokContext: TokContext3,
+        tokContexts: types2,
+        isIdentifierChar: isIdentifierChar2,
+        isIdentifierStart: isIdentifierStart2,
+        Token: Token3,
+        isNewLine: isNewLine2,
+        lineBreak: lineBreak2,
+        lineBreakG: lineBreakG2,
+        nonASCIIwhitespace: nonASCIIwhitespace2
+      };
+      function parse4(input, options) {
+        return Parser3.parse(input, options);
+      }
+      function parseExpressionAt2(input, pos, options) {
+        return Parser3.parseExpressionAt(input, pos, options);
+      }
+      function tokenizer2(input, options) {
+        return Parser3.tokenizer(input, options);
+      }
+      exports2.Node = Node3;
+      exports2.Parser = Parser3;
+      exports2.Position = Position3;
+      exports2.SourceLocation = SourceLocation3;
+      exports2.TokContext = TokContext3;
+      exports2.Token = Token3;
+      exports2.TokenType = TokenType3;
+      exports2.defaultOptions = defaultOptions2;
+      exports2.getLineInfo = getLineInfo2;
+      exports2.isIdentifierChar = isIdentifierChar2;
+      exports2.isIdentifierStart = isIdentifierStart2;
+      exports2.isNewLine = isNewLine2;
+      exports2.keywordTypes = keywords2;
+      exports2.lineBreak = lineBreak2;
+      exports2.lineBreakG = lineBreakG2;
+      exports2.nonASCIIwhitespace = nonASCIIwhitespace2;
+      exports2.parse = parse4;
+      exports2.parseExpressionAt = parseExpressionAt2;
+      exports2.tokContexts = types2;
+      exports2.tokTypes = types$12;
+      exports2.tokenizer = tokenizer2;
+      exports2.version = version2;
+    }));
+  }
+});
+
+// node_modules/acorn-walk/dist/walk.js
+var require_walk = __commonJS({
+  "node_modules/acorn-walk/dist/walk.js"(exports, module) {
+    (function(global, factory) {
+      typeof exports === "object" && typeof module !== "undefined" ? factory(exports) : typeof define === "function" && define.amd ? define(["exports"], factory) : (global = typeof globalThis !== "undefined" ? globalThis : global || self, factory((global.acorn = global.acorn || {}, global.acorn.walk = {})));
+    })(exports, (function(exports2) {
+      "use strict";
+      function simple(node, visitors, baseVisitor, state, override) {
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        (function c(node2, st, override2) {
+          var type = override2 || node2.type;
+          visitNode(baseVisitor, type, node2, st, c);
+          if (visitors[type]) {
+            visitors[type](node2, st);
+          }
+        })(node, state, override);
+      }
+      function ancestor(node, visitors, baseVisitor, state, override) {
+        var ancestors = [];
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        (function c(node2, st, override2) {
+          var type = override2 || node2.type;
+          var isNew = node2 !== ancestors[ancestors.length - 1];
+          if (isNew) {
+            ancestors.push(node2);
+          }
+          visitNode(baseVisitor, type, node2, st, c);
+          if (visitors[type]) {
+            visitors[type](node2, st || ancestors, ancestors);
+          }
+          if (isNew) {
+            ancestors.pop();
+          }
+        })(node, state, override);
+      }
+      function recursive(node, state, funcs, baseVisitor, override) {
+        var visitor = funcs ? make(funcs, baseVisitor || void 0) : baseVisitor;
+        (function c(node2, st, override2) {
+          visitor[override2 || node2.type](node2, st, c);
+        })(node, state, override);
+      }
+      function makeTest(test) {
+        if (typeof test === "string") {
+          return function(type) {
+            return type === test;
+          };
+        } else if (!test) {
+          return function() {
+            return true;
+          };
+        } else {
+          return test;
+        }
+      }
+      var Found = function Found2(node, state) {
+        this.node = node;
+        this.state = state;
+      };
+      function full(node, callback, baseVisitor, state, override) {
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        var last;
+        (function c(node2, st, override2) {
+          var type = override2 || node2.type;
+          visitNode(baseVisitor, type, node2, st, c);
+          if (last !== node2) {
+            callback(node2, st, type);
+            last = node2;
+          }
+        })(node, state, override);
+      }
+      function fullAncestor(node, callback, baseVisitor, state) {
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        var ancestors = [], last;
+        (function c(node2, st, override) {
+          var type = override || node2.type;
+          var isNew = node2 !== ancestors[ancestors.length - 1];
+          if (isNew) {
+            ancestors.push(node2);
+          }
+          visitNode(baseVisitor, type, node2, st, c);
+          if (last !== node2) {
+            callback(node2, st || ancestors, ancestors, type);
+            last = node2;
+          }
+          if (isNew) {
+            ancestors.pop();
+          }
+        })(node, state);
+      }
+      function findNodeAt(node, start, end, test, baseVisitor, state) {
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        test = makeTest(test);
+        try {
+          (function c(node2, st, override) {
+            var type = override || node2.type;
+            if ((start == null || node2.start <= start) && (end == null || node2.end >= end)) {
+              visitNode(baseVisitor, type, node2, st, c);
+            }
+            if ((start == null || node2.start === start) && (end == null || node2.end === end) && test(type, node2)) {
+              throw new Found(node2, st);
+            }
+          })(node, state);
+        } catch (e) {
+          if (e instanceof Found) {
+            return e;
+          }
+          throw e;
+        }
+      }
+      function findNodeAround(node, pos, test, baseVisitor, state) {
+        test = makeTest(test);
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        try {
+          (function c(node2, st, override) {
+            var type = override || node2.type;
+            if (node2.start > pos || node2.end < pos) {
+              return;
+            }
+            visitNode(baseVisitor, type, node2, st, c);
+            if (test(type, node2)) {
+              throw new Found(node2, st);
+            }
+          })(node, state);
+        } catch (e) {
+          if (e instanceof Found) {
+            return e;
+          }
+          throw e;
+        }
+      }
+      function findNodeAfter(node, pos, test, baseVisitor, state) {
+        test = makeTest(test);
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        try {
+          (function c(node2, st, override) {
+            if (node2.end < pos) {
+              return;
+            }
+            var type = override || node2.type;
+            if (node2.start >= pos && test(type, node2)) {
+              throw new Found(node2, st);
+            }
+            visitNode(baseVisitor, type, node2, st, c);
+          })(node, state);
+        } catch (e) {
+          if (e instanceof Found) {
+            return e;
+          }
+          throw e;
+        }
+      }
+      function findNodeBefore(node, pos, test, baseVisitor, state) {
+        test = makeTest(test);
+        if (!baseVisitor) {
+          baseVisitor = base;
+        }
+        var max;
+        (function c(node2, st, override) {
+          if (node2.start > pos) {
+            return;
+          }
+          var type = override || node2.type;
+          if (node2.end <= pos && (!max || max.node.end < node2.end) && test(type, node2)) {
+            max = new Found(node2, st);
+          }
+          visitNode(baseVisitor, type, node2, st, c);
+        })(node, state);
+        return max;
+      }
+      function make(funcs, baseVisitor) {
+        var visitor = Object.create(baseVisitor || base);
+        for (var type in funcs) {
+          visitor[type] = funcs[type];
+        }
+        return visitor;
+      }
+      function skipThrough(node, st, c) {
+        c(node, st);
+      }
+      function ignore(_node, _st, _c) {
+      }
+      function visitNode(baseVisitor, type, node, st, c) {
+        if (baseVisitor[type] == null) {
+          throw new Error("No walker function defined for node type " + type);
+        }
+        baseVisitor[type](node, st, c);
+      }
+      var base = {};
+      base.Program = base.BlockStatement = base.StaticBlock = function(node, st, c) {
+        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
+          var stmt = list2[i2];
+          c(stmt, st, "Statement");
+        }
+      };
+      base.Statement = skipThrough;
+      base.EmptyStatement = ignore;
+      base.ExpressionStatement = base.ParenthesizedExpression = base.ChainExpression = function(node, st, c) {
+        return c(node.expression, st, "Expression");
+      };
+      base.IfStatement = function(node, st, c) {
+        c(node.test, st, "Expression");
+        c(node.consequent, st, "Statement");
+        if (node.alternate) {
+          c(node.alternate, st, "Statement");
+        }
+      };
+      base.LabeledStatement = function(node, st, c) {
+        return c(node.body, st, "Statement");
+      };
+      base.BreakStatement = base.ContinueStatement = ignore;
+      base.WithStatement = function(node, st, c) {
+        c(node.object, st, "Expression");
+        c(node.body, st, "Statement");
+      };
+      base.SwitchStatement = function(node, st, c) {
+        c(node.discriminant, st, "Expression");
+        for (var i2 = 0, list2 = node.cases; i2 < list2.length; i2 += 1) {
+          var cs = list2[i2];
+          c(cs, st);
+        }
+      };
+      base.SwitchCase = function(node, st, c) {
+        if (node.test) {
+          c(node.test, st, "Expression");
+        }
+        for (var i2 = 0, list2 = node.consequent; i2 < list2.length; i2 += 1) {
+          var cons = list2[i2];
+          c(cons, st, "Statement");
+        }
+      };
+      base.ReturnStatement = base.YieldExpression = base.AwaitExpression = function(node, st, c) {
+        if (node.argument) {
+          c(node.argument, st, "Expression");
+        }
+      };
+      base.ThrowStatement = base.SpreadElement = function(node, st, c) {
+        return c(node.argument, st, "Expression");
+      };
+      base.TryStatement = function(node, st, c) {
+        c(node.block, st, "Statement");
+        if (node.handler) {
+          c(node.handler, st);
+        }
+        if (node.finalizer) {
+          c(node.finalizer, st, "Statement");
+        }
+      };
+      base.CatchClause = function(node, st, c) {
+        if (node.param) {
+          c(node.param, st, "Pattern");
+        }
+        c(node.body, st, "Statement");
+      };
+      base.WhileStatement = base.DoWhileStatement = function(node, st, c) {
+        c(node.test, st, "Expression");
+        c(node.body, st, "Statement");
+      };
+      base.ForStatement = function(node, st, c) {
+        if (node.init) {
+          c(node.init, st, "ForInit");
+        }
+        if (node.test) {
+          c(node.test, st, "Expression");
+        }
+        if (node.update) {
+          c(node.update, st, "Expression");
+        }
+        c(node.body, st, "Statement");
+      };
+      base.ForInStatement = base.ForOfStatement = function(node, st, c) {
+        c(node.left, st, "ForInit");
+        c(node.right, st, "Expression");
+        c(node.body, st, "Statement");
+      };
+      base.ForInit = function(node, st, c) {
+        if (node.type === "VariableDeclaration") {
+          c(node, st);
+        } else {
+          c(node, st, "Expression");
+        }
+      };
+      base.DebuggerStatement = ignore;
+      base.FunctionDeclaration = function(node, st, c) {
+        return c(node, st, "Function");
+      };
+      base.VariableDeclaration = function(node, st, c) {
+        for (var i2 = 0, list2 = node.declarations; i2 < list2.length; i2 += 1) {
+          var decl = list2[i2];
+          c(decl, st);
+        }
+      };
+      base.VariableDeclarator = function(node, st, c) {
+        c(node.id, st, "Pattern");
+        if (node.init) {
+          c(node.init, st, "Expression");
+        }
+      };
+      base.Function = function(node, st, c) {
+        if (node.id) {
+          c(node.id, st, "Pattern");
+        }
+        for (var i2 = 0, list2 = node.params; i2 < list2.length; i2 += 1) {
+          var param = list2[i2];
+          c(param, st, "Pattern");
+        }
+        c(node.body, st, node.expression ? "Expression" : "Statement");
+      };
+      base.Pattern = function(node, st, c) {
+        if (node.type === "Identifier") {
+          c(node, st, "VariablePattern");
+        } else if (node.type === "MemberExpression") {
+          c(node, st, "MemberPattern");
+        } else {
+          c(node, st);
+        }
+      };
+      base.VariablePattern = ignore;
+      base.MemberPattern = skipThrough;
+      base.RestElement = function(node, st, c) {
+        return c(node.argument, st, "Pattern");
+      };
+      base.ArrayPattern = function(node, st, c) {
+        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
+          var elt = list2[i2];
+          if (elt) {
+            c(elt, st, "Pattern");
+          }
+        }
+      };
+      base.ObjectPattern = function(node, st, c) {
+        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
+          var prop = list2[i2];
+          if (prop.type === "Property") {
+            if (prop.computed) {
+              c(prop.key, st, "Expression");
+            }
+            c(prop.value, st, "Pattern");
+          } else if (prop.type === "RestElement") {
+            c(prop.argument, st, "Pattern");
+          }
+        }
+      };
+      base.Expression = skipThrough;
+      base.ThisExpression = base.Super = base.MetaProperty = ignore;
+      base.ArrayExpression = function(node, st, c) {
+        for (var i2 = 0, list2 = node.elements; i2 < list2.length; i2 += 1) {
+          var elt = list2[i2];
+          if (elt) {
+            c(elt, st, "Expression");
+          }
+        }
+      };
+      base.ObjectExpression = function(node, st, c) {
+        for (var i2 = 0, list2 = node.properties; i2 < list2.length; i2 += 1) {
+          var prop = list2[i2];
+          c(prop, st);
+        }
+      };
+      base.FunctionExpression = base.ArrowFunctionExpression = base.FunctionDeclaration;
+      base.SequenceExpression = function(node, st, c) {
+        for (var i2 = 0, list2 = node.expressions; i2 < list2.length; i2 += 1) {
+          var expr = list2[i2];
+          c(expr, st, "Expression");
+        }
+      };
+      base.TemplateLiteral = function(node, st, c) {
+        for (var i2 = 0, list2 = node.quasis; i2 < list2.length; i2 += 1) {
+          var quasi = list2[i2];
+          c(quasi, st);
+        }
+        for (var i$1 = 0, list$1 = node.expressions; i$1 < list$1.length; i$1 += 1) {
+          var expr = list$1[i$1];
+          c(expr, st, "Expression");
+        }
+      };
+      base.TemplateElement = ignore;
+      base.UnaryExpression = base.UpdateExpression = function(node, st, c) {
+        c(node.argument, st, "Expression");
+      };
+      base.BinaryExpression = base.LogicalExpression = function(node, st, c) {
+        c(node.left, st, "Expression");
+        c(node.right, st, "Expression");
+      };
+      base.AssignmentExpression = base.AssignmentPattern = function(node, st, c) {
+        c(node.left, st, "Pattern");
+        c(node.right, st, "Expression");
+      };
+      base.ConditionalExpression = function(node, st, c) {
+        c(node.test, st, "Expression");
+        c(node.consequent, st, "Expression");
+        c(node.alternate, st, "Expression");
+      };
+      base.NewExpression = base.CallExpression = function(node, st, c) {
+        c(node.callee, st, "Expression");
+        if (node.arguments) {
+          for (var i2 = 0, list2 = node.arguments; i2 < list2.length; i2 += 1) {
+            var arg = list2[i2];
+            c(arg, st, "Expression");
+          }
+        }
+      };
+      base.MemberExpression = function(node, st, c) {
+        c(node.object, st, "Expression");
+        if (node.computed) {
+          c(node.property, st, "Expression");
+        }
+      };
+      base.ExportNamedDeclaration = base.ExportDefaultDeclaration = function(node, st, c) {
+        if (node.declaration) {
+          c(node.declaration, st, node.type === "ExportNamedDeclaration" || node.declaration.id ? "Statement" : "Expression");
+        }
+        if (node.source) {
+          c(node.source, st, "Expression");
+        }
+        if (node.attributes) {
+          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
+            var attr = list2[i2];
+            c(attr, st);
+          }
+        }
+      };
+      base.ExportAllDeclaration = function(node, st, c) {
+        if (node.exported) {
+          c(node.exported, st);
+        }
+        c(node.source, st, "Expression");
+        if (node.attributes) {
+          for (var i2 = 0, list2 = node.attributes; i2 < list2.length; i2 += 1) {
+            var attr = list2[i2];
+            c(attr, st);
+          }
+        }
+      };
+      base.ImportAttribute = function(node, st, c) {
+        c(node.value, st, "Expression");
+      };
+      base.ImportDeclaration = function(node, st, c) {
+        for (var i2 = 0, list2 = node.specifiers; i2 < list2.length; i2 += 1) {
+          var spec = list2[i2];
+          c(spec, st);
+        }
+        c(node.source, st, "Expression");
+        if (node.attributes) {
+          for (var i$1 = 0, list$1 = node.attributes; i$1 < list$1.length; i$1 += 1) {
+            var attr = list$1[i$1];
+            c(attr, st);
+          }
+        }
+      };
+      base.ImportExpression = function(node, st, c) {
+        c(node.source, st, "Expression");
+        if (node.options) {
+          c(node.options, st, "Expression");
+        }
+      };
+      base.ImportSpecifier = base.ImportDefaultSpecifier = base.ImportNamespaceSpecifier = base.Identifier = base.PrivateIdentifier = base.Literal = ignore;
+      base.TaggedTemplateExpression = function(node, st, c) {
+        c(node.tag, st, "Expression");
+        c(node.quasi, st, "Expression");
+      };
+      base.ClassDeclaration = base.ClassExpression = function(node, st, c) {
+        return c(node, st, "Class");
+      };
+      base.Class = function(node, st, c) {
+        if (node.id) {
+          c(node.id, st, "Pattern");
+        }
+        if (node.superClass) {
+          c(node.superClass, st, "Expression");
+        }
+        c(node.body, st);
+      };
+      base.ClassBody = function(node, st, c) {
+        for (var i2 = 0, list2 = node.body; i2 < list2.length; i2 += 1) {
+          var elt = list2[i2];
+          c(elt, st);
+        }
+      };
+      base.MethodDefinition = base.PropertyDefinition = base.Property = function(node, st, c) {
+        if (node.computed) {
+          c(node.key, st, "Expression");
+        }
+        if (node.value) {
+          c(node.value, st, "Expression");
+        }
+      };
+      exports2.ancestor = ancestor;
+      exports2.base = base;
+      exports2.findNodeAfter = findNodeAfter;
+      exports2.findNodeAround = findNodeAround;
+      exports2.findNodeAt = findNodeAt;
+      exports2.findNodeBefore = findNodeBefore;
+      exports2.full = full;
+      exports2.fullAncestor = fullAncestor;
+      exports2.make = make;
+      exports2.recursive = recursive;
+      exports2.simple = simple;
+    }));
+  }
+});
+
+// node_modules/acorn-globals/index.js
+var require_acorn_globals = __commonJS({
+  "node_modules/acorn-globals/index.js"(exports, module) {
+    "use strict";
+    var acorn = require_acorn();
+    var walk = require_walk();
+    function isScope(node) {
+      return node.type === "FunctionExpression" || node.type === "FunctionDeclaration" || node.type === "ArrowFunctionExpression" || node.type === "Program";
+    }
+    function isBlockScope(node) {
+      return node.type === "BlockStatement" || node.type === "SwitchStatement" || isScope(node);
+    }
+    function declaresArguments(node) {
+      return node.type === "FunctionExpression" || node.type === "FunctionDeclaration";
+    }
+    function reallyParse(source, options) {
+      var parseOptions = Object.assign(
+        {
+          allowReturnOutsideFunction: true,
+          allowImportExportEverywhere: true,
+          allowHashBang: true,
+          ecmaVersion: "latest"
+        },
+        options
+      );
+      return acorn.parse(source, parseOptions);
+    }
+    module.exports = findGlobals;
+    module.exports.parse = reallyParse;
+    function findGlobals(source, options) {
+      options = options || {};
+      var globals = [];
+      var ast;
+      if (typeof source === "string") {
+        ast = reallyParse(source, options);
+      } else {
+        ast = source;
+      }
+      if (!(ast && typeof ast === "object" && ast.type === "Program")) {
+        throw new TypeError("Source must be either a string of JavaScript or an acorn AST");
+      }
+      var declareFunction = function(node) {
+        var fn = node;
+        fn.locals = fn.locals || /* @__PURE__ */ Object.create(null);
+        node.params.forEach(function(node2) {
+          declarePattern(node2, fn);
+        });
+        if (node.id) {
+          fn.locals[node.id.name] = true;
+        }
+      };
+      var declareClass = function(node) {
+        node.locals = node.locals || /* @__PURE__ */ Object.create(null);
+        if (node.id) {
+          node.locals[node.id.name] = true;
+        }
+      };
+      var declarePattern = function(node, parent) {
+        switch (node.type) {
+          case "Identifier":
+            parent.locals[node.name] = true;
+            break;
+          case "ObjectPattern":
+            node.properties.forEach(function(node2) {
+              declarePattern(node2.value || node2.argument, parent);
+            });
+            break;
+          case "ArrayPattern":
+            node.elements.forEach(function(node2) {
+              if (node2) declarePattern(node2, parent);
+            });
+            break;
+          case "RestElement":
+            declarePattern(node.argument, parent);
+            break;
+          case "AssignmentPattern":
+            declarePattern(node.left, parent);
+            break;
+          // istanbul ignore next
+          default:
+            throw new Error("Unrecognized pattern type: " + node.type);
+        }
+      };
+      var declareModuleSpecifier = function(node, parents) {
+        ast.locals = ast.locals || /* @__PURE__ */ Object.create(null);
+        ast.locals[node.local.name] = true;
+      };
+      walk.ancestor(ast, {
+        "VariableDeclaration": function(node, parents) {
+          var parent = null;
+          for (var i2 = parents.length - 1; i2 >= 0 && parent === null; i2--) {
+            if (node.kind === "var" ? isScope(parents[i2]) : isBlockScope(parents[i2])) {
+              parent = parents[i2];
+            }
+          }
+          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
+          node.declarations.forEach(function(declaration) {
+            declarePattern(declaration.id, parent);
+          });
+        },
+        "FunctionDeclaration": function(node, parents) {
+          var parent = null;
+          for (var i2 = parents.length - 2; i2 >= 0 && parent === null; i2--) {
+            if (isScope(parents[i2])) {
+              parent = parents[i2];
+            }
+          }
+          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
+          if (node.id) {
+            parent.locals[node.id.name] = true;
+          }
+          declareFunction(node);
+        },
+        "Function": declareFunction,
+        "ClassDeclaration": function(node, parents) {
+          var parent = null;
+          for (var i2 = parents.length - 2; i2 >= 0 && parent === null; i2--) {
+            if (isBlockScope(parents[i2])) {
+              parent = parents[i2];
+            }
+          }
+          parent.locals = parent.locals || /* @__PURE__ */ Object.create(null);
+          if (node.id) {
+            parent.locals[node.id.name] = true;
+          }
+          declareClass(node);
+        },
+        "Class": declareClass,
+        "TryStatement": function(node) {
+          if (node.handler === null || node.handler.param === null) return;
+          node.handler.locals = node.handler.locals || /* @__PURE__ */ Object.create(null);
+          declarePattern(node.handler.param, node.handler);
+        },
+        "ImportDefaultSpecifier": declareModuleSpecifier,
+        "ImportSpecifier": declareModuleSpecifier,
+        "ImportNamespaceSpecifier": declareModuleSpecifier
+      });
+      function identifier(node, parents) {
+        var name = node.name;
+        if (name === "undefined") return;
+        for (var i2 = 0; i2 < parents.length; i2++) {
+          if (name === "arguments" && declaresArguments(parents[i2])) {
+            return;
+          }
+          if (parents[i2].locals && name in parents[i2].locals) {
+            return;
+          }
+        }
+        node.parents = parents.slice();
+        globals.push(node);
+      }
+      walk.ancestor(ast, {
+        "VariablePattern": identifier,
+        "Identifier": identifier,
+        "ThisExpression": function(node, parents) {
+          for (var i2 = 0; i2 < parents.length; i2++) {
+            var parent = parents[i2];
+            if (parent.type === "FunctionExpression" || parent.type === "FunctionDeclaration") {
+              return;
+            }
+            if (parent.type === "PropertyDefinition" && parents[i2 + 1] === parent.value) {
+              return;
+            }
+          }
+          node.parents = parents.slice();
+          globals.push(node);
+        }
+      });
+      var groupedGlobals = /* @__PURE__ */ Object.create(null);
+      globals.forEach(function(node) {
+        var name = node.type === "ThisExpression" ? "this" : node.name;
+        groupedGlobals[name] = groupedGlobals[name] || [];
+        groupedGlobals[name].push(node);
+      });
+      return Object.keys(groupedGlobals).sort().map(function(name) {
+        return { name, nodes: groupedGlobals[name] };
+      });
+    }
+  }
+});
+
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
 import path13 from "node:path";
@@ -15229,12 +15229,23 @@ async function reapAbandonedRuns(options) {
       if (fresh.status !== "in-progress") {
         continue;
       }
-      fresh.status = "abandoned";
-      fresh.abandonment = {
+      const abandonment = {
         observed_at: (/* @__PURE__ */ new Date()).toISOString(),
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      const rewritten = await resolveAbandonedAgentRecords(path3.join(options.namespaceDir, entry.name), abandonment);
+      if (Array.isArray(fresh.files)) {
+        for (const fileEntry of fresh.files) {
+          const update = rewritten.get(fileEntry.path);
+          if (update !== void 0) {
+            fileEntry.size = update.size;
+            fileEntry.sha256 = update.sha256;
+          }
+        }
+      }
+      fresh.status = "abandoned";
+      fresh.abandonment = abandonment;
       if (fresh.integrity !== void 0 && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
         fresh.integrity.manifest_sha256 = null;
         fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
@@ -15246,6 +15257,37 @@ async function reapAbandonedRuns(options) {
     }
   }
   return reaped;
+}
+async function resolveAbandonedAgentRecords(runDir, abandonment) {
+  const rewritten = /* @__PURE__ */ new Map();
+  const agentsDir = path3.join(runDir, "agents");
+  const agentEntries = await readdir(agentsDir, { withFileTypes: true }).catch(() => null);
+  if (agentEntries === null) {
+    return rewritten;
+  }
+  for (const agentEntry of agentEntries) {
+    if (!agentEntry.isDirectory()) {
+      continue;
+    }
+    try {
+      const agentJsonPath = path3.join(agentsDir, agentEntry.name, "agent.json");
+      const agentRecord = JSON.parse(await readFile(agentJsonPath, "utf8"));
+      if (agentRecord.status !== "in-progress") {
+        continue;
+      }
+      agentRecord.status = "abandoned";
+      agentRecord.abandonment = abandonment;
+      const content = `${canonicalJson(agentRecord)}
+`;
+      await writeStandaloneText(agentJsonPath, content);
+      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
+        size: Buffer.byteLength(content),
+        sha256: sha256(content)
+      });
+    } catch {
+    }
+  }
+  return rewritten;
 }
 async function judgeOwnerGone(owner, procDir, host) {
   if (owner === void 0 || owner === null) {
@@ -15373,6 +15415,8 @@ function holdEventKind(method) {
       return "answer-rejected";
     case "hold/timedOut":
       return "timed-out";
+    case "hold/retired":
+      return "retired";
     default:
       return null;
   }
@@ -15705,36 +15749,274 @@ function assertPositiveIntegerOption(options, option, maximum) {
 }
 
 // src/holds.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { homedir as homedir2, hostname as hostname2 } from "node:os";
+import path6 from "node:path";
+
+// src/status-file.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
+import { link, readFile as readFile2, readdir as readdir2, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import { hostname } from "node:os";
 import path5 from "node:path";
+var STATUS_FILENAME = "ensemble.local.json";
+var DEFAULT_HEARTBEAT_MS = 1e4;
+var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
+async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
+  if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
+    return false;
+  }
+  if (typeof owner.start_ticks !== "string") {
+    return false;
+  }
+  const liveTicks = await readProcessStartTicks(procDir, owner.pid);
+  if (liveTicks === owner.start_ticks) {
+    return false;
+  }
+  if (liveTicks === null && await readProcessStartTicks(procDir, process.pid) === null) {
+    return false;
+  }
+  return true;
+}
+var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile2, readdir: readdir2, rename: rename3, unlink, writeFile: writeFile3 };
+var StatusFileWriter = class {
+  #progress;
+  #dir;
+  #onError;
+  #fileOperations;
+  #unsubscribe;
+  #writing = null;
+  #dirty = false;
+  #closed = false;
+  #tmpSeq = 0;
+  #heartbeat;
+  #initialSweep;
+  #ownerEvidence;
+  #procDir;
+  constructor(options) {
+    this.#progress = options.progress;
+    this.#dir = options.dir;
+    this.#onError = options.onError;
+    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
+    const procDir = options.procDir ?? "/proc";
+    this.#procDir = procDir;
+    this.#ownerEvidence = (async () => ({
+      host: hostname(),
+      pid: process.pid,
+      start_ticks: await readProcessStartTicks(procDir, process.pid)
+    }))();
+    this.#initialSweep = this.#sweepStaleArtifacts();
+    this.#unsubscribe = this.#progress.onChange(() => this.#request());
+    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
+    this.#heartbeat.unref();
+    this.#request();
+  }
+  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
+  async close() {
+    this.#closed = true;
+    clearInterval(this.#heartbeat);
+    this.#unsubscribe();
+    while (this.#writing !== null) {
+      await this.#writing;
+    }
+    await this.#removeSnapshot();
+  }
+  #request() {
+    if (this.#closed) {
+      return;
+    }
+    this.#dirty = true;
+    this.#drain();
+  }
+  #drain() {
+    if (this.#writing !== null || !this.#dirty) {
+      return;
+    }
+    this.#dirty = false;
+    this.#writing = this.#write().finally(() => {
+      this.#writing = null;
+      this.#drain();
+    });
+  }
+  async #write() {
+    try {
+      await this.#writeAtomic(this.#progress.snapshot());
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+    }
+  }
+  async #writeAtomic(snapshot) {
+    await this.#initialSweep;
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
+    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
+`, "utf8");
+    await this.#fileOperations.rename(tmp, target);
+  }
+  async #removeSnapshot() {
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
+    try {
+      await this.#fileOperations.rename(target, claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+      return;
+    }
+    let belongsToAnotherRun = false;
+    try {
+      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      belongsToAnotherRun = typeof current2.runId === "string" && current2.runId !== this.#progress.runId;
+    } catch {
+    }
+    if (belongsToAnotherRun) {
+      try {
+        await this.#fileOperations.link(claim, target);
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "EEXIST") {
+          this.#reportError(error);
+          try {
+            await this.#fileOperations.rename(claim, target);
+          } catch (renameError) {
+            this.#reportError(renameError);
+          }
+          return;
+        }
+      }
+    }
+    try {
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "ENOENT") {
+        return;
+      }
+      this.#reportError(error);
+    }
+  }
+  async #sweepStaleArtifacts() {
+    let entries;
+    try {
+      entries = await this.#fileOperations.readdir(this.#dir);
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+      return;
+    }
+    for (const entry of entries) {
+      const prefix = `${STATUS_FILENAME}.`;
+      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
+      const ownerPid = Number(match?.[1]);
+      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+        continue;
+      }
+      try {
+        await this.#fileOperations.unlink(path5.join(this.#dir, entry));
+      } catch (error) {
+        if (!isNodeError2(error) || error.code !== "ENOENT") {
+          this.#reportError(error);
+        }
+      }
+    }
+    const target = path5.join(this.#dir, STATUS_FILENAME);
+    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
+    try {
+      await this.#fileOperations.rename(target, claim);
+    } catch {
+      return;
+    }
+    let ownerGone = false;
+    try {
+      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
+      ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
+    } catch {
+    }
+    if (ownerGone) {
+      await this.#fileOperations.unlink(claim).catch(() => void 0);
+      return;
+    }
+    try {
+      await this.#fileOperations.link(claim, target);
+      await this.#fileOperations.unlink(claim);
+    } catch (error) {
+      if (isNodeError2(error) && error.code === "EEXIST") {
+        await this.#fileOperations.unlink(claim).catch(() => void 0);
+        return;
+      }
+      try {
+        await this.#fileOperations.rename(claim, target);
+      } catch (renameError) {
+        this.#reportError(renameError);
+      }
+    }
+  }
+  #reportError(error) {
+    try {
+      this.#onError?.(error);
+    } catch {
+    }
+  }
+};
+function isNodeError2(error) {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !isNodeError2(error) || error.code !== "ESRCH";
+  }
+}
+
+// src/holds.ts
+var HOLD_SCOPE_ENV = "ENSEMBLE_HOLD_SCOPE";
+function resolveHoldScope(explicit, env = process.env) {
+  if (explicit !== void 0) {
+    return explicit;
+  }
+  const inherited = env[HOLD_SCOPE_ENV];
+  return inherited !== void 0 && inherited.trim().length > 0 ? inherited : null;
+}
+function holdScopeSegment(scope) {
+  return scope === null ? "shared" : `scope-${encodeURIComponent(scope)}`;
+}
 var DECISION_SUFFIX = ".decision.json";
 function defaultHoldsDirectory(env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir2(), ".local", "share");
-  return path5.join(dataHome2, "ensemble", "holds");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir2(), ".local", "share");
+  return path6.join(dataHome2, "ensemble", "holds");
 }
 var HoldManager = class {
   #dir;
   #runId;
   #cwd;
+  #scope;
   #pollIntervalMs;
   #now;
   #onEvent;
   #onOpen;
   #onSettled;
+  #procDir;
   #sequence = 0;
   #closed = false;
   #abort = new AbortController();
+  #sweepDone = false;
   constructor(options) {
-    this.#dir = options.dir;
+    this.#dir = path6.join(options.dir, holdScopeSegment(options.scope));
     this.#runId = options.runId;
     this.#cwd = options.cwd;
+    this.#scope = options.scope;
     this.#pollIntervalMs = options.pollIntervalMs ?? 500;
     this.#now = options.now ?? (() => Date.now());
     this.#onEvent = options.onEvent;
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
+    this.#procDir = options.procDir ?? "/proc";
   }
   async raise(options) {
     assertValidRaiseHoldOptions(options);
@@ -15743,33 +16025,40 @@ var HoldManager = class {
     }
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
-    const nonce = randomUUID();
-    const holdPath = path5.join(this.#dir, `${holdId}.json`);
-    const decisionPath = path5.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
+    const nonce = randomUUID2();
+    const holdPath = path6.join(this.#dir, `${holdId}.json`);
+    const decisionPath = path6.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
     const deadline = options.timeoutMs === void 0 ? null : raisedAt + options.timeoutMs;
     const record = {
-      schema_version: 1,
+      schema_version: 2,
       kind: "ensemble_hold",
       run_id: this.#runId,
       hold_id: holdId,
       nonce,
+      scope: this.#scope,
       content: options.content,
       verdicts: [...options.verdicts],
       raised_at: new Date(raisedAt).toISOString(),
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
-      pid: process.pid,
+      owner: {
+        host: hostname2(),
+        pid: process.pid,
+        start_ticks: await readProcessStartTicks(this.#procDir, process.pid)
+      },
       decision_path: decisionPath
     };
     await mkdir3(this.#dir, { recursive: true });
+    await this.#retireDeadSiblings();
     const tmp = `${holdPath}.${process.pid}.tmp`;
-    await writeFile3(tmp, `${JSON.stringify(record, null, 2)}
+    await writeFile4(tmp, `${JSON.stringify(record, null, 2)}
 `, { encoding: "utf8" });
-    await rename3(tmp, holdPath);
+    await rename4(tmp, holdPath);
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
       holdId,
+      scope: this.#scope,
       content: options.content,
       verdicts: record.verdicts,
       decisionPath,
@@ -15786,6 +16075,25 @@ var HoldManager = class {
   close() {
     this.#closed = true;
     this.#abort.abort();
+  }
+  /**
+   * Retire this scope's dead-raiser holds, once per manager: the sweep that
+   * observes a raiser provably gone removes its hold, observably — one
+   * `hold/retired` event per removal. Judgement is the shared never-guess
+   * owner check; anything undecidable stays.
+   */
+  async #retireDeadSiblings() {
+    if (this.#sweepDone) {
+      return;
+    }
+    this.#sweepDone = true;
+    try {
+      const { retired } = await enumerateScopeDirectory(this.#dir, { procDir: this.#procDir });
+      for (const record of retired) {
+        this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope });
+      }
+    } catch {
+    }
   }
   async #awaitDecision(record, holdPath, decisionPath, deadline) {
     const grace = { lastUnparseable: null };
@@ -15812,7 +16120,7 @@ var HoldManager = class {
   async #readDecision(record, decisionPath, grace) {
     let raw;
     try {
-      raw = await readFile2(decisionPath, "utf8");
+      raw = await readFile3(decisionPath, "utf8");
     } catch {
       grace.lastUnparseable = null;
       return null;
@@ -15868,43 +16176,65 @@ var HoldManager = class {
     this.#onEvent?.({ method, params, receivedAt: Date.now() });
   }
 };
-async function enumerateHolds(dir) {
+async function enumerateHolds(dir, options = {}) {
+  const procDir = options.procDir ?? "/proc";
+  if (options.scope !== void 0) {
+    return enumerateScopeDirectory(path6.join(dir, holdScopeSegment(options.scope)), { procDir });
+  }
   let entries;
   try {
-    entries = await readdir2(dir);
+    entries = await readdir3(dir, { withFileTypes: true });
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return [];
+      return { holds: [], retired: [] };
     }
     throw error;
   }
-  const holds = [];
+  const result = { holds: [], retired: [] };
+  for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const scoped = await enumerateScopeDirectory(path6.join(dir, entry.name), { procDir });
+    result.holds.push(...scoped.holds);
+    result.retired.push(...scoped.retired);
+  }
+  return result;
+}
+async function enumerateScopeDirectory(scopeDir, options) {
+  let entries;
+  try {
+    entries = await readdir3(scopeDir);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { holds: [], retired: [] };
+    }
+    throw error;
+  }
+  const result = { holds: [], retired: [] };
   for (const entry of entries.sort()) {
     if (!entry.endsWith(".json") || entry.endsWith(DECISION_SUFFIX)) {
       continue;
     }
-    const holdPath = path5.join(dir, entry);
+    const holdPath = path6.join(scopeDir, entry);
     try {
-      const record = JSON.parse(await readFile2(holdPath, "utf8"));
+      const record = JSON.parse(await readFile3(holdPath, "utf8"));
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
-      holds.push({ record, live: isProcessAlive(record.pid), path: holdPath });
+      if (await snapshotOwnerGone(record.owner, options.procDir)) {
+        await rm3(holdPath, { force: true }).catch(() => void 0);
+        if (typeof record.decision_path === "string") {
+          await rm3(record.decision_path, { force: true }).catch(() => void 0);
+        }
+        result.retired.push(record);
+        continue;
+      }
+      result.holds.push({ record, path: holdPath });
     } catch {
     }
   }
-  return holds;
-}
-function isProcessAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
-  }
+  return result;
 }
 var RAISE_HOLD_OPTION_KEYS = ["content", "verdicts", "timeoutMs"];
 var RAISE_HOLD_OPTION_KEY_SET = new Set(RAISE_HOLD_OPTION_KEYS);
@@ -15931,12 +16261,5685 @@ function assertValidRaiseHoldOptions(options) {
   }
 }
 
+// src/operator-diagnosis.ts
+function presentTerminalError(error, context) {
+  const lines = diagnose(error, context);
+  if (lines === null) {
+    return null;
+  }
+  const [first, ...detail] = lines;
+  return [first, ...detail.map((line) => `  ${line}`)].join("\n");
+}
+function presentOperationalError(error) {
+  return presentTerminalError(error, { archiveDir: null, lastAgentRecord: null });
+}
+function diagnose(error, context) {
+  if (isInterrupt(error)) {
+    return [
+      `Interrupted (${error.signal}) \u2014 partial result on stdout${recordSuffix(context)}`
+    ];
+  }
+  if (isWorkflowTimeout(error)) {
+    return [`${error.message} \u2014 partial result on stdout${recordSuffix(context)}`];
+  }
+  if (error instanceof Error && error.name === "SingleAgentFailedError") {
+    const lines = [error.message];
+    for (const attempt of context.lastAgentRecord?.attempts ?? []) {
+      if (attempt.failure !== null) {
+        const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
+        const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
+        lines.push(
+          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
+        );
+      }
+    }
+    const record = context.lastAgentRecord;
+    if (context.archiveDir !== null && record !== null) {
+      lines.push(`full attempt evidence: ${context.archiveDir}/agents/${String(record.id).padStart(6, "0")}/agent.json`);
+    }
+    return lines;
+  }
+  const argListLimit = findErrorCode(error, "E2BIG");
+  if (argListLimit) {
+    return [
+      "Prompt exceeds the platform's argument-size limit (E2BIG) \u2014 shorten the prompt (this engine passes it as a process argument)"
+    ];
+  }
+  if (error instanceof AmbientConfigError) {
+    return [`Configuration error: ${error.message}`];
+  }
+  if (error instanceof CodexSchemaSubsetUnsupportedError) {
+    const lines = [
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
+      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+    ];
+    const diagnostic = appServerDiagnosticOf(error);
+    if (diagnostic !== null) {
+      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
+    }
+    return lines;
+  }
+  if (error instanceof EngineShutdownError) {
+    return [`${error.message} \u2014 this worker was interrupted by the run ending, not by its own failure`];
+  }
+  if (error instanceof Error && error.name === "AppServerExitedError") {
+    const exit = workerExitStatusOf(error);
+    const how = exit?.signal !== null && exit?.signal !== void 0 ? `terminated by ${exit.signal}` : exit?.exitCode !== null && exit?.exitCode !== void 0 ? `exited with code ${exit.exitCode}` : "exited unexpectedly";
+    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
+    const diagnostic = appServerDiagnosticOf(error);
+    if (diagnostic !== null) {
+      lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
+    }
+    return lines;
+  }
+  if (error instanceof HoldTimeoutError || error instanceof PreSpawnAuthorError) {
+    return null;
+  }
+  return null;
+}
+function recordSuffix(context) {
+  return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
+}
+var TERMINAL_CONTROL_SEQUENCES = (
+  // eslint-disable-next-line no-control-regex -- the control characters are the subject of the strip
+  /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B\[[0-?]*[ -/]*[@-~]?|\u001B[@-_]?|\u0007/g
+);
+function stripControl(text) {
+  return text.replace(TERMINAL_CONTROL_SEQUENCES, "");
+}
+function bounded(text, limit = 400) {
+  const flat = stripControl(text).replace(/\s+/g, " ").trim();
+  return flat.length > limit ? `${flat.slice(0, limit)}\u2026` : flat;
+}
+function isInterrupt(error) {
+  return error instanceof Error && error.name === "WorkflowInterruptedError" && typeof error.signal === "string";
+}
+function isWorkflowTimeout(error) {
+  return error instanceof Error && error.name === "WorkflowTimeoutError";
+}
+function findErrorCode(error, code) {
+  let current2 = error;
+  for (let depth = 0; depth < 8 && current2 instanceof Error; depth += 1) {
+    if (current2.code === code || current2.message.includes(code)) {
+      return true;
+    }
+    current2 = current2.cause;
+  }
+  return false;
+}
+
+// src/runtime.ts
+import { randomUUID as randomUUID6 } from "node:crypto";
+
+// src/agent-placement.ts
+import { stat as stat2 } from "node:fs/promises";
+import path8 from "node:path";
+
+// src/worktree-isolation.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { execFile as execFile2 } from "node:child_process";
+import { mkdir as mkdir4, rmdir } from "node:fs/promises";
+import path7 from "node:path";
+import { promisify as promisify2 } from "node:util";
+var execFileAsync2 = promisify2(execFile2);
+var GitWorktreeIsolationManager = class {
+  #counter = 0;
+  #repoRoots = /* @__PURE__ */ new Map();
+  #worktreeRoots = /* @__PURE__ */ new Map();
+  async create(baseCwd) {
+    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const name = this.#uniqueName();
+    const branch = `ensemble-workflows/${name}`;
+    const worktreePath = path7.join(path7.dirname(repoRoot), `${path7.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    await mkdir4(path7.dirname(worktreePath), { recursive: true });
+    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
+    this.#worktreeRoots.set(worktreePath, repoRoot);
+    return {
+      path: worktreePath,
+      branch,
+      baseCommit
+    };
+  }
+  async finish(worktree) {
+    const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+    const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
+    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
+    if (changed) {
+      this.#worktreeRoots.delete(worktree.path);
+      return {
+        ...worktree,
+        tipCommit: tip,
+        changed: true,
+        removed: false
+      };
+    }
+    const repoRoot = this.#worktreeRoots.get(worktree.path);
+    if (repoRoot === void 0) {
+      throw new Error(`worktree was not created by this manager: ${worktree.path}`);
+    }
+    await git2(repoRoot, ["worktree", "remove", worktree.path]);
+    await git2(repoRoot, ["branch", "-D", worktree.branch]);
+    this.#worktreeRoots.delete(worktree.path);
+    try {
+      await rmdir(path7.dirname(worktree.path));
+    } catch {
+    }
+    return {
+      ...worktree,
+      tipCommit: tip,
+      changed: false,
+      removed: true
+    };
+  }
+  async #gitRepoRoot(baseCwd) {
+    const resolvedCwd = path7.resolve(baseCwd);
+    let repoRoot = this.#repoRoots.get(resolvedCwd);
+    if (repoRoot === void 0) {
+      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+        throw new WorktreePlacementRejectedError(resolvedCwd, {
+          cause: error
+        });
+      });
+      this.#repoRoots.set(resolvedCwd, repoRoot);
+    }
+    try {
+      return (await repoRoot).trim();
+    } catch (error) {
+      this.#repoRoots.delete(resolvedCwd);
+      throw error;
+    }
+  }
+  #uniqueName() {
+    this.#counter += 1;
+    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID3().slice(0, 8)}`;
+  }
+};
+async function git2(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync2("git", args, {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024
+    });
+    return stdout;
+  } catch (error) {
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
+      cause: error
+    });
+  }
+}
+function formatExecError(error) {
+  if (typeof error === "object" && error !== null) {
+    const stderr = "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : "";
+    const message = "message" in error && typeof error.message === "string" ? error.message : "";
+    return stderr.length > 0 ? stderr : message;
+  }
+  return String(error);
+}
+
+// src/agent-placement.ts
+var AgentPlacementManager = class {
+  baseCwd;
+  #worktreeManager;
+  constructor(options) {
+    this.baseCwd = path8.resolve(options.baseCwd);
+    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
+  }
+  async assertUsableCwd(options) {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    try {
+      if (!(await stat2(requestedCwd)).isDirectory()) {
+        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
+      }
+    } catch (error) {
+      if (error instanceof AgentCwdRejectedError) {
+        throw error;
+      }
+      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
+    }
+  }
+  async open(options) {
+    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
+    if (options.isolation !== "worktree") {
+      return { cwd: requestedCwd };
+    }
+    const worktree = await this.#worktreeManager.create(requestedCwd);
+    return { cwd: worktree.path, worktree };
+  }
+  async close(placement) {
+    if (placement.worktree === void 0) {
+      return null;
+    }
+    return this.#worktreeManager.finish(placement.worktree);
+  }
+};
+function resolveAgentCwd(baseCwd, requestedCwd) {
+  return path8.resolve(baseCwd, requestedCwd ?? ".");
+}
+
+// src/admission.ts
+var AdmissionController = class {
+  ceiling;
+  #caps;
+  #ceilingActive = 0;
+  #engineActive = /* @__PURE__ */ new Map();
+  #waiting = [];
+  #onAdmission;
+  #eventSeq = 0;
+  #closed = false;
+  constructor(options) {
+    if (options.ceiling !== null && (!Number.isInteger(options.ceiling) || options.ceiling < 1)) {
+      throw new Error(`Agent ceiling must be a positive integer, got ${options.ceiling}`);
+    }
+    for (const [engine, cap] of options.caps) {
+      if (!Number.isInteger(cap) || cap < 1) {
+        throw new Error(`Concurrency cap for ${engine} must be a positive integer, got ${cap}`);
+      }
+    }
+    this.ceiling = options.ceiling;
+    this.#caps = options.caps;
+    this.#onAdmission = options.onAdmission;
+  }
+  admit(engine, agentId, task) {
+    if (this.#closed) {
+      throw new EngineShutdownError(engine);
+    }
+    if (!this.#caps.has(engine)) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return new Promise((resolve, reject) => {
+      this.#waiting.push({
+        engine,
+        agentId,
+        task: async () => task(),
+        resolve: (value) => resolve(value),
+        reject,
+        skipReported: false
+      });
+      this.#emit("queued", engine, agentId);
+      this.#drain();
+    });
+  }
+  /**
+   * Settles every promise already accepted by the runtime. Waiting tasks are
+   * rejected without ever acquiring a slot — shutdown is a cancellation, not
+   * a dispatch, and starting them with gates bypassed was observed pushing
+   * the ceiling past its limit. Tasks already admitted keep their slots and
+   * release them through #start's finally as they settle.
+   */
+  close() {
+    if (this.#closed) {
+      return;
+    }
+    this.#closed = true;
+    const waiting = this.#waiting.splice(0);
+    for (const entry of waiting) {
+      entry.reject(new EngineShutdownError(entry.engine));
+    }
+  }
+  snapshot() {
+    return {
+      ceilingActive: this.#ceilingActive,
+      engineActive: new Map(this.#engineActive),
+      waiting: this.#waiting.length
+    };
+  }
+  #drain() {
+    let index = 0;
+    const bypassed = [];
+    while (index < this.#waiting.length) {
+      if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
+        return;
+      }
+      const entry = this.#waiting[index];
+      if (entry === void 0) {
+        return;
+      }
+      if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
+        bypassed.push(entry);
+        index += 1;
+        continue;
+      }
+      for (const skipped of bypassed) {
+        if (!skipped.skipReported) {
+          skipped.skipReported = true;
+          this.#emit("skipped", skipped.engine, skipped.agentId, "engine-cap");
+        }
+      }
+      bypassed.length = 0;
+      this.#waiting.splice(index, 1);
+      this.#start(entry);
+    }
+  }
+  #start(entry) {
+    this.#ceilingActive += 1;
+    this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) + 1);
+    this.#emit("admitted", entry.engine, entry.agentId);
+    Promise.resolve().then(entry.task).then(entry.resolve, entry.reject).finally(() => {
+      this.#ceilingActive -= 1;
+      this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) - 1);
+      this.#emit("released", entry.engine, entry.agentId);
+      if (!this.#closed) {
+        this.#drain();
+      }
+    });
+  }
+  #capFor(engine) {
+    const cap = this.#caps.get(engine);
+    if (cap === void 0) {
+      throw new Error(`No concurrency cap registered for engine ${engine}`);
+    }
+    return cap;
+  }
+  #activeFor(engine) {
+    return this.#engineActive.get(engine) ?? 0;
+  }
+  #emit(kind, engine, agentId, reason) {
+    this.#eventSeq += 1;
+    this.#onAdmission?.({
+      seq: this.#eventSeq,
+      engine,
+      agentId,
+      kind,
+      ceilingHeld: this.#ceilingActive,
+      engineHeld: this.#activeFor(engine),
+      ...reason === void 0 ? {} : { reason }
+    });
+  }
+};
+
+// src/budget.ts
+var TokenBudget = class {
+  ceilings;
+  accountingMode = "last-delta";
+  events = [];
+  #spent = {};
+  constructor(ceilings = {}) {
+    this.ceilings = {
+      codex: ceilings.codex ?? null,
+      claude: ceilings.claude ?? null,
+      opencode: ceilings.opencode ?? null,
+      ...ceilings
+    };
+  }
+  spent(engine) {
+    return this.#spent[engine] ?? 0;
+  }
+  remaining(engine) {
+    const ceiling = this.ceilings[engine] ?? null;
+    if (ceiling === null) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.max(0, ceiling - this.spent(engine));
+  }
+  assertCanStart(engine) {
+    const ceiling = this.ceilings[engine] ?? null;
+    const spent = this.spent(engine);
+    if (ceiling !== null && spent >= ceiling) {
+      throw new BudgetExceededError(engine, ceiling, spent);
+    }
+  }
+  record(engine, event) {
+    this.events.push({ engine, event });
+    this.#spent[engine] = this.spent(engine) + event.last.totalTokens;
+  }
+};
+function tokenUsageEventFromParams(params) {
+  const threadId = params.threadId;
+  const turnId = params.turnId;
+  const tokenUsage = params.tokenUsage;
+  if (typeof threadId !== "string" || typeof turnId !== "string" || !isJsonObject(tokenUsage)) {
+    return null;
+  }
+  const last = breakdownFromUnknown(tokenUsage.last);
+  const total = breakdownFromUnknown(tokenUsage.total);
+  if (last === null || total === null) {
+    return null;
+  }
+  return { threadId, turnId, last, total, raw: params };
+}
+function breakdownFromUnknown(value) {
+  if (!isJsonObject(value)) {
+    return null;
+  }
+  const cachedInputTokens = numericField(value, "cachedInputTokens");
+  const inputTokens = numericField(value, "inputTokens");
+  const outputTokens = numericField(value, "outputTokens");
+  const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
+  const totalTokens = numericField(value, "totalTokens");
+  if (cachedInputTokens === null || inputTokens === null || outputTokens === null || reasoningOutputTokens === null || totalTokens === null) {
+    return null;
+  }
+  return {
+    cachedInputTokens,
+    inputTokens,
+    outputTokens,
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens
+  };
+}
+function numericField(source, key) {
+  const value = source[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function optionalNumericField(source, key) {
+  return source[key] === void 0 ? void 0 : numericField(source, key);
+}
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/claude-control-plane.ts
+import { execFile as execFile3, spawn } from "node:child_process";
+import { access, mkdtemp, readFile as readFile4, readdir as readdir4, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { homedir as homedir3, tmpdir } from "node:os";
+import path9 from "node:path";
+var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+var ClaudeCliControlPlane = class {
+  #claudeBin;
+  #tmuxBin;
+  #projectsDir;
+  #dispatchTimeoutMs;
+  #reapGraceMs;
+  #procDir;
+  #valveAttachSettleMs;
+  #valveSubmitSettleMs;
+  #valveKillSettleMs;
+  #valveCounter = 0;
+  #env;
+  #workerEnv;
+  /** Per-session settings directories, removed when the session stops. */
+  #settingsDirs = /* @__PURE__ */ new Map();
+  constructor(options = {}) {
+    this.#claudeBin = options.claudeBin ?? "claude";
+    this.#tmuxBin = options.tmuxBin ?? "tmux";
+    this.#workerEnv = options.workerEnv ?? {};
+    this.#env = { ...process.env, ...this.#workerEnv };
+    this.#projectsDir = options.projectsDir ?? path9.join(homedir3(), ".claude", "projects");
+    this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
+    this.#reapGraceMs = options.reapGraceMs ?? 5e3;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
+    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
+    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
+  }
+  async dispatch(options) {
+    const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
+    if (options.model !== void 0) {
+      args.push("--model", options.model);
+    }
+    if (options.effort !== void 0) {
+      args.push("--effort", options.effort);
+    }
+    if (options.fallbackModel !== void 0) {
+      args.push("--fallback-model", options.fallbackModel);
+    }
+    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
+    args.push("--settings", path9.join(settingsDir, "settings.json"));
+    let registered = null;
+    try {
+      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
+      if (!dispatch.ok && await this.#findByName(options.name) === null) {
+        throw new ClaudeDispatchError(
+          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
+        );
+      }
+      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      for (; ; ) {
+        const handle = await this.#findByName(options.name);
+        if (handle !== null) {
+          registered = handle;
+          break;
+        }
+        if (Date.now() >= deadline) {
+          throw new ClaudeDispatchError(
+            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+          );
+        }
+        await delay(500);
+      }
+    } finally {
+      if (registered === null) {
+        await this.#removeSettingsDir(settingsDir);
+      } else {
+        this.#settingsDirs.set(registered.sessionId, settingsDir);
+      }
+    }
+    if (registered === null) {
+      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
+    }
+    return registered;
+  }
+  /**
+   * Write the per-dispatch settings file carrying the declared worker
+   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
+   * Written on every dispatch: the tag is what lets `stop()` reap the
+   * worker's surviving descendants, so an untagged worker would be an
+   * unowned one. (This supersedes the earlier no-declaration-no-flag
+   * behaviour, which predated descendant ownership.) The file can carry
+   * credentials — gateway values among the declared variables — so it lives
+   * in its own mkdtemp directory (0o700 by construction, unguessable name)
+   * and the file itself is 0o600.
+   */
+  async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
+    const env = {
+      ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
+      ...this.#workerEnv,
+      [WORKER_MARKER_VARIABLE]: dispatchName
+    };
+    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const dir = await mkdtemp(path9.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    try {
+      await writeFile5(path9.join(dir, "settings.json"), `${JSON.stringify(settings)}
+`, {
+        mode: 384
+      });
+    } catch (error) {
+      await this.#removeSettingsDir(dir);
+      throw error;
+    }
+    return dir;
+  }
+  async #removeSettingsDir(dir) {
+    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
+  }
+  async poll(handle) {
+    const roster = await this.#roster();
+    if (!roster.ok) {
+      return { status: "unknown", state: "unknown", present: true };
+    }
+    const record = roster.rows.find((row) => matchesHandle(row, handle)) ?? null;
+    if (record === null) {
+      return { status: "absent", state: "unknown", present: false };
+    }
+    const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
+    return {
+      status: typeof record.status === "string" ? record.status : "unknown",
+      state: normaliseState(record.state),
+      present: true,
+      ...waitingFor !== void 0 ? { waitingFor } : {}
+    };
+  }
+  async transcriptPath(handle) {
+    const filename = `${handle.sessionId}.jsonl`;
+    let projectDirs;
+    try {
+      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
+      projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      return null;
+    }
+    for (const dir of projectDirs) {
+      const candidate = path9.join(this.#projectsDir, dir, filename);
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+      }
+    }
+    return null;
+  }
+  async steer(handle, message) {
+    if ((await this.poll(handle)).present === false) {
+      return false;
+    }
+    this.#valveCounter += 1;
+    const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
+    try {
+      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
+        "-e",
+        `${name}=${value}`
+      ]);
+      const created = await this.#run(this.#tmuxBin, [
+        "new-session",
+        "-d",
+        ...environmentFlags,
+        "-s",
+        valve,
+        `${this.#claudeBin} attach ${handle.id}`
+      ]);
+      if (!created.ok) {
+        return false;
+      }
+      await delay(this.#valveAttachSettleMs);
+      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
+      if (!typed.ok) {
+        return false;
+      }
+      await delay(this.#valveSubmitSettleMs);
+      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      if (!submitted.ok) {
+        return false;
+      }
+      await delay(this.#valveKillSettleMs);
+      return true;
+    } finally {
+      await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
+    }
+  }
+  async stop(handle) {
+    await this.#run(this.#claudeBin, ["stop", handle.id]);
+    await this.#reapTaggedDescendants(handle.name);
+    await this.#run(this.#claudeBin, ["rm", handle.id]);
+    const settingsDir = this.#settingsDirs.get(handle.sessionId);
+    if (settingsDir !== void 0) {
+      this.#settingsDirs.delete(handle.sessionId);
+      await this.#removeSettingsDir(settingsDir);
+    }
+  }
+  /**
+   * Kill every surviving process tagged with this dispatch's marker:
+   * SIGTERM first, then SIGKILL for anything still alive after the grace
+   * period. Best-effort throughout — reaping is cleanup, and a scan or kill
+   * failure must never mask the turn's real outcome. On a platform without
+   * a readable proc filesystem the scan finds nothing and the reap is a
+   * no-op.
+   */
+  async #reapTaggedDescendants(dispatchName) {
+    const tagged = await this.#findTaggedProcesses(dispatchName);
+    if (tagged.length === 0) {
+      return;
+    }
+    for (const pid of tagged) {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+      }
+    }
+    await delay(this.#reapGraceMs);
+    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+      }
+    }
+  }
+  /** Pids (other than our own) whose environment carries this dispatch's tag. */
+  async #findTaggedProcesses(dispatchName) {
+    const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
+    let entries;
+    try {
+      entries = await readdir4(this.#procDir);
+    } catch {
+      return [];
+    }
+    const pids = [];
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) {
+        continue;
+      }
+      const pid = Number(entry);
+      if (pid === process.pid) {
+        continue;
+      }
+      let environ;
+      try {
+        environ = await readFile4(path9.join(this.#procDir, entry, "environ"), "utf8");
+      } catch {
+        continue;
+      }
+      if (environ.split("\0").includes(needle)) {
+        pids.push(pid);
+      }
+    }
+    return pids;
+  }
+  async tmuxAvailable() {
+    return (await this.#run(this.#tmuxBin, ["-V"])).ok;
+  }
+  async #findByName(name) {
+    const { rows } = await this.#roster();
+    const match = rows.find(
+      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
+    );
+    if (match === void 0 || typeof match.sessionId !== "string") {
+      return null;
+    }
+    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
+    return {
+      id,
+      sessionId: match.sessionId,
+      name,
+      cwd: typeof match.cwd === "string" ? match.cwd : ""
+    };
+  }
+  // `ok: false` means the query could not be performed (process error, empty or
+  // unparseable output) — distinct from "queried fine, session not listed",
+  // which is `{ ok: true, rows: [...] }` with the session simply absent.
+  async #roster() {
+    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
+    if (!result.ok || result.stdout.trim().length === 0) {
+      return { ok: false, rows: [] };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return { ok: false, rows: [] };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, rows: [] };
+    }
+    return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
+  }
+  #run(file, args, cwd) {
+    return new Promise((resolve) => {
+      execFile3(
+        file,
+        args,
+        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
+        (error, stdout, stderr) => {
+          resolve({ ok: error === null, stdout, stderr });
+        }
+      );
+    });
+  }
+  #runWithInput(file, args, input, cwd) {
+    return new Promise((resolve) => {
+      const child = spawn(file, args, {
+        ...cwd !== void 0 ? { cwd } : {},
+        env: this.#env,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      const stdout = [];
+      const stderr = [];
+      let settled = false;
+      const finish = (result) => {
+        if (!settled) {
+          settled = true;
+          resolve(result);
+        }
+      };
+      child.stdout.on("data", (chunk) => stdout.push(chunk));
+      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.on("error", (error) => {
+        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
+      });
+      child.on("close", (code) => {
+        finish({
+          ok: code === 0,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString()
+        });
+      });
+      child.stdin.on("error", () => void 0);
+      child.stdin.end(input);
+    });
+  }
+};
+function matchesHandle(row, handle) {
+  return typeof row.id === "string" && row.id === handle.id || typeof row.sessionId === "string" && row.sessionId === handle.sessionId;
+}
+function normaliseState(state) {
+  if (state === "working" || state === "blocked" || state === "done") {
+    return state;
+  }
+  return "unknown";
+}
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+// src/claude-engine.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/claude-transcript.ts
+import { readFile as readFile5 } from "node:fs/promises";
+function parseTranscriptText(text) {
+  const entries = [];
+  for (const line of text.split("\n")) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+    const entry = parseLine(line);
+    if (entry !== null) {
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+async function readTranscriptFile(path14) {
+  let text;
+  try {
+    text = await readFile5(path14, "utf8");
+  } catch (error) {
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
+  }
+  return { path: path14, text, entries: parseTranscriptText(text) };
+}
+function finalAssistantText(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const text = textFromContent(entry.message?.content);
+    if (text !== null && text.length > 0) {
+      return text;
+    }
+  }
+  return null;
+}
+var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
+function endsInSyntheticReply(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
+  }
+  return false;
+}
+function resolvedModelSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const model = entry.message?.model;
+    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
+      return model;
+    }
+  }
+  return null;
+}
+function turnComplete(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const stopReason = entry.message?.stop_reason;
+    return typeof stopReason === "string" && stopReason !== "tool_use";
+  }
+  return false;
+}
+function usageSince(entries, fromIndex = 0) {
+  let outputTokens = 0;
+  let lastInput = 0;
+  let lastCacheRead = 0;
+  let lastCacheCreation = 0;
+  let sawUsage = false;
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    const usage2 = asRecord(entry.message?.usage);
+    if (usage2 === null) {
+      continue;
+    }
+    sawUsage = true;
+    outputTokens += numeric(usage2.output_tokens);
+    lastInput = numeric(usage2.input_tokens);
+    lastCacheRead = numeric(usage2.cache_read_input_tokens);
+    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
+  }
+  if (!sawUsage) {
+    return zeroUsage();
+  }
+  const lastCached = lastCacheRead + lastCacheCreation;
+  return {
+    cachedInputTokens: lastCached,
+    cacheCreationInputTokens: lastCacheCreation,
+    inputTokens: lastInput,
+    outputTokens,
+    totalTokens: lastInput + lastCached + outputTokens
+  };
+}
+function parseLine(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asRecord(parsed) === null ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+function textFromContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const parts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      parts.push(record.text);
+    }
+  }
+  return parts.length > 0 ? parts.join("") : null;
+}
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function numeric(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+function zeroUsage() {
+  return {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0
+  };
+}
+
+// src/claude-engine.ts
+var CAPABILITY_DENY_RULES = {
+  skills: ["Skill"],
+  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
+};
+function permissionDenyRulesFor(strip) {
+  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
+}
+var CLAUDE_MULTITURN_CACHE_TTL = "1h";
+function claudeCacheTtlToMs(value) {
+  const match = /^(\d+)([smh]?)$/.exec(value.trim());
+  if (match === null) {
+    return null;
+  }
+  const amount = Number(match[1]);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return null;
+  }
+  const unit = match[2];
+  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
+}
+var CLAUDE_NATIVE_EFFORT = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "high"
+};
+function claudeNativeEffort(effort) {
+  if (effort === void 0) {
+    return void 0;
+  }
+  const native = CLAUDE_NATIVE_EFFORT[effort];
+  if (native === void 0) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
+    );
+  }
+  return native;
+}
+var dispatchCounter = 0;
+var MAX_CONSECUTIVE_ABSENCES = 3;
+var SETTLED_CONFIRMATION_POLLS = 5;
+var ClaudeEngineInvocation = class {
+  #cwd;
+  #options;
+  #controlPlane;
+  #onEvent;
+  #reportedUsage = null;
+  #multiTurn;
+  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
+  #turnPrompt;
+  /** The current turn's schema — the one thing a session varies per turn. */
+  #turnSchema;
+  /**
+   * Whether the current turn's prompt has reached the worker. A follow-up
+   * turn is delivered by the valve, and a retry after a failed delivery
+   * must re-send the prompt itself — a correction message would ask the
+   * worker to fix an answer it was never asked for.
+   */
+  #turnDelivered = false;
+  #pollIntervalMs;
+  #receiptTimeoutMs;
+  #firstLifeTimeoutMs;
+  #blockedRecoveryBound;
+  #namePrefix;
+  #handle = null;
+  #budgetEventCounter = 0;
+  #abortController = new AbortController();
+  #closed = false;
+  #closePromise = null;
+  #settlement = null;
+  #onClose;
+  constructor(options) {
+    this.#turnPrompt = options.prompt;
+    this.#turnSchema = options.options.schema;
+    this.#multiTurn = options.multiTurn ?? false;
+    this.#cwd = options.cwd;
+    this.#options = options.options;
+    this.#controlPlane = options.controlPlane;
+    this.#onEvent = options.onEvent;
+    this.#onClose = options.onClose;
+    const config = options.config ?? {};
+    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
+    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
+    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
+    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
+    this.#namePrefix = config.namePrefix ?? "ensemble";
+  }
+  /**
+   * Session mode's turn boundary: the next `runAttempt` delivers this
+   * prompt to the *held* session — by dispatch for the first turn, through
+   * the valve thereafter — with this turn's schema governing validation and
+   * correction. The returned invocation deliberately carries no `close`:
+   * a turn ending must never tear down the session it rode.
+   */
+  beginTurn(prompt, turn) {
+    this.#turnPrompt = prompt;
+    this.#turnSchema = turn.schema;
+    this.#turnDelivered = false;
+    return {
+      runAttempt: (context) => this.runAttempt(context)
+    };
+  }
+  runAttempt(context) {
+    const settlement = this.#runAttempt(context);
+    this.#settlement = settlement;
+    return settlement.finally(() => {
+      if (this.#settlement === settlement) {
+        this.#settlement = null;
+      }
+    });
+  }
+  async #runAttempt(context) {
+    this.#assertOpen();
+    this.#reportedUsage = null;
+    let fromIndex = 0;
+    try {
+      const previousFailure = context.previousFailure;
+      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        this.#requireValve(await this.#controlPlane.tmuxAvailable());
+        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
+      }
+      const correcting = previousFailure !== void 0 && this.#handle !== null;
+      if (correcting && await this.#controlPlane.tmuxAvailable()) {
+        const handle = this.#handle;
+        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
+      }
+      if (correcting && this.#multiTurn) {
+        this.#requireValve(false);
+      }
+      if (this.#handle !== null) {
+        await this.#teardown();
+      }
+      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
+    } catch (error) {
+      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
+      if (error instanceof Error && evidence !== null) {
+        this.#attachWorkerText(error, evidence, fromIndex);
+      }
+      if (error instanceof EngineShutdownError && evidence !== null) {
+        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
+      }
+      if (error instanceof ClaudeWorkerError) {
+        const workerDispatched = this.#handle !== null;
+        if (!this.#multiTurn) {
+          await this.#teardown();
+        }
+        return failedTurnResult(
+          error,
+          evidence,
+          this.#failureUsageEvent(evidence),
+          workerDispatched ? this.#options.effort : void 0
+        );
+      }
+      throw error;
+    }
+  }
+  async close() {
+    this.#closePromise ??= (async () => {
+      this.#closed = true;
+      this.#abortController.abort();
+      try {
+        await this.#settlement?.catch(() => void 0);
+        await this.#teardown();
+      } finally {
+        this.#onClose?.(this);
+      }
+    })();
+    await this.#closePromise;
+  }
+  async #dispatchAndCollect(previousFailure, onLiveEvidence) {
+    const denyRules = permissionDenyRulesFor(this.#options.strip);
+    const handle = await this.#controlPlane.dispatch({
+      prompt: this.#buildDispatchPrompt(previousFailure),
+      name: this.#nextName(),
+      cwd: this.#cwd,
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
+      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
+      // Loiter pricing: only a session meant to be resumed pays the
+      // 1-hour cache-write premium; one-shot workers keep the 5m default.
+      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
+    });
+    this.#handle = handle;
+    this.#turnDelivered = true;
+    if (this.#closed) {
+      await this.#teardown();
+      throw new EngineShutdownError("claude");
+    }
+    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
+    return this.#buildResult(handle, transcript, 0);
+  }
+  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
+  async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
+    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
+    }
+    await this.#awaitReceipt(handle, fromIndex);
+    this.#turnDelivered = true;
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /**
+   * Session mode has no degraded path: the valve is what keeps a follow-up
+   * (or a correction) inside the created session, so its absence fails the
+   * turn loudly instead of silently substituting a fresh worker.
+   */
+  #requireValve(available) {
+    if (!available) {
+      throw new ClaudeValveError(
+        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
+      );
+    }
+  }
+  async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
+    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!steered) {
+      throw new ClaudeValveError("reply valve failed to inject the correction");
+    }
+    await this.#awaitReceipt(handle, fromIndex);
+    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    return this.#buildResult(handle, transcript, fromIndex);
+  }
+  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
+  async #awaitReceipt(handle, mark) {
+    const deadline = Date.now() + this.#receiptTimeoutMs;
+    for (; ; ) {
+      this.#assertOpen();
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (status.status === "busy") {
+        return;
+      }
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null && transcript.entries.length > mark) {
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /**
+   * Poll until the worker's turn is complete, returning the transcript at that
+   * point. The transcript is the authoritative completion signal and is
+   * checked on **every** poll, before the roster state is interpreted: the
+   * daemon's `state` is unreliable, and a live process the worker itself
+   * spawned can hold the roster at `busy` long after the answer is on disk —
+   * gating the transcript read on "not busy" left a finished, schema-valid
+   * answer uncollected for 22+ minutes behind a worker-spawned child.
+   *
+   * Two ways out, and no silent third:
+   * - the transcript proves the turn complete (`turnComplete`) → collect;
+   * - the daemon stably reports the session settled while the transcript
+   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
+   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
+   *   *not* a collect-on-best-evidence path: a settled daemon beside an
+   *   unproven transcript is exactly what a killed worker's partial answer
+   *   looks like, and promoting that to a success would hand downstream
+   *   stages a truncated answer as if it were the real one. The partial text
+   *   rides the failure (the shared catch attaches it), and the bounded
+   *   retry re-asks.
+   *
+   * `state: blocked` still drives bounded valve recovery, and a transient
+   * roster-query failure reports `present: false` only after
+   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
+   * live worker.
+   */
+  async #runToCompletion(handle, fromIndex, onLiveEvidence) {
+    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
+    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
+    let sawLife = fromIndex > 0;
+    let nudges = 0;
+    let absences = 0;
+    let settledPolls = 0;
+    let evidenceReported = false;
+    for (; ; ) {
+      this.#assertOpen();
+      const transcript = await this.#tryReadTranscript(handle);
+      if (transcript !== null) {
+        sawLife = true;
+        this.#reportUsage(handle, transcript.entries, fromIndex);
+        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
+          evidenceReported = true;
+          try {
+            onLiveEvidence?.();
+          } catch {
+          }
+        }
+        if (turnComplete(transcript.entries, fromIndex)) {
+          return transcript;
+        }
+      }
+      if (!sawLife && Date.now() >= firstLifeDeadline) {
+        throw new ClaudeFirstLifeTimeoutError(
+          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
+        );
+      }
+      const status = await this.#controlPlane.poll(handle);
+      this.#assertOpen();
+      if (!status.present) {
+        absences += 1;
+        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
+          throw new ClaudePollTimeoutError("worker left the roster before completing");
+        }
+        await this.#pollDelay();
+        continue;
+      }
+      absences = 0;
+      if (status.state === "blocked") {
+        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
+        if (!canNudge) {
+          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
+        }
+        nudges += 1;
+        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!steered) {
+          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        }
+        await this.#awaitReceipt(handle, mark);
+        continue;
+      }
+      if (sawLife && (status.state === "done" || status.status === "idle")) {
+        settledPolls += 1;
+        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
+          throw new ClaudeCollectionError(
+            "session settled but its transcript never proved the turn complete"
+          );
+        }
+      } else {
+        settledPolls = 0;
+      }
+      if (Date.now() >= deadline) {
+        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
+      }
+      await this.#pollDelay();
+    }
+  }
+  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
+  #pollDelay() {
+    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
+  }
+  #assertOpen() {
+    if (this.#closed) {
+      throw new EngineShutdownError("claude");
+    }
+  }
+  #buildResult(handle, transcript, fromIndex) {
+    const entries = transcript.entries;
+    const text = finalAssistantText(entries, fromIndex) ?? "";
+    if (endsInSyntheticReply(entries, fromIndex)) {
+      throw new ClaudeWorkerDiagnosticError(
+        text.length > 0 ? text : "the session produced no model reply"
+      );
+    }
+    const resolvedModel = resolvedModelSince(entries, fromIndex);
+    const usage2 = usageSince(entries, fromIndex);
+    this.#reportUsage(handle, entries, fromIndex);
+    const usageEvent = this.#usageEvent(handle, usage2, usage2);
+    return {
+      text,
+      ...resolvedModel !== null ? { resolvedModel } : {},
+      // The CLI reports no served effort, so the resolved value is the
+      // native level this dispatch actually carried after the canonical
+      // clamp — so the record shows the level this dispatch carried.
+      ...this.#options.effort !== void 0 ? { resolvedEffort: this.#options.effort } : {},
+      deltaText: text,
+      durationMs: null,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: handle.sessionId,
+          content: transcript.text
+        }
+      ]
+    };
+  }
+  async #readTranscript(handle) {
+    const path14 = await this.#controlPlane.transcriptPath(handle);
+    if (path14 === null) {
+      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
+    }
+    return readTranscriptFile(path14);
+  }
+  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
+  async #tryReadTranscript(handle) {
+    try {
+      return await this.#readTranscript(handle);
+    } catch (error) {
+      if (error instanceof ClaudeTranscriptError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+  /**
+   * Everything a dying turn can still learn from the transcript the engine
+   * already has, in one read: the served model, the usage accumulated up to
+   * the failure, and the transcript itself. Best-effort — an unreadable or
+   * absent transcript is `null`, and nothing here polls or retries.
+   */
+  async #tryFailureEvidence(fromIndex) {
+    const handle = this.#handle;
+    if (handle === null) {
+      return null;
+    }
+    const transcript = await this.#tryReadTranscript(handle);
+    if (transcript === null) {
+      return null;
+    }
+    return {
+      handle,
+      transcript,
+      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      usage: usageSince(transcript.entries, fromIndex)
+    };
+  }
+  /** The failed turn's spend, as the same event shape the success path emits. */
+  #failureUsageEvent(evidence) {
+    if (evidence === null) {
+      return null;
+    }
+    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
+  }
+  #attachWorkerText(error, evidence, fromIndex) {
+    const transcript = evidence.transcript;
+    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
+      return;
+    }
+    const text = finalAssistantText(transcript.entries, fromIndex);
+    if (text !== null) {
+      attachPartialWorkerText(error, text);
+    }
+  }
+  /**
+   * Feed best-effort transcript-derived usage through the same event shape Codex
+   * emits. The adapter registration labels it as Claude before the runtime records
+   * it, so budget accounting never has to infer engine from the payload.
+   *
+   * The derived total is not monotonic: the input side is a snapshot of the
+   * running context, and compaction shrinks it, so a step that generated new
+   * output can still carry a *smaller* total than the step before. Growth is
+   * therefore judged per component, and the reported delta's own total is the
+   * sum of the components that grew — reporting nothing whenever the total
+   * fell would drop that output for good, since the high-water mark would not
+   * advance either and no later report would ever re-carry it. The high-water
+   * mark advances per component for the same reason.
+   */
+  #reportUsage(handle, entries, fromIndex) {
+    const total = usageSince(entries, fromIndex);
+    const last = subtractUsage(total, this.#reportedUsage);
+    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
+    if (grown === 0) {
+      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+      return;
+    }
+    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
+      last.cacheCreationInputTokens = last.cachedInputTokens;
+    }
+    last.totalTokens = grown;
+    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    const event = this.#usageEvent(handle, last, total);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(handle, last, total) {
+    if (total.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const event = {
+      threadId: handle.sessionId,
+      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+      last,
+      total,
+      raw: {
+        threadId: handle.sessionId,
+        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
+        tokenUsage: { last, total }
+      }
+    };
+    return event;
+  }
+  async #teardown() {
+    const handle = this.#handle;
+    this.#handle = null;
+    if (handle === null) {
+      return;
+    }
+    try {
+      await this.#controlPlane.stop(handle);
+    } catch {
+    }
+  }
+  #buildDispatchPrompt(previousFailure) {
+    const lines = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
+    ];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema)
+      );
+    }
+    if (previousFailure !== void 0) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#turnPrompt);
+    return lines.join("\n");
+  }
+  /**
+   * A follow-up turn's valve message: the session already holds the
+   * autonomy preamble from its dispatch, so the message carries only what
+   * this turn adds — its schema contract, when it has one, and its task.
+   */
+  #buildTurnMessage() {
+    const lines = [];
+    if (this.#turnSchema !== void 0) {
+      lines.push(
+        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#turnSchema),
+        ""
+      );
+    }
+    lines.push(this.#turnPrompt);
+    return lines.join("\n");
+  }
+  #correctionMessage(previousFailure) {
+    switch (previousFailure.kind) {
+      case "schema-validation":
+        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
+      case "invalid-json":
+        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
+      case "empty-output":
+      default:
+        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+    }
+  }
+  #blockedNudge(waitingFor) {
+    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
+    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
+  }
+  #nextName() {
+    dispatchCounter += 1;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID4().slice(0, 8)}`;
+  }
+};
+function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
+  const text = partialWorkerTextOf(error) ?? "";
+  const resolvedModel = evidence?.resolvedModel ?? null;
+  return {
+    text,
+    ...resolvedModel !== null ? { resolvedModel } : {},
+    // Static per dispatch, so a failed attempt's record still says which
+    // native level the clamp resolved the turn to.
+    ...dispatchedEffort !== void 0 ? { resolvedEffort: dispatchedEffort } : {},
+    attemptFailure: claudeAttemptFailure(error),
+    deltaText: text,
+    durationMs: null,
+    firstDeltaMs: null,
+    items: {},
+    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    ...evidence === null ? {} : {
+      transcripts: [
+        {
+          filename: "transcript.claude.jsonl",
+          format: "jsonl",
+          source: "claude-session-jsonl",
+          sessionId: evidence.handle.sessionId,
+          content: evidence.transcript.text
+        }
+      ]
+    }
+  };
+}
+function highWaterUsage(previous, total) {
+  if (previous === null) {
+    return total;
+  }
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
+  return {
+    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
+    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
+  };
+}
+function claudeAttemptFailure(error) {
+  if (error instanceof ClaudeFirstLifeTimeoutError) {
+    return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeBlockedError) {
+    return { kind: "claude-blocked", message: error.message };
+  }
+  if (error instanceof ClaudeValveError) {
+    return { kind: "claude-valve-error", message: error.message };
+  }
+  if (error instanceof ClaudePollTimeoutError) {
+    return { kind: "claude-poll-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeTranscriptError) {
+    return { kind: "claude-transcript-error", message: error.message };
+  }
+  if (error instanceof ClaudeCollectionError) {
+    return { kind: "claude-collection-error", message: error.message };
+  }
+  if (error instanceof ClaudeWorkerDiagnosticError) {
+    return { kind: "claude-worker-diagnostic", message: error.message };
+  }
+  return { kind: "claude-dispatch-error", message: error.message };
+}
+function hasAssistantEntrySince(entries, fromIndex) {
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    if (entries[index]?.type === "assistant") {
+      return true;
+    }
+  }
+  return false;
+}
+function delay2(ms, signal, abortError) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// src/progress.ts
+var MAX_AGENTS_IN_SNAPSHOT = 64;
+var RunProgress = class {
+  runId;
+  #budget;
+  #now;
+  #pid;
+  #workflow = null;
+  #currentPhase = null;
+  #state = "running";
+  #startedAt;
+  #updatedAt;
+  #finishedAt = null;
+  #nextAgentId = 0;
+  #live = /* @__PURE__ */ new Map();
+  #openHolds = /* @__PURE__ */ new Map();
+  #engines = /* @__PURE__ */ new Map();
+  #reportedSpend = /* @__PURE__ */ new Map();
+  #listeners = /* @__PURE__ */ new Set();
+  constructor(options) {
+    this.runId = options.runId;
+    this.#budget = options.budget;
+    this.#now = options.now ?? (() => Date.now());
+    this.#pid = options.pid ?? process.pid;
+    this.#startedAt = this.#now();
+    this.#updatedAt = this.#startedAt;
+  }
+  /** An open hold joins the snapshot the moment it is raised. */
+  noteHoldRaised(hold) {
+    this.#openHolds.set(hold.id, {
+      id: hold.id,
+      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
+      verdicts: [...hold.verdicts],
+      raisedAtMs: this.#now()
+    });
+    this.#touch();
+  }
+  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
+  noteHoldSettled(id) {
+    if (this.#openHolds.delete(id)) {
+      this.#touch();
+    }
+  }
+  /** Records an engine's concurrency cap so the snapshot can show saturation. */
+  registerEngine(engine, cap) {
+    this.#counters(engine).cap = cap;
+    this.#touch();
+  }
+  setWorkflow(name) {
+    this.#workflow = name;
+    this.#touch();
+  }
+  setPhase(title) {
+    this.#currentPhase = title;
+    this.#touch();
+  }
+  /**
+   * Registers a worker as queued and returns its id. The phase is captured at
+   * queue time: an explicit `phase` wins, otherwise the run's current phase.
+   */
+  queueAgent(input) {
+    const id = this.#nextAgentId += 1;
+    this.#live.set(id, {
+      id,
+      engine: input.engine,
+      label: input.label,
+      phase: input.phase ?? this.#currentPhase,
+      state: "queued",
+      attempt: 1,
+      startedAt: null,
+      firstEvidenceAt: null
+    });
+    this.#counters(input.engine).queued += 1;
+    this.#touch();
+    return id;
+  }
+  /** Moves a queued worker into the running state (a scheduler slot freed up). */
+  startAgent(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.state !== "queued") {
+      return;
+    }
+    record.state = "running";
+    record.startedAt = this.#now();
+    const counters = this.#counters(record.engine);
+    counters.queued -= 1;
+    counters.active += 1;
+    this.#touch();
+  }
+  /**
+   * Records the first observed sign of worker output for a live agent.
+   * Idempotent — the earliest observation wins — so engines may report on
+   * every attempt without the consumer losing the original timestamp.
+   */
+  noteAgentEvidence(id) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.firstEvidenceAt !== null) {
+      return;
+    }
+    record.firstEvidenceAt = this.#now();
+    this.#touch();
+  }
+  /** Updates a running worker's attempt number (retry / in-session correction). */
+  noteAttempt(id, attempt) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.attempt === attempt) {
+      return;
+    }
+    record.attempt = attempt;
+    this.#touch();
+  }
+  /** Retires a worker, tallying it as done or failed and freeing its slot. */
+  settleAgent(id, outcome) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    this.#live.delete(id);
+    const counters = this.#counters(record.engine);
+    if (record.state === "running") {
+      counters.active -= 1;
+    } else {
+      counters.queued -= 1;
+    }
+    if (outcome === "done") {
+      counters.done += 1;
+    } else {
+      counters.failed += 1;
+    }
+    this.#touch();
+  }
+  /** Marks the run finished. The serialiser writes one final snapshot after. */
+  finish() {
+    if (this.#state === "finished") {
+      return;
+    }
+    this.#state = "finished";
+    this.#finishedAt = this.#now();
+    this.#touch();
+  }
+  /**
+   * Publishes a changed per-engine spend figure to live consumers. Repeated
+   * reports of the same value are deliberately inert: accounting producers
+   * may observe the same running turn more than once.
+   */
+  noteEngineSpend(engine) {
+    const spent = this.#budget.spent(engine);
+    if (this.#reportedSpend.get(engine) === spent) {
+      return;
+    }
+    this.#reportedSpend.set(engine, spent);
+    this.#touch();
+  }
+  /** Refreshes the live snapshot without changing its modelled state. */
+  markChanged() {
+    this.#touch();
+  }
+  onChange(listener) {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+  snapshot() {
+    const engines = {};
+    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
+    for (const engine of this.#engines.keys()) {
+      const counters = this.#counters(engine);
+      const remaining = this.#budget.remaining(engine);
+      engines[engine] = {
+        cap: counters.cap,
+        active: counters.active,
+        queued: counters.queued,
+        done: counters.done,
+        failed: counters.failed,
+        spent: this.#budget.spent(engine),
+        ceiling: this.#budget.ceilings[engine] ?? null,
+        remaining: Number.isFinite(remaining) ? remaining : null
+      };
+      totals.active += counters.active;
+      totals.queued += counters.queued;
+      totals.done += counters.done;
+      totals.failed += counters.failed;
+    }
+    return {
+      schema: 1,
+      runId: this.runId,
+      pid: this.#pid,
+      workflow: this.#workflow,
+      state: this.#state,
+      startedAt: this.#startedAt,
+      updatedAt: this.#updatedAt,
+      finishedAt: this.#finishedAt,
+      currentPhase: this.#currentPhase,
+      totals,
+      engines,
+      agents: this.#liveAgents(),
+      holds: [...this.#openHolds.values()]
+    };
+  }
+  #liveAgents() {
+    const records = [...this.#live.values()];
+    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
+    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
+      id: record.id,
+      engine: record.engine,
+      label: record.label,
+      phase: record.phase,
+      state: record.state,
+      attempt: record.attempt,
+      startedAtMs: record.startedAt,
+      firstEvidenceAtMs: record.firstEvidenceAt
+    }));
+  }
+  #counters(engine) {
+    const counters = this.#engines.get(engine);
+    if (counters === void 0) {
+      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
+      this.#engines.set(engine, fresh);
+      return fresh;
+    }
+    return counters;
+  }
+  #touch() {
+    this.#updatedAt = this.#now();
+    for (const listener of this.#listeners) {
+      listener();
+    }
+  }
+};
+function rank(state) {
+  return state === "running" ? 0 : 1;
+}
+
+// src/app-server.ts
+import { spawn as spawn2 } from "node:child_process";
+import { createInterface } from "node:readline";
+var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
+var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
+var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
+var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
+var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
+var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
+var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
+var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
+var LazyCodexAppServerTransport = class {
+  cwd;
+  #options;
+  #transportPromise;
+  #closed = false;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#options = options;
+  }
+  async openThread(options) {
+    const transport = await this.#transport();
+    return transport.openThread(options);
+  }
+  async listSkills(cwd) {
+    const transport = await this.#transport();
+    return transport.listSkills(cwd);
+  }
+  async runTurn(threadId, prompt, options) {
+    const transport = await this.#transport();
+    return transport.runTurn(threadId, prompt, options);
+  }
+  async close() {
+    this.#closed = true;
+    if (this.#transportPromise === void 0) {
+      return;
+    }
+    let transport;
+    try {
+      transport = await this.#transportPromise;
+    } catch {
+      return;
+    }
+    await transport.close();
+  }
+  #transport() {
+    if (this.#closed) {
+      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
+    }
+    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
+    return this.#transportPromise;
+  }
+};
+var CodexAppServerTransport = class _CodexAppServerTransport {
+  cwd;
+  #process;
+  #requestTimeoutMs;
+  #retryPromiseSilenceTimeoutMs;
+  #firstOutputTimeoutMs;
+  #startupHandshakeTimeoutMs;
+  #skillDiscoveryStabilityIntervalMs;
+  #skillDiscoveryDeadlineMs;
+  #nextId = 0;
+  #pending = /* @__PURE__ */ new Map();
+  #turns = /* @__PURE__ */ new Map();
+  #transcripts = /* @__PURE__ */ new Map();
+  #stderrTail = [];
+  #exitStatus = null;
+  #hasExited = false;
+  #onEvent;
+  constructor(options) {
+    this.cwd = options.cwd;
+    this.#requestTimeoutMs = options.requestTimeoutMs;
+    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
+    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
+    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
+    this.#onEvent = options.onEvent;
+    this.#process = spawn2(options.codexBin, ["app-server"], {
+      cwd: options.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      // Declared variables sit above inherited ones; everything undeclared
+      // still inherits, so a configured parent keeps working unchanged.
+      env: { ...process.env, ...options.workerEnv }
+    });
+    this.#wireReader();
+    this.#wireStderr();
+    this.#process.once("exit", (code, signal) => {
+      this.#exitStatus = { exitCode: code, signal };
+      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
+    });
+    this.#process.once("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
+    });
+  }
+  static async start(options) {
+    const transport = new _CodexAppServerTransport(options);
+    try {
+      await transport.#handshake(options.clientName, options.clientVersion);
+    } catch (error) {
+      await transport.close();
+      throw error;
+    }
+    return transport;
+  }
+  async openThread(options) {
+    const requestParams = {
+      cwd: options.cwd ?? this.cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      ephemeral: true,
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...options.threadConfig !== void 0 ? { config: options.threadConfig } : {}
+    };
+    const result = await this.#request("thread/start", requestParams);
+    const resultObject = asJsonObject(result);
+    const directThreadId = resultObject?.threadId;
+    const nestedThread = asJsonObject(resultObject?.thread);
+    const nestedThreadId = nestedThread?.id;
+    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
+    if (threadId !== null) {
+      const resolvedModel = resultObject?.model;
+      const resolvedEffort = resultObject?.reasoningEffort;
+      this.#transcripts.set(threadId, {
+        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null,
+        events: [
+          {
+            direction: "client",
+            method: "thread/start",
+            params: requestParams,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          },
+          {
+            direction: "server",
+            method: "thread/start/result",
+            result,
+            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+          }
+        ]
+      });
+      return threadId;
+    }
+    throw new AppServerRequestError("thread/start", {
+      code: void 0,
+      message: "response did not contain result.thread.id or result.threadId",
+      data: result
+    });
+  }
+  async listSkills(cwd = this.cwd) {
+    const startedAt = Date.now();
+    let previousNames;
+    let observedExpansion = false;
+    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
+      const names = await this.#listSkillsOnce(cwd);
+      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
+        return names;
+      }
+      if (previousNames !== void 0) {
+        if (strictlyContainsAll(names, previousNames)) {
+          observedExpansion = true;
+        } else if (!sameStrings(previousNames, names)) {
+          observedExpansion = false;
+        }
+      }
+      previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
+      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
+      }
+    }
+    throw new AppServerRequestError("skills/list", {
+      code: "unstable_discovery",
+      message: `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+    });
+  }
+  async #listSkillsOnce(cwd) {
+    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
+    const entries = result?.data;
+    if (!Array.isArray(entries)) {
+      throw new AppServerRequestError("skills/list", {
+        code: "invalid_response",
+        message: "response omitted the discovered skill entries"
+      });
+    }
+    const names = /* @__PURE__ */ new Set();
+    for (const entry of entries) {
+      const entryObject = asJsonObject(entry);
+      const errors = entryObject?.errors;
+      const skills = entryObject?.skills;
+      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
+        throw new AppServerRequestError("skills/list", {
+          code: "incomplete_discovery",
+          message: "could not establish the complete discovered skill set"
+        });
+      }
+      for (const skill of skills) {
+        const name = asJsonObject(skill)?.name;
+        if (typeof name !== "string" || name.length === 0) {
+          throw new AppServerRequestError("skills/list", {
+            code: "invalid_response",
+            message: "response included a skill without a name"
+          });
+        }
+        names.add(name);
+      }
+    }
+    return [...names].sort();
+  }
+  async runTurn(threadId, prompt, options) {
+    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    this.#turns.set(threadId, state);
+    state.promise.catch(() => void 0);
+    try {
+      const params = {
+        threadId,
+        input: [{ type: "text", text: prompt }],
+        sandboxPolicy: { type: "dangerFullAccess" }
+      };
+      if (options.schema !== void 0) {
+        params.outputSchema = options.schema;
+      }
+      if (options.model !== void 0) {
+        params.model = options.model;
+      }
+      if (options.effort !== void 0) {
+        params.effort = options.effort;
+        const transcript = this.#transcripts.get(threadId);
+        if (transcript !== void 0) {
+          transcript.resolvedEffort = options.effort;
+        }
+      }
+      this.#appendTranscript(threadId, {
+        direction: "client",
+        method: "turn/start",
+        params,
+        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const result = asJsonObject(await this.#request("turn/start", params));
+      const startedTurn = asJsonObject(result?.turn);
+      if (typeof startedTurn?.id === "string") {
+        state.turnId = startedTurn.id;
+      }
+      return await state.promise;
+    } catch (error) {
+      if (this.#turns.get(threadId) === state) {
+        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      return await state.promise;
+    }
+  }
+  /** Number of thread transcripts currently held in memory. Observability for tests. */
+  openTranscripts() {
+    return this.#transcripts.size;
+  }
+  async close() {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#hasExited = true;
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new AppServerExitedError("codex app-server closed"));
+    }
+    this.#pending.clear();
+    for (const [threadId, turn] of [...this.#turns]) {
+      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
+    }
+    this.#turns.clear();
+    this.#transcripts.clear();
+    this.#process.stdin.end();
+    this.#process.kill("SIGTERM");
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.#process.kill("SIGKILL");
+        resolve();
+      }, 5e3);
+      this.#process.once("exit", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  async #handshake(clientName, clientVersion) {
+    try {
+      await this.#request(
+        "initialize",
+        {
+          clientInfo: {
+            name: clientName,
+            version: clientVersion
+          }
+        },
+        this.#startupHandshakeTimeoutMs
+      );
+    } catch (error) {
+      if (error instanceof TurnTimeoutError) {
+        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
+      }
+      throw error;
+    }
+    this.#sendNotification("initialized", {});
+  }
+  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    const payload = JSON.stringify({ id, method, params });
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.#pending.set(id, { method, resolve, reject, timeout });
+      this.#writeLine(payload).catch((error) => {
+        this.#pending.delete(id);
+        clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+  #sendNotification(method, params) {
+    void this.#writeLine(JSON.stringify({ method, params }));
+  }
+  /** Sends a request through stdin without retaining or awaiting its response. */
+  async #sendUnacknowledgedRequest(method, params) {
+    const id = this.#nextId + 1;
+    this.#nextId = id;
+    await this.#writeLine(JSON.stringify({ id, method, params }));
+  }
+  async #writeLine(line) {
+    if (this.#hasExited) {
+      throw new AppServerExitedError("codex app-server is not running");
+    }
+    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+    await new Promise((resolve, reject) => {
+      this.#process.stdin.write(`${framedLine}
+`, (error) => {
+        if (error !== null && error !== void 0) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  #wireReader() {
+    let chunks = [];
+    let byteLength = 0;
+    let prefix = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    let oversizedLineByteLength = 0;
+    const resetLine = () => {
+      chunks = [];
+      byteLength = 0;
+      prefix = Buffer.alloc(0);
+      discardingOversizedLine = false;
+      oversizedLineByteLength = 0;
+    };
+    const retain = (chunk) => {
+      if (chunk.length === 0) {
+        return;
+      }
+      chunks.push(chunk);
+      byteLength += chunk.length;
+      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
+        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
+      }
+    };
+    const reportOversizedLine = () => {
+      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+    };
+    const handleRetainedLine = () => {
+      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
+      resetLine();
+      this.#handleLine(line);
+    };
+    this.#process.stdout.on("data", (chunk) => {
+      let offset2 = 0;
+      while (offset2 < chunk.length) {
+        const newline = chunk.indexOf(10, offset2);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset2, end);
+        if (discardingOversizedLine) {
+          oversizedLineByteLength += segment.length;
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
+          retain(segment);
+          if (newline !== -1) {
+            handleRetainedLine();
+          }
+        } else {
+          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
+          retain(segment.subarray(0, retainedBytes));
+          discardingOversizedLine = true;
+          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
+          if (newline !== -1) {
+            reportOversizedLine();
+            resetLine();
+          }
+        }
+        offset2 = newline === -1 ? chunk.length : newline + 1;
+      }
+    });
+    this.#process.stdout.once("end", () => {
+      if (discardingOversizedLine) {
+        reportOversizedLine();
+        resetLine();
+      } else if (byteLength > 0) {
+        handleRetainedLine();
+      }
+      if (this.#hasExited) {
+        return;
+      }
+      const grace = setTimeout(() => {
+        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
+      }, STDOUT_CLOSE_EXIT_GRACE_MS);
+      grace.unref();
+      this.#process.once("exit", () => {
+        clearTimeout(grace);
+      });
+    });
+  }
+  #wireStderr() {
+    const reader = createInterface({ input: this.#process.stderr });
+    reader.on("line", (line) => {
+      this.#stderrTail.push(line);
+      if (this.#stderrTail.length > 50) {
+        this.#stderrTail.shift();
+      }
+    });
+  }
+  #handleLine(line) {
+    if (line.trim().length === 0) {
+      return;
+    }
+    const parsed = parseRpcMessage(line);
+    if (parsed === null) {
+      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
+      return;
+    }
+    const id = typeof parsed.id === "number" ? parsed.id : null;
+    const method = typeof parsed.method === "string" ? parsed.method : null;
+    if (id !== null && method !== null) {
+      this.#onEvent?.({
+        method: "server/request/denied",
+        params: { requestId: id, requestMethod: method },
+        receivedAt: Date.now()
+      });
+      const requestParams = asJsonObject(parsed.params);
+      if (requestParams !== null) {
+        const turn = this.#turnCorrelatedBy(requestParams);
+        if (turn !== void 0) {
+          this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#disarmFirstOutputDeadline(turn);
+          this.#noteTurnFirstOutput(turn);
+        }
+      }
+      this.#sendApprovalDenial(id);
+      return;
+    }
+    if (id !== null && ("result" in parsed || "error" in parsed)) {
+      this.#handleResponse(id, parsed);
+      return;
+    }
+    if (method !== null) {
+      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
+    }
+  }
+  #reportDecodeFailure(byteLength, linePrefix) {
+    this.#onEvent?.({
+      method: "transport/decodeFailed",
+      params: { byteLength, linePrefix },
+      receivedAt: Date.now()
+    });
+  }
+  #handleResponse(id, message) {
+    const pending = this.#pending.get(id);
+    if (pending === void 0) {
+      return;
+    }
+    this.#pending.delete(id);
+    clearTimeout(pending.timeout);
+    if (message.error !== void 0) {
+      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
+      return;
+    }
+    pending.resolve(message.result);
+  }
+  #handleNotification(method, params) {
+    this.#onEvent?.({ method, params, receivedAt: Date.now() });
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return;
+    }
+    this.#appendTranscript(threadId, {
+      direction: "server",
+      method,
+      params,
+      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0) {
+      return;
+    }
+    const speaksForTurn = this.#correlatesWithTurn(turn, params);
+    if (speaksForTurn) {
+      this.#disarmRetryPromiseSilenceDeadline(turn);
+      if (isOutputBearingTurnFrame(method)) {
+        this.#disarmFirstOutputDeadline(turn);
+        this.#noteTurnFirstOutput(turn);
+      }
+    }
+    const now = Date.now();
+    if (isTurnProgressNotification(method)) {
+      turn.consecutiveRetryPromises = 0;
+    }
+    if (method === "turn/started") {
+      return;
+    }
+    if (method === "model/rerouted") {
+      const toModel = params.toModel;
+      const transcript = this.#transcripts.get(threadId);
+      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
+        transcript.resolvedModel = toModel;
+      }
+      return;
+    }
+    if (method === "item/started") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      if (turn.firstDeltaAt === null) {
+        turn.firstDeltaAt = now;
+      }
+      if (typeof params.delta === "string") {
+        turn.deltaText += params.delta;
+      }
+      return;
+    }
+    if (method === "item/completed") {
+      const item = asJsonObject(params.item);
+      const itemType = itemTypeFromItem(item);
+      if (itemType === "agentMessage" && typeof item?.text === "string") {
+        turn.itemText = item.text;
+      }
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      const event = tokenUsageEventFromParams(params);
+      if (event !== null) {
+        turn.tokenUsageEvents.push(event);
+      }
+      return;
+    }
+    if (method === "thread/status/changed") {
+      const status = asJsonObject(params.status);
+      if (status?.type === "systemError") {
+        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
+      }
+      return;
+    }
+    if (method === "turn/completed") {
+      turn.completedAt = now;
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+        return;
+      }
+      this.#completeTurn(threadId, turn);
+      return;
+    }
+    if (method === "error") {
+      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+        return;
+      }
+      if (params.willRetry === true) {
+        turn.consecutiveRetryPromises += 1;
+        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
+          const diagnostic = errorPayloadFromNotification(params);
+          void this.#rejectTurn(
+            threadId,
+            turn,
+            attachAppServerDiagnostic(
+              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
+              appServerDiagnosticFromPayload(diagnostic)
+            )
+          );
+          return;
+        }
+        if (speaksForTurn) {
+          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
+        }
+        return;
+      }
+      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
+    }
+  }
+  /**
+   * Whether an inbound frame speaks for this turn's silence clock. Thread
+   * identity has already matched; a frame naming a different turn (a
+   * straggler from an abandoned turn on a recycled thread) must not disarm
+   * the live turn's deadline. Frames carrying no turn identity are
+   * thread-scoped and count: ephemeral threads run one turn, so the thread
+   * speaking is the turn's server speaking.
+   */
+  #correlatesWithTurn(turn, params) {
+    const turnId = turnIdFromParams(params);
+    if (turnId === void 0) {
+      return true;
+    }
+    if (turn.turnId === void 0) {
+      turn.turnId = turnId;
+      return true;
+    }
+    return turn.turnId === turnId;
+  }
+  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
+  #turnCorrelatedBy(params) {
+    const threadId = params.threadId;
+    if (typeof threadId !== "string") {
+      return void 0;
+    }
+    const turn = this.#turns.get(threadId);
+    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
+      return void 0;
+    }
+    return turn;
+  }
+  #disarmRetryPromiseSilenceDeadline(turn) {
+    if (turn.retryPromiseSilenceDeadline !== void 0) {
+      clearTimeout(turn.retryPromiseSilenceDeadline);
+      turn.retryPromiseSilenceDeadline = void 0;
+    }
+  }
+  #disarmSystemErrorDiagnosticGrace(turn) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
+      turn.systemErrorDiagnosticGraceDeadline = void 0;
+    }
+  }
+  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
+    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
+      return;
+    }
+    const diagnostic = {
+      code: void 0,
+      message: "Codex app-server reported terminal systemError without a diagnostic",
+      data: statusParams
+    };
+    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
+      new AppServerSystemError(method, diagnostic),
+      appServerDiagnosticFromPayload(diagnostic)
+    );
+    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
+    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
+  }
+  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
+    const diagnostic = errorPayloadFromNotification(promiseParams);
+    turn.retryPromiseSilenceDeadline = setTimeout(() => {
+      void this.#rejectTurn(
+        threadId,
+        turn,
+        attachAppServerDiagnostic(
+          new AppServerRetryPromiseBrokenError(
+            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
+            diagnostic
+          ),
+          appServerDiagnosticFromPayload(diagnostic)
+        )
+      );
+    }, this.#retryPromiseSilenceTimeoutMs);
+  }
+  #disarmFirstOutputDeadline(turn) {
+    if (turn.firstOutputDeadline !== void 0) {
+      clearTimeout(turn.firstOutputDeadline);
+      turn.firstOutputDeadline = void 0;
+    }
+  }
+  /**
+   * Fire the supervisor-facing first-output callback, once per turn. Called
+   * only from the frame-driven sites (an output-bearing notification, a
+   * turn-scoped server request) — never from the completion/rejection
+   * teardown, which also disarms the deadline but proves nothing about
+   * output. The callback is observability: a throw inside it must never
+   * affect the turn.
+   */
+  #noteTurnFirstOutput(turn) {
+    if (turn.firstOutputSeen) {
+      return;
+    }
+    turn.firstOutputSeen = true;
+    try {
+      turn.onFirstOutput?.();
+    } catch {
+    }
+  }
+  #armFirstOutputDeadline(threadId, turn) {
+    turn.firstOutputDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
+    }, this.#firstOutputTimeoutMs);
+  }
+  /**
+   * The single terminal path for a failing turn. Every way a turn can end
+   * short of completion — error notification, retry-promise bound,
+   * systemError, per-turn timeout, transport close, process death — comes
+   * through here, so the terminalisation invariant is enforced once: the
+   * worker's accumulated text rides the rejection instead of being deleted
+   * with the turn state.
+   */
+  #rejectTurn(threadId, turn, error) {
+    this.#turns.delete(threadId);
+    this.#transcripts.delete(threadId);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    if (turn.turnId !== void 0) {
+      void this.#sendUnacknowledgedRequest("turn/interrupt", {
+        threadId,
+        turnId: turn.turnId
+      }).catch(() => {
+      });
+    }
+    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
+  }
+  #completeTurn(threadId, turn) {
+    this.#turns.delete(threadId);
+    clearTimeout(turn.timeout);
+    this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmSystemErrorDiagnosticGrace(turn);
+    this.#disarmFirstOutputDeadline(turn);
+    const text = turn.itemText ?? turn.deltaText;
+    const transcript = this.#transcripts.get(threadId);
+    const result = {
+      text,
+      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
+      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
+      deltaText: turn.deltaText,
+      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
+      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
+      items: Object.fromEntries(turn.items),
+      tokenUsageEvents: turn.tokenUsageEvents,
+      transcripts: [
+        {
+          filename: "transcript.codex.jsonl",
+          format: "jsonl",
+          source: "codex-app-server-events",
+          threadId,
+          content: this.#transcriptText(threadId)
+        }
+      ]
+    };
+    if (turn.itemText !== void 0) {
+      result.itemText = turn.itemText;
+    }
+    this.#transcripts.delete(threadId);
+    turn.resolve(result);
+  }
+  #appendTranscript(threadId, event) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return;
+    }
+    transcript.events.push(event);
+  }
+  #transcriptText(threadId) {
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript === void 0) {
+      return "";
+    }
+    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
+`;
+  }
+  #createTurnState(threadId, timeoutMs, onFirstOutput) {
+    let resolveTurn = () => void 0;
+    let rejectTurn = () => void 0;
+    const promise = new Promise((resolve, reject) => {
+      resolveTurn = resolve;
+      rejectTurn = reject;
+    });
+    const state = {
+      threadId,
+      turnId: void 0,
+      startedAt: Date.now(),
+      firstDeltaAt: null,
+      firstOutputSeen: false,
+      onFirstOutput,
+      completedAt: null,
+      deltaText: "",
+      items: /* @__PURE__ */ new Map(),
+      tokenUsageEvents: [],
+      consecutiveRetryPromises: 0,
+      retryPromiseSilenceDeadline: void 0,
+      systemErrorDiagnosticGraceDeadline: void 0,
+      systemErrorDiagnosticFallback: void 0,
+      firstOutputDeadline: void 0,
+      promise,
+      resolve: resolveTurn,
+      reject: rejectTurn,
+      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
+      // the run is stopped. A backstop is the orchestrator's responsibility.
+      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
+        void this.#rejectTurn(
+          threadId,
+          state,
+          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
+        );
+      }, timeoutMs)
+    };
+    this.#armFirstOutputDeadline(threadId, state);
+    return state;
+  }
+  #sendApprovalDenial(id) {
+    void this.#writeLine(
+      JSON.stringify({
+        id,
+        result: {
+          decision: "denied",
+          reason: "Ensemble workers run with approvalPolicy never"
+        }
+      })
+    );
+  }
+  #failAll(error) {
+    if (this.#hasExited) {
+      return;
+    }
+    this.#hasExited = true;
+    const stderr = this.#stderrTail.length > 0 ? `
+Recent stderr:
+${this.#stderrTail.join("\n")}` : "";
+    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(wrapped);
+    }
+    this.#pending.clear();
+    for (const [threadId, turn] of [...this.#turns]) {
+      const perTurn = new AppServerExitedError(wrapped.message);
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(perTurn, this.#exitStatus);
+      }
+      void this.#rejectTurn(threadId, turn, perTurn);
+    }
+    this.#turns.clear();
+    this.#transcripts.clear();
+  }
+};
+function appServerErrorFromPayload(method, errorPayload) {
+  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  return attachAppServerDiagnostic(error, diagnostic);
+}
+function appServerErrorFromNotification(params) {
+  const errorPayload = errorPayloadFromNotification(params);
+  if (errorPayload.code === "serverOverloaded") {
+    return attachAppServerDiagnostic(
+      new AppServerOverloadedError("turn notification", errorPayload),
+      appServerDiagnosticFromPayload(errorPayload)
+    );
+  }
+  return appServerErrorFromPayload("turn notification", errorPayload);
+}
+function appServerDiagnosticFromPayload(payload) {
+  return {
+    code: payload.code ?? null,
+    message: payload.message ?? "unknown app-server error",
+    payload: renderPayloadSafely(payload.data)
+  };
+}
+function errorPayloadFromNotification(params) {
+  const turnError = asJsonObject(params.error);
+  const codexErrorInfo = turnError?.codexErrorInfo;
+  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
+  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
+  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
+  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
+  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
+  return {
+    code,
+    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
+    data: params
+  };
+}
+function renderPayloadSafely(payload) {
+  try {
+    return JSON.stringify(payload) ?? "undefined";
+  } catch (error) {
+    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+function isTurnProgressNotification(method) {
+  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
+  // resuming — the reset set's rationale. Counting it would let a
+  // promise/heartbeat alternation defeat the consecutive-promise bound.
+  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isOutputBearingTurnFrame(method) {
+  return method !== "turn/started";
+}
+function turnIdFromParams(params) {
+  if (typeof params.turnId === "string") {
+    return params.turnId;
+  }
+  const turn = asJsonObject(params.turn);
+  return typeof turn?.id === "string" ? turn.id : void 0;
+}
+var MAX_INBOUND_PAYLOAD_DEPTH = 64;
+function payloadContainsInvalidJsonSchema(value, depth = 0) {
+  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.includes("invalid_json_schema");
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+  }
+  const object = asJsonObject(value);
+  if (object === null) {
+    return false;
+  }
+  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
+}
+function parseRpcMessage(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return asJsonObject(parsed);
+  } catch {
+    return null;
+  }
+}
+function asJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function sameStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function strictlyContainsAll(candidate, baseline) {
+  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
+}
+function asRpcError(value) {
+  const object = asJsonObject(value);
+  if (object === null) {
+    return { code: void 0, message: String(value) };
+  }
+  return {
+    code: typeof object.code === "number" ? object.code : void 0,
+    message: typeof object.message === "string" ? object.message : void 0,
+    data: object.data
+  };
+}
+function itemTypeFromItem(item) {
+  if (item === null) {
+    return "?";
+  }
+  const itemType = item.itemType ?? item.type;
+  return typeof itemType === "string" ? itemType : "?";
+}
+
+// src/opencode-engine.ts
+import { spawn as spawn3 } from "node:child_process";
+import { randomUUID as randomUUID5 } from "node:crypto";
+var OpenCodeCliRunner = class {
+  #bin;
+  #killGraceMs;
+  #env;
+  constructor(bin = "opencode", options = {}) {
+    this.#bin = bin;
+    this.#killGraceMs = options.killGraceMs ?? 5e3;
+    this.#env = { ...process.env, ...options.workerEnv };
+  }
+  async run(options) {
+    const args = [
+      "run",
+      "--format",
+      "json",
+      "--model",
+      options.providerModel,
+      "--dir",
+      options.cwd,
+      "--title",
+      "ensemble-worker"
+    ];
+    if (options.variant !== void 0) {
+      args.push("--variant", options.variant);
+    }
+    args.push(options.prompt);
+    return runProcess(
+      this.#bin,
+      args,
+      options.cwd,
+      this.#env,
+      options.timeoutMs,
+      this.#killGraceMs,
+      options.signal,
+      options.onFirstData,
+      options.onData
+    );
+  }
+  async exportSession(sessionId, cwd, signal) {
+    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 3e4, this.#killGraceMs, signal);
+    if (result.exitCode !== 0) {
+      return {
+        status: "command-failed",
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stderr: result.stderr
+      };
+    }
+    return { status: "ok", stdout: result.stdout };
+  }
+};
+var OpenCodeEngineInvocation = class {
+  #prompt;
+  #cwd;
+  #providerModel;
+  #modelKey;
+  #options;
+  #runner;
+  #onEvent;
+  #reportedUsage = null;
+  #budgetEventCounter = 0;
+  #abortController = new AbortController();
+  #closePromise = null;
+  #settlement = null;
+  #onClose;
+  constructor(options) {
+    this.#prompt = options.prompt;
+    this.#cwd = options.cwd;
+    this.#providerModel = options.providerModel;
+    this.#modelKey = options.modelKey;
+    this.#options = options.options;
+    this.#runner = options.runner ?? new OpenCodeCliRunner();
+    this.#onEvent = options.onEvent;
+    this.#onClose = options.onClose;
+  }
+  runAttempt(context) {
+    const settlement = this.#runAttempt(context);
+    this.#settlement = settlement;
+    return settlement.finally(() => {
+      if (this.#settlement === settlement) {
+        this.#settlement = null;
+      }
+    });
+  }
+  async #runAttempt(context) {
+    this.#reportedUsage = null;
+    let streamBuffer = "";
+    const streamEvents = [];
+    let streamSessionId = null;
+    const onData = (chunk) => {
+      streamBuffer += chunk;
+      const lines = streamBuffer.split(/\r?\n/);
+      streamBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const parsed = parseRunEvents(line);
+        streamEvents.push(...parsed.events);
+        streamSessionId ??= parsed.sessionId;
+      }
+      const usage3 = usageFromStream(streamEvents);
+      if (usage3.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      }
+    };
+    const run = await this.#runner.run({
+      prompt: this.#buildPrompt(context.previousFailure),
+      cwd: this.#cwd,
+      providerModel: this.#providerModel,
+      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
+      ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
+      ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
+      onData,
+      signal: this.#abortController.signal
+    });
+    const parsedRun = parseRunEvents(run.stdout);
+    const fallback = fallbackText(parsedRun.events);
+    if (this.#abortController.signal.aborted) {
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
+    }
+    let exportData = null;
+    let exportDiagnostic;
+    if (parsedRun.sessionId === null) {
+      exportDiagnostic = { status: "no-session-id" };
+    } else {
+      let exportResult;
+      try {
+        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
+      } catch (error) {
+        if (error instanceof Error) {
+          attachPartialWorkerText(error, fallback);
+        }
+        throw error;
+      }
+      if (exportResult.status === "command-failed") {
+        exportDiagnostic = {
+          status: "command-failed",
+          exit_code: exportResult.exitCode,
+          signal: exportResult.signal,
+          stderr: exportResult.stderr
+        };
+      } else {
+        const parsedExport = parseExport(exportResult.stdout);
+        if (parsedExport.ok) {
+          exportData = parsedExport.data;
+          exportDiagnostic = { status: "available" };
+        } else {
+          exportDiagnostic = { status: "parse-failed", error: parsedExport.error };
+        }
+      }
+    }
+    if (this.#abortController.signal.aborted) {
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
+    }
+    let text = fallback;
+    if (exportData !== null) {
+      const exportedText = finalAssistantText2(exportData);
+      if (exportedText.trim().length > 0) {
+        text = exportedText;
+      } else {
+        exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
+      }
+    }
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
+    const transcripts = [
+      {
+        filename: "transcript.opencode.jsonl",
+        format: "jsonl",
+        source: "opencode run --format json",
+        content: transcriptContent(run.stdout, exportData),
+        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+      }
+    ];
+    if (run.exitCode !== 0) {
+      return {
+        text,
+        resolvedModel: this.#providerModel,
+        attemptFailure: {
+          kind: "opencode-run-error",
+          message: openCodeFailureMessage(run, parsedRun.events)
+        },
+        workerExit: { exitCode: run.exitCode, signal: run.signal },
+        deltaText: text,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        transcripts,
+        diagnostics: {
+          opencode: {
+            session_export: exportDiagnostic
+          }
+        }
+      };
+    }
+    return {
+      text,
+      resolvedModel: this.#providerModel,
+      deltaText: text,
+      durationMs: run.durationMs,
+      firstDeltaMs: null,
+      items: {},
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts,
+      diagnostics: {
+        opencode: {
+          session_export: exportDiagnostic
+        }
+      }
+    };
+  }
+  async close() {
+    this.#closePromise ??= (async () => {
+      this.#abortController.abort();
+      try {
+        await this.#settlement?.catch(() => void 0);
+      } finally {
+        this.#onClose?.(this);
+      }
+    })();
+    await this.#closePromise;
+  }
+  /**
+   * Attribution identity for a token-bearing stream that named no session:
+   * unique per invocation, and visibly synthetic so a consumer never
+   * mistakes it for a real opencode session id.
+   */
+  #syntheticSessionId() {
+    return `opencode-no-session-${randomUUID5()}`;
+  }
+  #reportUsage(sessionId, total, cost) {
+    const last = subtractUsage(total, this.#reportedUsage);
+    if (last.totalTokens === 0) {
+      return;
+    }
+    this.#reportedUsage = total;
+    const event = this.#usageEvent(sessionId, last, total, cost);
+    if (event === null) {
+      return;
+    }
+    this.#onEvent?.({
+      method: "thread/tokenUsage/updated",
+      params: event.raw,
+      receivedAt: Date.now()
+    });
+  }
+  #usageEvent(sessionId, last, total, cost) {
+    if (total.totalTokens === 0) {
+      return null;
+    }
+    this.#budgetEventCounter += 1;
+    const turnId = `${sessionId}:opencode-${this.#budgetEventCounter}`;
+    const event = {
+      threadId: sessionId,
+      turnId,
+      last,
+      total,
+      raw: {
+        threadId: sessionId,
+        turnId,
+        model: this.#modelKey,
+        providerModel: this.#providerModel,
+        tokenUsage: { last, total },
+        cost
+      }
+    };
+    return event;
+  }
+  #buildPrompt(previousFailure) {
+    const lines = [
+      "You are an automated worker dispatched by the Ensemble orchestration harness.",
+      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
+    ];
+    if (this.#options.schema !== void 0) {
+      lines.push(
+        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
+        JSON.stringify(this.#options.schema)
+      );
+    }
+    if (previousFailure !== void 0) {
+      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
+    }
+    lines.push("", "Task:", this.#prompt);
+    return lines.join("\n");
+  }
+};
+function rejectUnsupportedOpenCodeOptions(options) {
+  assertFallbackModelSupported("opencode", options.fallbackModel);
+}
+function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData, onData) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn3(command, args, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const stdout = [];
+    const stderr = [];
+    let settled = false;
+    let killEscalation;
+    const terminate = () => {
+      if (settled || killEscalation !== void 0) {
+        return;
+      }
+      child.kill("SIGTERM");
+      killEscalation = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, killGraceMs);
+      killEscalation.unref();
+    };
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
+    if (abortSignal?.aborted === true) {
+      terminate();
+    } else {
+      abortSignal?.addEventListener("abort", terminate, { once: true });
+    }
+    let firstDataSeen = false;
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      if (!firstDataSeen) {
+        firstDataSeen = true;
+        try {
+          onFirstData?.();
+        } catch {
+        }
+      }
+      try {
+        onData?.(chunk);
+      } catch {
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
+      abortSignal?.removeEventListener("abort", terminate);
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(killEscalation);
+      abortSignal?.removeEventListener("abort", terminate);
+      resolve({
+        exitCode,
+        signal,
+        stdout: stdout.join(""),
+        stderr: stderr.join(""),
+        durationMs: Date.now() - startedAt
+      });
+    });
+  });
+}
+function parseRunEvents(stdout) {
+  const events = [];
+  let sessionId = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    try {
+      const event = JSON.parse(trimmed);
+      events.push(event);
+      const candidate = sessionIdFromEvent(event);
+      if (candidate !== null) {
+        sessionId = candidate;
+      }
+    } catch {
+      events.push({ type: "raw", text: line });
+    }
+  }
+  return { events, sessionId };
+}
+function sessionIdFromEvent(event) {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const direct = event.sessionID ?? event.sessionId;
+  if (typeof direct === "string") {
+    return direct;
+  }
+  const nested = event.session;
+  if (isRecord(nested) && typeof nested.id === "string") {
+    return nested.id;
+  }
+  return null;
+}
+function parseExport(output) {
+  const start = output.indexOf("{");
+  if (start < 0) {
+    return { ok: false, error: "export output did not contain a JSON object" };
+  }
+  try {
+    const value = JSON.parse(output.slice(start));
+    return isRecord(value) ? { ok: true, data: value } : { ok: false, error: "export JSON root was not an object" };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+function finalAssistantText2(exportData) {
+  if (!Array.isArray(exportData.messages)) {
+    return "";
+  }
+  for (let index = exportData.messages.length - 1; index >= 0; index -= 1) {
+    const message = exportData.messages[index];
+    if (!isRecord(message) || !isRecord(message.info) || message.info.role !== "assistant") {
+      continue;
+    }
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const text = parts.map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "").join("");
+    if (text.trim().length > 0) {
+      return text;
+    }
+  }
+  return "";
+}
+function fallbackText(events) {
+  let currentStepText = null;
+  let finalStoppedStepText = "";
+  for (const event of events) {
+    if (!isRecord(event) || !isRecord(event.part)) {
+      continue;
+    }
+    if (event.type === "step_start" && event.part.type === "step-start") {
+      currentStepText = [];
+      continue;
+    }
+    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
+      if (currentStepText === null && finalStoppedStepText.length > 0) {
+        continue;
+      }
+      currentStepText ??= [];
+      currentStepText.push(event.part.text);
+      continue;
+    }
+    if (event.type === "step_finish" && event.part.type === "step-finish") {
+      if (event.part.reason === "stop" && currentStepText !== null) {
+        const stoppedStepText = currentStepText.join("");
+        if (stoppedStepText.trim().length > 0) {
+          finalStoppedStepText = stoppedStepText;
+        }
+      }
+      currentStepText = null;
+    }
+  }
+  if (finalStoppedStepText.length > 0) {
+    return finalStoppedStepText;
+  }
+  const inProgressText = currentStepText?.join("") ?? "";
+  if (inProgressText.length > 0) {
+    return inProgressText;
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!isRecord(event)) {
+      continue;
+    }
+    if (typeof event.text === "string") {
+      return event.text;
+    }
+    if (typeof event.message === "string") {
+      return event.message;
+    }
+  }
+  return "";
+}
+function usageFromExport(exportData) {
+  const messageTokens = [];
+  if (Array.isArray(exportData.messages)) {
+    for (const message of exportData.messages) {
+      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
+        messageTokens.push(message.info.tokens);
+      }
+    }
+  }
+  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
+}
+function usageFromStream(events) {
+  const stepTokens = [];
+  let cost = null;
+  for (const event of events) {
+    if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
+      continue;
+    }
+    stepTokens.push(event.part.tokens);
+    const stepCost = numberValue(event.part.cost);
+    if (stepCost !== null) {
+      cost = (cost ?? 0) + stepCost;
+    }
+  }
+  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
+}
+function openCodeTokenSnapshot(tokens) {
+  if (!isRecord(tokens)) {
+    return null;
+  }
+  const inputTokens = numberField(tokens, "input");
+  const outputTokens = numberField(tokens, "output");
+  const reasoningOutputTokens = numberField(tokens, "reasoning");
+  const cache = tokens.cache;
+  const cacheReadTokens = isRecord(cache) ? numberField(cache, "read") : null;
+  const cacheCreationInputTokens = isRecord(cache) ? numberField(cache, "write") : null;
+  const cachedInputTokens = cacheReadTokens === null && cacheCreationInputTokens === null ? null : (cacheReadTokens ?? 0) + (cacheCreationInputTokens ?? 0);
+  const reportedTotal = numberField(tokens, "total");
+  if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
+    return null;
+  }
+  return {
+    cachedInputTokens: cachedInputTokens ?? 0,
+    ...cacheCreationInputTokens === null ? {} : { cacheCreationInputTokens },
+    inputTokens: inputTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
+    reasoningOutputTokens: reasoningOutputTokens ?? 0,
+    reportedTotal,
+    hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
+  };
+}
+function aggregateOpenCodeUsage(tokenSnapshots) {
+  let sawUsage = false;
+  let cachedInputTokens = 0;
+  let cacheCreationInputTokens;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let uncategorisedTokens = 0;
+  for (const tokens of tokenSnapshots) {
+    const snapshot = openCodeTokenSnapshot(tokens);
+    if (snapshot === null) {
+      continue;
+    }
+    sawUsage = true;
+    cachedInputTokens = snapshot.cachedInputTokens;
+    cacheCreationInputTokens = snapshot.cacheCreationInputTokens;
+    inputTokens = snapshot.inputTokens;
+    outputTokens += snapshot.outputTokens;
+    reasoningOutputTokens += snapshot.reasoningOutputTokens;
+    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
+      uncategorisedTokens += snapshot.reportedTotal;
+    }
+  }
+  if (!sawUsage) {
+    return null;
+  }
+  const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
+  return {
+    cachedInputTokens,
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens
+  };
+}
+function transcriptContent(stdout, exportData) {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (exportData !== null) {
+    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
+  }
+  return `${lines.join("\n")}
+`;
+}
+function openCodeFailureMessage(run, events) {
+  const eventError = events.map(errorFromEvent).find((message) => message !== null);
+  if (eventError !== void 0 && eventError !== null) {
+    return `opencode run failed: ${eventError}`;
+  }
+  const stderr = run.stderr.trim();
+  if (stderr.length > 0) {
+    return `opencode run failed: ${stderr}`;
+  }
+  return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
+}
+function errorFromEvent(event) {
+  if (!isRecord(event)) {
+    return null;
+  }
+  const error = event.error;
+  if (typeof error === "string") {
+    return error;
+  }
+  if (isRecord(error)) {
+    const data2 = error.data;
+    if (isRecord(data2) && typeof data2.message === "string") {
+      return data2.message;
+    }
+    if (typeof error.message === "string") {
+      return error.message;
+    }
+    if (typeof error.name === "string") {
+      return error.name;
+    }
+  }
+  return null;
+}
+function numberField(record, key) {
+  return numberValue(record[key]);
+}
+function numberValue(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/scheduler.ts
+var Scheduler = class {
+  concurrency;
+  #active = 0;
+  #queue = [];
+  #shutdownError = null;
+  constructor(concurrency) {
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error(`Concurrency must be a positive integer, got ${concurrency}`);
+    }
+    this.concurrency = concurrency;
+  }
+  active() {
+    return this.#active;
+  }
+  queued() {
+    return this.#queue.length;
+  }
+  schedule(task) {
+    if (this.#shutdownError !== null) {
+      return Promise.reject(this.#shutdownError);
+    }
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        this.#active += 1;
+        Promise.resolve().then(task).then(resolve, reject).finally(() => {
+          this.#active -= 1;
+          this.#drain();
+        });
+      };
+      this.#queue.push({ run, reject });
+      this.#drain();
+    });
+  }
+  /**
+   * Rejects everything still queued and refuses new work. Active tasks are
+   * untouched — cancelling started work is the adapter's job, since only it
+   * knows how to reach a live session or child process.
+   */
+  close(rejection) {
+    if (this.#shutdownError !== null) {
+      return;
+    }
+    this.#shutdownError = rejection;
+    const queued = this.#queue.splice(0);
+    for (const task of queued) {
+      task.reject(rejection);
+    }
+  }
+  #drain() {
+    while (this.#active < this.concurrency) {
+      const next = this.#queue.shift();
+      if (next === void 0) {
+        return;
+      }
+      next.run();
+    }
+  }
+};
+
+// src/schema.ts
+var import_ajv = __toESM(require_ajv(), 1);
+var import__ = __toESM(require__(), 1);
+var ajv = new import_ajv.Ajv({
+  allErrors: true,
+  strict: false
+});
+var ajv2020 = new import__.Ajv2020({
+  allErrors: true,
+  strict: false
+});
+var DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
+var DRAFT_07_URI = "http://json-schema.org/draft-07/schema";
+function compilerFor(schema) {
+  const declared = schema.$schema;
+  if (typeof declared !== "string") {
+    return ajv;
+  }
+  const dialect = declared.replace(/#$/, "");
+  if (dialect === DRAFT_2020_12_URI) {
+    return ajv2020;
+  }
+  if (dialect === DRAFT_07_URI) {
+    return ajv;
+  }
+  throw new InvalidAgentSchemaError(
+    `unsupported JSON Schema dialect '${declared}' \u2014 supported dialects are draft 2020-12 ("${DRAFT_2020_12_URI}") and draft-07 ("${DRAFT_07_URI}#", also the default when $schema is omitted); declare one of those or omit $schema`
+  );
+}
+function selectLastValidJsonFromText(text, schema) {
+  const candidates = parseJsonCandidates(text);
+  if (candidates.length === 0) {
+    return { kind: "invalid-json" };
+  }
+  let selected = null;
+  let lastValidation = null;
+  for (const candidate of candidates) {
+    const validation = validateJsonSchema(candidate.value, schema);
+    if (validation.ok) {
+      selected = candidate;
+    }
+    lastValidation = validation;
+  }
+  if (selected !== null) {
+    return { kind: "valid", parsed: selected };
+  }
+  if (lastValidation !== null) {
+    return { kind: "schema-validation", validation: lastValidation };
+  }
+  return { kind: "invalid-json" };
+}
+function validateJsonSchema(value, schema) {
+  const validate = compileSchema(schema);
+  const ok = validate(value);
+  return { ok, value, errors: validate.errors };
+}
+function assertCompilableSchema(schema) {
+  try {
+    compileSchema(schema);
+  } catch (error) {
+    if (error instanceof InvalidAgentSchemaError) {
+      throw error;
+    }
+    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
+      cause: error,
+      offending: schema
+    });
+  }
+}
+function normaliseForCodexOutputSchema(schema) {
+  return normaliseSchemaNode(schema);
+}
+function compileSchema(schema) {
+  return compilerFor(schema).compile(schema);
+}
+function normaliseSchemaNode(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normaliseSchemaNode(item));
+  }
+  const object = asJsonObject2(value);
+  if (object === null) {
+    return value;
+  }
+  const normalised = {};
+  for (const [key, child] of Object.entries(object)) {
+    normalised[key] = cloneJsonNode(child);
+  }
+  const authoredProperties = asJsonObject2(object.properties);
+  if (authoredProperties !== null) {
+    const properties2 = {};
+    for (const [key, propertySchema] of Object.entries(authoredProperties)) {
+      properties2[key] = normaliseSchemaNode(propertySchema);
+    }
+    normalised.properties = properties2;
+  }
+  normaliseSchemaMapKeyword(object, normalised, "$defs");
+  normaliseSchemaMapKeyword(object, normalised, "definitions");
+  if (Object.hasOwn(object, "items")) {
+    normalised.items = Array.isArray(object.items) ? object.items.map((item) => normaliseSchemaNode(item)) : normaliseSchemaNode(object.items);
+  }
+  normaliseSchemaArrayKeyword(object, normalised, "anyOf");
+  normaliseSchemaArrayKeyword(object, normalised, "oneOf");
+  normaliseSchemaArrayKeyword(object, normalised, "allOf");
+  const properties = asJsonObject2(normalised.properties);
+  if (properties === null) {
+    return normalised;
+  }
+  promotePropertiesToRequired(normalised, properties);
+  return normalised;
+}
+function normaliseSchemaMapKeyword(source, target, key) {
+  const definitions = asJsonObject2(source[key]);
+  if (definitions === null) {
+    return;
+  }
+  const normalisedDefinitions = {};
+  for (const [name, schema] of Object.entries(definitions)) {
+    normalisedDefinitions[name] = normaliseSchemaNode(schema);
+  }
+  target[key] = normalisedDefinitions;
+}
+function normaliseSchemaArrayKeyword(source, target, key) {
+  if (Array.isArray(source[key])) {
+    target[key] = source[key].map((schema) => normaliseSchemaNode(schema));
+  }
+}
+function promotePropertiesToRequired(normalised, properties) {
+  if (!Object.hasOwn(normalised, "required")) {
+    normalised.required = Object.keys(properties);
+    return;
+  }
+  if (Array.isArray(normalised.required)) {
+    const required = [...normalised.required];
+    const seen = new Set(required);
+    for (const property of Object.keys(properties)) {
+      if (!seen.has(property)) {
+        required.push(property);
+        seen.add(property);
+      }
+    }
+    normalised.required = required;
+  }
+}
+function asJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function cloneJsonNode(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonNode(item));
+  }
+  const object = asJsonObject2(value);
+  if (object === null) {
+    return value;
+  }
+  const clone = {};
+  for (const [key, child] of Object.entries(object)) {
+    clone[key] = cloneJsonNode(child);
+  }
+  return clone;
+}
+function tryParse(source) {
+  try {
+    return { ok: true, value: JSON.parse(source) };
+  } catch {
+    return { ok: false };
+  }
+}
+function parseJsonCandidates(source) {
+  const trimmed = source.trim();
+  if (trimmed.length === 0) {
+    return [];
+  }
+  const direct = tryParse(trimmed);
+  if (direct.ok) {
+    return [{ value: direct.value, source: "direct" }];
+  }
+  const candidates = [];
+  const regions = indexBalancedJsonRegions(trimmed);
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const open = trimmed[index];
+    if (open !== "{" && open !== "[") {
+      continue;
+    }
+    const region = regions.byStart.get(index);
+    if (region === void 0) {
+      continue;
+    }
+    const alreadyClassified = region.parsed !== void 0;
+    const parsed = parseRegion(trimmed, region);
+    if (parsed.ok) {
+      candidates.push({
+        value: parsed.value,
+        source: open === "{" ? "object-fallback" : "array-fallback"
+      });
+      index = region.end;
+    } else if (!alreadyClassified) {
+      classifyDescendants(trimmed, region);
+    }
+  }
+  return candidates;
+}
+function indexBalancedJsonRegions(source) {
+  const starts = {
+    "{": [[], []],
+    "[": [[], []]
+  };
+  const regions = [];
+  let quoteParity = 0;
+  let consecutiveBackslashes = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "\\") {
+      consecutiveBackslashes += 1;
+      continue;
+    }
+    if (char === '"' && consecutiveBackslashes % 2 === 0) {
+      quoteParity = quoteParity === 0 ? 1 : 0;
+      consecutiveBackslashes = 0;
+      continue;
+    }
+    consecutiveBackslashes = 0;
+    if (char === "{" || char === "[") {
+      starts[char][quoteParity].push(index);
+      continue;
+    }
+    const open = char === "}" ? "{" : char === "]" ? "[" : null;
+    if (open !== null) {
+      const start = starts[open][quoteParity].pop();
+      if (start !== void 0) {
+        regions.push({ start, end: index, quoteParity, children: [] });
+      }
+    }
+  }
+  const ordered = regions.sort((left, right) => left.start - right.start || right.end - left.end);
+  attachContainedRegions(ordered, 0);
+  attachContainedRegions(ordered, 1);
+  return { byStart: new Map(ordered.map((region) => [region.start, region])), ordered };
+}
+function attachContainedRegions(regions, quoteParity) {
+  const containers = [];
+  for (const region of regions) {
+    if (region.quoteParity !== quoteParity) {
+      continue;
+    }
+    while (containers.length > 0) {
+      const candidate = containers.at(-1);
+      if (candidate.end >= region.end) {
+        break;
+      }
+      containers.pop();
+    }
+    const parent = containers.at(-1);
+    if (parent !== void 0 && parent.start < region.start && region.end <= parent.end) {
+      parent.children.push(region);
+    }
+    containers.push(region);
+  }
+}
+function parseRegion(source, region) {
+  region.parsed ??= tryParse(source.slice(region.start, region.end + 1));
+  return region.parsed;
+}
+function classifyDescendants(source, region) {
+  const descendants = [];
+  const pending = [...region.children];
+  while (pending.length > 0) {
+    const descendant = pending.pop();
+    descendants.push(descendant);
+    pending.push(...descendant.children);
+  }
+  for (let index = descendants.length - 1; index >= 0; index -= 1) {
+    const descendant = descendants[index];
+    if (descendant.parsed !== void 0) {
+      continue;
+    }
+    if (descendant.children.some((child) => child.parsed?.ok === false)) {
+      descendant.parsed = { ok: false };
+    } else {
+      parseRegion(source, descendant);
+    }
+  }
+}
+
+// src/engines.ts
+var EngineRegistry = class {
+  #engines = /* @__PURE__ */ new Map();
+  constructor(engines) {
+    for (const engine of engines) {
+      this.#engines.set(engine.name, engine);
+    }
+  }
+  get(name) {
+    return this.#engines.get(name);
+  }
+  names() {
+    return [...this.#engines.keys()];
+  }
+  async close() {
+    const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    const failures = results.filter((result) => result.status === "rejected");
+    if (failures.length === 1) {
+      throw failures[0].reason;
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        "engine teardown failed"
+      );
+    }
+  }
+};
+async function codexThreadConfig(strip, transport, cwd) {
+  const strippedAgents = strip?.includes("agents") === true;
+  const strippedSkills = strip?.includes("skills") === true;
+  if (!strippedAgents && !strippedSkills) {
+    return void 0;
+  }
+  return {
+    ...strippedAgents ? { agents: { enabled: false } } : {},
+    ...strippedSkills ? {
+      skills: {
+        bundled: { enabled: false },
+        config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
+      }
+    } : {}
+  };
+}
+var codexSkillDiscoveryCache = /* @__PURE__ */ new WeakMap();
+function discoveredCodexSkillNames(transport, cwd) {
+  const listSkills = transport.listSkills;
+  if (listSkills === void 0) {
+    throw new CapabilityStripUnsupportedError(
+      "codex",
+      "skills",
+      "the transport cannot retrieve the app-server's stabilised skill discovery result"
+    );
+  }
+  let byCwd = codexSkillDiscoveryCache.get(transport);
+  if (byCwd === void 0) {
+    byCwd = /* @__PURE__ */ new Map();
+    codexSkillDiscoveryCache.set(transport, byCwd);
+  }
+  const key = cwd ?? "";
+  const cached = byCwd.get(key);
+  if (cached !== void 0) {
+    return cached;
+  }
+  const discovery = listSkills.call(transport, cwd);
+  byCwd.set(key, discovery);
+  discovery.catch(() => byCwd.delete(key));
+  return discovery;
+}
+var CodexEngineAdapter = class {
+  name = "codex";
+  concurrency;
+  /**
+   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
+   * model provider:
+   *
+   * - `agents` strips through the per-thread `thread/start` config overlay:
+   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
+   *   tool namespace from the tool schema Codex sends the model, per
+   *   thread, without leaking between sibling threads on one app-server
+   *   process. The key is `--strict-config`-validated but undocumented,
+   *   and its failure mode on a Codex rename would be silent — a live test
+   *   against a real worker is what re-checks this judgement per release.
+   * - `skills` strips through the same per-thread overlay, measured
+   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
+   *   growing filesystem-and-plugin set and then repeat it (sampled up to
+   *   10 times at 1000 ms spacing by default; the transport's discovery
+   *   deadline, checked between samples, stops the loop once its elapsed
+   *   budget is spent — each call itself is bounded by the request
+   *   timeout). This rejects a repeated cold state
+   *   rather than mistaking it for complete discovery; bundled skills are
+   *   disabled and every accepted name gets an exact `skills.config` deny.
+   *   Discovery has no protocol-level completion signal — the
+   *   grow-then-repeat heuristic is a measured judgement of one release's
+   *   timing, so **re-verify it on every codex-cli upgrade**: a future
+   *   multi-stage or slower-than-interval discovery would stabilise early
+   *   and silently under-strip.
+   */
+  capabilities = {
+    skills: {
+      route: "config",
+      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+    },
+    agents: {
+      route: "config",
+      detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
+    }
+  };
+  #transport;
+  #scheduler;
+  constructor(options) {
+    this.concurrency = options.concurrency;
+    this.#transport = options.transport;
+    this.#scheduler = new Scheduler(options.concurrency);
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  createInvocation(prompt, options) {
+    assertFallbackModelSupported(this.name, options.fallbackModel);
+    return new CodexEngineInvocation({
+      prompt,
+      options,
+      transport: this.#transport
+    });
+  }
+  createSession(options) {
+    assertFallbackModelSupported(this.name, options.fallbackModel);
+    return new CodexWorkerSession({ options, transport: this.#transport });
+  }
+  async close() {
+    this.#scheduler.close(new EngineShutdownError(this.name));
+    await this.#transport.close();
+  }
+};
+var CodexWorkerSession = class {
+  #options;
+  #transport;
+  #threadId = null;
+  #opening = null;
+  constructor(options) {
+    this.#options = options.options;
+    this.#transport = options.transport;
+  }
+  beginTurn(prompt, turn) {
+    return {
+      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context)
+    };
+  }
+  async #runTurnAttempt(prompt, schema, context) {
+    const threadId = await this.#ensureThread();
+    const message = context.previousFailure === void 0 ? prompt : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
+    return this.#transport.runTurn(threadId, message, {
+      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
+      ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
+    });
+  }
+  /**
+   * Single-flight thread open, not failure-memoised: a failed open leaves
+   * the session threadless so the bounded retry (or the next turn) may try
+   * again — memoising the failure would terminalise a whole session on one
+   * transient spawn error.
+   */
+  #ensureThread() {
+    if (this.#threadId !== null) {
+      return Promise.resolve(this.#threadId);
+    }
+    this.#opening ??= (async () => {
+      try {
+        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
+        const threadId = await this.#transport.openThread({
+          ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
+          ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+          ...threadConfig !== void 0 ? { threadConfig } : {}
+        });
+        this.#threadId = threadId;
+        return threadId;
+      } finally {
+        this.#opening = null;
+      }
+    })();
+    return this.#opening;
+  }
+  async close() {
+    this.#threadId = null;
+  }
+};
+var CodexEngineInvocation = class {
+  #prompt;
+  #options;
+  #transport;
+  constructor(options) {
+    this.#prompt = options.prompt;
+    this.#options = options.options;
+    this.#transport = options.transport;
+  }
+  async runAttempt(context) {
+    const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+  }
+  async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
+    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
+    const threadId = await this.#transport.openThread({
+      ...cwd !== void 0 ? { cwd } : {},
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...threadConfig !== void 0 ? { threadConfig } : {}
+    });
+    return this.#transport.runTurn(threadId, prompt, {
+      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
+      ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
+      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
+      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
+      ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
+    });
+  }
+};
+var ClaudeEngineAdapter = class {
+  name = "claude";
+  concurrency;
+  /**
+   * Claude strips both named minimum capabilities mechanically: permission
+   * deny rules ride the per-dispatch settings file the control plane already
+   * writes (the one surface measured to reach the daemon-served session).
+   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
+   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
+   * deny working (`Skill` absent under a skills strip, present in the
+   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
+   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
+   * while the unstripped control demonstrated discovery and messaging.
+   * `Agent` was also absent, but the witness cannot isolate it from the
+   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
+   * the exact-set regression proves. Deny rules outrank every allow layer and
+   * permission mode, `--dangerously-skip-permissions` included — a live test
+   * asserts that at the worker itself.
+   */
+  capabilities = {
+    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
+    agents: {
+      route: "config",
+      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
+    }
+  };
+  #scheduler;
+  #cwd;
+  #controlPlane;
+  #onEvent;
+  #config;
+  #activeInvocations = /* @__PURE__ */ new Set();
+  #closed = false;
+  constructor(options = {}) {
+    this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
+    this.#onEvent = options.onEvent;
+    this.#config = options.config;
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  createInvocation(prompt, options) {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
+    const effort = claudeNativeEffort(options.effort);
+    const invocation = new ClaudeEngineInvocation({
+      prompt,
+      cwd: options.cwd ?? this.#cwd,
+      options: effort === void 0 ? options : { ...options, effort },
+      controlPlane: this.#controlPlane,
+      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
+      ...this.#config !== void 0 ? { config: this.#config } : {},
+      onClose: (closed) => this.#activeInvocations.delete(closed)
+    });
+    this.#activeInvocations.add(invocation);
+    return invocation;
+  }
+  createSession(options) {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
+    const effort = claudeNativeEffort(options.effort);
+    const session = new ClaudeEngineInvocation({
+      prompt: "",
+      cwd: options.cwd ?? this.#cwd,
+      options: effort === void 0 ? options : { ...options, effort },
+      multiTurn: true,
+      controlPlane: this.#controlPlane,
+      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
+      ...this.#config !== void 0 ? { config: this.#config } : {},
+      onClose: (closed) => this.#activeInvocations.delete(closed)
+    });
+    this.#activeInvocations.add(session);
+    return session;
+  }
+  async close() {
+    this.#closed = true;
+    this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+  }
+};
+var OpenCodeEngineAdapter = class {
+  name = "opencode";
+  concurrency;
+  /**
+   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
+   * `permission.task` and `permission.skill`, and
+   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
+   * measurement is not worker-boundary proof, though: the available live
+   * dispatches timed out before producing output, so this unit has not shown
+   * that either explicit deny stops a worker. Both capabilities therefore
+   * fail loud pre-spawn rather than dispatch a worker under a restriction the
+   * author believes is in force. A successful deny witness re-opens this
+   * judgement.
+   */
+  capabilities = {
+    skills: {
+      route: "unsupported",
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
+    },
+    agents: {
+      route: "unsupported",
+      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
+    }
+  };
+  #scheduler;
+  #cwd;
+  #runner;
+  #modelRegistry;
+  #onEvent;
+  #activeInvocations = /* @__PURE__ */ new Set();
+  #closed = false;
+  constructor(options = {}) {
+    this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
+    this.#scheduler = new Scheduler(this.concurrency);
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#runner = options.runner ?? new OpenCodeCliRunner(options.bin);
+    this.#modelRegistry = options.modelRegistry ?? defaultOpenCodeModelRegistry;
+    this.#onEvent = options.onEvent;
+  }
+  /**
+   * The registry this adapter dispatches against — exposed so load-time
+   * validation consults the same registry, never a parallel resolution of
+   * the module default that an injected registry would silently disagree
+   * with (rejecting before the body a model the runtime would run).
+   */
+  get modelRegistry() {
+    return this.#modelRegistry;
+  }
+  schedule(task) {
+    return this.#scheduler.schedule(task);
+  }
+  createInvocation(prompt, options) {
+    if (this.#closed) {
+      throw new EngineShutdownError(this.name);
+    }
+    rejectUnsupportedOpenCodeOptions(options);
+    if (options.model === void 0) {
+      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
+    }
+    const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
+    if (options.effort !== void 0 && !model.variants.includes(options.effort)) {
+      throw new InvalidAgentOptionValueError(
+        "effort",
+        options.effort,
+        model.variants.length > 0 ? `one of ${model.variants.join(" | ")} (the variants the registry declares for ${model.key})` : `absent \u2014 the registry entry for ${model.key} declares no served variants`
+      );
+    }
+    const invocation = new OpenCodeEngineInvocation({
+      prompt,
+      cwd: options.cwd ?? this.#cwd,
+      providerModel: model.providerModel,
+      modelKey: model.key,
+      options,
+      runner: this.#runner,
+      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
+      onClose: (closed) => this.#activeInvocations.delete(closed)
+    });
+    this.#activeInvocations.add(invocation);
+    return invocation;
+  }
+  async close() {
+    this.#closed = true;
+    this.#scheduler.close(new EngineShutdownError(this.name));
+    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
+  }
+};
+async function createDefaultEngineRegistry(options) {
+  const transport = new LazyCodexAppServerTransport({
+    cwd: options.cwd,
+    codexBin: options.codexBin,
+    ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
+    requestTimeoutMs: options.requestTimeoutMs,
+    ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+    ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
+    startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
+    clientName: options.clientName,
+    clientVersion: options.clientVersion,
+    onEvent: options.onEvent
+  });
+  return new EngineRegistry([
+    new CodexEngineAdapter({
+      transport,
+      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
+    }),
+    new ClaudeEngineAdapter({
+      cwd: options.cwd,
+      ...options.workerEnvironment?.claude !== void 0 ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) } : {},
+      ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
+      // Claude deliberately emits the same usage event shape as Codex. Keep the
+      // adapter sink labelled so accounting never has to infer engine from payload.
+      onEvent: options.onClaudeEvent
+    }),
+    new OpenCodeEngineAdapter({
+      cwd: options.cwd,
+      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
+      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+      onEvent: options.onOpenCodeEvent
+    })
+  ]);
+}
+function promptWithFailureFeedback(prompt, failure) {
+  if (failure === void 0) {
+    return prompt;
+  }
+  return `${prompt}
+
+A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
+}
+
+// src/runtime.ts
+function assertValidAgentPrompt(prompt) {
+  if (typeof prompt !== "string") {
+    throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
+  }
+  if (prompt.trim().length === 0) {
+    throw new AgentPromptRejectedError("agent() prompt must be a non-empty string");
+  }
+}
+var WorkerSession = class {
+  #state;
+  #now;
+  #sendTurn;
+  #close;
+  constructor(options) {
+    this.#state = options.state;
+    this.#now = options.now;
+    this.#sendTurn = options.sendTurn;
+    this.#close = options.close;
+  }
+  /** Run-scoped session ordinal — the identity the archive's per-turn records carry. */
+  get id() {
+    return this.#state.id;
+  }
+  get engine() {
+    return this.#state.options.engine;
+  }
+  /** Completed turns so far (a settled send, whatever its outcome). */
+  get turns() {
+    return this.#state.turnCount;
+  }
+  /** Milliseconds since the last settled turn, or null before the first. */
+  get idleMs() {
+    const last = this.#state.lastTurnEndedAt;
+    return last === null ? null : Math.max(0, this.#now() - last);
+  }
+  /**
+   * The idle gap at which this session reads stale: the resolved runtime
+   * option, or — on Claude — the machine-declared cache TTL when one
+   * overrides the injected default, so the mark and the cache expire on
+   * one clock.
+   */
+  get staleAfterMs() {
+    return this.#state.stalenessThresholdMs;
+  }
+  /**
+   * The advisory staleness mark: true once the idle gap since the
+   * last settled turn has outlived the session's cache economics — the
+   * configured TTL cliff on Claude, the measured idle threshold on Codex.
+   * Always false while marking is disabled, before the first turn, and
+   * mid-turn. Advisory only: the runtime never blocks or reroutes a send
+   * on it — a fresh session cannot inherit the old transcript, so only the
+   * script can decide to re-brief.
+   */
+  get stale() {
+    const state = this.#state;
+    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
+      return false;
+    }
+    return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
+  }
+  send(prompt, turn = {}) {
+    return this.#sendTurn(prompt, turn);
+  }
+  /** Idempotent: stops the held worker and finalises the session's placement. */
+  close() {
+    return this.#close();
+  }
+};
+var EnsembleRuntime = class _EnsembleRuntime {
+  budget;
+  worktrees = [];
+  /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
+  progress;
+  #engines;
+  #admission;
+  #placement;
+  #defaultTurnTimeoutMs;
+  #defaultMaxAttempts;
+  /** Run-wide capability strip, united with each call's own list. */
+  #strip;
+  #eventListeners = /* @__PURE__ */ new Set();
+  #completed = [];
+  #runRecorder = null;
+  #executingAgentRecords = /* @__PURE__ */ new Map();
+  // Every dispatched record remains here until its own agent() call settles.
+  // close() uses this to terminalise work a run ended before
+  // the normal per-agent settlement path could run.
+  #unsettledAgentRecords = /* @__PURE__ */ new Map();
+  /** close()'s settlement barrier: per-leg waiters resolved by #noteAgentSettled. */
+  #settlementWaiters = /* @__PURE__ */ new Map();
+  // Once close() has made the only honest terminal transition for a record,
+  // late shutdown rejections must not overwrite it with an invented outcome.
+  #abandonedAgentIds = /* @__PURE__ */ new Set();
+  #shutdownAgentStatus = "interrupted";
+  // The worker tally close() publishes once teardown has settled every
+  // classified leg — derived from the records' final dispositions behind
+  // the settlement barrier, so it is determinate without racing whichever
+  // straggler lands first, and it never disagrees with the archive.
+  #shutdownTally = null;
+  /** The first close() call's run, latched so later calls join it. */
+  #closeRun = null;
+  #closed = false;
+  #workerSessions = /* @__PURE__ */ new Set();
+  #sessionCounter = 0;
+  /** Injectable clock (tests): drives the staleness mark's idle reading. */
+  #now;
+  #holdManager = null;
+  #lastSettledAgentRecord = null;
+  #holdsDir;
+  #holdScope;
+  #holdPollIntervalMs;
+  #holdsCwd;
+  #claudeSessionStaleAfterMs;
+  #codexSessionStaleAfterMs;
+  constructor(options) {
+    if (options.strip !== void 0) {
+      assertValidStripOption(options.strip);
+    }
+    this.#strip = options.strip ?? [];
+    this.budget = new TokenBudget(options.budgetCeilings);
+    this.progress = new RunProgress({
+      runId: options.runId ?? randomUUID6(),
+      budget: this.budget,
+      ...options.now !== void 0 ? { now: options.now } : {}
+    });
+    this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
+    this.#defaultMaxAttempts = options.defaultMaxAttempts;
+    this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 36e5;
+    this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 36e5;
+    this.#now = options.now ?? (() => Date.now());
+    this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
+    if (options.holdScope !== void 0 && options.holdScope.trim().length === 0) {
+      throw new HoldRejectedError("holdScope must be a non-empty string when given");
+    }
+    this.#holdScope = resolveHoldScope(options.holdScope, process.env);
+    this.#holdPollIntervalMs = options.holdPollIntervalMs;
+    this.#holdsCwd = options.cwd ?? process.cwd();
+    this.#placement = new AgentPlacementManager({
+      baseCwd: options.cwd ?? process.cwd(),
+      ...options.worktreeManager !== void 0 ? { worktreeManager: options.worktreeManager } : {}
+    });
+    this.#engines = options.engines ?? new EngineRegistry([
+      new CodexEngineAdapter({
+        transport: requireTransport(options.transport),
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
+      }),
+      new ClaudeEngineAdapter({
+        ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {}
+      }),
+      new OpenCodeEngineAdapter({
+        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
+      })
+    ]);
+    this.#admission = new AdmissionController({
+      ceiling: options.agentCeiling ?? null,
+      caps: this.#engineCaps()
+    });
+    this.#registerEngineCaps();
+  }
+  /**
+   * The opencode registry dispatch will consult — the adapter's own, so
+   * load-time validation and dispatch can never read different registries
+   * (an injected registry previously made load time the stricter of the
+   * two, rejecting models dispatch would run).
+   */
+  get openCodeModelRegistry() {
+    const adapter = this.#engines.get("opencode");
+    return adapter instanceof OpenCodeEngineAdapter ? adapter.modelRegistry : void 0;
+  }
+  static async create(options = {}) {
+    let runtime = null;
+    const cwd = options.cwd ?? process.cwd();
+    const engines = await createDefaultEngineRegistry({
+      cwd,
+      codexBin: options.codexBin ?? "codex",
+      requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
+      ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+      ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
+      ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
+      startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
+      clientName: options.clientName ?? "ensemble-workflows",
+      clientVersion: options.clientVersion ?? harnessVersion(),
+      onEvent: (event) => {
+        runtime?.handleEngineEvent("codex", event);
+      },
+      onClaudeEvent: (event) => {
+        runtime?.handleEngineEvent("claude", event);
+      },
+      onOpenCodeEvent: (event) => {
+        runtime?.handleEngineEvent("opencode", event);
+      },
+      ...options.concurrencyCaps !== void 0 ? { concurrencyCaps: options.concurrencyCaps } : {}
+    });
+    runtime = new _EnsembleRuntime({
+      engines,
+      cwd,
+      ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
+      ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
+      ...options.agentCeiling !== void 0 ? { agentCeiling: options.agentCeiling } : {},
+      defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
+      ...options.holdsDir !== void 0 ? { holdsDir: options.holdsDir } : {},
+      ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
+      ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
+      ...options.strip !== void 0 ? { strip: options.strip } : {},
+      // The staleness cliff tracks the *effective* TTL: an explicit option
+      // wins, else a machine-declared TTL for the Claude workers (which
+      // outranks the injected 1h in the settings file) sets the cliff, else
+      // the injected default's hour — never two silently different clocks.
+      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : declaredClaudeTtlMs(options.workerEnvironment) !== null ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) } : {},
+      ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
+    });
+    return runtime;
+  }
+  onEvent(listener) {
+    this.#eventListeners.add(listener);
+    return () => {
+      this.#eventListeners.delete(listener);
+    };
+  }
+  setRunRecorder(recorder) {
+    this.#runRecorder = recorder;
+  }
+  /** Sets the run's current phase. Driven by the script's `phase()` hook. */
+  notePhase(title) {
+    this.progress.setPhase(title);
+  }
+  handleEngineEvent(engine, event) {
+    if (event.method === "thread/tokenUsage/updated") {
+      const usageEvent = tokenUsageEventFromParams(event.params);
+      if (usageEvent !== null) {
+        this.budget.record(engine, usageEvent);
+        this.progress.noteEngineSpend(engine);
+      }
+    }
+    if (event.method === "transport/decodeFailed") {
+      const diagnostic = decodeFailureDiagnosticFromParams(event.params);
+      if (diagnostic !== null) {
+        for (const record of this.#executingAgentRecords.get(engine) ?? []) {
+          record.decodeFailure = diagnostic;
+        }
+      }
+    }
+    this.#emitEvent(event);
+  }
+  handleTransportEvent(event) {
+    this.handleEngineEvent("codex", event);
+  }
+  async agent(prompt, options = {}) {
+    if (this.#closed) {
+      throw new Error("EnsembleRuntime is closed");
+    }
+    assertValidAgentPrompt(prompt);
+    assertValidAgentOptions(options);
+    if (options.schema !== void 0) {
+      assertCompilableSchema(options.schema);
+    }
+    if (options.cwd !== void 0) {
+      await this.#placement.assertUsableCwd(options);
+    }
+    const engine = this.#engineFor(options.engine);
+    const strip = effectiveStrip(this.#strip, options.strip);
+    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
+    this.budget.assertCanStart(engine.name);
+    const queuedAt = Date.now();
+    const agentId = this.progress.queueAgent({
+      engine: engine.name,
+      label: options.label ?? null,
+      phase: options.phase ?? null
+    });
+    if (engine.name === "claude" && options.model === void 0) {
+      this.#emitEvent({
+        method: "claude/unpinnedModel",
+        params: { agentId, label: options.label ?? null },
+        receivedAt: Date.now()
+      });
+    }
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+    try {
+      await this.#recordAgentSafely(agentRecord);
+      const unsettled = this.#unsettledAgentRecords.get(agentId);
+      if (unsettled !== void 0) {
+        unsettled.stage = "admitting";
+      }
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      if (options.identity === true) {
+        const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
+        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+      }
+      return output;
+    } catch (error) {
+      if (options.identity === true) {
+        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        throw carrier;
+      }
+      throw error;
+    } finally {
+      this.#noteAgentSettled(agentId);
+    }
+  }
+  /**
+   * Raise a hold and await its decision: the hold's content and
+   * accepted verdicts are published under the run's launcher-supplied scope
+   * in the shared holds root, any process — the launcher or not, alive at
+   * raise time or not — writes the decision file the record names, nonce
+   * correlation rejects stale answers, and the resolved decision is always
+   * one of the accepted verdicts. Open holds appear in the live status
+   * snapshot and the `ensemble holds` listings (the run's own scope, or
+   * machine-wide); raise, answer, rejection, timeout, and dead-raiser
+   * retirement each emit an event and land in the archive's hold_events.
+   */
+  async raiseHold(options) {
+    if (this.#closed) {
+      throw new HoldRejectedError("the run is closing; no new holds can be raised");
+    }
+    this.#holdManager ??= new HoldManager({
+      dir: this.#holdsDir,
+      runId: this.progress.runId,
+      cwd: this.#holdsCwd,
+      scope: this.#holdScope,
+      ...this.#holdPollIntervalMs !== void 0 ? { pollIntervalMs: this.#holdPollIntervalMs } : {},
+      onEvent: (event) => {
+        this.#emitEvent(event);
+        void this.#recordHoldEventSafely(event);
+      },
+      onOpen: (hold) => this.progress.noteHoldRaised(hold),
+      onSettled: (id) => this.progress.noteHoldSettled(id)
+    });
+    return this.#holdManager.raise(options);
+  }
+  /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
+  async #recordHoldEventSafely(event) {
+    try {
+      await this.#runRecorder?.recordHoldEvent(event);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { holdEvent: event.method, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
+  }
+  /**
+   * Open a multi-turn worker session: one worker, held across turns,
+   * with engine, model, and effort fixed for its life. Creation spawns
+   * nothing — validation and strip enforcement run here, pre-spawn, and the
+   * worker itself starts at the first `send()`. An engine that does not
+   * hold sessions (opencode) throws before any worker exists.
+   */
+  createWorkerSession(options) {
+    if (this.#closed) {
+      throw new SessionClosedError();
+    }
+    assertValidWorkerSessionOptions(options);
+    const engine = this.#engineFor(options.engine);
+    if (engine.createSession === void 0) {
+      throw new MultiTurnUnsupportedError(engine.name);
+    }
+    const strip = effectiveStrip(this.#strip, options.strip);
+    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+    this.#sessionCounter += 1;
+    const state = {
+      id: this.#sessionCounter,
+      options: sessionOptions,
+      engine,
+      stripRoutes,
+      // The mark's threshold is per engine shape: Claude's is the cliff at
+      // its configured (injected) cache TTL, Codex's the measured coin-flip
+      // idle point — both overridable as library-level runtime options.
+      stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
+      markStaleness: sessionOptions.stalenessMark ?? true,
+      engineSession: null,
+      placement: null,
+      turnCount: 0,
+      lastTurnEndedAt: null,
+      inFlight: false,
+      pendingTurn: null,
+      closed: false
+    };
+    const session = new WorkerSession({
+      state,
+      now: this.#now,
+      sendTurn: (prompt, turn) => {
+        const pending = this.#runSessionTurn(state, prompt, turn);
+        state.pendingTurn = pending;
+        void pending.catch(() => void 0).finally(() => {
+          if (state.pendingTurn === pending) {
+            state.pendingTurn = null;
+          }
+        });
+        return pending;
+      },
+      close: () => this.#closeWorkerSession(state)
+    });
+    this.#workerSessions.add(session);
+    return session;
+  }
+  async #runSessionTurn(state, prompt, turn) {
+    if (this.#closed || state.closed) {
+      throw new SessionClosedError();
+    }
+    if (state.inFlight) {
+      throw new SessionBusyError();
+    }
+    assertValidAgentPrompt(prompt);
+    assertValidSessionTurnOptions(turn);
+    if (turn.schema !== void 0) {
+      assertCompilableSchema(turn.schema);
+    }
+    const options = state.options;
+    const engine = state.engine;
+    state.inFlight = true;
+    try {
+      this.budget.assertCanStart(engine.name);
+      const queuedAt = Date.now();
+      const agentId = this.progress.queueAgent({
+        engine: engine.name,
+        label: options.label ?? null,
+        phase: options.phase ?? null
+      });
+      if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
+        this.#emitEvent({
+          method: "claude/unpinnedModel",
+          params: { agentId, label: options.label ?? null },
+          receivedAt: Date.now()
+        });
+      }
+      const turnNumber = state.turnCount + 1;
+      const recordOptions = {
+        engine: engine.name,
+        ...options.model !== void 0 ? { model: options.model } : {},
+        ...options.effort !== void 0 ? { effort: options.effort } : {},
+        ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
+        ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
+        ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
+        ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+        ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
+        ...options.label !== void 0 ? { label: options.label } : {},
+        ...options.phase !== void 0 ? { phase: options.phase } : {},
+        ...turn.schema !== void 0 ? { schema: turn.schema } : {},
+        ...options.strip !== void 0 ? { strip: options.strip } : {}
+      };
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      agentRecord.session = { id: state.id, turn: turnNumber };
+      this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+      try {
+        await this.#recordAgentSafely(agentRecord);
+        const unsettled = this.#unsettledAgentRecords.get(agentId);
+        if (unsettled !== void 0) {
+          unsettled.stage = "admitting";
+        }
+        let started = false;
+        try {
+          return await this.#admission.admit(
+            engine.name,
+            agentId,
+            () => engine.schedule(async () => {
+              started = true;
+              return this.#executeAgent(
+                engine.name,
+                { label: options.label ?? null, phase: options.phase ?? null },
+                agentId,
+                agentRecord,
+                queuedAt,
+                () => this.#runSessionBody(state, prompt, turn, agentId, agentRecord)
+              );
+            })
+          );
+        } catch (error) {
+          if (!started) {
+            this.progress.settleAgent(agentId, "failed");
+            this.#settleTerminalStatus(agentRecord, error, "queued");
+            agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
+            agentRecord.executionMs = 0;
+            await this.#recordSettlementSafely(agentId, agentRecord);
+          }
+          throw error;
+        }
+      } finally {
+        this.#noteAgentSettled(agentId);
+        state.turnCount = turnNumber;
+        state.lastTurnEndedAt = this.#now();
+      }
+    } finally {
+      state.inFlight = false;
+    }
+  }
+  async #runSessionBody(state, prompt, turn, agentId, agentRecord) {
+    const options = state.options;
+    state.placement ??= await this.#placement.open({
+      ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
+      ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
+    });
+    if (state.closed || this.#closed) {
+      const placement = state.placement;
+      state.placement = null;
+      await this.#placement.close(placement).catch(() => void 0);
+      throw new SessionClosedError();
+    }
+    agentRecord.resolvedCwd = state.placement.cwd;
+    agentRecord.isolation = options.isolation ?? null;
+    const createSession = state.engine.createSession;
+    if (createSession === void 0) {
+      throw new MultiTurnUnsupportedError(state.engine.name);
+    }
+    state.engineSession ??= createSession.call(
+      state.engine,
+      this.#engineTurnOptions(
+        {
+          engine: state.engine.name,
+          ...options.model !== void 0 ? { model: options.model } : {},
+          ...options.effort !== void 0 ? { effort: options.effort } : {},
+          ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
+          ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
+          ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {}
+        },
+        state.placement.cwd
+      )
+    );
+    const invocation = state.engineSession.beginTurn(prompt, {
+      ...turn.schema !== void 0 ? { schema: turn.schema } : {}
+    });
+    const sharedOptions = {
+      ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
+      ...options.model !== void 0 ? { model: options.model } : {}
+    };
+    if (turn.schema !== void 0) {
+      return this.#runSchemaAgent(
+        state.engine.name,
+        invocation,
+        { ...sharedOptions, schema: turn.schema },
+        agentId,
+        agentRecord
+      );
+    }
+    return {
+      status: "complete",
+      value: await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord)
+    };
+  }
+  async #closeWorkerSession(state) {
+    if (state.closed) {
+      return;
+    }
+    state.closed = true;
+    try {
+      await state.engineSession?.close();
+    } catch {
+    }
+    await state.pendingTurn?.catch(() => void 0);
+    const placement = state.placement;
+    state.placement = null;
+    if (placement !== null) {
+      try {
+        const worktree = await this.#placement.close(placement);
+        if (worktree !== null) {
+          this.worktrees.push(worktree);
+          this.#emitEvent({
+            method: "worktree/finished",
+            params: {
+              path: worktree.path,
+              branch: worktree.branch,
+              changed: worktree.changed,
+              removed: worktree.removed
+            },
+            receivedAt: Date.now()
+          });
+        }
+      } catch (error) {
+        if (placement.worktree !== void 0) {
+          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
+          this.#emitEvent({
+            method: "worktree/finalisationFailed",
+            params: {
+              sessionId: state.id,
+              path: placement.worktree.path,
+              branch: placement.worktree.branch,
+              message: failureFromError(error).message
+            },
+            receivedAt: Date.now()
+          });
+        }
+      }
+    }
+  }
+  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+    let started = false;
+    try {
+      return await this.#admission.admit(
+        engine.name,
+        agentId,
+        () => engine.schedule(async () => {
+          started = true;
+          return this.#executeAgent(
+            engine.name,
+            { label: options.label ?? null, phase: options.phase ?? null },
+            agentId,
+            agentRecord,
+            queuedAt,
+            () => this.#runAgent(engine, prompt, options, agentId, agentRecord)
+          );
+        })
+      );
+    } catch (error) {
+      if (!started) {
+        this.progress.settleAgent(agentId, "failed");
+        this.#settleTerminalStatus(agentRecord, error, "queued");
+        agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
+        agentRecord.executionMs = 0;
+        await this.#recordSettlementSafely(agentId, agentRecord);
+      }
+      throw error;
+    }
+  }
+  async #executeAgent(engineName, identity, agentId, agentRecord, queuedAt, run) {
+    const executionStartedAt = Date.now();
+    this.progress.startAgent(agentId);
+    const executingRecords = this.#executingAgentRecords.get(engineName) ?? /* @__PURE__ */ new Set();
+    this.#executingAgentRecords.set(engineName, executingRecords);
+    executingRecords.add(agentRecord);
+    try {
+      const execution = await run();
+      const outcome = execution.status === "complete" ? "done" : "failed";
+      const executionEndedAt = Date.now();
+      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      this.progress.settleAgent(agentId, outcome);
+      if (outcome === "done") {
+        agentRecord.status = "complete";
+      } else {
+        this.#settleTerminalStatus(agentRecord, null);
+      }
+      agentRecord.rawOutput = lastRawOutput(agentRecord);
+      agentRecord.validatedOutput = execution.value;
+      if (outcome === "done") {
+        this.#completed.push({
+          id: agentId,
+          engine: engineName,
+          label: identity.label,
+          phase: identity.phase,
+          output: execution.value
+        });
+      }
+      await this.#recordSettlementSafely(agentId, agentRecord);
+      return execution.value;
+    } catch (error) {
+      const executionEndedAt = Date.now();
+      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      this.progress.settleAgent(agentId, "failed");
+      this.#settleTerminalStatus(agentRecord, error);
+      agentRecord.rawOutput = lastRawOutput(agentRecord);
+      agentRecord.validatedOutput = null;
+      await this.#recordSettlementSafely(agentId, agentRecord);
+      throw error;
+    } finally {
+      this.#lastSettledAgentRecord = agentRecord;
+      executingRecords.delete(agentRecord);
+      if (executingRecords.size === 0) {
+        this.#executingAgentRecords.delete(engineName);
+      }
+    }
+  }
+  /** The last settled agent record, or null before any settlement. */
+  lastAgentRecord() {
+    return this.#lastSettledAgentRecord;
+  }
+  /**
+   * The archive is observability: a bookkeeping failure must not reject (or,
+   * on the success path, falsify) the agent whose work it records. Failures
+   * surface as an event the CLI logs to stderr.
+   */
+  async #recordAgentSafely(record) {
+    try {
+      await this.#runRecorder?.recordAgent(record);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: {
+          agentId: record.id,
+          message: error instanceof Error ? error.message : String(error)
+        },
+        receivedAt: Date.now()
+      });
+    }
+  }
+  async #recordSettlementSafely(agentId, record) {
+    if (this.#abandonedAgentIds.has(agentId)) {
+      return;
+    }
+    await this.#recordAgentSafely(record);
+  }
+  /**
+   * Outputs of every worker that finished successfully, in completion order.
+   * The CLI reads this to assemble a partial result if the whole-workflow
+   * timeout fires before the script returns.
+   */
+  completedOutputs() {
+    return this.#completed;
+  }
+  /**
+   * The worker tally for the run's end, or null before close() completes
+   * it. Legs close() abandons (no outcome ever observed) count `unsettled`
+   * by its own decision; every other leg is counted from what its durable
+   * record settled to during teardown — cut short where the run's ending
+   * is the recorded cause, done/failed where the leg settled on its own
+   * account — so the sentinel's figures and the archive's records state
+   * the same thing, including for a leg that outraced teardown.
+   */
+  shutdownTally() {
+    return this.#shutdownTally;
+  }
+  close(status = "interrupted") {
+    this.#closeRun ??= this.#closeOnce(status);
+    return this.#closeRun;
+  }
+  async #closeOnce(status) {
+    this.#shutdownAgentStatus = status;
+    this.#closed = true;
+    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
+      ([, { record }]) => record.status === "in-progress"
+    );
+    const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
+    const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
+    const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
+    const totalsAtClose = this.progress.snapshot().totals;
+    const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
+    this.#holdManager?.close();
+    this.#admission.close();
+    await Promise.all(
+      abandoning.map(async (record) => {
+        this.#abandonedAgentIds.add(record.id);
+        record.status = "abandoned";
+        await this.#recordAgentSafely(record);
+      })
+    );
+    const teardownFailures = [];
+    try {
+      await this.#engines.close();
+    } catch (error) {
+      teardownFailures.push(error);
+    }
+    for (const result of await sessionCloses) {
+      if (result.status === "rejected") {
+        teardownFailures.push(result.reason);
+      }
+    }
+    this.#workerSessions.clear();
+    await settlementBarrier;
+    let done = totalsAtClose.done;
+    let failed = totalsAtClose.failed;
+    let cutShort = 0;
+    for (const [, { record }] of closing) {
+      if (record.status === "complete") {
+        done += 1;
+      } else if (record.terminationCause?.kind === `run-${status}`) {
+        cutShort += 1;
+      } else {
+        failed += 1;
+      }
+    }
+    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    if (teardownFailures.length === 1) {
+      throw teardownFailures[0];
+    }
+    if (teardownFailures.length > 1) {
+      throw new AggregateError(teardownFailures, "run teardown failed to end cleanly");
+    }
+  }
+  /**
+   * Resolves when the identified leg's settlement bookkeeping has finished —
+   * its record status, cause, and settlement write are all final. Already
+   * settled resolves immediately.
+   */
+  #settledSignal(agentId) {
+    if (!this.#unsettledAgentRecords.has(agentId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters = this.#settlementWaiters.get(agentId) ?? [];
+      waiters.push(resolve);
+      this.#settlementWaiters.set(agentId, waiters);
+    });
+  }
+  /** The one place a leg leaves the unsettled set; wakes any close() waiting on it. */
+  #noteAgentSettled(agentId) {
+    this.#unsettledAgentRecords.delete(agentId);
+    const waiters = this.#settlementWaiters.get(agentId);
+    if (waiters !== void 0) {
+      this.#settlementWaiters.delete(agentId);
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
+  }
+  /**
+   * The run's own settlement, seen from inside a worker's turn, or null when
+   * the engine failed on its own account. A run interrupt or whole-run
+   * timeout reaches an in-flight turn as whatever its transport noticed
+   * first — a closed app-server, an aborted poll — so that symptom names the
+   * run's exit rather than the turn's cause. Agent and attempt both read
+   * their cause from here, so a record cannot disagree with its own attempts.
+   */
+  #runSettlementCause(error, dispatch = "in-flight") {
+    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
+      return {
+        kind: `run-${this.#shutdownAgentStatus}`,
+        // A queued leg's turn never reached an engine; saying it was in
+        // flight would claim a dispatch that never happened.
+        message: dispatch === "queued" ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched` : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
+      };
+    }
+    return null;
+  }
+  /**
+   * Settles a record's terminal status *and* the cause that produced it, so
+   * the two can never disagree.
+   */
+  #settleTerminalStatus(record, error, dispatch = "in-flight") {
+    const settlement = this.#runSettlementCause(error, dispatch);
+    if (settlement !== null) {
+      record.status = this.#shutdownAgentStatus;
+      record.terminationCause = settlement;
+      return;
+    }
+    if (error instanceof TurnTimeoutError) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: "turn-timeout", message: error.message };
+      return;
+    }
+    const lastFailure = record.attempts.at(-1)?.failure;
+    if (lastFailure?.kind.endsWith("-timeout") === true) {
+      record.status = "timed-out";
+      record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
+      return;
+    }
+    record.status = "failed";
+    record.terminationCause = null;
+  }
+  async #runAgent(engine, prompt, options, agentId, agentRecord) {
+    const placement = await this.#placement.open(options);
+    agentRecord.resolvedCwd = placement.cwd;
+    agentRecord.isolation = options.isolation ?? null;
+    let invocation;
+    let completion;
+    try {
+      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
+      if (options.schema !== void 0) {
+        completion = {
+          ok: true,
+          execution: await this.#runSchemaAgent(
+            engine.name,
+            invocation,
+            { ...options, schema: options.schema },
+            agentId,
+            agentRecord
+          )
+        };
+      } else {
+        completion = {
+          ok: true,
+          execution: {
+            status: "complete",
+            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
+          }
+        };
+      }
+    } catch (error) {
+      completion = { ok: false, error };
+    } finally {
+      try {
+        try {
+          await invocation?.close?.();
+        } catch (error) {
+          completion = { ok: false, error };
+        }
+      } finally {
+        try {
+          const worktree = await this.#placement.close(placement);
+          if (worktree !== null) {
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finished",
+              params: {
+                path: worktree.path,
+                branch: worktree.branch,
+                changed: worktree.changed,
+                removed: worktree.removed
+              },
+              receivedAt: Date.now()
+            });
+          }
+        } catch (error) {
+          if (placement.worktree !== void 0) {
+            const worktree = {
+              ...placement.worktree,
+              tipCommit: null,
+              changed: true,
+              removed: false
+            };
+            this.#publishWorktree(agentRecord, worktree);
+            this.#emitEvent({
+              method: "worktree/finalisationFailed",
+              params: {
+                agentId,
+                path: worktree.path,
+                branch: worktree.branch,
+                message: failureFromError(error).message
+              },
+              receivedAt: Date.now()
+            });
+          }
+          if (completion?.ok !== false) {
+            completion = { ok: false, error };
+          }
+        }
+      }
+    }
+    if (completion === void 0) {
+      throw new Error("agent execution ended without a result");
+    }
+    if (!completion.ok) {
+      throw completion.error;
+    }
+    return completion.execution;
+  }
+  #publishWorktree(agentRecord, worktree) {
+    this.worktrees.push(worktree);
+    agentRecord.worktree = {
+      branch: worktree.branch,
+      baseCommit: worktree.baseCommit,
+      tipCommit: worktree.tipCommit,
+      changed: worktree.changed,
+      removed: worktree.removed
+    };
+  }
+  async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
+    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+    let lastError = null;
+    let previousFailure;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
+      const startedAt = Date.now();
+      try {
+        const result = await invocation.runAttempt({
+          attempt,
+          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          ...previousFailure !== void 0 ? { previousFailure } : {}
+        });
+        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== void 0) {
+          previousFailure = operationalFailure;
+          lastError = new EmptyAgentOutputError(previousFailure.message);
+          continue;
+        }
+        const text = result.text.trim();
+        if (text.length > 0) {
+          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
+          return text;
+        }
+        previousFailure = {
+          kind: "empty-output",
+          message: `agent returned empty text on attempt ${attempt}`
+        };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+        lastError = new EmptyAgentOutputError(previousFailure.message);
+      } catch (error) {
+        const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
+        const settlement = this.#runSettlementCause(error);
+        agentRecord.attempts.push(
+          attemptRecord(
+            attempt,
+            "failed",
+            settlement ?? observed,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            failedResult,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error),
+            settlement === null ? null : observed
+          )
+        );
+        if (!isRetryableError(error) || attempt === maxAttempts) {
+          throw error;
+        }
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
+  }
+  async #runSchemaAgent(engine, invocation, options, agentId, agentRecord) {
+    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+    let previousFailure;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      this.progress.noteAttempt(agentId, attempt);
+      const startedAt = Date.now();
+      try {
+        const result = await invocation.runAttempt({
+          attempt,
+          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          ...previousFailure !== void 0 ? { previousFailure } : {}
+        });
+        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
+        recordTurnMetadata(agentRecord, result);
+        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        if (operationalFailure !== void 0) {
+          previousFailure = operationalFailure;
+          continue;
+        }
+        if (result.text.trim().length === 0) {
+          previousFailure = {
+            kind: "empty-output",
+            message: `agent returned empty text on attempt ${attempt}`
+          };
+          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          continue;
+        }
+        const selection = selectLastValidJsonFromText(result.text, options.schema);
+        if (selection.kind === "invalid-json") {
+          previousFailure = {
+            kind: "invalid-json",
+            message: "agent output did not contain parseable JSON"
+          };
+          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          continue;
+        }
+        if (selection.kind === "valid") {
+          agentRecord.parseRoute = selection.parsed.source;
+          agentRecord.attempts.push(
+            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+          );
+          return {
+            status: "complete",
+            value: selection.parsed.value
+          };
+        }
+        previousFailure = {
+          kind: "schema-validation",
+          message: JSON.stringify(selection.validation.errors ?? [])
+        };
+        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+      } catch (error) {
+        const observed = failureFromError(error);
+        const failedResult = failedTurnResultOf(error);
+        if (failedResult !== null) {
+          recordTurnMetadata(agentRecord, failedResult);
+        }
+        const settlement = this.#runSettlementCause(error);
+        agentRecord.attempts.push(
+          attemptRecord(
+            attempt,
+            "failed",
+            settlement ?? observed,
+            partialWorkerTextOf(error),
+            null,
+            startedAt,
+            failedResult,
+            workerExitStatusOf(error),
+            appServerDiagnosticOf(error),
+            settlement === null ? null : observed
+          )
+        );
+        if (!isRetryableError(error) || attempt === maxAttempts) {
+          throw error;
+        }
+      }
+    }
+    return {
+      status: "failed",
+      value: null
+    };
+  }
+  #emitEvent(event) {
+    for (const listener of this.#eventListeners) {
+      listener(event);
+    }
+  }
+  /**
+   * An unpinned call's first resolved served model becomes a named notice —
+   * on every engine that reports one, so the Claude notice names its model
+   * exactly as the Codex line does (an unpinned worker's real identity is
+   * operator-facing information, not a Codex privilege).
+   */
+  #recordResolvedUnpinnedModel(engine, options, agentId, record, result) {
+    if (options.model !== void 0 || record.resolvedModel !== null || result.resolvedModel === void 0) {
+      return;
+    }
+    this.#emitEvent({
+      method: `${engine}/unpinnedModelResolved`,
+      params: {
+        agentId,
+        label: options.label ?? null,
+        model: result.resolvedModel,
+        effort: result.resolvedEffort ?? null
+      },
+      receivedAt: Date.now()
+    });
+  }
+  #registerEngineCaps() {
+    for (const name of this.#engines.names()) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== void 0) {
+        this.progress.registerEngine(name, adapter.concurrency);
+      }
+    }
+  }
+  #engineCaps() {
+    const caps = /* @__PURE__ */ new Map();
+    for (const name of this.#engines.names()) {
+      const adapter = this.#engines.get(name);
+      if (adapter !== void 0) {
+        caps.set(name, adapter.concurrency);
+      }
+    }
+    return caps;
+  }
+  #engineFor(engine) {
+    if (engine === void 0) {
+      throw new MissingEngineError();
+    }
+    if (typeof engine !== "string") {
+      throw new UnknownEngineError(engine);
+    }
+    const adapter = this.#engines.get(engine);
+    if (adapter === void 0) {
+      throw new UnknownEngineError(engine);
+    }
+    return adapter;
+  }
+  #engineTurnOptions(options, cwd) {
+    const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
+    return {
+      ...resolvedTimeoutMs !== void 0 ? { timeoutMs: resolvedTimeoutMs } : {},
+      ...options.schema !== void 0 ? { schema: options.schema } : {},
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...options.effort !== void 0 ? { effort: options.effort } : {},
+      ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
+      ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
+      cwd
+    };
+  }
+  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+    return {
+      id,
+      engine,
+      prompt,
+      options: {
+        timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,
+        maxAttempts: options.maxAttempts ?? this.#defaultMaxAttempts
+      },
+      model: typeof options.model === "string" ? options.model : null,
+      effort: typeof options.effort === "string" ? options.effort : null,
+      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
+      resolvedModel: null,
+      resolvedEffort: null,
+      resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
+      isolation: options.isolation ?? null,
+      worktree: null,
+      label: options.label ?? null,
+      phase: options.phase ?? null,
+      status: "in-progress",
+      terminationCause: null,
+      creationOrder: id,
+      concurrencyGroup: engine,
+      schema: options.schema ?? null,
+      strip: stripRoutes === null || options.strip === void 0 ? null : { requested: [...options.strip], enforcement: stripRoutes },
+      session: null,
+      parseRoute: null,
+      decodeFailure: null,
+      rawOutput: null,
+      validatedOutput: null,
+      queuedMs: 0,
+      executionMs: 0,
+      attempts: []
+    };
+  }
+};
+async function createRuntime(options = {}) {
+  return EnsembleRuntime.create(options);
+}
+function declaredClaudeTtlMs(workerEnvironment) {
+  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
+  return declared === void 0 ? null : claudeCacheTtlToMs(declared);
+}
+function isRetryableError(error) {
+  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
+}
+function requireTransport(transport) {
+  if (transport === void 0) {
+    throw new Error("EnsembleRuntime requires either engines or a Codex transport");
+  }
+  return transport;
+}
+function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null, observedFailure = null) {
+  const endedAt = /* @__PURE__ */ new Date();
+  return {
+    attempt,
+    status,
+    failure,
+    observedFailure,
+    workerExit,
+    appServerDiagnostic,
+    rawOutput,
+    validatedOutput,
+    startedAt: new Date(startedAtMs).toISOString(),
+    endedAt: endedAt.toISOString(),
+    // Per-attempt served-model identity: retries can open fresh threads that
+    // resolve differently, so each attempt keeps its own answer rather than
+    // inheriting the agent-level last-write-wins field.
+    resolvedModel: result?.resolvedModel ?? null,
+    resolvedEffort: result?.resolvedEffort ?? null,
+    // Engines that time their own turn say so; for the rest the attempt
+    // already holds both endpoints, and a null beside them would be the
+    // record discarding a figure it holds.
+    durationMs: result?.durationMs ?? Math.max(0, endedAt.getTime() - startedAtMs),
+    firstDeltaMs: result?.firstDeltaMs ?? null,
+    tokenUsageEvents: result?.tokenUsageEvents ?? [],
+    transcripts: result?.transcripts ?? [],
+    diagnostics: result?.diagnostics ?? {}
+  };
+}
+function recordTurnMetadata(record, result) {
+  if (result.resolvedModel !== void 0) {
+    record.resolvedModel = result.resolvedModel;
+  }
+  if (result.resolvedEffort !== void 0) {
+    record.resolvedEffort = result.resolvedEffort;
+  }
+}
+function recordOperationalFailure(record, attempt, startedAtMs, result) {
+  if (result.attemptFailure === void 0) {
+    return void 0;
+  }
+  record.attempts.push(
+    attemptRecord(
+      attempt,
+      "failed",
+      result.attemptFailure,
+      result.text,
+      null,
+      startedAtMs,
+      result,
+      result.workerExit ?? null
+    )
+  );
+  return result.attemptFailure;
+}
+function failureFromError(error) {
+  return describeError(error);
+}
+function settledFailureMessage(record) {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const failure = record.attempts[index]?.failure;
+    if (failure !== void 0 && failure !== null) {
+      return `${failure.kind}: ${failure.message}`;
+    }
+  }
+  return record.terminationCause !== null ? `${record.terminationCause.kind}: ${record.terminationCause.message}` : "the agent failed without a recorded cause";
+}
+function lastRawOutput(record) {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const rawOutput = record.attempts[index]?.rawOutput;
+    if (rawOutput !== void 0 && rawOutput !== null) {
+      return rawOutput;
+    }
+  }
+  return null;
+}
+function decodeFailureDiagnosticFromParams(params) {
+  return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
+}
+
+// src/hooks.ts
+function createWorkflowHooks(options) {
+  const writeLog = (message) => {
+    options.log(message);
+  };
+  const defaults = options.defaults ?? {};
+  function agentWithDefaults(prompt, agentOptions) {
+    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
+  }
+  return {
+    agent: agentWithDefaults,
+    session: (sessionOptions) => {
+      const createWorkerSession = options.runtime.createWorkerSession;
+      if (createWorkerSession === void 0) {
+        throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
+      }
+      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
+    },
+    hold: (holdOptions) => {
+      const raiseHold = options.runtime.raiseHold;
+      if (raiseHold === void 0) {
+        throw new PreSpawnAuthorError("this runtime does not support holds");
+      }
+      return raiseHold.call(options.runtime, holdOptions);
+    },
+    workflow: options.workflow,
+    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
+    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    phase: (title) => {
+      options.runtime.notePhase(title);
+      writeLog(`[phase] ${title}`);
+    },
+    log: (message) => {
+      writeLog(message);
+    },
+    // A read-only facade: handing the live TokenBudget to the script would
+    // expose record() and the events array to script mutation.
+    budget: {
+      spent: (engine) => options.runtime.budget.spent(engine),
+      remaining: (engine) => options.runtime.budget.remaining(engine)
+    },
+    worktrees: options.runtime.worktrees,
+    args: Array.isArray(options.args) ? [...options.args] : options.args
+  };
+}
+async function parallel(thunks, log, presentError) {
+  return Promise.all(
+    thunks.map(async (thunk, index) => {
+      try {
+        return await thunk();
+      } catch (error) {
+        if (error instanceof PreSpawnAuthorError) {
+          throw error;
+        }
+        presentError?.(error);
+        log(`parallel thunk ${index} failed: ${describeWorkerFailure(error)}`);
+        const identity = agentIdentityOf(error);
+        if (identity !== null) {
+          return {
+            label: identity.label,
+            phase: identity.phase,
+            output: null,
+            failure: { message: error instanceof Error ? error.message : String(error) }
+          };
+        }
+        return null;
+      }
+    })
+  );
+}
+async function pipeline(items, stages, log, presentError) {
+  return Promise.all(
+    items.map(async (item, index) => {
+      let previous = item;
+      for (let stageIndex = 0; stageIndex < stages.length; stageIndex += 1) {
+        const stage = stages[stageIndex];
+        if (stage === void 0) {
+          throw new Error(`pipeline stage ${stageIndex} is missing`);
+        }
+        try {
+          previous = await stage(previous, item, index);
+        } catch (error) {
+          if (error instanceof PreSpawnAuthorError) {
+            throw error;
+          }
+          presentError?.(error);
+          log(`pipeline item ${index} stage ${stageIndex} failed: ${describeWorkerFailure(error)}`);
+          const identity = agentIdentityOf(error);
+          if (identity !== null) {
+            return {
+              label: identity.label,
+              phase: identity.phase,
+              output: null,
+              failure: { message: error instanceof Error ? error.message : String(error) }
+            };
+          }
+          return null;
+        }
+      }
+      return previous;
+    })
+  );
+}
+function mergeAgentDefaults(defaults, agentOptions) {
+  assertValidAgentOptions(agentOptions ?? {});
+  const engine = agentOptions?.engine;
+  const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
+  if (engineDefaults === void 0) {
+    return agentOptions ?? {};
+  }
+  const merged = { ...engineDefaults };
+  for (const [key, value] of Object.entries(agentOptions ?? {})) {
+    if (value !== void 0) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+function mergeSessionDefaults(defaults, sessionOptions) {
+  const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
+  if (engineDefaults === void 0) {
+    return sessionOptions;
+  }
+  const merged = { ...engineDefaults };
+  for (const [key, value] of Object.entries(sessionOptions)) {
+    if (value !== void 0) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+function describeWorkerFailure(error) {
+  const presented = presentOperationalError(error);
+  if (presented !== null) {
+    return presented;
+  }
+  if (error instanceof Error) {
+    return error.stack ?? error.message;
+  }
+  return String(error);
+}
+
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile4 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path7 from "node:path";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -21629,139 +27632,11 @@ function parse3(input, options) {
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
-// src/hooks.ts
-function createWorkflowHooks(options) {
-  const writeLog = (message) => {
-    options.log(message);
-  };
-  const defaults = options.defaults ?? {};
-  function agentWithDefaults(prompt, agentOptions) {
-    return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
-  }
-  return {
-    agent: agentWithDefaults,
-    session: (sessionOptions) => {
-      const createWorkerSession = options.runtime.createWorkerSession;
-      if (createWorkerSession === void 0) {
-        throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
-      }
-      return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
-    hold: (holdOptions) => {
-      const raiseHold = options.runtime.raiseHold;
-      if (raiseHold === void 0) {
-        throw new PreSpawnAuthorError("this runtime does not support holds");
-      }
-      return raiseHold.call(options.runtime, holdOptions);
-    },
-    workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
-    phase: (title) => {
-      options.runtime.notePhase(title);
-      writeLog(`[phase] ${title}`);
-    },
-    log: (message) => {
-      writeLog(message);
-    },
-    // A read-only facade: handing the live TokenBudget to the script would
-    // expose record() and the events array to script mutation.
-    budget: {
-      spent: (engine) => options.runtime.budget.spent(engine),
-      remaining: (engine) => options.runtime.budget.remaining(engine)
-    },
-    worktrees: options.runtime.worktrees,
-    args: Array.isArray(options.args) ? [...options.args] : options.args
-  };
-}
-async function parallel(thunks, log, presentError) {
-  return Promise.all(
-    thunks.map(async (thunk, index) => {
-      try {
-        return await thunk();
-      } catch (error) {
-        if (error instanceof PreSpawnAuthorError) {
-          throw error;
-        }
-        presentError?.(error);
-        log(`parallel thunk ${index} failed: ${formatError(error)}`);
-        const identity = agentIdentityOf(error);
-        if (identity !== null) {
-          return { label: identity.label, phase: identity.phase, output: null };
-        }
-        return null;
-      }
-    })
-  );
-}
-async function pipeline(items, stages, log, presentError) {
-  return Promise.all(
-    items.map(async (item, index) => {
-      let previous = item;
-      for (let stageIndex = 0; stageIndex < stages.length; stageIndex += 1) {
-        const stage = stages[stageIndex];
-        if (stage === void 0) {
-          throw new Error(`pipeline stage ${stageIndex} is missing`);
-        }
-        try {
-          previous = await stage(previous, item, index);
-        } catch (error) {
-          if (error instanceof PreSpawnAuthorError) {
-            throw error;
-          }
-          presentError?.(error);
-          log(`pipeline item ${index} stage ${stageIndex} failed: ${formatError(error)}`);
-          const identity = agentIdentityOf(error);
-          if (identity !== null) {
-            return { label: identity.label, phase: identity.phase, output: null };
-          }
-          return null;
-        }
-      }
-      return previous;
-    })
-  );
-}
-function mergeAgentDefaults(defaults, agentOptions) {
-  assertValidAgentOptions(agentOptions ?? {});
-  const engine = agentOptions?.engine;
-  const engineDefaults = typeof engine === "string" ? defaults[engine] : void 0;
-  if (engineDefaults === void 0) {
-    return agentOptions ?? {};
-  }
-  const merged = { ...engineDefaults };
-  for (const [key, value] of Object.entries(agentOptions ?? {})) {
-    if (value !== void 0) {
-      merged[key] = value;
-    }
-  }
-  return merged;
-}
-function mergeSessionDefaults(defaults, sessionOptions) {
-  const engineDefaults = typeof sessionOptions.engine === "string" ? defaults[sessionOptions.engine] : void 0;
-  if (engineDefaults === void 0) {
-    return sessionOptions;
-  }
-  const merged = { ...engineDefaults };
-  for (const [key, value] of Object.entries(sessionOptions)) {
-    if (value !== void 0) {
-      merged[key] = value;
-    }
-  }
-  return merged;
-}
-function formatError(error) {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-  return String(error);
-}
-
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access, readdir as readdir3, readFile as readFile3 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
-import path6 from "node:path";
+import { access as access2, readdir as readdir5, readFile as readFile6 } from "node:fs/promises";
+import { homedir as homedir4 } from "node:os";
+import path10 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -21770,10 +27645,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir3(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path10.join(homedir4(), ".local", "share");
   return {
-    project: path6.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path6.join(dataHome2, "ensemble", "workflows")
+    project: path10.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path10.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -21783,9 +27658,9 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path6.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path10.resolve(options.cwd, nameOrRef.scriptPath);
   try {
-    await access(scriptPath, constants.R_OK);
+    await access2(scriptPath, constants.R_OK);
   } catch (error) {
     throw new WorkflowResolutionError(`workflow({ scriptPath }) could not read ${scriptPath}`, { cause: error });
   }
@@ -21837,14 +27712,14 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir3(dir, { withFileTypes: true });
+    directoryEntries = await readdir5(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
     }
     return {
       entries: [],
-      notes: [{ scriptPath: dir, message: `could not read registry directory: ${formatError2(error)}` }]
+      notes: [{ scriptPath: dir, message: `could not read registry directory: ${formatError(error)}` }]
     };
   }
   const entries = [];
@@ -21853,9 +27728,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path6.join(dir, entry.name);
+    const scriptPath = path10.join(dir, entry.name);
     try {
-      const source = await readFile3(scriptPath, "utf8");
+      const source = await readFile6(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -21863,7 +27738,7 @@ async function listRegistryDir(dir, scope, readMeta) {
       }
       entries.push({ ...meta, scriptPath, scope, shadowed: false });
     } catch (error) {
-      notes.push({ scriptPath, message: formatError2(error) });
+      notes.push({ scriptPath, message: formatError(error) });
     }
   }
   return { entries, notes };
@@ -21896,7 +27771,7 @@ function compareEntries(left, right) {
 function isMissingDirectory(error) {
   return typeof error === "object" && error !== null && error.code === "ENOENT";
 }
-function formatError2(error) {
+function formatError(error) {
   if (error instanceof Error) {
     return error.message;
   }
@@ -21995,8 +27870,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path7.resolve(options.filename);
-  const cwd = options.cwd ?? path7.dirname(resolvedFilename);
+  const resolvedFilename = path11.resolve(options.filename);
+  const cwd = options.cwd ?? path11.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -22372,7 +28247,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile4(scriptPath, "utf8");
+    return await readFile7(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -22682,5673 +28557,6 @@ function skipBlockComment(source, start) {
   return end + 2;
 }
 
-// src/operator-diagnosis.ts
-function presentTerminalError(error, context) {
-  const lines = diagnose(error, context);
-  if (lines === null) {
-    return null;
-  }
-  const [first, ...detail] = lines;
-  return [first, ...detail.map((line) => `  ${line}`)].join("\n");
-}
-function diagnose(error, context) {
-  if (isInterrupt(error)) {
-    return [
-      `Interrupted (${error.signal}) \u2014 partial result on stdout${recordSuffix(context)}`
-    ];
-  }
-  if (error instanceof WorkflowTimeoutError) {
-    return [`${error.message} \u2014 partial result on stdout${recordSuffix(context)}`];
-  }
-  if (error instanceof Error && error.name === "SingleAgentFailedError") {
-    const lines = [error.message];
-    for (const attempt of context.lastAgentRecord?.attempts ?? []) {
-      if (attempt.failure !== null) {
-        const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
-        const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
-      }
-    }
-    const record = context.lastAgentRecord;
-    if (context.archiveDir !== null && record !== null) {
-      lines.push(`full attempt evidence: ${context.archiveDir}/agents/${String(record.id).padStart(6, "0")}/agent.json`);
-    }
-    return lines;
-  }
-  const argListLimit = findErrorCode(error, "E2BIG");
-  if (argListLimit) {
-    return [
-      "Prompt exceeds the platform's argument-size limit (E2BIG) \u2014 shorten the prompt (this engine passes it as a process argument)"
-    ];
-  }
-  if (error instanceof Error && error.name === "AppServerExitedError") {
-    const exit = workerExitStatusOf(error);
-    const how = exit?.signal !== null && exit?.signal !== void 0 ? `terminated by ${exit.signal}` : exit?.exitCode !== null && exit?.exitCode !== void 0 ? `exited with code ${exit.exitCode}` : "exited unexpectedly";
-    const lines = [`Codex app-server ${how}`, ...error.message.split("\n")];
-    const diagnostic = appServerDiagnosticOf(error);
-    if (diagnostic !== null) {
-      lines.push(`server diagnostic: ${diagnostic.message}`);
-    }
-    return lines;
-  }
-  if (error instanceof HoldTimeoutError || error instanceof PreSpawnAuthorError) {
-    return null;
-  }
-  return null;
-}
-function recordSuffix(context) {
-  return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
-}
-function bounded(text, limit = 400) {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > limit ? `${flat.slice(0, limit)}\u2026` : flat;
-}
-function isInterrupt(error) {
-  return error instanceof Error && error.name === "WorkflowInterruptedError" && typeof error.signal === "string";
-}
-function findErrorCode(error, code) {
-  let current2 = error;
-  for (let depth = 0; depth < 8 && current2 instanceof Error; depth += 1) {
-    if (current2.code === code || current2.message.includes(code)) {
-      return true;
-    }
-    current2 = current2.cause;
-  }
-  return false;
-}
-
-// src/runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
-
-// src/agent-placement.ts
-import { stat as stat2 } from "node:fs/promises";
-import path9 from "node:path";
-
-// src/worktree-isolation.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { execFile as execFile2 } from "node:child_process";
-import { mkdir as mkdir4, rmdir } from "node:fs/promises";
-import path8 from "node:path";
-import { promisify as promisify2 } from "node:util";
-var execFileAsync2 = promisify2(execFile2);
-var GitWorktreeIsolationManager = class {
-  #counter = 0;
-  #repoRoots = /* @__PURE__ */ new Map();
-  #worktreeRoots = /* @__PURE__ */ new Map();
-  async create(baseCwd) {
-    const repoRoot = await this.#gitRepoRoot(baseCwd);
-    const name = this.#uniqueName();
-    const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
-    await mkdir4(path8.dirname(worktreePath), { recursive: true });
-    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
-    const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
-    this.#worktreeRoots.set(worktreePath, repoRoot);
-    return {
-      path: worktreePath,
-      branch,
-      baseCommit
-    };
-  }
-  async finish(worktree) {
-    const status = await git2(worktree.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    const tip = (await git2(worktree.path, ["rev-parse", "HEAD"])).trim();
-    const changed = status.trim().length > 0 || tip !== worktree.baseCommit;
-    if (changed) {
-      this.#worktreeRoots.delete(worktree.path);
-      return {
-        ...worktree,
-        tipCommit: tip,
-        changed: true,
-        removed: false
-      };
-    }
-    const repoRoot = this.#worktreeRoots.get(worktree.path);
-    if (repoRoot === void 0) {
-      throw new Error(`worktree was not created by this manager: ${worktree.path}`);
-    }
-    await git2(repoRoot, ["worktree", "remove", worktree.path]);
-    await git2(repoRoot, ["branch", "-D", worktree.branch]);
-    this.#worktreeRoots.delete(worktree.path);
-    try {
-      await rmdir(path8.dirname(worktree.path));
-    } catch {
-    }
-    return {
-      ...worktree,
-      tipCommit: tip,
-      changed: false,
-      removed: true
-    };
-  }
-  async #gitRepoRoot(baseCwd) {
-    const resolvedCwd = path8.resolve(baseCwd);
-    let repoRoot = this.#repoRoots.get(resolvedCwd);
-    if (repoRoot === void 0) {
-      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
-        throw new WorktreePlacementRejectedError(resolvedCwd, {
-          cause: error
-        });
-      });
-      this.#repoRoots.set(resolvedCwd, repoRoot);
-    }
-    try {
-      return (await repoRoot).trim();
-    } catch (error) {
-      this.#repoRoots.delete(resolvedCwd);
-      throw error;
-    }
-  }
-  #uniqueName() {
-    this.#counter += 1;
-    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
-  }
-};
-async function git2(cwd, args) {
-  try {
-    const { stdout } = await execFileAsync2("git", args, {
-      cwd,
-      maxBuffer: 10 * 1024 * 1024
-    });
-    return stdout;
-  } catch (error) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${formatExecError(error)}`, {
-      cause: error
-    });
-  }
-}
-function formatExecError(error) {
-  if (typeof error === "object" && error !== null) {
-    const stderr = "stderr" in error && typeof error.stderr === "string" ? error.stderr.trim() : "";
-    const message = "message" in error && typeof error.message === "string" ? error.message : "";
-    return stderr.length > 0 ? stderr : message;
-  }
-  return String(error);
-}
-
-// src/agent-placement.ts
-var AgentPlacementManager = class {
-  baseCwd;
-  #worktreeManager;
-  constructor(options) {
-    this.baseCwd = path9.resolve(options.baseCwd);
-    this.#worktreeManager = options.worktreeManager ?? new GitWorktreeIsolationManager();
-  }
-  async assertUsableCwd(options) {
-    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
-    try {
-      if (!(await stat2(requestedCwd)).isDirectory()) {
-        throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
-      }
-    } catch (error) {
-      if (error instanceof AgentCwdRejectedError) {
-        throw error;
-      }
-      throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`, { cause: error });
-    }
-  }
-  async open(options) {
-    const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
-    if (options.isolation !== "worktree") {
-      return { cwd: requestedCwd };
-    }
-    const worktree = await this.#worktreeManager.create(requestedCwd);
-    return { cwd: worktree.path, worktree };
-  }
-  async close(placement) {
-    if (placement.worktree === void 0) {
-      return null;
-    }
-    return this.#worktreeManager.finish(placement.worktree);
-  }
-};
-function resolveAgentCwd(baseCwd, requestedCwd) {
-  return path9.resolve(baseCwd, requestedCwd ?? ".");
-}
-
-// src/admission.ts
-var AdmissionController = class {
-  ceiling;
-  #caps;
-  #ceilingActive = 0;
-  #engineActive = /* @__PURE__ */ new Map();
-  #waiting = [];
-  #onAdmission;
-  #eventSeq = 0;
-  #closed = false;
-  constructor(options) {
-    if (options.ceiling !== null && (!Number.isInteger(options.ceiling) || options.ceiling < 1)) {
-      throw new Error(`Agent ceiling must be a positive integer, got ${options.ceiling}`);
-    }
-    for (const [engine, cap] of options.caps) {
-      if (!Number.isInteger(cap) || cap < 1) {
-        throw new Error(`Concurrency cap for ${engine} must be a positive integer, got ${cap}`);
-      }
-    }
-    this.ceiling = options.ceiling;
-    this.#caps = options.caps;
-    this.#onAdmission = options.onAdmission;
-  }
-  admit(engine, agentId, task) {
-    if (this.#closed) {
-      throw new EngineShutdownError(engine);
-    }
-    if (!this.#caps.has(engine)) {
-      throw new Error(`No concurrency cap registered for engine ${engine}`);
-    }
-    return new Promise((resolve, reject) => {
-      this.#waiting.push({
-        engine,
-        agentId,
-        task: async () => task(),
-        resolve: (value) => resolve(value),
-        reject,
-        skipReported: false
-      });
-      this.#emit("queued", engine, agentId);
-      this.#drain();
-    });
-  }
-  /**
-   * Settles every promise already accepted by the runtime. Waiting tasks are
-   * rejected without ever acquiring a slot — shutdown is a cancellation, not
-   * a dispatch, and starting them with gates bypassed was observed pushing
-   * the ceiling past its limit. Tasks already admitted keep their slots and
-   * release them through #start's finally as they settle.
-   */
-  close() {
-    if (this.#closed) {
-      return;
-    }
-    this.#closed = true;
-    const waiting = this.#waiting.splice(0);
-    for (const entry of waiting) {
-      entry.reject(new EngineShutdownError(entry.engine));
-    }
-  }
-  snapshot() {
-    return {
-      ceilingActive: this.#ceilingActive,
-      engineActive: new Map(this.#engineActive),
-      waiting: this.#waiting.length
-    };
-  }
-  #drain() {
-    let index = 0;
-    const bypassed = [];
-    while (index < this.#waiting.length) {
-      if (this.ceiling !== null && this.#ceilingActive >= this.ceiling) {
-        return;
-      }
-      const entry = this.#waiting[index];
-      if (entry === void 0) {
-        return;
-      }
-      if (this.#activeFor(entry.engine) >= this.#capFor(entry.engine)) {
-        bypassed.push(entry);
-        index += 1;
-        continue;
-      }
-      for (const skipped of bypassed) {
-        if (!skipped.skipReported) {
-          skipped.skipReported = true;
-          this.#emit("skipped", skipped.engine, skipped.agentId, "engine-cap");
-        }
-      }
-      bypassed.length = 0;
-      this.#waiting.splice(index, 1);
-      this.#start(entry);
-    }
-  }
-  #start(entry) {
-    this.#ceilingActive += 1;
-    this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) + 1);
-    this.#emit("admitted", entry.engine, entry.agentId);
-    Promise.resolve().then(entry.task).then(entry.resolve, entry.reject).finally(() => {
-      this.#ceilingActive -= 1;
-      this.#engineActive.set(entry.engine, this.#activeFor(entry.engine) - 1);
-      this.#emit("released", entry.engine, entry.agentId);
-      if (!this.#closed) {
-        this.#drain();
-      }
-    });
-  }
-  #capFor(engine) {
-    const cap = this.#caps.get(engine);
-    if (cap === void 0) {
-      throw new Error(`No concurrency cap registered for engine ${engine}`);
-    }
-    return cap;
-  }
-  #activeFor(engine) {
-    return this.#engineActive.get(engine) ?? 0;
-  }
-  #emit(kind, engine, agentId, reason) {
-    this.#eventSeq += 1;
-    this.#onAdmission?.({
-      seq: this.#eventSeq,
-      engine,
-      agentId,
-      kind,
-      ceilingHeld: this.#ceilingActive,
-      engineHeld: this.#activeFor(engine),
-      ...reason === void 0 ? {} : { reason }
-    });
-  }
-};
-
-// src/budget.ts
-var TokenBudget = class {
-  ceilings;
-  accountingMode = "last-delta";
-  events = [];
-  #spent = {};
-  constructor(ceilings = {}) {
-    this.ceilings = {
-      codex: ceilings.codex ?? null,
-      claude: ceilings.claude ?? null,
-      opencode: ceilings.opencode ?? null,
-      ...ceilings
-    };
-  }
-  spent(engine) {
-    return this.#spent[engine] ?? 0;
-  }
-  remaining(engine) {
-    const ceiling = this.ceilings[engine] ?? null;
-    if (ceiling === null) {
-      return Number.POSITIVE_INFINITY;
-    }
-    return Math.max(0, ceiling - this.spent(engine));
-  }
-  assertCanStart(engine) {
-    const ceiling = this.ceilings[engine] ?? null;
-    const spent = this.spent(engine);
-    if (ceiling !== null && spent >= ceiling) {
-      throw new BudgetExceededError(engine, ceiling, spent);
-    }
-  }
-  record(engine, event) {
-    this.events.push({ engine, event });
-    this.#spent[engine] = this.spent(engine) + event.last.totalTokens;
-  }
-};
-function tokenUsageEventFromParams(params) {
-  const threadId = params.threadId;
-  const turnId = params.turnId;
-  const tokenUsage = params.tokenUsage;
-  if (typeof threadId !== "string" || typeof turnId !== "string" || !isJsonObject(tokenUsage)) {
-    return null;
-  }
-  const last = breakdownFromUnknown(tokenUsage.last);
-  const total = breakdownFromUnknown(tokenUsage.total);
-  if (last === null || total === null) {
-    return null;
-  }
-  return { threadId, turnId, last, total, raw: params };
-}
-function breakdownFromUnknown(value) {
-  if (!isJsonObject(value)) {
-    return null;
-  }
-  const cachedInputTokens = numericField(value, "cachedInputTokens");
-  const inputTokens = numericField(value, "inputTokens");
-  const outputTokens = numericField(value, "outputTokens");
-  const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
-  const totalTokens = numericField(value, "totalTokens");
-  if (cachedInputTokens === null || inputTokens === null || outputTokens === null || reasoningOutputTokens === null || totalTokens === null) {
-    return null;
-  }
-  return {
-    cachedInputTokens,
-    inputTokens,
-    outputTokens,
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens
-  };
-}
-function numericField(source, key) {
-  const value = source[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-function optionalNumericField(source, key) {
-  return source[key] === void 0 ? void 0 : numericField(source, key);
-}
-function isJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/claude-control-plane.ts
-import { execFile as execFile3, spawn } from "node:child_process";
-import { access as access2, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir4, tmpdir } from "node:os";
-import path10 from "node:path";
-var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
-var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
-var ClaudeCliControlPlane = class {
-  #claudeBin;
-  #tmuxBin;
-  #projectsDir;
-  #dispatchTimeoutMs;
-  #reapGraceMs;
-  #procDir;
-  #valveAttachSettleMs;
-  #valveSubmitSettleMs;
-  #valveKillSettleMs;
-  #valveCounter = 0;
-  #env;
-  #workerEnv;
-  /** Per-session settings directories, removed when the session stops. */
-  #settingsDirs = /* @__PURE__ */ new Map();
-  constructor(options = {}) {
-    this.#claudeBin = options.claudeBin ?? "claude";
-    this.#tmuxBin = options.tmuxBin ?? "tmux";
-    this.#workerEnv = options.workerEnv ?? {};
-    this.#env = { ...process.env, ...this.#workerEnv };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir4(), ".claude", "projects");
-    this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
-    this.#reapGraceMs = options.reapGraceMs ?? 5e3;
-    this.#procDir = options.procDir ?? "/proc";
-    this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
-    this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
-    this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
-  }
-  async dispatch(options) {
-    const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
-    if (options.model !== void 0) {
-      args.push("--model", options.model);
-    }
-    if (options.effort !== void 0) {
-      args.push("--effort", options.effort);
-    }
-    if (options.fallbackModel !== void 0) {
-      args.push("--fallback-model", options.fallbackModel);
-    }
-    const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path10.join(settingsDir, "settings.json"));
-    let registered = null;
-    try {
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      if (!dispatch.ok && await this.#findByName(options.name) === null) {
-        throw new ClaudeDispatchError(
-          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
-        );
-      }
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
-      for (; ; ) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
-          break;
-        }
-        if (Date.now() >= deadline) {
-          throw new ClaudeDispatchError(
-            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
-          );
-        }
-        await delay(500);
-      }
-    } finally {
-      if (registered === null) {
-        await this.#removeSettingsDir(settingsDir);
-      } else {
-        this.#settingsDirs.set(registered.sessionId, settingsDir);
-      }
-    }
-    if (registered === null) {
-      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
-    }
-    return registered;
-  }
-  /**
-   * Write the per-dispatch settings file carrying the declared worker
-   * environment plus the dispatch's ownership tag (`WORKER_MARKER_VARIABLE`).
-   * Written on every dispatch: the tag is what lets `stop()` reap the
-   * worker's surviving descendants, so an untagged worker would be an
-   * unowned one. (This supersedes the earlier no-declaration-no-flag
-   * behaviour, which predated descendant ownership.) The file can carry
-   * credentials — gateway values among the declared variables — so it lives
-   * in its own mkdtemp directory (0o700 by construction, unguessable name)
-   * and the file itself is 0o600.
-   */
-  async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
-    const env = {
-      ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
-      ...this.#workerEnv,
-      [WORKER_MARKER_VARIABLE]: dispatchName
-    };
-    const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
-    const dir = await mkdtemp(path10.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
-    try {
-      await writeFile4(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
-`, {
-        mode: 384
-      });
-    } catch (error) {
-      await this.#removeSettingsDir(dir);
-      throw error;
-    }
-    return dir;
-  }
-  async #removeSettingsDir(dir) {
-    await rm4(dir, { recursive: true, force: true }).catch(() => void 0);
-  }
-  async poll(handle) {
-    const roster = await this.#roster();
-    if (!roster.ok) {
-      return { status: "unknown", state: "unknown", present: true };
-    }
-    const record = roster.rows.find((row) => matchesHandle(row, handle)) ?? null;
-    if (record === null) {
-      return { status: "absent", state: "unknown", present: false };
-    }
-    const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
-    return {
-      status: typeof record.status === "string" ? record.status : "unknown",
-      state: normaliseState(record.state),
-      present: true,
-      ...waitingFor !== void 0 ? { waitingFor } : {}
-    };
-  }
-  async transcriptPath(handle) {
-    const filename = `${handle.sessionId}.jsonl`;
-    let projectDirs;
-    try {
-      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
-      projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-    } catch {
-      return null;
-    }
-    for (const dir of projectDirs) {
-      const candidate = path10.join(this.#projectsDir, dir, filename);
-      try {
-        await access2(candidate);
-        return candidate;
-      } catch {
-      }
-    }
-    return null;
-  }
-  async steer(handle, message) {
-    if ((await this.poll(handle)).present === false) {
-      return false;
-    }
-    this.#valveCounter += 1;
-    const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
-    try {
-      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
-        "-e",
-        `${name}=${value}`
-      ]);
-      const created = await this.#run(this.#tmuxBin, [
-        "new-session",
-        "-d",
-        ...environmentFlags,
-        "-s",
-        valve,
-        `${this.#claudeBin} attach ${handle.id}`
-      ]);
-      if (!created.ok) {
-        return false;
-      }
-      await delay(this.#valveAttachSettleMs);
-      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
-      if (!typed.ok) {
-        return false;
-      }
-      await delay(this.#valveSubmitSettleMs);
-      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
-      if (!submitted.ok) {
-        return false;
-      }
-      await delay(this.#valveKillSettleMs);
-      return true;
-    } finally {
-      await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
-    }
-  }
-  async stop(handle) {
-    await this.#run(this.#claudeBin, ["stop", handle.id]);
-    await this.#reapTaggedDescendants(handle.name);
-    await this.#run(this.#claudeBin, ["rm", handle.id]);
-    const settingsDir = this.#settingsDirs.get(handle.sessionId);
-    if (settingsDir !== void 0) {
-      this.#settingsDirs.delete(handle.sessionId);
-      await this.#removeSettingsDir(settingsDir);
-    }
-  }
-  /**
-   * Kill every surviving process tagged with this dispatch's marker:
-   * SIGTERM first, then SIGKILL for anything still alive after the grace
-   * period. Best-effort throughout — reaping is cleanup, and a scan or kill
-   * failure must never mask the turn's real outcome. On a platform without
-   * a readable proc filesystem the scan finds nothing and the reap is a
-   * no-op.
-   */
-  async #reapTaggedDescendants(dispatchName) {
-    const tagged = await this.#findTaggedProcesses(dispatchName);
-    if (tagged.length === 0) {
-      return;
-    }
-    for (const pid of tagged) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-      }
-    }
-    await delay(this.#reapGraceMs);
-    for (const pid of await this.#findTaggedProcesses(dispatchName)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-      }
-    }
-  }
-  /** Pids (other than our own) whose environment carries this dispatch's tag. */
-  async #findTaggedProcesses(dispatchName) {
-    const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
-    let entries;
-    try {
-      entries = await readdir4(this.#procDir);
-    } catch {
-      return [];
-    }
-    const pids = [];
-    for (const entry of entries) {
-      if (!/^\d+$/.test(entry)) {
-        continue;
-      }
-      const pid = Number(entry);
-      if (pid === process.pid) {
-        continue;
-      }
-      let environ;
-      try {
-        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
-      } catch {
-        continue;
-      }
-      if (environ.split("\0").includes(needle)) {
-        pids.push(pid);
-      }
-    }
-    return pids;
-  }
-  async tmuxAvailable() {
-    return (await this.#run(this.#tmuxBin, ["-V"])).ok;
-  }
-  async #findByName(name) {
-    const { rows } = await this.#roster();
-    const match = rows.find(
-      (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
-    );
-    if (match === void 0 || typeof match.sessionId !== "string") {
-      return null;
-    }
-    const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
-    return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
-    };
-  }
-  // `ok: false` means the query could not be performed (process error, empty or
-  // unparseable output) — distinct from "queried fine, session not listed",
-  // which is `{ ok: true, rows: [...] }` with the session simply absent.
-  async #roster() {
-    const result = await this.#run(this.#claudeBin, ["agents", "--json"]);
-    if (!result.ok || result.stdout.trim().length === 0) {
-      return { ok: false, rows: [] };
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      return { ok: false, rows: [] };
-    }
-    if (!Array.isArray(parsed)) {
-      return { ok: false, rows: [] };
-    }
-    return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
-  }
-  #run(file, args, cwd) {
-    return new Promise((resolve) => {
-      execFile3(
-        file,
-        args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
-  }
-  #runWithInput(file, args, input, cwd) {
-    return new Promise((resolve) => {
-      const child = spawn(file, args, {
-        ...cwd !== void 0 ? { cwd } : {},
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-      const stdout = [];
-      const stderr = [];
-      let settled = false;
-      const finish = (result) => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      };
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", (error) => {
-        finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
-      });
-      child.on("close", (code) => {
-        finish({
-          ok: code === 0,
-          stdout: Buffer.concat(stdout).toString(),
-          stderr: Buffer.concat(stderr).toString()
-        });
-      });
-      child.stdin.on("error", () => void 0);
-      child.stdin.end(input);
-    });
-  }
-};
-function matchesHandle(row, handle) {
-  return typeof row.id === "string" && row.id === handle.id || typeof row.sessionId === "string" && row.sessionId === handle.sessionId;
-}
-function normaliseState(state) {
-  if (state === "working" || state === "blocked" || state === "done") {
-    return state;
-  }
-  return "unknown";
-}
-function delay(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-// src/claude-engine.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-
-// src/claude-transcript.ts
-import { readFile as readFile6 } from "node:fs/promises";
-function parseTranscriptText(text) {
-  const entries = [];
-  for (const line of text.split("\n")) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const entry = parseLine(line);
-    if (entry !== null) {
-      entries.push(entry);
-    }
-  }
-  return entries;
-}
-async function readTranscriptFile(path14) {
-  let text;
-  try {
-    text = await readFile6(path14, "utf8");
-  } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path14}`, { cause: error });
-  }
-  return { path: path14, text, entries: parseTranscriptText(text) };
-}
-function finalAssistantText(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const text = textFromContent(entry.message?.content);
-    if (text !== null && text.length > 0) {
-      return text;
-    }
-  }
-  return null;
-}
-var SYNTHETIC_MODEL_PLACEHOLDER = "<synthetic>";
-function endsInSyntheticReply(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
-  }
-  return false;
-}
-function resolvedModelSince(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const model = entry.message?.model;
-    if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
-      return model;
-    }
-  }
-  return null;
-}
-function turnComplete(entries, fromIndex = 0) {
-  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use";
-  }
-  return false;
-}
-function usageSince(entries, fromIndex = 0) {
-  let outputTokens = 0;
-  let lastInput = 0;
-  let lastCacheRead = 0;
-  let lastCacheCreation = 0;
-  let sawUsage = false;
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === void 0 || entry.type !== "assistant") {
-      continue;
-    }
-    const usage2 = asRecord(entry.message?.usage);
-    if (usage2 === null) {
-      continue;
-    }
-    sawUsage = true;
-    outputTokens += numeric(usage2.output_tokens);
-    lastInput = numeric(usage2.input_tokens);
-    lastCacheRead = numeric(usage2.cache_read_input_tokens);
-    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
-  }
-  if (!sawUsage) {
-    return zeroUsage();
-  }
-  const lastCached = lastCacheRead + lastCacheCreation;
-  return {
-    cachedInputTokens: lastCached,
-    cacheCreationInputTokens: lastCacheCreation,
-    inputTokens: lastInput,
-    outputTokens,
-    totalTokens: lastInput + lastCached + outputTokens
-  };
-}
-function parseLine(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asRecord(parsed) === null ? null : parsed;
-  } catch {
-    return null;
-  }
-}
-function textFromContent(content) {
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  const parts = [];
-  for (const block of content) {
-    const record = asRecord(block);
-    if (record?.type === "text" && typeof record.text === "string") {
-      parts.push(record.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("") : null;
-}
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function numeric(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-function zeroUsage() {
-  return {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0
-  };
-}
-
-// src/claude-engine.ts
-var CAPABILITY_DENY_RULES = {
-  skills: ["Skill"],
-  agents: ["Task", "Agent", "ListAgents", "SendMessage"]
-};
-function permissionDenyRulesFor(strip) {
-  return [...new Set((strip ?? []).flatMap((capability) => CAPABILITY_DENY_RULES[capability]))];
-}
-var CLAUDE_MULTITURN_CACHE_TTL = "1h";
-function claudeCacheTtlToMs(value) {
-  const match = /^(\d+)([smh]?)$/.exec(value.trim());
-  if (match === null) {
-    return null;
-  }
-  const amount = Number(match[1]);
-  if (!Number.isSafeInteger(amount) || amount <= 0) {
-    return null;
-  }
-  const unit = match[2];
-  return amount * (unit === "h" ? 36e5 : unit === "m" ? 6e4 : 1e3);
-}
-var CLAUDE_NATIVE_EFFORT = {
-  minimal: "low",
-  low: "low",
-  medium: "medium",
-  high: "high",
-  xhigh: "high"
-};
-function claudeNativeEffort(effort) {
-  if (effort === void 0) {
-    return void 0;
-  }
-  const native = CLAUDE_NATIVE_EFFORT[effort];
-  if (native === void 0) {
-    throw new InvalidAgentOptionValueError(
-      "effort",
-      effort,
-      `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")} (the canonical effort vocabulary)`
-    );
-  }
-  return native;
-}
-var dispatchCounter = 0;
-var MAX_CONSECUTIVE_ABSENCES = 3;
-var SETTLED_CONFIRMATION_POLLS = 5;
-var ClaudeEngineInvocation = class {
-  #cwd;
-  #options;
-  #controlPlane;
-  #onEvent;
-  #reportedUsage = null;
-  #multiTurn;
-  /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
-  #turnPrompt;
-  /** The current turn's schema — the one thing a session varies per turn. */
-  #turnSchema;
-  /**
-   * Whether the current turn's prompt has reached the worker. A follow-up
-   * turn is delivered by the valve, and a retry after a failed delivery
-   * must re-send the prompt itself — a correction message would ask the
-   * worker to fix an answer it was never asked for.
-   */
-  #turnDelivered = false;
-  #pollIntervalMs;
-  #receiptTimeoutMs;
-  #firstLifeTimeoutMs;
-  #blockedRecoveryBound;
-  #namePrefix;
-  #handle = null;
-  #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closed = false;
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
-  constructor(options) {
-    this.#turnPrompt = options.prompt;
-    this.#turnSchema = options.options.schema;
-    this.#multiTurn = options.multiTurn ?? false;
-    this.#cwd = options.cwd;
-    this.#options = options.options;
-    this.#controlPlane = options.controlPlane;
-    this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
-    const config = options.config ?? {};
-    this.#pollIntervalMs = config.pollIntervalMs ?? 2e3;
-    this.#receiptTimeoutMs = config.receiptTimeoutMs ?? 3e4;
-    this.#firstLifeTimeoutMs = config.firstLifeTimeoutMs ?? 6e4;
-    this.#blockedRecoveryBound = config.blockedRecoveryBound ?? 2;
-    this.#namePrefix = config.namePrefix ?? "ensemble";
-  }
-  /**
-   * Session mode's turn boundary: the next `runAttempt` delivers this
-   * prompt to the *held* session — by dispatch for the first turn, through
-   * the valve thereafter — with this turn's schema governing validation and
-   * correction. The returned invocation deliberately carries no `close`:
-   * a turn ending must never tear down the session it rode.
-   */
-  beginTurn(prompt, turn) {
-    this.#turnPrompt = prompt;
-    this.#turnSchema = turn.schema;
-    this.#turnDelivered = false;
-    return {
-      runAttempt: (context) => this.runAttempt(context)
-    };
-  }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  async #runAttempt(context) {
-    this.#assertOpen();
-    this.#reportedUsage = null;
-    let fromIndex = 0;
-    try {
-      const previousFailure = context.previousFailure;
-      if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
-        this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
-      }
-      const correcting = previousFailure !== void 0 && this.#handle !== null;
-      if (correcting && await this.#controlPlane.tmuxAvailable()) {
-        const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
-      }
-      if (correcting && this.#multiTurn) {
-        this.#requireValve(false);
-      }
-      if (this.#handle !== null) {
-        await this.#teardown();
-      }
-      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
-    } catch (error) {
-      const evidence = error instanceof Error ? await this.#tryFailureEvidence(fromIndex) : null;
-      if (error instanceof Error && evidence !== null) {
-        this.#attachWorkerText(error, evidence, fromIndex);
-      }
-      if (error instanceof EngineShutdownError && evidence !== null) {
-        attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
-      }
-      if (error instanceof ClaudeWorkerError) {
-        const workerDispatched = this.#handle !== null;
-        if (!this.#multiTurn) {
-          await this.#teardown();
-        }
-        return failedTurnResult(
-          error,
-          evidence,
-          this.#failureUsageEvent(evidence),
-          workerDispatched ? this.#options.effort : void 0
-        );
-      }
-      throw error;
-    }
-  }
-  async close() {
-    this.#closePromise ??= (async () => {
-      this.#closed = true;
-      this.#abortController.abort();
-      try {
-        await this.#settlement?.catch(() => void 0);
-        await this.#teardown();
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
-  async #dispatchAndCollect(previousFailure, onLiveEvidence) {
-    const denyRules = permissionDenyRulesFor(this.#options.strip);
-    const handle = await this.#controlPlane.dispatch({
-      prompt: this.#buildDispatchPrompt(previousFailure),
-      name: this.#nextName(),
-      cwd: this.#cwd,
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
-      ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
-      // Loiter pricing: only a session meant to be resumed pays the
-      // 1-hour cache-write premium; one-shot workers keep the 5m default.
-      ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
-    });
-    this.#handle = handle;
-    this.#turnDelivered = true;
-    if (this.#closed) {
-      await this.#teardown();
-      throw new EngineShutdownError("claude");
-    }
-    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
-    return this.#buildResult(handle, transcript, 0);
-  }
-  /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
-  async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
-    }
-    await this.#awaitReceipt(handle, fromIndex);
-    this.#turnDelivered = true;
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /**
-   * Session mode has no degraded path: the valve is what keeps a follow-up
-   * (or a correction) inside the created session, so its absence fails the
-   * turn loudly instead of silently substituting a fresh worker.
-   */
-  #requireValve(available) {
-    if (!available) {
-      throw new ClaudeValveError(
-        "multi-turn worker sessions require the tmux reply valve, which is unavailable"
-      );
-    }
-  }
-  async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the correction");
-    }
-    await this.#awaitReceipt(handle, fromIndex);
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
-    return this.#buildResult(handle, transcript, fromIndex);
-  }
-  /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark) {
-    const deadline = Date.now() + this.#receiptTimeoutMs;
-    for (; ; ) {
-      this.#assertOpen();
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (status.status === "busy") {
-        return;
-      }
-      const transcript = await this.#tryReadTranscript(handle);
-      if (transcript !== null && transcript.entries.length > mark) {
-        return;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudeValveError(`steer not acknowledged within ${this.#receiptTimeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /**
-   * Poll until the worker's turn is complete, returning the transcript at that
-   * point. The transcript is the authoritative completion signal and is
-   * checked on **every** poll, before the roster state is interpreted: the
-   * daemon's `state` is unreliable, and a live process the worker itself
-   * spawned can hold the roster at `busy` long after the answer is on disk —
-   * gating the transcript read on "not busy" left a finished, schema-valid
-   * answer uncollected for 22+ minutes behind a worker-spawned child.
-   *
-   * Two ways out, and no silent third:
-   * - the transcript proves the turn complete (`turnComplete`) → collect;
-   * - the daemon stably reports the session settled while the transcript
-   *   never satisfies `turnComplete` → after `SETTLED_CONFIRMATION_POLLS`,
-   *   throw `ClaudeCollectionError` rather than spin for ever. Deliberately
-   *   *not* a collect-on-best-evidence path: a settled daemon beside an
-   *   unproven transcript is exactly what a killed worker's partial answer
-   *   looks like, and promoting that to a success would hand downstream
-   *   stages a truncated answer as if it were the real one. The partial text
-   *   rides the failure (the shared catch attaches it), and the bounded
-   *   retry re-asks.
-   *
-   * `state: blocked` still drives bounded valve recovery, and a transient
-   * roster-query failure reports `present: false` only after
-   * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
-   * live worker.
-   */
-  async #runToCompletion(handle, fromIndex, onLiveEvidence) {
-    const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
-    const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
-    let sawLife = fromIndex > 0;
-    let nudges = 0;
-    let absences = 0;
-    let settledPolls = 0;
-    let evidenceReported = false;
-    for (; ; ) {
-      this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
-      if (transcript !== null) {
-        sawLife = true;
-        this.#reportUsage(handle, transcript.entries, fromIndex);
-        if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
-          evidenceReported = true;
-          try {
-            onLiveEvidence?.();
-          } catch {
-          }
-        }
-        if (turnComplete(transcript.entries, fromIndex)) {
-          return transcript;
-        }
-      }
-      if (!sawLife && Date.now() >= firstLifeDeadline) {
-        throw new ClaudeFirstLifeTimeoutError(
-          `Claude worker showed no sign of life within ${this.#firstLifeTimeoutMs}ms (no transcript appeared)`
-        );
-      }
-      const status = await this.#controlPlane.poll(handle);
-      this.#assertOpen();
-      if (!status.present) {
-        absences += 1;
-        if (absences >= MAX_CONSECUTIVE_ABSENCES) {
-          throw new ClaudePollTimeoutError("worker left the roster before completing");
-        }
-        await this.#pollDelay();
-        continue;
-      }
-      absences = 0;
-      if (status.state === "blocked") {
-        const canNudge = nudges < this.#blockedRecoveryBound && await this.#controlPlane.tmuxAvailable();
-        if (!canNudge) {
-          throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
-        }
-        nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
-        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!steered) {
-          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
-        }
-        await this.#awaitReceipt(handle, mark);
-        continue;
-      }
-      if (sawLife && (status.state === "done" || status.status === "idle")) {
-        settledPolls += 1;
-        if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
-          throw new ClaudeCollectionError(
-            "session settled but its transcript never proved the turn complete"
-          );
-        }
-      } else {
-        settledPolls = 0;
-      }
-      if (Date.now() >= deadline) {
-        throw new ClaudePollTimeoutError(`worker did not complete within ${this.#options.timeoutMs}ms`);
-      }
-      await this.#pollDelay();
-    }
-  }
-  /** A poll gap that ends early — by rejecting — the moment close() aborts. */
-  #pollDelay() {
-    return delay2(this.#pollIntervalMs, this.#abortController.signal, () => new EngineShutdownError("claude"));
-  }
-  #assertOpen() {
-    if (this.#closed) {
-      throw new EngineShutdownError("claude");
-    }
-  }
-  #buildResult(handle, transcript, fromIndex) {
-    const entries = transcript.entries;
-    const text = finalAssistantText(entries, fromIndex) ?? "";
-    if (endsInSyntheticReply(entries, fromIndex)) {
-      throw new ClaudeWorkerDiagnosticError(
-        text.length > 0 ? text : "the session produced no model reply"
-      );
-    }
-    const resolvedModel = resolvedModelSince(entries, fromIndex);
-    const usage2 = usageSince(entries, fromIndex);
-    this.#reportUsage(handle, entries, fromIndex);
-    const usageEvent = this.#usageEvent(handle, usage2, usage2);
-    return {
-      text,
-      ...resolvedModel !== null ? { resolvedModel } : {},
-      // The CLI reports no served effort, so the resolved value is the
-      // native level this dispatch actually carried after the canonical
-      // clamp — so the record shows the level this dispatch carried.
-      ...this.#options.effort !== void 0 ? { resolvedEffort: this.#options.effort } : {},
-      deltaText: text,
-      durationMs: null,
-      firstDeltaMs: null,
-      items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: handle.sessionId,
-          content: transcript.text
-        }
-      ]
-    };
-  }
-  async #readTranscript(handle) {
-    const path14 = await this.#controlPlane.transcriptPath(handle);
-    if (path14 === null) {
-      throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
-    }
-    return readTranscriptFile(path14);
-  }
-  /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle) {
-    try {
-      return await this.#readTranscript(handle);
-    } catch (error) {
-      if (error instanceof ClaudeTranscriptError) {
-        return null;
-      }
-      throw error;
-    }
-  }
-  /**
-   * Everything a dying turn can still learn from the transcript the engine
-   * already has, in one read: the served model, the usage accumulated up to
-   * the failure, and the transcript itself. Best-effort — an unreadable or
-   * absent transcript is `null`, and nothing here polls or retries.
-   */
-  async #tryFailureEvidence(fromIndex) {
-    const handle = this.#handle;
-    if (handle === null) {
-      return null;
-    }
-    const transcript = await this.#tryReadTranscript(handle);
-    if (transcript === null) {
-      return null;
-    }
-    return {
-      handle,
-      transcript,
-      resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex)
-    };
-  }
-  /** The failed turn's spend, as the same event shape the success path emits. */
-  #failureUsageEvent(evidence) {
-    if (evidence === null) {
-      return null;
-    }
-    return this.#usageEvent(evidence.handle, evidence.usage, evidence.usage);
-  }
-  #attachWorkerText(error, evidence, fromIndex) {
-    const transcript = evidence.transcript;
-    if (endsInSyntheticReply(transcript.entries, fromIndex)) {
-      return;
-    }
-    const text = finalAssistantText(transcript.entries, fromIndex);
-    if (text !== null) {
-      attachPartialWorkerText(error, text);
-    }
-  }
-  /**
-   * Feed best-effort transcript-derived usage through the same event shape Codex
-   * emits. The adapter registration labels it as Claude before the runtime records
-   * it, so budget accounting never has to infer engine from the payload.
-   *
-   * The derived total is not monotonic: the input side is a snapshot of the
-   * running context, and compaction shrinks it, so a step that generated new
-   * output can still carry a *smaller* total than the step before. Growth is
-   * therefore judged per component, and the reported delta's own total is the
-   * sum of the components that grew — reporting nothing whenever the total
-   * fell would drop that output for good, since the high-water mark would not
-   * advance either and no later report would ever re-carry it. The high-water
-   * mark advances per component for the same reason.
-   */
-  #reportUsage(handle, entries, fromIndex) {
-    const total = usageSince(entries, fromIndex);
-    const last = subtractUsage(total, this.#reportedUsage);
-    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
-    if (grown === 0) {
-      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
-      return;
-    }
-    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
-      last.cacheCreationInputTokens = last.cachedInputTokens;
-    }
-    last.totalTokens = grown;
-    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
-    const event = this.#usageEvent(handle, last, total);
-    if (event === null) {
-      return;
-    }
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
-  }
-  #usageEvent(handle, last, total) {
-    if (total.totalTokens === 0) {
-      return null;
-    }
-    this.#budgetEventCounter += 1;
-    const event = {
-      threadId: handle.sessionId,
-      turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-      last,
-      total,
-      raw: {
-        threadId: handle.sessionId,
-        turnId: `${handle.sessionId}:claude-${this.#budgetEventCounter}`,
-        tokenUsage: { last, total }
-      }
-    };
-    return event;
-  }
-  async #teardown() {
-    const handle = this.#handle;
-    this.#handle = null;
-    if (handle === null) {
-      return;
-    }
-    try {
-      await this.#controlPlane.stop(handle);
-    } catch {
-    }
-  }
-  #buildDispatchPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions \u2014 make a reasonable decision and finish the task."
-    ];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#turnPrompt);
-    return lines.join("\n");
-  }
-  /**
-   * A follow-up turn's valve message: the session already holds the
-   * autonomy preamble from its dispatch, so the message carries only what
-   * this turn adds — its schema contract, when it has one, and its task.
-   */
-  #buildTurnMessage() {
-    const lines = [];
-    if (this.#turnSchema !== void 0) {
-      lines.push(
-        "For this reply, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#turnSchema),
-        ""
-      );
-    }
-    lines.push(this.#turnPrompt);
-    return lines.join("\n");
-  }
-  #correctionMessage(previousFailure) {
-    switch (previousFailure.kind) {
-      case "schema-validation":
-        return `Your final JSON did not satisfy the required schema. Validation errors: ${previousFailure.message}. Reply with a corrected JSON value that conforms to the schema. You may surround the value with prose or markdown fences.`;
-      case "invalid-json":
-        return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
-      case "empty-output":
-      default:
-        return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
-    }
-  }
-  #blockedNudge(waitingFor) {
-    const context = waitingFor !== void 0 ? ` (waiting for: ${waitingFor})` : "";
-    return `You appear to be waiting for input${context}. Proceed autonomously without asking \u2014 make a reasonable decision, complete the task, and output your final answer.`;
-  }
-  #nextName() {
-    dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
-  }
-};
-function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
-  const text = partialWorkerTextOf(error) ?? "";
-  const resolvedModel = evidence?.resolvedModel ?? null;
-  return {
-    text,
-    ...resolvedModel !== null ? { resolvedModel } : {},
-    // Static per dispatch, so a failed attempt's record still says which
-    // native level the clamp resolved the turn to.
-    ...dispatchedEffort !== void 0 ? { resolvedEffort: dispatchedEffort } : {},
-    attemptFailure: claudeAttemptFailure(error),
-    deltaText: text,
-    durationMs: null,
-    firstDeltaMs: null,
-    items: {},
-    tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-    ...evidence === null ? {} : {
-      transcripts: [
-        {
-          filename: "transcript.claude.jsonl",
-          format: "jsonl",
-          source: "claude-session-jsonl",
-          sessionId: evidence.handle.sessionId,
-          content: evidence.transcript.text
-        }
-      ]
-    }
-  };
-}
-function highWaterUsage(previous, total) {
-  if (previous === null) {
-    return total;
-  }
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
-  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
-  return {
-    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
-    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
-  };
-}
-function claudeAttemptFailure(error) {
-  if (error instanceof ClaudeFirstLifeTimeoutError) {
-    return { kind: "claude-first-life-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeBlockedError) {
-    return { kind: "claude-blocked", message: error.message };
-  }
-  if (error instanceof ClaudeValveError) {
-    return { kind: "claude-valve-error", message: error.message };
-  }
-  if (error instanceof ClaudePollTimeoutError) {
-    return { kind: "claude-poll-timeout", message: error.message };
-  }
-  if (error instanceof ClaudeTranscriptError) {
-    return { kind: "claude-transcript-error", message: error.message };
-  }
-  if (error instanceof ClaudeCollectionError) {
-    return { kind: "claude-collection-error", message: error.message };
-  }
-  if (error instanceof ClaudeWorkerDiagnosticError) {
-    return { kind: "claude-worker-diagnostic", message: error.message };
-  }
-  return { kind: "claude-dispatch-error", message: error.message };
-}
-function hasAssistantEntrySince(entries, fromIndex) {
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
-    if (entries[index]?.type === "assistant") {
-      return true;
-    }
-  }
-  return false;
-}
-function delay2(ms, signal, abortError) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timeout);
-      reject(abortError());
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-// src/progress.ts
-var MAX_AGENTS_IN_SNAPSHOT = 64;
-var RunProgress = class {
-  runId;
-  #budget;
-  #now;
-  #pid;
-  #workflow = null;
-  #currentPhase = null;
-  #state = "running";
-  #startedAt;
-  #updatedAt;
-  #finishedAt = null;
-  #nextAgentId = 0;
-  #live = /* @__PURE__ */ new Map();
-  #openHolds = /* @__PURE__ */ new Map();
-  #engines = /* @__PURE__ */ new Map();
-  #reportedSpend = /* @__PURE__ */ new Map();
-  #listeners = /* @__PURE__ */ new Set();
-  constructor(options) {
-    this.runId = options.runId;
-    this.#budget = options.budget;
-    this.#now = options.now ?? (() => Date.now());
-    this.#pid = options.pid ?? process.pid;
-    this.#startedAt = this.#now();
-    this.#updatedAt = this.#startedAt;
-  }
-  /** An open hold joins the snapshot the moment it is raised. */
-  noteHoldRaised(hold) {
-    this.#openHolds.set(hold.id, {
-      id: hold.id,
-      content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
-      verdicts: [...hold.verdicts],
-      raisedAtMs: this.#now()
-    });
-    this.#touch();
-  }
-  /** Settled holds — answered, timed out, or abandoned — leave the snapshot. */
-  noteHoldSettled(id) {
-    if (this.#openHolds.delete(id)) {
-      this.#touch();
-    }
-  }
-  /** Records an engine's concurrency cap so the snapshot can show saturation. */
-  registerEngine(engine, cap) {
-    this.#counters(engine).cap = cap;
-    this.#touch();
-  }
-  setWorkflow(name) {
-    this.#workflow = name;
-    this.#touch();
-  }
-  setPhase(title) {
-    this.#currentPhase = title;
-    this.#touch();
-  }
-  /**
-   * Registers a worker as queued and returns its id. The phase is captured at
-   * queue time: an explicit `phase` wins, otherwise the run's current phase.
-   */
-  queueAgent(input) {
-    const id = this.#nextAgentId += 1;
-    this.#live.set(id, {
-      id,
-      engine: input.engine,
-      label: input.label,
-      phase: input.phase ?? this.#currentPhase,
-      state: "queued",
-      attempt: 1,
-      startedAt: null,
-      firstEvidenceAt: null
-    });
-    this.#counters(input.engine).queued += 1;
-    this.#touch();
-    return id;
-  }
-  /** Moves a queued worker into the running state (a scheduler slot freed up). */
-  startAgent(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.state !== "queued") {
-      return;
-    }
-    record.state = "running";
-    record.startedAt = this.#now();
-    const counters = this.#counters(record.engine);
-    counters.queued -= 1;
-    counters.active += 1;
-    this.#touch();
-  }
-  /**
-   * Records the first observed sign of worker output for a live agent.
-   * Idempotent — the earliest observation wins — so engines may report on
-   * every attempt without the consumer losing the original timestamp.
-   */
-  noteAgentEvidence(id) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.firstEvidenceAt !== null) {
-      return;
-    }
-    record.firstEvidenceAt = this.#now();
-    this.#touch();
-  }
-  /** Updates a running worker's attempt number (retry / in-session correction). */
-  noteAttempt(id, attempt) {
-    const record = this.#live.get(id);
-    if (record === void 0 || record.attempt === attempt) {
-      return;
-    }
-    record.attempt = attempt;
-    this.#touch();
-  }
-  /** Retires a worker, tallying it as done or failed and freeing its slot. */
-  settleAgent(id, outcome) {
-    const record = this.#live.get(id);
-    if (record === void 0) {
-      return;
-    }
-    this.#live.delete(id);
-    const counters = this.#counters(record.engine);
-    if (record.state === "running") {
-      counters.active -= 1;
-    } else {
-      counters.queued -= 1;
-    }
-    if (outcome === "done") {
-      counters.done += 1;
-    } else {
-      counters.failed += 1;
-    }
-    this.#touch();
-  }
-  /** Marks the run finished. The serialiser writes one final snapshot after. */
-  finish() {
-    if (this.#state === "finished") {
-      return;
-    }
-    this.#state = "finished";
-    this.#finishedAt = this.#now();
-    this.#touch();
-  }
-  /**
-   * Publishes a changed per-engine spend figure to live consumers. Repeated
-   * reports of the same value are deliberately inert: accounting producers
-   * may observe the same running turn more than once.
-   */
-  noteEngineSpend(engine) {
-    const spent = this.#budget.spent(engine);
-    if (this.#reportedSpend.get(engine) === spent) {
-      return;
-    }
-    this.#reportedSpend.set(engine, spent);
-    this.#touch();
-  }
-  /** Refreshes the live snapshot without changing its modelled state. */
-  markChanged() {
-    this.#touch();
-  }
-  onChange(listener) {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  }
-  snapshot() {
-    const engines = {};
-    const totals = { active: 0, queued: 0, done: 0, failed: 0 };
-    for (const engine of this.#engines.keys()) {
-      const counters = this.#counters(engine);
-      const remaining = this.#budget.remaining(engine);
-      engines[engine] = {
-        cap: counters.cap,
-        active: counters.active,
-        queued: counters.queued,
-        done: counters.done,
-        failed: counters.failed,
-        spent: this.#budget.spent(engine),
-        ceiling: this.#budget.ceilings[engine] ?? null,
-        remaining: Number.isFinite(remaining) ? remaining : null
-      };
-      totals.active += counters.active;
-      totals.queued += counters.queued;
-      totals.done += counters.done;
-      totals.failed += counters.failed;
-    }
-    return {
-      schema: 1,
-      runId: this.runId,
-      pid: this.#pid,
-      workflow: this.#workflow,
-      state: this.#state,
-      startedAt: this.#startedAt,
-      updatedAt: this.#updatedAt,
-      finishedAt: this.#finishedAt,
-      currentPhase: this.#currentPhase,
-      totals,
-      engines,
-      agents: this.#liveAgents(),
-      holds: [...this.#openHolds.values()]
-    };
-  }
-  #liveAgents() {
-    const records = [...this.#live.values()];
-    records.sort((a, b) => rank(a.state) - rank(b.state) || a.id - b.id);
-    return records.slice(0, MAX_AGENTS_IN_SNAPSHOT).map((record) => ({
-      id: record.id,
-      engine: record.engine,
-      label: record.label,
-      phase: record.phase,
-      state: record.state,
-      attempt: record.attempt,
-      startedAtMs: record.startedAt,
-      firstEvidenceAtMs: record.firstEvidenceAt
-    }));
-  }
-  #counters(engine) {
-    const counters = this.#engines.get(engine);
-    if (counters === void 0) {
-      const fresh = { cap: null, active: 0, queued: 0, done: 0, failed: 0 };
-      this.#engines.set(engine, fresh);
-      return fresh;
-    }
-    return counters;
-  }
-  #touch() {
-    this.#updatedAt = this.#now();
-    for (const listener of this.#listeners) {
-      listener();
-    }
-  }
-};
-function rank(state) {
-  return state === "running" ? 0 : 1;
-}
-
-// src/app-server.ts
-import { spawn as spawn2 } from "node:child_process";
-import { createInterface } from "node:readline";
-var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
-var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
-var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
-var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
-var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
-var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
-var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
-var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
-var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
-var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
-var LazyCodexAppServerTransport = class {
-  cwd;
-  #options;
-  #transportPromise;
-  #closed = false;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#options = options;
-  }
-  async openThread(options) {
-    const transport = await this.#transport();
-    return transport.openThread(options);
-  }
-  async listSkills(cwd) {
-    const transport = await this.#transport();
-    return transport.listSkills(cwd);
-  }
-  async runTurn(threadId, prompt, options) {
-    const transport = await this.#transport();
-    return transport.runTurn(threadId, prompt, options);
-  }
-  async close() {
-    this.#closed = true;
-    if (this.#transportPromise === void 0) {
-      return;
-    }
-    let transport;
-    try {
-      transport = await this.#transportPromise;
-    } catch {
-      return;
-    }
-    await transport.close();
-  }
-  #transport() {
-    if (this.#closed) {
-      return Promise.reject(new AppServerExitedError("codex app-server transport is closed"));
-    }
-    this.#transportPromise ??= CodexAppServerTransport.start(this.#options);
-    return this.#transportPromise;
-  }
-};
-var CodexAppServerTransport = class _CodexAppServerTransport {
-  cwd;
-  #process;
-  #requestTimeoutMs;
-  #retryPromiseSilenceTimeoutMs;
-  #firstOutputTimeoutMs;
-  #startupHandshakeTimeoutMs;
-  #skillDiscoveryStabilityIntervalMs;
-  #nextId = 0;
-  #pending = /* @__PURE__ */ new Map();
-  #turns = /* @__PURE__ */ new Map();
-  #transcripts = /* @__PURE__ */ new Map();
-  #stderrTail = [];
-  #exitStatus = null;
-  #hasExited = false;
-  #onEvent;
-  constructor(options) {
-    this.cwd = options.cwd;
-    this.#requestTimeoutMs = options.requestTimeoutMs;
-    this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
-    this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
-    this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
-    this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
-    this.#onEvent = options.onEvent;
-    this.#process = spawn2(options.codexBin, ["app-server"], {
-      cwd: options.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      // Declared variables sit above inherited ones; everything undeclared
-      // still inherits, so a configured parent keeps working unchanged.
-      env: { ...process.env, ...options.workerEnv }
-    });
-    this.#wireReader();
-    this.#wireStderr();
-    this.#process.once("exit", (code, signal) => {
-      this.#exitStatus = { exitCode: code, signal };
-      this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
-    });
-    this.#process.once("error", (error) => {
-      this.#failAll(new AppServerExitedError(`codex app-server process error: ${error.message}`));
-    });
-  }
-  static async start(options) {
-    const transport = new _CodexAppServerTransport(options);
-    try {
-      await transport.#handshake(options.clientName, options.clientVersion);
-    } catch (error) {
-      await transport.close();
-      throw error;
-    }
-    return transport;
-  }
-  async openThread(options) {
-    const requestParams = {
-      cwd: options.cwd ?? this.cwd,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-      ephemeral: true,
-      ...options.model !== void 0 ? { model: options.model } : {},
-      ...options.threadConfig !== void 0 ? { config: options.threadConfig } : {}
-    };
-    const result = await this.#request("thread/start", requestParams);
-    const resultObject = asJsonObject(result);
-    const directThreadId = resultObject?.threadId;
-    const nestedThread = asJsonObject(resultObject?.thread);
-    const nestedThreadId = nestedThread?.id;
-    const threadId = typeof directThreadId === "string" ? directThreadId : typeof nestedThreadId === "string" ? nestedThreadId : null;
-    if (threadId !== null) {
-      const resolvedModel = resultObject?.model;
-      const resolvedEffort = resultObject?.reasoningEffort;
-      this.#transcripts.set(threadId, {
-        resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null,
-        events: [
-          {
-            direction: "client",
-            method: "thread/start",
-            params: requestParams,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          },
-          {
-            direction: "server",
-            method: "thread/start/result",
-            result,
-            recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-          }
-        ]
-      });
-      return threadId;
-    }
-    throw new AppServerRequestError("thread/start", {
-      code: void 0,
-      message: "response did not contain result.thread.id or result.threadId",
-      data: result
-    });
-  }
-  async listSkills(cwd = this.cwd) {
-    let previousNames;
-    let observedExpansion = false;
-    for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
-      const names = await this.#listSkillsOnce(cwd);
-      if (observedExpansion && previousNames !== void 0 && sameStrings(previousNames, names)) {
-        return names;
-      }
-      if (previousNames !== void 0) {
-        if (strictlyContainsAll(names, previousNames)) {
-          observedExpansion = true;
-        } else if (!sameStrings(previousNames, names)) {
-          observedExpansion = false;
-        }
-      }
-      previousNames = names;
-      if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
-      }
-    }
-    throw new AppServerRequestError("skills/list", {
-      code: "unstable_discovery",
-      message: `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
-    });
-  }
-  async #listSkillsOnce(cwd) {
-    const result = asJsonObject(await this.#request("skills/list", { cwds: [cwd], forceReload: true }));
-    const entries = result?.data;
-    if (!Array.isArray(entries)) {
-      throw new AppServerRequestError("skills/list", {
-        code: "invalid_response",
-        message: "response omitted the discovered skill entries"
-      });
-    }
-    const names = /* @__PURE__ */ new Set();
-    for (const entry of entries) {
-      const entryObject = asJsonObject(entry);
-      const errors = entryObject?.errors;
-      const skills = entryObject?.skills;
-      if (!Array.isArray(errors) || errors.length > 0 || !Array.isArray(skills)) {
-        throw new AppServerRequestError("skills/list", {
-          code: "incomplete_discovery",
-          message: "could not establish the complete discovered skill set"
-        });
-      }
-      for (const skill of skills) {
-        const name = asJsonObject(skill)?.name;
-        if (typeof name !== "string" || name.length === 0) {
-          throw new AppServerRequestError("skills/list", {
-            code: "invalid_response",
-            message: "response included a skill without a name"
-          });
-        }
-        names.add(name);
-      }
-    }
-    return [...names].sort();
-  }
-  async runTurn(threadId, prompt, options) {
-    const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
-    this.#turns.set(threadId, state);
-    state.promise.catch(() => void 0);
-    try {
-      const params = {
-        threadId,
-        input: [{ type: "text", text: prompt }],
-        sandboxPolicy: { type: "dangerFullAccess" }
-      };
-      if (options.schema !== void 0) {
-        params.outputSchema = options.schema;
-      }
-      if (options.model !== void 0) {
-        params.model = options.model;
-      }
-      if (options.effort !== void 0) {
-        params.effort = options.effort;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== void 0) {
-          transcript.resolvedEffort = options.effort;
-        }
-      }
-      this.#appendTranscript(threadId, {
-        direction: "client",
-        method: "turn/start",
-        params,
-        recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-      });
-      const result = asJsonObject(await this.#request("turn/start", params));
-      const startedTurn = asJsonObject(result?.turn);
-      if (typeof startedTurn?.id === "string") {
-        state.turnId = startedTurn.id;
-      }
-      return await state.promise;
-    } catch (error) {
-      if (this.#turns.get(threadId) === state) {
-        this.#rejectTurn(threadId, state, error instanceof Error ? error : new Error(String(error)));
-        throw error;
-      }
-      return await state.promise;
-    }
-  }
-  /** Number of thread transcripts currently held in memory. Observability for tests. */
-  openTranscripts() {
-    return this.#transcripts.size;
-  }
-  async close() {
-    if (this.#hasExited) {
-      return;
-    }
-    this.#hasExited = true;
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#pending.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
-    this.#process.stdin.end();
-    this.#process.kill("SIGTERM");
-    await new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.#process.kill("SIGKILL");
-        resolve();
-      }, 5e3);
-      this.#process.once("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-  }
-  async #handshake(clientName, clientVersion) {
-    try {
-      await this.#request(
-        "initialize",
-        {
-          clientInfo: {
-            name: clientName,
-            version: clientVersion
-          }
-        },
-        this.#startupHandshakeTimeoutMs
-      );
-    } catch (error) {
-      if (error instanceof TurnTimeoutError) {
-        throw new AppServerStartupTimeoutError(this.#startupHandshakeTimeoutMs);
-      }
-      throw error;
-    }
-    this.#sendNotification("initialized", {});
-  }
-  #request(method, params, timeoutMs = this.#requestTimeoutMs) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    const payload = JSON.stringify({ id, method, params });
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(id);
-        reject(new TurnTimeoutError(`${method} request ${id} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.#pending.set(id, { method, resolve, reject, timeout });
-      this.#writeLine(payload).catch((error) => {
-        this.#pending.delete(id);
-        clearTimeout(timeout);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      });
-    });
-  }
-  #sendNotification(method, params) {
-    void this.#writeLine(JSON.stringify({ method, params }));
-  }
-  /** Sends a request through stdin without retaining or awaiting its response. */
-  async #sendUnacknowledgedRequest(method, params) {
-    const id = this.#nextId + 1;
-    this.#nextId = id;
-    await this.#writeLine(JSON.stringify({ id, method, params }));
-  }
-  async #writeLine(line) {
-    if (this.#hasExited) {
-      throw new AppServerExitedError("codex app-server is not running");
-    }
-    const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
-    await new Promise((resolve, reject) => {
-      this.#process.stdin.write(`${framedLine}
-`, (error) => {
-        if (error !== null && error !== void 0) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  #wireReader() {
-    let chunks = [];
-    let byteLength = 0;
-    let prefix = Buffer.alloc(0);
-    let discardingOversizedLine = false;
-    let oversizedLineByteLength = 0;
-    const resetLine = () => {
-      chunks = [];
-      byteLength = 0;
-      prefix = Buffer.alloc(0);
-      discardingOversizedLine = false;
-      oversizedLineByteLength = 0;
-    };
-    const retain = (chunk) => {
-      if (chunk.length === 0) {
-        return;
-      }
-      chunks.push(chunk);
-      byteLength += chunk.length;
-      if (prefix.length < DECODE_FAILURE_BUFFER_PREFIX_BYTES) {
-        prefix = Buffer.concat([prefix, chunk.subarray(0, DECODE_FAILURE_BUFFER_PREFIX_BYTES - prefix.length)]);
-      }
-    };
-    const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
-    };
-    const handleRetainedLine = () => {
-      const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
-      resetLine();
-      this.#handleLine(line);
-    };
-    this.#process.stdout.on("data", (chunk) => {
-      let offset2 = 0;
-      while (offset2 < chunk.length) {
-        const newline = chunk.indexOf(10, offset2);
-        const end = newline === -1 ? chunk.length : newline;
-        const segment = chunk.subarray(offset2, end);
-        if (discardingOversizedLine) {
-          oversizedLineByteLength += segment.length;
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        } else if (byteLength + segment.length <= MAX_APP_SERVER_STDOUT_LINE_BYTES) {
-          retain(segment);
-          if (newline !== -1) {
-            handleRetainedLine();
-          }
-        } else {
-          const retainedBytes = Math.max(0, MAX_APP_SERVER_STDOUT_LINE_BYTES - byteLength);
-          retain(segment.subarray(0, retainedBytes));
-          discardingOversizedLine = true;
-          oversizedLineByteLength = byteLength + (segment.length - retainedBytes);
-          if (newline !== -1) {
-            reportOversizedLine();
-            resetLine();
-          }
-        }
-        offset2 = newline === -1 ? chunk.length : newline + 1;
-      }
-    });
-    this.#process.stdout.once("end", () => {
-      if (discardingOversizedLine) {
-        reportOversizedLine();
-        resetLine();
-      } else if (byteLength > 0) {
-        handleRetainedLine();
-      }
-      if (this.#hasExited) {
-        return;
-      }
-      const grace = setTimeout(() => {
-        this.#failAll(new AppServerExitedError("codex app-server stdout closed"));
-      }, STDOUT_CLOSE_EXIT_GRACE_MS);
-      grace.unref();
-      this.#process.once("exit", () => {
-        clearTimeout(grace);
-      });
-    });
-  }
-  #wireStderr() {
-    const reader = createInterface({ input: this.#process.stderr });
-    reader.on("line", (line) => {
-      this.#stderrTail.push(line);
-      if (this.#stderrTail.length > 50) {
-        this.#stderrTail.shift();
-      }
-    });
-  }
-  #handleLine(line) {
-    if (line.trim().length === 0) {
-      return;
-    }
-    const parsed = parseRpcMessage(line);
-    if (parsed === null) {
-      this.#reportDecodeFailure(Buffer.byteLength(line, "utf8"), line.slice(0, DECODE_FAILURE_LINE_PREFIX_CHARACTERS));
-      return;
-    }
-    const id = typeof parsed.id === "number" ? parsed.id : null;
-    const method = typeof parsed.method === "string" ? parsed.method : null;
-    if (id !== null && method !== null) {
-      this.#onEvent?.({
-        method: "server/request/denied",
-        params: { requestId: id, requestMethod: method },
-        receivedAt: Date.now()
-      });
-      const requestParams = asJsonObject(parsed.params);
-      if (requestParams !== null) {
-        const turn = this.#turnCorrelatedBy(requestParams);
-        if (turn !== void 0) {
-          this.#disarmRetryPromiseSilenceDeadline(turn);
-          this.#disarmFirstOutputDeadline(turn);
-          this.#noteTurnFirstOutput(turn);
-        }
-      }
-      this.#sendApprovalDenial(id);
-      return;
-    }
-    if (id !== null && ("result" in parsed || "error" in parsed)) {
-      this.#handleResponse(id, parsed);
-      return;
-    }
-    if (method !== null) {
-      this.#handleNotification(method, asJsonObject(parsed.params) ?? {});
-    }
-  }
-  #reportDecodeFailure(byteLength, linePrefix) {
-    this.#onEvent?.({
-      method: "transport/decodeFailed",
-      params: { byteLength, linePrefix },
-      receivedAt: Date.now()
-    });
-  }
-  #handleResponse(id, message) {
-    const pending = this.#pending.get(id);
-    if (pending === void 0) {
-      return;
-    }
-    this.#pending.delete(id);
-    clearTimeout(pending.timeout);
-    if (message.error !== void 0) {
-      pending.reject(appServerErrorFromPayload(pending.method, asRpcError(message.error)));
-      return;
-    }
-    pending.resolve(message.result);
-  }
-  #handleNotification(method, params) {
-    this.#onEvent?.({ method, params, receivedAt: Date.now() });
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return;
-    }
-    this.#appendTranscript(threadId, {
-      direction: "server",
-      method,
-      params,
-      recordedAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0) {
-      return;
-    }
-    const speaksForTurn = this.#correlatesWithTurn(turn, params);
-    if (speaksForTurn) {
-      this.#disarmRetryPromiseSilenceDeadline(turn);
-      if (isOutputBearingTurnFrame(method)) {
-        this.#disarmFirstOutputDeadline(turn);
-        this.#noteTurnFirstOutput(turn);
-      }
-    }
-    const now = Date.now();
-    if (isTurnProgressNotification(method)) {
-      turn.consecutiveRetryPromises = 0;
-    }
-    if (method === "turn/started") {
-      return;
-    }
-    if (method === "model/rerouted") {
-      const toModel = params.toModel;
-      const transcript = this.#transcripts.get(threadId);
-      if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
-        transcript.resolvedModel = toModel;
-      }
-      return;
-    }
-    if (method === "item/started") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      turn.items.set(itemType, (turn.items.get(itemType) ?? 0) + 1);
-      return;
-    }
-    if (method === "item/agentMessage/delta") {
-      if (turn.firstDeltaAt === null) {
-        turn.firstDeltaAt = now;
-      }
-      if (typeof params.delta === "string") {
-        turn.deltaText += params.delta;
-      }
-      return;
-    }
-    if (method === "item/completed") {
-      const item = asJsonObject(params.item);
-      const itemType = itemTypeFromItem(item);
-      if (itemType === "agentMessage" && typeof item?.text === "string") {
-        turn.itemText = item.text;
-      }
-      return;
-    }
-    if (method === "thread/tokenUsage/updated") {
-      const event = tokenUsageEventFromParams(params);
-      if (event !== null) {
-        turn.tokenUsageEvents.push(event);
-      }
-      return;
-    }
-    if (method === "thread/status/changed") {
-      const status = asJsonObject(params.status);
-      if (status?.type === "systemError") {
-        this.#armSystemErrorDiagnosticGrace(threadId, turn, method, params);
-      }
-      return;
-    }
-    if (method === "turn/completed") {
-      turn.completedAt = now;
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-        return;
-      }
-      this.#completeTurn(threadId, turn);
-      return;
-    }
-    if (method === "error") {
-      if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-        void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-        return;
-      }
-      if (params.willRetry === true) {
-        turn.consecutiveRetryPromises += 1;
-        if (turn.consecutiveRetryPromises > MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES) {
-          const diagnostic = errorPayloadFromNotification(params);
-          void this.#rejectTurn(
-            threadId,
-            turn,
-            attachAppServerDiagnostic(
-              new AppServerRetryPromiseBrokenError("turn notification", diagnostic),
-              appServerDiagnosticFromPayload(diagnostic)
-            )
-          );
-          return;
-        }
-        if (speaksForTurn) {
-          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        }
-        return;
-      }
-      void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
-    }
-  }
-  /**
-   * Whether an inbound frame speaks for this turn's silence clock. Thread
-   * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must not disarm
-   * the live turn's deadline. Frames carrying no turn identity are
-   * thread-scoped and count: ephemeral threads run one turn, so the thread
-   * speaking is the turn's server speaking.
-   */
-  #correlatesWithTurn(turn, params) {
-    const turnId = turnIdFromParams(params);
-    if (turnId === void 0) {
-      return true;
-    }
-    if (turn.turnId === void 0) {
-      turn.turnId = turnId;
-      return true;
-    }
-    return turn.turnId === turnId;
-  }
-  /** Resolves an inbound frame's params to the live turn they speak for, if any. */
-  #turnCorrelatedBy(params) {
-    const threadId = params.threadId;
-    if (typeof threadId !== "string") {
-      return void 0;
-    }
-    const turn = this.#turns.get(threadId);
-    if (turn === void 0 || !this.#correlatesWithTurn(turn, params)) {
-      return void 0;
-    }
-    return turn;
-  }
-  #disarmRetryPromiseSilenceDeadline(turn) {
-    if (turn.retryPromiseSilenceDeadline !== void 0) {
-      clearTimeout(turn.retryPromiseSilenceDeadline);
-      turn.retryPromiseSilenceDeadline = void 0;
-    }
-  }
-  #disarmSystemErrorDiagnosticGrace(turn) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
-      turn.systemErrorDiagnosticGraceDeadline = void 0;
-    }
-  }
-  #armSystemErrorDiagnosticGrace(threadId, turn, method, statusParams) {
-    if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
-      return;
-    }
-    const diagnostic = {
-      code: void 0,
-      message: "Codex app-server reported terminal systemError without a diagnostic",
-      data: statusParams
-    };
-    turn.systemErrorDiagnosticFallback = attachAppServerDiagnostic(
-      new AppServerSystemError(method, diagnostic),
-      appServerDiagnosticFromPayload(diagnostic)
-    );
-    turn.systemErrorDiagnosticGraceDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
-    }, SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS);
-  }
-  #armRetryPromiseSilenceDeadline(threadId, turn, promiseParams) {
-    const diagnostic = errorPayloadFromNotification(promiseParams);
-    turn.retryPromiseSilenceDeadline = setTimeout(() => {
-      void this.#rejectTurn(
-        threadId,
-        turn,
-        attachAppServerDiagnostic(
-          new AppServerRetryPromiseBrokenError(
-            `turn notification (silent for ${this.#retryPromiseSilenceTimeoutMs}ms after a promised retry)`,
-            diagnostic
-          ),
-          appServerDiagnosticFromPayload(diagnostic)
-        )
-      );
-    }, this.#retryPromiseSilenceTimeoutMs);
-  }
-  #disarmFirstOutputDeadline(turn) {
-    if (turn.firstOutputDeadline !== void 0) {
-      clearTimeout(turn.firstOutputDeadline);
-      turn.firstOutputDeadline = void 0;
-    }
-  }
-  /**
-   * Fire the supervisor-facing first-output callback, once per turn. Called
-   * only from the frame-driven sites (an output-bearing notification, a
-   * turn-scoped server request) — never from the completion/rejection
-   * teardown, which also disarms the deadline but proves nothing about
-   * output. The callback is observability: a throw inside it must never
-   * affect the turn.
-   */
-  #noteTurnFirstOutput(turn) {
-    if (turn.firstOutputSeen) {
-      return;
-    }
-    turn.firstOutputSeen = true;
-    try {
-      turn.onFirstOutput?.();
-    } catch {
-    }
-  }
-  #armFirstOutputDeadline(threadId, turn) {
-    turn.firstOutputDeadline = setTimeout(() => {
-      void this.#rejectTurn(threadId, turn, new AppServerFirstOutputTimeoutError(this.#firstOutputTimeoutMs));
-    }, this.#firstOutputTimeoutMs);
-  }
-  /**
-   * The single terminal path for a failing turn. Every way a turn can end
-   * short of completion — error notification, retry-promise bound,
-   * systemError, per-turn timeout, transport close, process death — comes
-   * through here, so the terminalisation invariant is enforced once: the
-   * worker's accumulated text rides the rejection instead of being deleted
-   * with the turn state.
-   */
-  #rejectTurn(threadId, turn, error) {
-    this.#turns.delete(threadId);
-    this.#transcripts.delete(threadId);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    if (turn.turnId !== void 0) {
-      void this.#sendUnacknowledgedRequest("turn/interrupt", {
-        threadId,
-        turnId: turn.turnId
-      }).catch(() => {
-      });
-    }
-    turn.reject(attachPartialWorkerText(error, turn.itemText ?? turn.deltaText));
-  }
-  #completeTurn(threadId, turn) {
-    this.#turns.delete(threadId);
-    clearTimeout(turn.timeout);
-    this.#disarmRetryPromiseSilenceDeadline(turn);
-    this.#disarmSystemErrorDiagnosticGrace(turn);
-    this.#disarmFirstOutputDeadline(turn);
-    const text = turn.itemText ?? turn.deltaText;
-    const transcript = this.#transcripts.get(threadId);
-    const result = {
-      text,
-      ...transcript?.resolvedModel !== null && transcript?.resolvedModel !== void 0 ? { resolvedModel: transcript.resolvedModel } : {},
-      ...transcript?.resolvedEffort !== null && transcript?.resolvedEffort !== void 0 ? { resolvedEffort: transcript.resolvedEffort } : {},
-      deltaText: turn.deltaText,
-      durationMs: turn.completedAt === null ? null : turn.completedAt - turn.startedAt,
-      firstDeltaMs: turn.firstDeltaAt === null ? null : turn.firstDeltaAt - turn.startedAt,
-      items: Object.fromEntries(turn.items),
-      tokenUsageEvents: turn.tokenUsageEvents,
-      transcripts: [
-        {
-          filename: "transcript.codex.jsonl",
-          format: "jsonl",
-          source: "codex-app-server-events",
-          threadId,
-          content: this.#transcriptText(threadId)
-        }
-      ]
-    };
-    if (turn.itemText !== void 0) {
-      result.itemText = turn.itemText;
-    }
-    this.#transcripts.delete(threadId);
-    turn.resolve(result);
-  }
-  #appendTranscript(threadId, event) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return;
-    }
-    transcript.events.push(event);
-  }
-  #transcriptText(threadId) {
-    const transcript = this.#transcripts.get(threadId);
-    if (transcript === void 0) {
-      return "";
-    }
-    return `${transcript.events.map((event) => JSON.stringify(event)).join("\n")}
-`;
-  }
-  #createTurnState(threadId, timeoutMs, onFirstOutput) {
-    let resolveTurn = () => void 0;
-    let rejectTurn = () => void 0;
-    const promise = new Promise((resolve, reject) => {
-      resolveTurn = resolve;
-      rejectTurn = reject;
-    });
-    const state = {
-      threadId,
-      turnId: void 0,
-      startedAt: Date.now(),
-      firstDeltaAt: null,
-      firstOutputSeen: false,
-      onFirstOutput,
-      completedAt: null,
-      deltaText: "",
-      items: /* @__PURE__ */ new Map(),
-      tokenUsageEvents: [],
-      consecutiveRetryPromises: 0,
-      retryPromiseSilenceDeadline: void 0,
-      systemErrorDiagnosticGraceDeadline: void 0,
-      systemErrorDiagnosticFallback: void 0,
-      firstOutputDeadline: void 0,
-      promise,
-      resolve: resolveTurn,
-      reject: rejectTurn,
-      // No timeoutMs → no per-turn deadline; the turn runs until it completes or
-      // the run is stopped. A backstop is the orchestrator's responsibility.
-      timeout: timeoutMs === void 0 ? void 0 : setTimeout(() => {
-        void this.#rejectTurn(
-          threadId,
-          state,
-          new TurnTimeoutError(`turn on ${threadId} timed out after ${timeoutMs}ms`)
-        );
-      }, timeoutMs)
-    };
-    this.#armFirstOutputDeadline(threadId, state);
-    return state;
-  }
-  #sendApprovalDenial(id) {
-    void this.#writeLine(
-      JSON.stringify({
-        id,
-        result: {
-          decision: "denied",
-          reason: "Ensemble workers run with approvalPolicy never"
-        }
-      })
-    );
-  }
-  #failAll(error) {
-    if (this.#hasExited) {
-      return;
-    }
-    this.#hasExited = true;
-    const stderr = this.#stderrTail.length > 0 ? `
-Recent stderr:
-${this.#stderrTail.join("\n")}` : "";
-    const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(wrapped);
-    }
-    this.#pending.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      const perTurn = new AppServerExitedError(wrapped.message);
-      if (this.#exitStatus !== null) {
-        attachWorkerExitStatus(perTurn, this.#exitStatus);
-      }
-      void this.#rejectTurn(threadId, turn, perTurn);
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
-  }
-};
-function appServerErrorFromPayload(method, errorPayload) {
-  const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
-  return attachAppServerDiagnostic(error, diagnostic);
-}
-function appServerErrorFromNotification(params) {
-  const errorPayload = errorPayloadFromNotification(params);
-  if (errorPayload.code === "serverOverloaded") {
-    return attachAppServerDiagnostic(
-      new AppServerOverloadedError("turn notification", errorPayload),
-      appServerDiagnosticFromPayload(errorPayload)
-    );
-  }
-  return appServerErrorFromPayload("turn notification", errorPayload);
-}
-function appServerDiagnosticFromPayload(payload) {
-  return {
-    code: payload.code ?? null,
-    message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
-  };
-}
-function errorPayloadFromNotification(params) {
-  const turnError = asJsonObject(params.error);
-  const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
-  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
-  const message = typeof turnError?.message === "string" ? turnError.message : void 0;
-  const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
-  const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
-  return {
-    code,
-    message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
-  };
-}
-function renderPayloadSafely(payload) {
-  try {
-    return JSON.stringify(payload) ?? "undefined";
-  } catch (error) {
-    return `[unrenderable payload: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-}
-function isTurnProgressNotification(method) {
-  return method === "turn/started" || method === "turn/diff/updated" || method === "turn/plan/updated" || // MCP progress is a tool saying it is alive, not the response stream
-  // resuming — the reset set's rationale. Counting it would let a
-  // promise/heartbeat alternation defeat the consecutive-promise bound.
-  method.startsWith("item/") && method !== "item/mcpToolCall/progress";
-}
-function isOutputBearingTurnFrame(method) {
-  return method !== "turn/started";
-}
-function turnIdFromParams(params) {
-  if (typeof params.turnId === "string") {
-    return params.turnId;
-  }
-  const turn = asJsonObject(params.turn);
-  return typeof turn?.id === "string" ? turn.id : void 0;
-}
-var MAX_INBOUND_PAYLOAD_DEPTH = 64;
-function payloadContainsInvalidJsonSchema(value, depth = 0) {
-  if (depth >= MAX_INBOUND_PAYLOAD_DEPTH) {
-    return false;
-  }
-  if (typeof value === "string") {
-    return value.includes("invalid_json_schema");
-  }
-  if (Array.isArray(value)) {
-    return value.some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-  }
-  const object = asJsonObject(value);
-  if (object === null) {
-    return false;
-  }
-  return Object.values(object).some((item) => payloadContainsInvalidJsonSchema(item, depth + 1));
-}
-function parseRpcMessage(line) {
-  try {
-    const parsed = JSON.parse(line);
-    return asJsonObject(parsed);
-  } catch {
-    return null;
-  }
-}
-function asJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function sameStrings(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function strictlyContainsAll(candidate, baseline) {
-  return candidate.length > baseline.length && baseline.every((name) => candidate.includes(name));
-}
-function asRpcError(value) {
-  const object = asJsonObject(value);
-  if (object === null) {
-    return { code: void 0, message: String(value) };
-  }
-  return {
-    code: typeof object.code === "number" ? object.code : void 0,
-    message: typeof object.message === "string" ? object.message : void 0,
-    data: object.data
-  };
-}
-function itemTypeFromItem(item) {
-  if (item === null) {
-    return "?";
-  }
-  const itemType = item.itemType ?? item.type;
-  return typeof itemType === "string" ? itemType : "?";
-}
-
-// src/opencode-engine.ts
-import { spawn as spawn3 } from "node:child_process";
-import { randomUUID as randomUUID4 } from "node:crypto";
-var OpenCodeCliRunner = class {
-  #bin;
-  #killGraceMs;
-  #env;
-  constructor(bin = "opencode", options = {}) {
-    this.#bin = bin;
-    this.#killGraceMs = options.killGraceMs ?? 5e3;
-    this.#env = { ...process.env, ...options.workerEnv };
-  }
-  async run(options) {
-    const args = [
-      "run",
-      "--format",
-      "json",
-      "--model",
-      options.providerModel,
-      "--dir",
-      options.cwd,
-      "--title",
-      "ensemble-worker"
-    ];
-    if (options.variant !== void 0) {
-      args.push("--variant", options.variant);
-    }
-    args.push(options.prompt);
-    return runProcess(
-      this.#bin,
-      args,
-      options.cwd,
-      this.#env,
-      options.timeoutMs,
-      this.#killGraceMs,
-      options.signal,
-      options.onFirstData,
-      options.onData
-    );
-  }
-  async exportSession(sessionId, cwd, signal) {
-    const result = await runProcess(this.#bin, ["export", sessionId], cwd, this.#env, 3e4, this.#killGraceMs, signal);
-    if (result.exitCode !== 0) {
-      return {
-        status: "command-failed",
-        exitCode: result.exitCode,
-        signal: result.signal,
-        stderr: result.stderr
-      };
-    }
-    return { status: "ok", stdout: result.stdout };
-  }
-};
-var OpenCodeEngineInvocation = class {
-  #prompt;
-  #cwd;
-  #providerModel;
-  #modelKey;
-  #options;
-  #runner;
-  #onEvent;
-  #reportedUsage = null;
-  #budgetEventCounter = 0;
-  #abortController = new AbortController();
-  #closePromise = null;
-  #settlement = null;
-  #onClose;
-  constructor(options) {
-    this.#prompt = options.prompt;
-    this.#cwd = options.cwd;
-    this.#providerModel = options.providerModel;
-    this.#modelKey = options.modelKey;
-    this.#options = options.options;
-    this.#runner = options.runner ?? new OpenCodeCliRunner();
-    this.#onEvent = options.onEvent;
-    this.#onClose = options.onClose;
-  }
-  runAttempt(context) {
-    const settlement = this.#runAttempt(context);
-    this.#settlement = settlement;
-    return settlement.finally(() => {
-      if (this.#settlement === settlement) {
-        this.#settlement = null;
-      }
-    });
-  }
-  async #runAttempt(context) {
-    this.#reportedUsage = null;
-    let streamBuffer = "";
-    const streamEvents = [];
-    let streamSessionId = null;
-    const onData = (chunk) => {
-      streamBuffer += chunk;
-      const lines = streamBuffer.split(/\r?\n/);
-      streamBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const parsed = parseRunEvents(line);
-        streamEvents.push(...parsed.events);
-        streamSessionId ??= parsed.sessionId;
-      }
-      const usage3 = usageFromStream(streamEvents);
-      if (usage3.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
-      }
-    };
-    const run = await this.#runner.run({
-      prompt: this.#buildPrompt(context.previousFailure),
-      cwd: this.#cwd,
-      providerModel: this.#providerModel,
-      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
-      ...this.#options.effort !== void 0 ? { variant: this.#options.effort } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstData: context.onLiveEvidence } : {},
-      onData,
-      signal: this.#abortController.signal
-    });
-    const parsedRun = parseRunEvents(run.stdout);
-    const fallback = fallbackText(parsedRun.events);
-    if (this.#abortController.signal.aborted) {
-      throw attachWorkerExitStatus(
-        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
-        { exitCode: run.exitCode, signal: run.signal }
-      );
-    }
-    let exportData = null;
-    let exportDiagnostic;
-    if (parsedRun.sessionId === null) {
-      exportDiagnostic = { status: "no-session-id" };
-    } else {
-      let exportResult;
-      try {
-        exportResult = await this.#runner.exportSession(parsedRun.sessionId, this.#cwd, this.#abortController.signal);
-      } catch (error) {
-        if (error instanceof Error) {
-          attachPartialWorkerText(error, fallback);
-        }
-        throw error;
-      }
-      if (exportResult.status === "command-failed") {
-        exportDiagnostic = {
-          status: "command-failed",
-          exit_code: exportResult.exitCode,
-          signal: exportResult.signal,
-          stderr: exportResult.stderr
-        };
-      } else {
-        const parsedExport = parseExport(exportResult.stdout);
-        if (parsedExport.ok) {
-          exportData = parsedExport.data;
-          exportDiagnostic = { status: "available" };
-        } else {
-          exportDiagnostic = { status: "parse-failed", error: parsedExport.error };
-        }
-      }
-    }
-    if (this.#abortController.signal.aborted) {
-      throw attachWorkerExitStatus(
-        attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
-        { exitCode: run.exitCode, signal: run.signal }
-      );
-    }
-    let text = fallback;
-    if (exportData !== null) {
-      const exportedText = finalAssistantText2(exportData);
-      if (exportedText.trim().length > 0) {
-        text = exportedText;
-      } else {
-        exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
-      }
-    }
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl",
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-      }
-    ];
-    if (run.exitCode !== 0) {
-      return {
-        text,
-        resolvedModel: this.#providerModel,
-        attemptFailure: {
-          kind: "opencode-run-error",
-          message: openCodeFailureMessage(run, parsedRun.events)
-        },
-        workerExit: { exitCode: run.exitCode, signal: run.signal },
-        deltaText: text,
-        durationMs: run.durationMs,
-        firstDeltaMs: null,
-        items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-        transcripts,
-        diagnostics: {
-          opencode: {
-            session_export: exportDiagnostic
-          }
-        }
-      };
-    }
-    return {
-      text,
-      resolvedModel: this.#providerModel,
-      deltaText: text,
-      durationMs: run.durationMs,
-      firstDeltaMs: null,
-      items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
-      transcripts,
-      diagnostics: {
-        opencode: {
-          session_export: exportDiagnostic
-        }
-      }
-    };
-  }
-  async close() {
-    this.#closePromise ??= (async () => {
-      this.#abortController.abort();
-      try {
-        await this.#settlement?.catch(() => void 0);
-      } finally {
-        this.#onClose?.(this);
-      }
-    })();
-    await this.#closePromise;
-  }
-  /**
-   * Attribution identity for a token-bearing stream that named no session:
-   * unique per invocation, and visibly synthetic so a consumer never
-   * mistakes it for a real opencode session id.
-   */
-  #syntheticSessionId() {
-    return `opencode-no-session-${randomUUID4()}`;
-  }
-  #reportUsage(sessionId, total, cost) {
-    const last = subtractUsage(total, this.#reportedUsage);
-    if (last.totalTokens === 0) {
-      return;
-    }
-    this.#reportedUsage = total;
-    const event = this.#usageEvent(sessionId, last, total, cost);
-    if (event === null) {
-      return;
-    }
-    this.#onEvent?.({
-      method: "thread/tokenUsage/updated",
-      params: event.raw,
-      receivedAt: Date.now()
-    });
-  }
-  #usageEvent(sessionId, last, total, cost) {
-    if (total.totalTokens === 0) {
-      return null;
-    }
-    this.#budgetEventCounter += 1;
-    const turnId = `${sessionId}:opencode-${this.#budgetEventCounter}`;
-    const event = {
-      threadId: sessionId,
-      turnId,
-      last,
-      total,
-      raw: {
-        threadId: sessionId,
-        turnId,
-        model: this.#modelKey,
-        providerModel: this.#providerModel,
-        tokenUsage: { last, total },
-        cost
-      }
-    };
-    return event;
-  }
-  #buildPrompt(previousFailure) {
-    const lines = [
-      "You are an automated worker dispatched by the Ensemble orchestration harness.",
-      "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."
-    ];
-    if (this.#options.schema !== void 0) {
-      lines.push(
-        "When finished, include in your FINAL message a JSON value that conforms to this JSON Schema. You may surround the value with prose, explanation, or markdown code fences:",
-        JSON.stringify(this.#options.schema)
-      );
-    }
-    if (previousFailure !== void 0) {
-      lines.push(`A previous attempt failed (${previousFailure.kind}): ${previousFailure.message}. Correct it this time.`);
-    }
-    lines.push("", "Task:", this.#prompt);
-    return lines.join("\n");
-  }
-};
-function rejectUnsupportedOpenCodeOptions(options) {
-  assertFallbackModelSupported("opencode", options.fallbackModel);
-}
-function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData, onData) {
-  return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    const child = spawn3(command, args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    const stdout = [];
-    const stderr = [];
-    let settled = false;
-    let killEscalation;
-    const terminate = () => {
-      if (settled || killEscalation !== void 0) {
-        return;
-      }
-      child.kill("SIGTERM");
-      killEscalation = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, killGraceMs);
-      killEscalation.unref();
-    };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
-    if (abortSignal?.aborted === true) {
-      terminate();
-    } else {
-      abortSignal?.addEventListener("abort", terminate, { once: true });
-    }
-    let firstDataSeen = false;
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      if (!firstDataSeen) {
-        firstDataSeen = true;
-        try {
-          onFirstData?.();
-        } catch {
-        }
-      }
-      try {
-        onData?.(chunk);
-      } catch {
-      }
-      stdout.push(chunk);
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      reject(error);
-    });
-    child.on("close", (exitCode, signal) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      clearTimeout(killEscalation);
-      abortSignal?.removeEventListener("abort", terminate);
-      resolve({
-        exitCode,
-        signal,
-        stdout: stdout.join(""),
-        stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
-      });
-    });
-  });
-}
-function parseRunEvents(stdout) {
-  const events = [];
-  let sessionId = null;
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    try {
-      const event = JSON.parse(trimmed);
-      events.push(event);
-      const candidate = sessionIdFromEvent(event);
-      if (candidate !== null) {
-        sessionId = candidate;
-      }
-    } catch {
-      events.push({ type: "raw", text: line });
-    }
-  }
-  return { events, sessionId };
-}
-function sessionIdFromEvent(event) {
-  if (!isRecord(event)) {
-    return null;
-  }
-  const direct = event.sessionID ?? event.sessionId;
-  if (typeof direct === "string") {
-    return direct;
-  }
-  const nested = event.session;
-  if (isRecord(nested) && typeof nested.id === "string") {
-    return nested.id;
-  }
-  return null;
-}
-function parseExport(output) {
-  const start = output.indexOf("{");
-  if (start < 0) {
-    return { ok: false, error: "export output did not contain a JSON object" };
-  }
-  try {
-    const value = JSON.parse(output.slice(start));
-    return isRecord(value) ? { ok: true, data: value } : { ok: false, error: "export JSON root was not an object" };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
-function finalAssistantText2(exportData) {
-  if (!Array.isArray(exportData.messages)) {
-    return "";
-  }
-  for (let index = exportData.messages.length - 1; index >= 0; index -= 1) {
-    const message = exportData.messages[index];
-    if (!isRecord(message) || !isRecord(message.info) || message.info.role !== "assistant") {
-      continue;
-    }
-    const parts = Array.isArray(message.parts) ? message.parts : [];
-    const text = parts.map((part) => isRecord(part) && part.type === "text" && typeof part.text === "string" ? part.text : "").join("");
-    if (text.trim().length > 0) {
-      return text;
-    }
-  }
-  return "";
-}
-function fallbackText(events) {
-  let currentStepText = null;
-  let finalStoppedStepText = "";
-  for (const event of events) {
-    if (!isRecord(event) || !isRecord(event.part)) {
-      continue;
-    }
-    if (event.type === "step_start" && event.part.type === "step-start") {
-      currentStepText = [];
-      continue;
-    }
-    if (event.type === "text" && event.part.type === "text" && typeof event.part.text === "string") {
-      if (currentStepText === null && finalStoppedStepText.length > 0) {
-        continue;
-      }
-      currentStepText ??= [];
-      currentStepText.push(event.part.text);
-      continue;
-    }
-    if (event.type === "step_finish" && event.part.type === "step-finish") {
-      if (event.part.reason === "stop" && currentStepText !== null) {
-        const stoppedStepText = currentStepText.join("");
-        if (stoppedStepText.trim().length > 0) {
-          finalStoppedStepText = stoppedStepText;
-        }
-      }
-      currentStepText = null;
-    }
-  }
-  if (finalStoppedStepText.length > 0) {
-    return finalStoppedStepText;
-  }
-  const inProgressText = currentStepText?.join("") ?? "";
-  if (inProgressText.length > 0) {
-    return inProgressText;
-  }
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!isRecord(event)) {
-      continue;
-    }
-    if (typeof event.text === "string") {
-      return event.text;
-    }
-    if (typeof event.message === "string") {
-      return event.message;
-    }
-  }
-  return "";
-}
-function usageFromExport(exportData) {
-  const messageTokens = [];
-  if (Array.isArray(exportData.messages)) {
-    for (const message of exportData.messages) {
-      if (isRecord(message) && isRecord(message.info) && message.info.role === "assistant") {
-        messageTokens.push(message.info.tokens);
-      }
-    }
-  }
-  return aggregateOpenCodeUsage(messageTokens) ?? aggregateOpenCodeUsage([exportData.info?.tokens]);
-}
-function usageFromStream(events) {
-  const stepTokens = [];
-  let cost = null;
-  for (const event of events) {
-    if (!isRecord(event) || event.type !== "step_finish" || !isRecord(event.part) || event.part.type !== "step-finish") {
-      continue;
-    }
-    stepTokens.push(event.part.tokens);
-    const stepCost = numberValue(event.part.cost);
-    if (stepCost !== null) {
-      cost = (cost ?? 0) + stepCost;
-    }
-  }
-  return { breakdown: aggregateOpenCodeUsage(stepTokens), cost };
-}
-function openCodeTokenSnapshot(tokens) {
-  if (!isRecord(tokens)) {
-    return null;
-  }
-  const inputTokens = numberField(tokens, "input");
-  const outputTokens = numberField(tokens, "output");
-  const reasoningOutputTokens = numberField(tokens, "reasoning");
-  const cache = tokens.cache;
-  const cacheReadTokens = isRecord(cache) ? numberField(cache, "read") : null;
-  const cacheCreationInputTokens = isRecord(cache) ? numberField(cache, "write") : null;
-  const cachedInputTokens = cacheReadTokens === null && cacheCreationInputTokens === null ? null : (cacheReadTokens ?? 0) + (cacheCreationInputTokens ?? 0);
-  const reportedTotal = numberField(tokens, "total");
-  if (inputTokens === null && outputTokens === null && reasoningOutputTokens === null && cachedInputTokens === null && reportedTotal === null) {
-    return null;
-  }
-  return {
-    cachedInputTokens: cachedInputTokens ?? 0,
-    ...cacheCreationInputTokens === null ? {} : { cacheCreationInputTokens },
-    inputTokens: inputTokens ?? 0,
-    outputTokens: outputTokens ?? 0,
-    reasoningOutputTokens: reasoningOutputTokens ?? 0,
-    reportedTotal,
-    hasCategorisedTokens: cachedInputTokens !== null || inputTokens !== null || outputTokens !== null || reasoningOutputTokens !== null
-  };
-}
-function aggregateOpenCodeUsage(tokenSnapshots) {
-  let sawUsage = false;
-  let cachedInputTokens = 0;
-  let cacheCreationInputTokens;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let reasoningOutputTokens = 0;
-  let uncategorisedTokens = 0;
-  for (const tokens of tokenSnapshots) {
-    const snapshot = openCodeTokenSnapshot(tokens);
-    if (snapshot === null) {
-      continue;
-    }
-    sawUsage = true;
-    cachedInputTokens = snapshot.cachedInputTokens;
-    cacheCreationInputTokens = snapshot.cacheCreationInputTokens;
-    inputTokens = snapshot.inputTokens;
-    outputTokens += snapshot.outputTokens;
-    reasoningOutputTokens += snapshot.reasoningOutputTokens;
-    if (!snapshot.hasCategorisedTokens && snapshot.reportedTotal !== null) {
-      uncategorisedTokens += snapshot.reportedTotal;
-    }
-  }
-  if (!sawUsage) {
-    return null;
-  }
-  const totalTokens = cachedInputTokens + inputTokens + outputTokens + reasoningOutputTokens + uncategorisedTokens;
-  return {
-    cachedInputTokens,
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens,
-    outputTokens,
-    reasoningOutputTokens,
-    totalTokens
-  };
-}
-function transcriptContent(stdout, exportData) {
-  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
-  if (exportData !== null) {
-    lines.push(JSON.stringify({ type: "session/export", data: exportData }));
-  }
-  return `${lines.join("\n")}
-`;
-}
-function openCodeFailureMessage(run, events) {
-  const eventError = events.map(errorFromEvent).find((message) => message !== null);
-  if (eventError !== void 0 && eventError !== null) {
-    return `opencode run failed: ${eventError}`;
-  }
-  const stderr = run.stderr.trim();
-  if (stderr.length > 0) {
-    return `opencode run failed: ${stderr}`;
-  }
-  return `opencode run failed with exit code ${run.exitCode ?? `signal ${run.signal ?? "unknown"}`}`;
-}
-function errorFromEvent(event) {
-  if (!isRecord(event)) {
-    return null;
-  }
-  const error = event.error;
-  if (typeof error === "string") {
-    return error;
-  }
-  if (isRecord(error)) {
-    const data2 = error.data;
-    if (isRecord(data2) && typeof data2.message === "string") {
-      return data2.message;
-    }
-    if (typeof error.message === "string") {
-      return error.message;
-    }
-    if (typeof error.name === "string") {
-      return error.name;
-    }
-  }
-  return null;
-}
-function numberField(record, key) {
-  return numberValue(record[key]);
-}
-function numberValue(value) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/scheduler.ts
-var Scheduler = class {
-  concurrency;
-  #active = 0;
-  #queue = [];
-  #shutdownError = null;
-  constructor(concurrency) {
-    if (!Number.isInteger(concurrency) || concurrency < 1) {
-      throw new Error(`Concurrency must be a positive integer, got ${concurrency}`);
-    }
-    this.concurrency = concurrency;
-  }
-  active() {
-    return this.#active;
-  }
-  queued() {
-    return this.#queue.length;
-  }
-  schedule(task) {
-    if (this.#shutdownError !== null) {
-      return Promise.reject(this.#shutdownError);
-    }
-    return new Promise((resolve, reject) => {
-      const run = () => {
-        this.#active += 1;
-        Promise.resolve().then(task).then(resolve, reject).finally(() => {
-          this.#active -= 1;
-          this.#drain();
-        });
-      };
-      this.#queue.push({ run, reject });
-      this.#drain();
-    });
-  }
-  /**
-   * Rejects everything still queued and refuses new work. Active tasks are
-   * untouched — cancelling started work is the adapter's job, since only it
-   * knows how to reach a live session or child process.
-   */
-  close(rejection) {
-    if (this.#shutdownError !== null) {
-      return;
-    }
-    this.#shutdownError = rejection;
-    const queued = this.#queue.splice(0);
-    for (const task of queued) {
-      task.reject(rejection);
-    }
-  }
-  #drain() {
-    while (this.#active < this.concurrency) {
-      const next = this.#queue.shift();
-      if (next === void 0) {
-        return;
-      }
-      next.run();
-    }
-  }
-};
-
-// src/schema.ts
-var import_ajv = __toESM(require_ajv(), 1);
-var import__ = __toESM(require__(), 1);
-var ajv = new import_ajv.Ajv({
-  allErrors: true,
-  strict: false
-});
-var ajv2020 = new import__.Ajv2020({
-  allErrors: true,
-  strict: false
-});
-var DRAFT_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
-var DRAFT_07_URI = "http://json-schema.org/draft-07/schema";
-function compilerFor(schema) {
-  const declared = schema.$schema;
-  if (typeof declared !== "string") {
-    return ajv;
-  }
-  const dialect = declared.replace(/#$/, "");
-  if (dialect === DRAFT_2020_12_URI) {
-    return ajv2020;
-  }
-  if (dialect === DRAFT_07_URI) {
-    return ajv;
-  }
-  throw new InvalidAgentSchemaError(
-    `unsupported JSON Schema dialect '${declared}' \u2014 supported dialects are draft 2020-12 ("${DRAFT_2020_12_URI}") and draft-07 ("${DRAFT_07_URI}#", also the default when $schema is omitted); declare one of those or omit $schema`
-  );
-}
-function selectLastValidJsonFromText(text, schema) {
-  const candidates = parseJsonCandidates(text);
-  if (candidates.length === 0) {
-    return { kind: "invalid-json" };
-  }
-  let selected = null;
-  let lastValidation = null;
-  for (const candidate of candidates) {
-    const validation = validateJsonSchema(candidate.value, schema);
-    if (validation.ok) {
-      selected = candidate;
-    }
-    lastValidation = validation;
-  }
-  if (selected !== null) {
-    return { kind: "valid", parsed: selected };
-  }
-  if (lastValidation !== null) {
-    return { kind: "schema-validation", validation: lastValidation };
-  }
-  return { kind: "invalid-json" };
-}
-function validateJsonSchema(value, schema) {
-  const validate = compileSchema(schema);
-  const ok = validate(value);
-  return { ok, value, errors: validate.errors };
-}
-function assertCompilableSchema(schema) {
-  try {
-    compileSchema(schema);
-  } catch (error) {
-    if (error instanceof InvalidAgentSchemaError) {
-      throw error;
-    }
-    throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
-      cause: error,
-      offending: schema
-    });
-  }
-}
-function normaliseForCodexOutputSchema(schema) {
-  return normaliseSchemaNode(schema);
-}
-function compileSchema(schema) {
-  return compilerFor(schema).compile(schema);
-}
-function normaliseSchemaNode(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => normaliseSchemaNode(item));
-  }
-  const object = asJsonObject2(value);
-  if (object === null) {
-    return value;
-  }
-  const normalised = {};
-  for (const [key, child] of Object.entries(object)) {
-    normalised[key] = cloneJsonNode(child);
-  }
-  const authoredProperties = asJsonObject2(object.properties);
-  if (authoredProperties !== null) {
-    const properties2 = {};
-    for (const [key, propertySchema] of Object.entries(authoredProperties)) {
-      properties2[key] = normaliseSchemaNode(propertySchema);
-    }
-    normalised.properties = properties2;
-  }
-  normaliseSchemaMapKeyword(object, normalised, "$defs");
-  normaliseSchemaMapKeyword(object, normalised, "definitions");
-  if (Object.hasOwn(object, "items")) {
-    normalised.items = Array.isArray(object.items) ? object.items.map((item) => normaliseSchemaNode(item)) : normaliseSchemaNode(object.items);
-  }
-  normaliseSchemaArrayKeyword(object, normalised, "anyOf");
-  normaliseSchemaArrayKeyword(object, normalised, "oneOf");
-  normaliseSchemaArrayKeyword(object, normalised, "allOf");
-  const properties = asJsonObject2(normalised.properties);
-  if (properties === null) {
-    return normalised;
-  }
-  promotePropertiesToRequired(normalised, properties);
-  return normalised;
-}
-function normaliseSchemaMapKeyword(source, target, key) {
-  const definitions = asJsonObject2(source[key]);
-  if (definitions === null) {
-    return;
-  }
-  const normalisedDefinitions = {};
-  for (const [name, schema] of Object.entries(definitions)) {
-    normalisedDefinitions[name] = normaliseSchemaNode(schema);
-  }
-  target[key] = normalisedDefinitions;
-}
-function normaliseSchemaArrayKeyword(source, target, key) {
-  if (Array.isArray(source[key])) {
-    target[key] = source[key].map((schema) => normaliseSchemaNode(schema));
-  }
-}
-function promotePropertiesToRequired(normalised, properties) {
-  if (!Object.hasOwn(normalised, "required")) {
-    normalised.required = Object.keys(properties);
-    return;
-  }
-  if (Array.isArray(normalised.required)) {
-    const required = [...normalised.required];
-    const seen = new Set(required);
-    for (const property of Object.keys(properties)) {
-      if (!seen.has(property)) {
-        required.push(property);
-        seen.add(property);
-      }
-    }
-    normalised.required = required;
-  }
-}
-function asJsonObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-}
-function cloneJsonNode(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => cloneJsonNode(item));
-  }
-  const object = asJsonObject2(value);
-  if (object === null) {
-    return value;
-  }
-  const clone = {};
-  for (const [key, child] of Object.entries(object)) {
-    clone[key] = cloneJsonNode(child);
-  }
-  return clone;
-}
-function tryParse(source) {
-  try {
-    return { ok: true, value: JSON.parse(source) };
-  } catch {
-    return { ok: false };
-  }
-}
-function parseJsonCandidates(source) {
-  const trimmed = source.trim();
-  if (trimmed.length === 0) {
-    return [];
-  }
-  const direct = tryParse(trimmed);
-  if (direct.ok) {
-    return [{ value: direct.value, source: "direct" }];
-  }
-  const candidates = [];
-  const regions = indexBalancedJsonRegions(trimmed);
-  for (let index = 0; index < trimmed.length; index += 1) {
-    const open = trimmed[index];
-    if (open !== "{" && open !== "[") {
-      continue;
-    }
-    const region = regions.byStart.get(index);
-    if (region === void 0) {
-      continue;
-    }
-    const alreadyClassified = region.parsed !== void 0;
-    const parsed = parseRegion(trimmed, region);
-    if (parsed.ok) {
-      candidates.push({
-        value: parsed.value,
-        source: open === "{" ? "object-fallback" : "array-fallback"
-      });
-      index = region.end;
-    } else if (!alreadyClassified) {
-      classifyDescendants(trimmed, region);
-    }
-  }
-  return candidates;
-}
-function indexBalancedJsonRegions(source) {
-  const starts = {
-    "{": [[], []],
-    "[": [[], []]
-  };
-  const regions = [];
-  let quoteParity = 0;
-  let consecutiveBackslashes = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (char === "\\") {
-      consecutiveBackslashes += 1;
-      continue;
-    }
-    if (char === '"' && consecutiveBackslashes % 2 === 0) {
-      quoteParity = quoteParity === 0 ? 1 : 0;
-      consecutiveBackslashes = 0;
-      continue;
-    }
-    consecutiveBackslashes = 0;
-    if (char === "{" || char === "[") {
-      starts[char][quoteParity].push(index);
-      continue;
-    }
-    const open = char === "}" ? "{" : char === "]" ? "[" : null;
-    if (open !== null) {
-      const start = starts[open][quoteParity].pop();
-      if (start !== void 0) {
-        regions.push({ start, end: index, quoteParity, children: [] });
-      }
-    }
-  }
-  const ordered = regions.sort((left, right) => left.start - right.start || right.end - left.end);
-  attachContainedRegions(ordered, 0);
-  attachContainedRegions(ordered, 1);
-  return { byStart: new Map(ordered.map((region) => [region.start, region])), ordered };
-}
-function attachContainedRegions(regions, quoteParity) {
-  const containers = [];
-  for (const region of regions) {
-    if (region.quoteParity !== quoteParity) {
-      continue;
-    }
-    while (containers.length > 0) {
-      const candidate = containers.at(-1);
-      if (candidate.end >= region.end) {
-        break;
-      }
-      containers.pop();
-    }
-    const parent = containers.at(-1);
-    if (parent !== void 0 && parent.start < region.start && region.end <= parent.end) {
-      parent.children.push(region);
-    }
-    containers.push(region);
-  }
-}
-function parseRegion(source, region) {
-  region.parsed ??= tryParse(source.slice(region.start, region.end + 1));
-  return region.parsed;
-}
-function classifyDescendants(source, region) {
-  const descendants = [];
-  const pending = [...region.children];
-  while (pending.length > 0) {
-    const descendant = pending.pop();
-    descendants.push(descendant);
-    pending.push(...descendant.children);
-  }
-  for (let index = descendants.length - 1; index >= 0; index -= 1) {
-    const descendant = descendants[index];
-    if (descendant.parsed !== void 0) {
-      continue;
-    }
-    if (descendant.children.some((child) => child.parsed?.ok === false)) {
-      descendant.parsed = { ok: false };
-    } else {
-      parseRegion(source, descendant);
-    }
-  }
-}
-
-// src/engines.ts
-var EngineRegistry = class {
-  #engines = /* @__PURE__ */ new Map();
-  constructor(engines) {
-    for (const engine of engines) {
-      this.#engines.set(engine.name, engine);
-    }
-  }
-  get(name) {
-    return this.#engines.get(name);
-  }
-  names() {
-    return [...this.#engines.keys()];
-  }
-  async close() {
-    const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
-    const failures = results.filter((result) => result.status === "rejected");
-    if (failures.length === 1) {
-      throw failures[0].reason;
-    }
-    if (failures.length > 1) {
-      throw new AggregateError(
-        failures.map((failure) => failure.reason),
-        "engine teardown failed"
-      );
-    }
-  }
-};
-async function codexThreadConfig(strip, transport, cwd) {
-  const strippedAgents = strip?.includes("agents") === true;
-  const strippedSkills = strip?.includes("skills") === true;
-  if (!strippedAgents && !strippedSkills) {
-    return void 0;
-  }
-  return {
-    ...strippedAgents ? { agents: { enabled: false } } : {},
-    ...strippedSkills ? {
-      skills: {
-        bundled: { enabled: false },
-        config: (await discoveredCodexSkillNames(transport, cwd)).map((name) => ({ name, enabled: false }))
-      }
-    } : {}
-  };
-}
-async function discoveredCodexSkillNames(transport, cwd) {
-  if (transport.listSkills === void 0) {
-    throw new CapabilityStripUnsupportedError(
-      "codex",
-      "skills",
-      "the transport cannot retrieve the app-server's stabilised skill discovery result"
-    );
-  }
-  return transport.listSkills(cwd);
-}
-var CodexEngineAdapter = class {
-  name = "codex";
-  concurrency;
-  /**
-   * Measured 2026-08-28 on codex-cli 0.149.1, at Codex's own wire to the
-   * model provider:
-   *
-   * - `agents` strips through the per-thread `thread/start` config overlay:
-   *   `{ agents: { enabled: false } }` removes the entire `collaboration`
-   *   tool namespace from the tool schema Codex sends the model, per
-   *   thread, without leaking between sibling threads on one app-server
-   *   process. The key is `--strict-config`-validated but undocumented,
-   *   and its failure mode on a Codex rename would be silent — a live test
-   *   against a real worker is what re-checks this judgement per release.
-   * - `skills` strips through the same per-thread overlay, measured
-   *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
-   *   growing filesystem-and-plugin set and then repeat it. This rejects a
-   *   repeated cold state rather than mistaking it for complete discovery;
-   *   bundled skills are disabled and every accepted name gets an exact
-   *   `skills.config` deny.
-   */
-  capabilities = {
-    skills: {
-      route: "config",
-      detail: "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
-    },
-    agents: {
-      route: "config",
-      detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
-    }
-  };
-  #transport;
-  #scheduler;
-  constructor(options) {
-    this.concurrency = options.concurrency;
-    this.#transport = options.transport;
-    this.#scheduler = new Scheduler(options.concurrency);
-  }
-  schedule(task) {
-    return this.#scheduler.schedule(task);
-  }
-  createInvocation(prompt, options) {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
-    return new CodexEngineInvocation({
-      prompt,
-      options,
-      transport: this.#transport
-    });
-  }
-  createSession(options) {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
-    return new CodexWorkerSession({ options, transport: this.#transport });
-  }
-  async close() {
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await this.#transport.close();
-  }
-};
-var CodexWorkerSession = class {
-  #options;
-  #transport;
-  #threadId = null;
-  #opening = null;
-  constructor(options) {
-    this.#options = options.options;
-    this.#transport = options.transport;
-  }
-  beginTurn(prompt, turn) {
-    return {
-      runAttempt: (context) => this.#runTurnAttempt(prompt, turn.schema, context)
-    };
-  }
-  async #runTurnAttempt(prompt, schema, context) {
-    const threadId = await this.#ensureThread();
-    const message = context.previousFailure === void 0 ? prompt : `A previous attempt failed (${context.previousFailure.kind}): ${context.previousFailure.message}. Correct it this time.`;
-    return this.#transport.runTurn(threadId, message, {
-      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
-      ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
-    });
-  }
-  /**
-   * Single-flight thread open, not failure-memoised: a failed open leaves
-   * the session threadless so the bounded retry (or the next turn) may try
-   * again — memoising the failure would terminalise a whole session on one
-   * transient spawn error.
-   */
-  #ensureThread() {
-    if (this.#threadId !== null) {
-      return Promise.resolve(this.#threadId);
-    }
-    this.#opening ??= (async () => {
-      try {
-        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
-        const threadId = await this.#transport.openThread({
-          ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
-          ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-          ...threadConfig !== void 0 ? { threadConfig } : {}
-        });
-        this.#threadId = threadId;
-        return threadId;
-      } finally {
-        this.#opening = null;
-      }
-    })();
-    return this.#opening;
-  }
-  async close() {
-    this.#threadId = null;
-  }
-};
-var CodexEngineInvocation = class {
-  #prompt;
-  #options;
-  #transport;
-  constructor(options) {
-    this.#prompt = options.prompt;
-    this.#options = options.options;
-    this.#transport = options.transport;
-  }
-  async runAttempt(context) {
-    const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
-  }
-  async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
-    const threadId = await this.#transport.openThread({
-      ...cwd !== void 0 ? { cwd } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...threadConfig !== void 0 ? { threadConfig } : {}
-    });
-    return this.#transport.runTurn(threadId, prompt, {
-      ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
-      ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
-    });
-  }
-};
-var ClaudeEngineAdapter = class {
-  name = "claude";
-  concurrency;
-  /**
-   * Claude strips both named minimum capabilities mechanically: permission
-   * deny rules ride the per-dispatch settings file the control plane already
-   * writes (the one surface measured to reach the daemon-served session).
-   * Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used
-   * `mcp__`-prefixed names; that session's skills pair showed the bare `Skill`
-   * deny working (`Skill` absent under a skills strip, present in the
-   * baseline). The agents deny set was witnessed 2026-08-30 on Claude Code
-   * 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker,
-   * while the unstripped control demonstrated discovery and messaging.
-   * `Agent` was also absent, but the witness cannot isolate it from the
-   * machine-wide `Agent` deny. `Task` remains in the delivered deny set, which
-   * the exact-set regression proves. Deny rules outrank every allow layer and
-   * permission mode, `--dangerously-skip-permissions` included — a live test
-   * asserts that at the worker itself.
-   */
-  capabilities = {
-    skills: { route: "config", detail: "permissions deny rules in the per-dispatch settings file" },
-    agents: {
-      route: "config",
-      detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
-    }
-  };
-  #scheduler;
-  #cwd;
-  #controlPlane;
-  #onEvent;
-  #config;
-  #activeInvocations = /* @__PURE__ */ new Set();
-  #closed = false;
-  constructor(options = {}) {
-    this.concurrency = options.concurrency ?? defaultClaudeConcurrency();
-    this.#scheduler = new Scheduler(this.concurrency);
-    this.#cwd = options.cwd ?? process.cwd();
-    this.#controlPlane = options.controlPlane ?? new ClaudeCliControlPlane();
-    this.#onEvent = options.onEvent;
-    this.#config = options.config;
-  }
-  schedule(task) {
-    return this.#scheduler.schedule(task);
-  }
-  createInvocation(prompt, options) {
-    if (this.#closed) {
-      throw new EngineShutdownError(this.name);
-    }
-    const effort = claudeNativeEffort(options.effort);
-    const invocation = new ClaudeEngineInvocation({
-      prompt,
-      cwd: options.cwd ?? this.#cwd,
-      options: effort === void 0 ? options : { ...options, effort },
-      controlPlane: this.#controlPlane,
-      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
-      ...this.#config !== void 0 ? { config: this.#config } : {},
-      onClose: (closed) => this.#activeInvocations.delete(closed)
-    });
-    this.#activeInvocations.add(invocation);
-    return invocation;
-  }
-  createSession(options) {
-    if (this.#closed) {
-      throw new EngineShutdownError(this.name);
-    }
-    const effort = claudeNativeEffort(options.effort);
-    const session = new ClaudeEngineInvocation({
-      prompt: "",
-      cwd: options.cwd ?? this.#cwd,
-      options: effort === void 0 ? options : { ...options, effort },
-      multiTurn: true,
-      controlPlane: this.#controlPlane,
-      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
-      ...this.#config !== void 0 ? { config: this.#config } : {},
-      onClose: (closed) => this.#activeInvocations.delete(closed)
-    });
-    this.#activeInvocations.add(session);
-    return session;
-  }
-  async close() {
-    this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
-  }
-};
-var OpenCodeEngineAdapter = class {
-  name = "opencode";
-  concurrency;
-  /**
-   * Measured 2026-08-27 against opencode 1.18.4: its schema exposes
-   * `permission.task` and `permission.skill`, and
-   * `OPENCODE_CONFIG_CONTENT` is a per-process merge overlay. The surface
-   * measurement is not worker-boundary proof, though: the available live
-   * dispatches timed out before producing output, so this unit has not shown
-   * that either explicit deny stops a worker. Both capabilities therefore
-   * fail loud pre-spawn rather than dispatch a worker under a restriction the
-   * author believes is in force. A successful deny witness re-opens this
-   * judgement.
-   */
-  capabilities = {
-    skills: {
-      route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.skill=deny, but worker-boundary enforcement is unproven"
-    },
-    agents: {
-      route: "unsupported",
-      detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
-    }
-  };
-  #scheduler;
-  #cwd;
-  #runner;
-  #modelRegistry;
-  #onEvent;
-  #activeInvocations = /* @__PURE__ */ new Set();
-  #closed = false;
-  constructor(options = {}) {
-    this.concurrency = options.concurrency ?? defaultOpenCodeConcurrency();
-    this.#scheduler = new Scheduler(this.concurrency);
-    this.#cwd = options.cwd ?? process.cwd();
-    this.#runner = options.runner ?? new OpenCodeCliRunner(options.bin);
-    this.#modelRegistry = options.modelRegistry ?? defaultOpenCodeModelRegistry;
-    this.#onEvent = options.onEvent;
-  }
-  /**
-   * The registry this adapter dispatches against — exposed so load-time
-   * validation consults the same registry, never a parallel resolution of
-   * the module default that an injected registry would silently disagree
-   * with (rejecting before the body a model the runtime would run).
-   */
-  get modelRegistry() {
-    return this.#modelRegistry;
-  }
-  schedule(task) {
-    return this.#scheduler.schedule(task);
-  }
-  createInvocation(prompt, options) {
-    if (this.#closed) {
-      throw new EngineShutdownError(this.name);
-    }
-    rejectUnsupportedOpenCodeOptions(options);
-    if (options.model === void 0) {
-      throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
-    }
-    const model = requireRegisteredOpenCodeModel(options.model, this.#modelRegistry);
-    if (options.effort !== void 0 && !model.variants.includes(options.effort)) {
-      throw new InvalidAgentOptionValueError(
-        "effort",
-        options.effort,
-        model.variants.length > 0 ? `one of ${model.variants.join(" | ")} (the variants the registry declares for ${model.key})` : `absent \u2014 the registry entry for ${model.key} declares no served variants`
-      );
-    }
-    const invocation = new OpenCodeEngineInvocation({
-      prompt,
-      cwd: options.cwd ?? this.#cwd,
-      providerModel: model.providerModel,
-      modelKey: model.key,
-      options,
-      runner: this.#runner,
-      ...this.#onEvent !== void 0 ? { onEvent: this.#onEvent } : {},
-      onClose: (closed) => this.#activeInvocations.delete(closed)
-    });
-    this.#activeInvocations.add(invocation);
-    return invocation;
-  }
-  async close() {
-    this.#closed = true;
-    this.#scheduler.close(new EngineShutdownError(this.name));
-    await Promise.allSettled([...this.#activeInvocations].map((invocation) => invocation.close()));
-  }
-};
-async function createDefaultEngineRegistry(options) {
-  const transport = new LazyCodexAppServerTransport({
-    cwd: options.cwd,
-    codexBin: options.codexBin,
-    ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
-    requestTimeoutMs: options.requestTimeoutMs,
-    ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
-    ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
-    startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
-    clientName: options.clientName,
-    clientVersion: options.clientVersion,
-    onEvent: options.onEvent
-  });
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      ...options.workerEnvironment?.claude !== void 0 ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) } : {},
-      ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
-      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
-      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
-}
-function promptWithFailureFeedback(prompt, failure) {
-  if (failure === void 0) {
-    return prompt;
-  }
-  return `${prompt}
-
-A previous attempt failed (${failure.kind}): ${failure.message}. Correct it this time.`;
-}
-
-// src/runtime.ts
-function assertValidAgentPrompt(prompt) {
-  if (typeof prompt !== "string") {
-    throw new AgentPromptRejectedError(`agent() prompt must be a string, got ${typeof prompt}`);
-  }
-  if (prompt.trim().length === 0) {
-    throw new AgentPromptRejectedError("agent() prompt must be a non-empty string");
-  }
-}
-var WorkerSession = class {
-  #state;
-  #now;
-  #sendTurn;
-  #close;
-  constructor(options) {
-    this.#state = options.state;
-    this.#now = options.now;
-    this.#sendTurn = options.sendTurn;
-    this.#close = options.close;
-  }
-  /** Run-scoped session ordinal — the identity the archive's per-turn records carry. */
-  get id() {
-    return this.#state.id;
-  }
-  get engine() {
-    return this.#state.options.engine;
-  }
-  /** Completed turns so far (a settled send, whatever its outcome). */
-  get turns() {
-    return this.#state.turnCount;
-  }
-  /** Milliseconds since the last settled turn, or null before the first. */
-  get idleMs() {
-    const last = this.#state.lastTurnEndedAt;
-    return last === null ? null : Math.max(0, this.#now() - last);
-  }
-  /**
-   * The idle gap at which this session reads stale: the resolved runtime
-   * option, or — on Claude — the machine-declared cache TTL when one
-   * overrides the injected default, so the mark and the cache expire on
-   * one clock.
-   */
-  get staleAfterMs() {
-    return this.#state.stalenessThresholdMs;
-  }
-  /**
-   * The advisory staleness mark: true once the idle gap since the
-   * last settled turn has outlived the session's cache economics — the
-   * configured TTL cliff on Claude, the measured idle threshold on Codex.
-   * Always false while marking is disabled, before the first turn, and
-   * mid-turn. Advisory only: the runtime never blocks or reroutes a send
-   * on it — a fresh session cannot inherit the old transcript, so only the
-   * script can decide to re-brief.
-   */
-  get stale() {
-    const state = this.#state;
-    if (!state.markStaleness || state.lastTurnEndedAt === null || state.inFlight) {
-      return false;
-    }
-    return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
-  }
-  send(prompt, turn = {}) {
-    return this.#sendTurn(prompt, turn);
-  }
-  /** Idempotent: stops the held worker and finalises the session's placement. */
-  close() {
-    return this.#close();
-  }
-};
-var EnsembleRuntime = class _EnsembleRuntime {
-  budget;
-  worktrees = [];
-  /** Live, in-memory view of what the run is doing. Always maintained; persisting it is opt-in at the CLI. */
-  progress;
-  #engines;
-  #admission;
-  #placement;
-  #defaultTurnTimeoutMs;
-  #defaultMaxAttempts;
-  /** Run-wide capability strip, united with each call's own list. */
-  #strip;
-  #eventListeners = /* @__PURE__ */ new Set();
-  #completed = [];
-  #runRecorder = null;
-  #executingAgentRecords = /* @__PURE__ */ new Map();
-  // Every dispatched record remains here until its own agent() call settles.
-  // close() uses this to terminalise work a run ended before
-  // the normal per-agent settlement path could run.
-  #unsettledAgentRecords = /* @__PURE__ */ new Map();
-  /** close()'s settlement barrier: per-leg waiters resolved by #noteAgentSettled. */
-  #settlementWaiters = /* @__PURE__ */ new Map();
-  // Once close() has made the only honest terminal transition for a record,
-  // late shutdown rejections must not overwrite it with an invented outcome.
-  #abandonedAgentIds = /* @__PURE__ */ new Set();
-  #shutdownAgentStatus = "interrupted";
-  // The worker tally close() publishes once teardown has settled every
-  // classified leg — derived from the records' final dispositions behind
-  // the settlement barrier, so it is determinate without racing whichever
-  // straggler lands first, and it never disagrees with the archive.
-  #shutdownTally = null;
-  /** The first close() call's run, latched so later calls join it. */
-  #closeRun = null;
-  #closed = false;
-  #workerSessions = /* @__PURE__ */ new Set();
-  #sessionCounter = 0;
-  /** Injectable clock (tests): drives the staleness mark's idle reading. */
-  #now;
-  #holdManager = null;
-  #lastSettledAgentRecord = null;
-  #holdsDir;
-  #holdPollIntervalMs;
-  #holdsCwd;
-  #claudeSessionStaleAfterMs;
-  #codexSessionStaleAfterMs;
-  constructor(options) {
-    if (options.strip !== void 0) {
-      assertValidStripOption(options.strip);
-    }
-    this.#strip = options.strip ?? [];
-    this.budget = new TokenBudget(options.budgetCeilings);
-    this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID5(),
-      budget: this.budget,
-      ...options.now !== void 0 ? { now: options.now } : {}
-    });
-    this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
-    this.#defaultMaxAttempts = options.defaultMaxAttempts;
-    this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 36e5;
-    this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 36e5;
-    this.#now = options.now ?? (() => Date.now());
-    this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
-    this.#holdPollIntervalMs = options.holdPollIntervalMs;
-    this.#holdsCwd = options.cwd ?? process.cwd();
-    this.#placement = new AgentPlacementManager({
-      baseCwd: options.cwd ?? process.cwd(),
-      ...options.worktreeManager !== void 0 ? { worktreeManager: options.worktreeManager } : {}
-    });
-    this.#engines = options.engines ?? new EngineRegistry([
-      new CodexEngineAdapter({
-        transport: requireTransport(options.transport),
-        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-      }),
-      new ClaudeEngineAdapter({
-        ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {}
-      }),
-      new OpenCodeEngineAdapter({
-        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {}
-      })
-    ]);
-    this.#admission = new AdmissionController({
-      ceiling: options.agentCeiling ?? null,
-      caps: this.#engineCaps()
-    });
-    this.#registerEngineCaps();
-  }
-  /**
-   * The opencode registry dispatch will consult — the adapter's own, so
-   * load-time validation and dispatch can never read different registries
-   * (an injected registry previously made load time the stricter of the
-   * two, rejecting models dispatch would run).
-   */
-  get openCodeModelRegistry() {
-    const adapter = this.#engines.get("opencode");
-    return adapter instanceof OpenCodeEngineAdapter ? adapter.modelRegistry : void 0;
-  }
-  static async create(options = {}) {
-    let runtime = null;
-    const cwd = options.cwd ?? process.cwd();
-    const engines = await createDefaultEngineRegistry({
-      cwd,
-      codexBin: options.codexBin ?? "codex",
-      requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
-      ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
-      ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
-      ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
-      startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
-      clientName: options.clientName ?? "ensemble-workflows",
-      clientVersion: options.clientVersion ?? harnessVersion(),
-      onEvent: (event) => {
-        runtime?.handleEngineEvent("codex", event);
-      },
-      onClaudeEvent: (event) => {
-        runtime?.handleEngineEvent("claude", event);
-      },
-      onOpenCodeEvent: (event) => {
-        runtime?.handleEngineEvent("opencode", event);
-      },
-      ...options.concurrencyCaps !== void 0 ? { concurrencyCaps: options.concurrencyCaps } : {}
-    });
-    runtime = new _EnsembleRuntime({
-      engines,
-      cwd,
-      ...options.budgetCeilings !== void 0 ? { budgetCeilings: options.budgetCeilings } : {},
-      ...options.defaultTurnTimeoutMs !== void 0 ? { defaultTurnTimeoutMs: options.defaultTurnTimeoutMs } : {},
-      ...options.agentCeiling !== void 0 ? { agentCeiling: options.agentCeiling } : {},
-      defaultMaxAttempts: options.defaultMaxAttempts ?? 3,
-      ...options.holdsDir !== void 0 ? { holdsDir: options.holdsDir } : {},
-      ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
-      ...options.strip !== void 0 ? { strip: options.strip } : {},
-      // The staleness cliff tracks the *effective* TTL: an explicit option
-      // wins, else a machine-declared TTL for the Claude workers (which
-      // outranks the injected 1h in the settings file) sets the cliff, else
-      // the injected default's hour — never two silently different clocks.
-      ...options.claudeSessionStaleAfterMs !== void 0 ? { claudeSessionStaleAfterMs: options.claudeSessionStaleAfterMs } : declaredClaudeTtlMs(options.workerEnvironment) !== null ? { claudeSessionStaleAfterMs: declaredClaudeTtlMs(options.workerEnvironment) } : {},
-      ...options.codexSessionStaleAfterMs !== void 0 ? { codexSessionStaleAfterMs: options.codexSessionStaleAfterMs } : {}
-    });
-    return runtime;
-  }
-  onEvent(listener) {
-    this.#eventListeners.add(listener);
-    return () => {
-      this.#eventListeners.delete(listener);
-    };
-  }
-  setRunRecorder(recorder) {
-    this.#runRecorder = recorder;
-  }
-  /** Sets the run's current phase. Driven by the script's `phase()` hook. */
-  notePhase(title) {
-    this.progress.setPhase(title);
-  }
-  handleEngineEvent(engine, event) {
-    if (event.method === "thread/tokenUsage/updated") {
-      const usageEvent = tokenUsageEventFromParams(event.params);
-      if (usageEvent !== null) {
-        this.budget.record(engine, usageEvent);
-        this.progress.noteEngineSpend(engine);
-      }
-    }
-    if (event.method === "transport/decodeFailed") {
-      const diagnostic = decodeFailureDiagnosticFromParams(event.params);
-      if (diagnostic !== null) {
-        for (const record of this.#executingAgentRecords.get(engine) ?? []) {
-          record.decodeFailure = diagnostic;
-        }
-      }
-    }
-    this.#emitEvent(event);
-  }
-  handleTransportEvent(event) {
-    this.handleEngineEvent("codex", event);
-  }
-  async agent(prompt, options = {}) {
-    if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
-    }
-    assertValidAgentPrompt(prompt);
-    assertValidAgentOptions(options);
-    if (options.schema !== void 0) {
-      assertCompilableSchema(options.schema);
-    }
-    if (options.cwd !== void 0) {
-      await this.#placement.assertUsableCwd(options);
-    }
-    const engine = this.#engineFor(options.engine);
-    const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
-    this.budget.assertCanStart(engine.name);
-    const queuedAt = Date.now();
-    const agentId = this.progress.queueAgent({
-      engine: engine.name,
-      label: options.label ?? null,
-      phase: options.phase ?? null
-    });
-    if (engine.name === "claude" && options.model === void 0) {
-      this.#emitEvent({
-        method: "claude/unpinnedModel",
-        params: { agentId, label: options.label ?? null },
-        receivedAt: Date.now()
-      });
-    }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
-    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
-    try {
-      await this.#recordAgentSafely(agentRecord);
-      const unsettled = this.#unsettledAgentRecords.get(agentId);
-      if (unsettled !== void 0) {
-        unsettled.stage = "admitting";
-      }
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
-      if (options.identity === true) {
-        return { label: options.label ?? null, phase: options.phase ?? null, output };
-      }
-      return output;
-    } catch (error) {
-      if (options.identity === true && error instanceof Error) {
-        attachAgentIdentity(error, { label: options.label ?? null, phase: options.phase ?? null });
-      }
-      throw error;
-    } finally {
-      this.#noteAgentSettled(agentId);
-    }
-  }
-  /**
-   * Raise a hold and await its decision: the hold's content and
-   * accepted verdicts are published to the shared holds directory, any
-   * process — the launcher or not, alive at raise time or not — writes the
-   * decision file the record names, nonce correlation rejects stale
-   * answers, and the resolved decision is always one of the accepted
-   * verdicts. Open holds appear in the live status snapshot and the
-   * cross-run `ensemble holds` listing; raise, answer, rejection, and
-   * timeout each emit an event and land in the archive's hold_events.
-   */
-  async raiseHold(options) {
-    if (this.#closed) {
-      throw new HoldRejectedError("the run is closing; no new holds can be raised");
-    }
-    this.#holdManager ??= new HoldManager({
-      dir: this.#holdsDir,
-      runId: this.progress.runId,
-      cwd: this.#holdsCwd,
-      ...this.#holdPollIntervalMs !== void 0 ? { pollIntervalMs: this.#holdPollIntervalMs } : {},
-      onEvent: (event) => {
-        this.#emitEvent(event);
-        void this.#recordHoldEventSafely(event);
-      },
-      onOpen: (hold) => this.progress.noteHoldRaised(hold),
-      onSettled: (id) => this.progress.noteHoldSettled(id)
-    });
-    return this.#holdManager.raise(options);
-  }
-  /** Same observability contract as agent-record writes: failures surface as events, never as hold failures. */
-  async #recordHoldEventSafely(event) {
-    try {
-      await this.#runRecorder?.recordHoldEvent(event);
-    } catch (error) {
-      this.#emitEvent({
-        method: "runRecord/writeFailed",
-        params: { holdEvent: event.method, message: error instanceof Error ? error.message : String(error) },
-        receivedAt: Date.now()
-      });
-    }
-  }
-  /**
-   * Open a multi-turn worker session: one worker, held across turns,
-   * with engine, model, and effort fixed for its life. Creation spawns
-   * nothing — validation and strip enforcement run here, pre-spawn, and the
-   * worker itself starts at the first `send()`. An engine that does not
-   * hold sessions (opencode) throws before any worker exists.
-   */
-  createWorkerSession(options) {
-    if (this.#closed) {
-      throw new SessionClosedError();
-    }
-    assertValidWorkerSessionOptions(options);
-    const engine = this.#engineFor(options.engine);
-    if (engine.createSession === void 0) {
-      throw new MultiTurnUnsupportedError(engine.name);
-    }
-    const strip = effectiveStrip(this.#strip, options.strip);
-    const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
-    this.#sessionCounter += 1;
-    const state = {
-      id: this.#sessionCounter,
-      options: sessionOptions,
-      engine,
-      stripRoutes,
-      // The mark's threshold is per engine shape: Claude's is the cliff at
-      // its configured (injected) cache TTL, Codex's the measured coin-flip
-      // idle point — both overridable as library-level runtime options.
-      stalenessThresholdMs: engine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs,
-      markStaleness: sessionOptions.stalenessMark ?? true,
-      engineSession: null,
-      placement: null,
-      turnCount: 0,
-      lastTurnEndedAt: null,
-      inFlight: false,
-      pendingTurn: null,
-      closed: false
-    };
-    const session = new WorkerSession({
-      state,
-      now: this.#now,
-      sendTurn: (prompt, turn) => {
-        const pending = this.#runSessionTurn(state, prompt, turn);
-        state.pendingTurn = pending;
-        void pending.catch(() => void 0).finally(() => {
-          if (state.pendingTurn === pending) {
-            state.pendingTurn = null;
-          }
-        });
-        return pending;
-      },
-      close: () => this.#closeWorkerSession(state)
-    });
-    this.#workerSessions.add(session);
-    return session;
-  }
-  async #runSessionTurn(state, prompt, turn) {
-    if (this.#closed || state.closed) {
-      throw new SessionClosedError();
-    }
-    if (state.inFlight) {
-      throw new SessionBusyError();
-    }
-    assertValidAgentPrompt(prompt);
-    assertValidSessionTurnOptions(turn);
-    if (turn.schema !== void 0) {
-      assertCompilableSchema(turn.schema);
-    }
-    const options = state.options;
-    const engine = state.engine;
-    state.inFlight = true;
-    try {
-      this.budget.assertCanStart(engine.name);
-      const queuedAt = Date.now();
-      const agentId = this.progress.queueAgent({
-        engine: engine.name,
-        label: options.label ?? null,
-        phase: options.phase ?? null
-      });
-      if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
-        this.#emitEvent({
-          method: "claude/unpinnedModel",
-          params: { agentId, label: options.label ?? null },
-          receivedAt: Date.now()
-        });
-      }
-      const turnNumber = state.turnCount + 1;
-      const recordOptions = {
-        engine: engine.name,
-        ...options.model !== void 0 ? { model: options.model } : {},
-        ...options.effort !== void 0 ? { effort: options.effort } : {},
-        ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
-        ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
-        ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
-        ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-        ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
-        ...options.label !== void 0 ? { label: options.label } : {},
-        ...options.phase !== void 0 ? { phase: options.phase } : {},
-        ...turn.schema !== void 0 ? { schema: turn.schema } : {},
-        ...options.strip !== void 0 ? { strip: options.strip } : {}
-      };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
-      agentRecord.session = { id: state.id, turn: turnNumber };
-      this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
-      try {
-        await this.#recordAgentSafely(agentRecord);
-        const unsettled = this.#unsettledAgentRecords.get(agentId);
-        if (unsettled !== void 0) {
-          unsettled.stage = "admitting";
-        }
-        let started = false;
-        try {
-          return await this.#admission.admit(
-            engine.name,
-            agentId,
-            () => engine.schedule(async () => {
-              started = true;
-              return this.#executeAgent(
-                engine.name,
-                { label: options.label ?? null, phase: options.phase ?? null },
-                agentId,
-                agentRecord,
-                queuedAt,
-                () => this.#runSessionBody(state, prompt, turn, agentId, agentRecord)
-              );
-            })
-          );
-        } catch (error) {
-          if (!started) {
-            this.progress.settleAgent(agentId, "failed");
-            this.#settleTerminalStatus(agentRecord, error, "queued");
-            agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-            agentRecord.executionMs = 0;
-            await this.#recordSettlementSafely(agentId, agentRecord);
-          }
-          throw error;
-        }
-      } finally {
-        this.#noteAgentSettled(agentId);
-        state.turnCount = turnNumber;
-        state.lastTurnEndedAt = this.#now();
-      }
-    } finally {
-      state.inFlight = false;
-    }
-  }
-  async #runSessionBody(state, prompt, turn, agentId, agentRecord) {
-    const options = state.options;
-    state.placement ??= await this.#placement.open({
-      ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
-      ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
-    });
-    if (state.closed || this.#closed) {
-      const placement = state.placement;
-      state.placement = null;
-      await this.#placement.close(placement).catch(() => void 0);
-      throw new SessionClosedError();
-    }
-    agentRecord.resolvedCwd = state.placement.cwd;
-    agentRecord.isolation = options.isolation ?? null;
-    const createSession = state.engine.createSession;
-    if (createSession === void 0) {
-      throw new MultiTurnUnsupportedError(state.engine.name);
-    }
-    state.engineSession ??= createSession.call(
-      state.engine,
-      this.#engineTurnOptions(
-        {
-          engine: state.engine.name,
-          ...options.model !== void 0 ? { model: options.model } : {},
-          ...options.effort !== void 0 ? { effort: options.effort } : {},
-          ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
-          ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-          ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {}
-        },
-        state.placement.cwd
-      )
-    );
-    const invocation = state.engineSession.beginTurn(prompt, {
-      ...turn.schema !== void 0 ? { schema: turn.schema } : {}
-    });
-    const sharedOptions = {
-      ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
-      ...options.model !== void 0 ? { model: options.model } : {}
-    };
-    if (turn.schema !== void 0) {
-      return this.#runSchemaAgent(
-        state.engine.name,
-        invocation,
-        { ...sharedOptions, schema: turn.schema },
-        agentId,
-        agentRecord
-      );
-    }
-    return {
-      status: "complete",
-      value: await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord)
-    };
-  }
-  async #closeWorkerSession(state) {
-    if (state.closed) {
-      return;
-    }
-    state.closed = true;
-    try {
-      await state.engineSession?.close();
-    } catch {
-    }
-    await state.pendingTurn?.catch(() => void 0);
-    const placement = state.placement;
-    state.placement = null;
-    if (placement !== null) {
-      try {
-        const worktree = await this.#placement.close(placement);
-        if (worktree !== null) {
-          this.worktrees.push(worktree);
-          this.#emitEvent({
-            method: "worktree/finished",
-            params: {
-              path: worktree.path,
-              branch: worktree.branch,
-              changed: worktree.changed,
-              removed: worktree.removed
-            },
-            receivedAt: Date.now()
-          });
-        }
-      } catch (error) {
-        if (placement.worktree !== void 0) {
-          this.worktrees.push({ ...placement.worktree, tipCommit: null, changed: true, removed: false });
-          this.#emitEvent({
-            method: "worktree/finalisationFailed",
-            params: {
-              sessionId: state.id,
-              path: placement.worktree.path,
-              branch: placement.worktree.branch,
-              message: failureFromError(error).message
-            },
-            receivedAt: Date.now()
-          });
-        }
-      }
-    }
-  }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
-    let started = false;
-    try {
-      return await this.#admission.admit(
-        engine.name,
-        agentId,
-        () => engine.schedule(async () => {
-          started = true;
-          return this.#executeAgent(
-            engine.name,
-            { label: options.label ?? null, phase: options.phase ?? null },
-            agentId,
-            agentRecord,
-            queuedAt,
-            () => this.#runAgent(engine, prompt, options, agentId, agentRecord)
-          );
-        })
-      );
-    } catch (error) {
-      if (!started) {
-        this.progress.settleAgent(agentId, "failed");
-        this.#settleTerminalStatus(agentRecord, error, "queued");
-        agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-        agentRecord.executionMs = 0;
-        await this.#recordSettlementSafely(agentId, agentRecord);
-      }
-      throw error;
-    }
-  }
-  async #executeAgent(engineName, identity, agentId, agentRecord, queuedAt, run) {
-    const executionStartedAt = Date.now();
-    this.progress.startAgent(agentId);
-    const executingRecords = this.#executingAgentRecords.get(engineName) ?? /* @__PURE__ */ new Set();
-    this.#executingAgentRecords.set(engineName, executingRecords);
-    executingRecords.add(agentRecord);
-    try {
-      const execution = await run();
-      const outcome = execution.status === "complete" ? "done" : "failed";
-      const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, outcome);
-      if (outcome === "done") {
-        agentRecord.status = "complete";
-      } else {
-        this.#settleTerminalStatus(agentRecord, null);
-      }
-      agentRecord.rawOutput = lastRawOutput(agentRecord);
-      agentRecord.validatedOutput = execution.value;
-      if (outcome === "done") {
-        this.#completed.push({
-          id: agentId,
-          engine: engineName,
-          label: identity.label,
-          phase: identity.phase,
-          output: execution.value
-        });
-      }
-      await this.#recordSettlementSafely(agentId, agentRecord);
-      return execution.value;
-    } catch (error) {
-      const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
-      this.progress.settleAgent(agentId, "failed");
-      this.#settleTerminalStatus(agentRecord, error);
-      agentRecord.rawOutput = lastRawOutput(agentRecord);
-      agentRecord.validatedOutput = null;
-      await this.#recordSettlementSafely(agentId, agentRecord);
-      throw error;
-    } finally {
-      this.#lastSettledAgentRecord = agentRecord;
-      executingRecords.delete(agentRecord);
-      if (executingRecords.size === 0) {
-        this.#executingAgentRecords.delete(engineName);
-      }
-    }
-  }
-  /** The last settled agent record, or null before any settlement. */
-  lastAgentRecord() {
-    return this.#lastSettledAgentRecord;
-  }
-  /**
-   * The archive is observability: a bookkeeping failure must not reject (or,
-   * on the success path, falsify) the agent whose work it records. Failures
-   * surface as an event the CLI logs to stderr.
-   */
-  async #recordAgentSafely(record) {
-    try {
-      await this.#runRecorder?.recordAgent(record);
-    } catch (error) {
-      this.#emitEvent({
-        method: "runRecord/writeFailed",
-        params: {
-          agentId: record.id,
-          message: error instanceof Error ? error.message : String(error)
-        },
-        receivedAt: Date.now()
-      });
-    }
-  }
-  async #recordSettlementSafely(agentId, record) {
-    if (this.#abandonedAgentIds.has(agentId)) {
-      return;
-    }
-    await this.#recordAgentSafely(record);
-  }
-  /**
-   * Outputs of every worker that finished successfully, in completion order.
-   * The CLI reads this to assemble a partial result if the whole-workflow
-   * timeout fires before the script returns.
-   */
-  completedOutputs() {
-    return this.#completed;
-  }
-  /**
-   * The worker tally for the run's end, or null before close() completes
-   * it. Legs close() abandons (no outcome ever observed) count `unsettled`
-   * by its own decision; every other leg is counted from what its durable
-   * record settled to during teardown — cut short where the run's ending
-   * is the recorded cause, done/failed where the leg settled on its own
-   * account — so the sentinel's figures and the archive's records state
-   * the same thing, including for a leg that outraced teardown.
-   */
-  shutdownTally() {
-    return this.#shutdownTally;
-  }
-  close(status = "interrupted") {
-    this.#closeRun ??= this.#closeOnce(status);
-    return this.#closeRun;
-  }
-  async #closeOnce(status) {
-    this.#shutdownAgentStatus = status;
-    this.#closed = true;
-    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
-      ([, { record }]) => record.status === "in-progress"
-    );
-    const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
-    const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
-    const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
-    const totalsAtClose = this.progress.snapshot().totals;
-    const sessionCloses = Promise.allSettled([...this.#workerSessions].map((session) => session.close()));
-    this.#holdManager?.close();
-    this.#admission.close();
-    await Promise.all(
-      abandoning.map(async (record) => {
-        this.#abandonedAgentIds.add(record.id);
-        record.status = "abandoned";
-        await this.#recordAgentSafely(record);
-      })
-    );
-    const teardownFailures = [];
-    try {
-      await this.#engines.close();
-    } catch (error) {
-      teardownFailures.push(error);
-    }
-    for (const result of await sessionCloses) {
-      if (result.status === "rejected") {
-        teardownFailures.push(result.reason);
-      }
-    }
-    this.#workerSessions.clear();
-    await settlementBarrier;
-    let done = totalsAtClose.done;
-    let failed = totalsAtClose.failed;
-    let cutShort = 0;
-    for (const [, { record }] of closing) {
-      if (record.status === "complete") {
-        done += 1;
-      } else if (record.terminationCause?.kind === `run-${status}`) {
-        cutShort += 1;
-      } else {
-        failed += 1;
-      }
-    }
-    this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
-    if (teardownFailures.length === 1) {
-      throw teardownFailures[0];
-    }
-    if (teardownFailures.length > 1) {
-      throw new AggregateError(teardownFailures, "run teardown failed to end cleanly");
-    }
-  }
-  /**
-   * Resolves when the identified leg's settlement bookkeeping has finished —
-   * its record status, cause, and settlement write are all final. Already
-   * settled resolves immediately.
-   */
-  #settledSignal(agentId) {
-    if (!this.#unsettledAgentRecords.has(agentId)) {
-      return Promise.resolve();
-    }
-    return new Promise((resolve) => {
-      const waiters = this.#settlementWaiters.get(agentId) ?? [];
-      waiters.push(resolve);
-      this.#settlementWaiters.set(agentId, waiters);
-    });
-  }
-  /** The one place a leg leaves the unsettled set; wakes any close() waiting on it. */
-  #noteAgentSettled(agentId) {
-    this.#unsettledAgentRecords.delete(agentId);
-    const waiters = this.#settlementWaiters.get(agentId);
-    if (waiters !== void 0) {
-      this.#settlementWaiters.delete(agentId);
-      for (const waiter of waiters) {
-        waiter();
-      }
-    }
-  }
-  /**
-   * The run's own settlement, seen from inside a worker's turn, or null when
-   * the engine failed on its own account. A run interrupt or whole-run
-   * timeout reaches an in-flight turn as whatever its transport noticed
-   * first — a closed app-server, an aborted poll — so that symptom names the
-   * run's exit rather than the turn's cause. Agent and attempt both read
-   * their cause from here, so a record cannot disagree with its own attempts.
-   */
-  #runSettlementCause(error, dispatch = "in-flight") {
-    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
-      return {
-        kind: `run-${this.#shutdownAgentStatus}`,
-        // A queued leg's turn never reached an engine; saying it was in
-        // flight would claim a dispatch that never happened.
-        message: dispatch === "queued" ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched` : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
-      };
-    }
-    return null;
-  }
-  /**
-   * Settles a record's terminal status *and* the cause that produced it, so
-   * the two can never disagree.
-   */
-  #settleTerminalStatus(record, error, dispatch = "in-flight") {
-    const settlement = this.#runSettlementCause(error, dispatch);
-    if (settlement !== null) {
-      record.status = this.#shutdownAgentStatus;
-      record.terminationCause = settlement;
-      return;
-    }
-    if (error instanceof TurnTimeoutError) {
-      record.status = "timed-out";
-      record.terminationCause = { kind: "turn-timeout", message: error.message };
-      return;
-    }
-    const lastFailure = record.attempts.at(-1)?.failure;
-    if (lastFailure?.kind.endsWith("-timeout") === true) {
-      record.status = "timed-out";
-      record.terminationCause = { kind: lastFailure.kind, message: lastFailure.message };
-      return;
-    }
-    record.status = "failed";
-    record.terminationCause = null;
-  }
-  async #runAgent(engine, prompt, options, agentId, agentRecord) {
-    const placement = await this.#placement.open(options);
-    agentRecord.resolvedCwd = placement.cwd;
-    agentRecord.isolation = options.isolation ?? null;
-    let invocation;
-    let completion;
-    try {
-      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
-      if (options.schema !== void 0) {
-        completion = {
-          ok: true,
-          execution: await this.#runSchemaAgent(
-            engine.name,
-            invocation,
-            { ...options, schema: options.schema },
-            agentId,
-            agentRecord
-          )
-        };
-      } else {
-        completion = {
-          ok: true,
-          execution: {
-            status: "complete",
-            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
-          }
-        };
-      }
-    } catch (error) {
-      completion = { ok: false, error };
-    } finally {
-      try {
-        try {
-          await invocation?.close?.();
-        } catch (error) {
-          completion = { ok: false, error };
-        }
-      } finally {
-        try {
-          const worktree = await this.#placement.close(placement);
-          if (worktree !== null) {
-            this.#publishWorktree(agentRecord, worktree);
-            this.#emitEvent({
-              method: "worktree/finished",
-              params: {
-                path: worktree.path,
-                branch: worktree.branch,
-                changed: worktree.changed,
-                removed: worktree.removed
-              },
-              receivedAt: Date.now()
-            });
-          }
-        } catch (error) {
-          if (placement.worktree !== void 0) {
-            const worktree = {
-              ...placement.worktree,
-              tipCommit: null,
-              changed: true,
-              removed: false
-            };
-            this.#publishWorktree(agentRecord, worktree);
-            this.#emitEvent({
-              method: "worktree/finalisationFailed",
-              params: {
-                agentId,
-                path: worktree.path,
-                branch: worktree.branch,
-                message: failureFromError(error).message
-              },
-              receivedAt: Date.now()
-            });
-          }
-          if (completion?.ok !== false) {
-            completion = { ok: false, error };
-          }
-        }
-      }
-    }
-    if (completion === void 0) {
-      throw new Error("agent execution ended without a result");
-    }
-    if (!completion.ok) {
-      throw completion.error;
-    }
-    return completion.execution;
-  }
-  #publishWorktree(agentRecord, worktree) {
-    this.worktrees.push(worktree);
-    agentRecord.worktree = {
-      branch: worktree.branch,
-      baseCommit: worktree.baseCommit,
-      tipCommit: worktree.tipCommit,
-      changed: worktree.changed,
-      removed: worktree.removed
-    };
-  }
-  async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
-    let lastError = null;
-    let previousFailure;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      this.progress.noteAttempt(agentId, attempt);
-      const startedAt = Date.now();
-      try {
-        const result = await invocation.runAttempt({
-          attempt,
-          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
-          ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
-        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
-        recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
-        if (operationalFailure !== void 0) {
-          previousFailure = operationalFailure;
-          lastError = new EmptyAgentOutputError(previousFailure.message);
-          continue;
-        }
-        const text = result.text.trim();
-        if (text.length > 0) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
-          return text;
-        }
-        previousFailure = {
-          kind: "empty-output",
-          message: `agent returned empty text on attempt ${attempt}`
-        };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
-        lastError = new EmptyAgentOutputError(previousFailure.message);
-      } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
-        }
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
-          throw error;
-        }
-        lastError = error instanceof Error ? error : new Error(String(error));
-      }
-    }
-    throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
-  }
-  async #runSchemaAgent(engine, invocation, options, agentId, agentRecord) {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
-    let previousFailure;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      this.progress.noteAttempt(agentId, attempt);
-      const startedAt = Date.now();
-      try {
-        const result = await invocation.runAttempt({
-          attempt,
-          onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
-          ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
-        this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
-        recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
-        if (operationalFailure !== void 0) {
-          previousFailure = operationalFailure;
-          continue;
-        }
-        if (result.text.trim().length === 0) {
-          previousFailure = {
-            kind: "empty-output",
-            message: `agent returned empty text on attempt ${attempt}`
-          };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
-          continue;
-        }
-        const selection = selectLastValidJsonFromText(result.text, options.schema);
-        if (selection.kind === "invalid-json") {
-          previousFailure = {
-            kind: "invalid-json",
-            message: "agent output did not contain parseable JSON"
-          };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
-          continue;
-        }
-        if (selection.kind === "valid") {
-          agentRecord.parseRoute = selection.parsed.source;
-          agentRecord.attempts.push(
-            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
-          );
-          return {
-            status: "complete",
-            value: selection.parsed.value
-          };
-        }
-        previousFailure = {
-          kind: "schema-validation",
-          message: JSON.stringify(selection.validation.errors ?? [])
-        };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
-      } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
-        }
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
-          throw error;
-        }
-      }
-    }
-    return {
-      status: "failed",
-      value: null
-    };
-  }
-  #emitEvent(event) {
-    for (const listener of this.#eventListeners) {
-      listener(event);
-    }
-  }
-  /**
-   * An unpinned call's first resolved served model becomes a named notice —
-   * on every engine that reports one, so the Claude notice names its model
-   * exactly as the Codex line does (an unpinned worker's real identity is
-   * operator-facing information, not a Codex privilege).
-   */
-  #recordResolvedUnpinnedModel(engine, options, agentId, record, result) {
-    if (options.model !== void 0 || record.resolvedModel !== null || result.resolvedModel === void 0) {
-      return;
-    }
-    this.#emitEvent({
-      method: `${engine}/unpinnedModelResolved`,
-      params: {
-        agentId,
-        label: options.label ?? null,
-        model: result.resolvedModel,
-        effort: result.resolvedEffort ?? null
-      },
-      receivedAt: Date.now()
-    });
-  }
-  #registerEngineCaps() {
-    for (const name of this.#engines.names()) {
-      const adapter = this.#engines.get(name);
-      if (adapter !== void 0) {
-        this.progress.registerEngine(name, adapter.concurrency);
-      }
-    }
-  }
-  #engineCaps() {
-    const caps = /* @__PURE__ */ new Map();
-    for (const name of this.#engines.names()) {
-      const adapter = this.#engines.get(name);
-      if (adapter !== void 0) {
-        caps.set(name, adapter.concurrency);
-      }
-    }
-    return caps;
-  }
-  #engineFor(engine) {
-    if (engine === void 0) {
-      throw new MissingEngineError();
-    }
-    if (typeof engine !== "string") {
-      throw new UnknownEngineError(engine);
-    }
-    const adapter = this.#engines.get(engine);
-    if (adapter === void 0) {
-      throw new UnknownEngineError(engine);
-    }
-    return adapter;
-  }
-  #engineTurnOptions(options, cwd) {
-    const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
-    return {
-      ...resolvedTimeoutMs !== void 0 ? { timeoutMs: resolvedTimeoutMs } : {},
-      ...options.schema !== void 0 ? { schema: options.schema } : {},
-      ...options.model !== void 0 ? { model: options.model } : {},
-      ...options.effort !== void 0 ? { effort: options.effort } : {},
-      ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
-      ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
-      cwd
-    };
-  }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
-    return {
-      id,
-      engine,
-      prompt,
-      options: {
-        timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,
-        maxAttempts: options.maxAttempts ?? this.#defaultMaxAttempts
-      },
-      model: typeof options.model === "string" ? options.model : null,
-      effort: typeof options.effort === "string" ? options.effort : null,
-      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
-      resolvedModel: null,
-      resolvedEffort: null,
-      resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
-      isolation: options.isolation ?? null,
-      worktree: null,
-      label: options.label ?? null,
-      phase: options.phase ?? null,
-      status: "in-progress",
-      terminationCause: null,
-      creationOrder: id,
-      concurrencyGroup: engine,
-      schema: options.schema ?? null,
-      strip: stripRoutes === null || options.strip === void 0 ? null : { requested: [...options.strip], enforcement: stripRoutes },
-      session: null,
-      parseRoute: null,
-      decodeFailure: null,
-      rawOutput: null,
-      validatedOutput: null,
-      queuedMs: 0,
-      executionMs: 0,
-      attempts: []
-    };
-  }
-};
-async function createRuntime(options = {}) {
-  return EnsembleRuntime.create(options);
-}
-function declaredClaudeTtlMs(workerEnvironment) {
-  const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
-  return declared === void 0 ? null : claudeCacheTtlToMs(declared);
-}
-function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
-}
-function requireTransport(transport) {
-  if (transport === void 0) {
-    throw new Error("EnsembleRuntime requires either engines or a Codex transport");
-  }
-  return transport;
-}
-function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null, observedFailure = null) {
-  const endedAt = /* @__PURE__ */ new Date();
-  return {
-    attempt,
-    status,
-    failure,
-    observedFailure,
-    workerExit,
-    appServerDiagnostic,
-    rawOutput,
-    validatedOutput,
-    startedAt: new Date(startedAtMs).toISOString(),
-    endedAt: endedAt.toISOString(),
-    // Per-attempt served-model identity: retries can open fresh threads that
-    // resolve differently, so each attempt keeps its own answer rather than
-    // inheriting the agent-level last-write-wins field.
-    resolvedModel: result?.resolvedModel ?? null,
-    resolvedEffort: result?.resolvedEffort ?? null,
-    // Engines that time their own turn say so; for the rest the attempt
-    // already holds both endpoints, and a null beside them would be the
-    // record discarding a figure it holds.
-    durationMs: result?.durationMs ?? Math.max(0, endedAt.getTime() - startedAtMs),
-    firstDeltaMs: result?.firstDeltaMs ?? null,
-    tokenUsageEvents: result?.tokenUsageEvents ?? [],
-    transcripts: result?.transcripts ?? [],
-    diagnostics: result?.diagnostics ?? {}
-  };
-}
-function recordTurnMetadata(record, result) {
-  if (result.resolvedModel !== void 0) {
-    record.resolvedModel = result.resolvedModel;
-  }
-  if (result.resolvedEffort !== void 0) {
-    record.resolvedEffort = result.resolvedEffort;
-  }
-}
-function recordOperationalFailure(record, attempt, startedAtMs, result) {
-  if (result.attemptFailure === void 0) {
-    return void 0;
-  }
-  record.attempts.push(
-    attemptRecord(
-      attempt,
-      "failed",
-      result.attemptFailure,
-      result.text,
-      null,
-      startedAtMs,
-      result,
-      result.workerExit ?? null
-    )
-  );
-  return result.attemptFailure;
-}
-function failureFromError(error) {
-  return describeError(error);
-}
-function lastRawOutput(record) {
-  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
-    const rawOutput = record.attempts[index]?.rawOutput;
-    if (rawOutput !== void 0 && rawOutput !== null) {
-      return rawOutput;
-    }
-  }
-  return null;
-}
-function decodeFailureDiagnosticFromParams(params) {
-  return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
-}
-
-// src/status-file.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
-import { link, readFile as readFile7, readdir as readdir5, rename as rename4, unlink, writeFile as writeFile5 } from "node:fs/promises";
-import { hostname } from "node:os";
-import path11 from "node:path";
-var STATUS_FILENAME = "ensemble.local.json";
-var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
-async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
-  if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
-    return false;
-  }
-  if (typeof owner.start_ticks !== "string") {
-    return false;
-  }
-  const liveTicks = await readProcessStartTicks(procDir, owner.pid);
-  if (liveTicks === owner.start_ticks) {
-    return false;
-  }
-  if (liveTicks === null && await readProcessStartTicks(procDir, process.pid) === null) {
-    return false;
-  }
-  return true;
-}
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile7, readdir: readdir5, rename: rename4, unlink, writeFile: writeFile5 };
-var StatusFileWriter = class {
-  #progress;
-  #dir;
-  #onError;
-  #fileOperations;
-  #unsubscribe;
-  #writing = null;
-  #dirty = false;
-  #closed = false;
-  #tmpSeq = 0;
-  #heartbeat;
-  #initialSweep;
-  #ownerEvidence;
-  #procDir;
-  constructor(options) {
-    this.#progress = options.progress;
-    this.#dir = options.dir;
-    this.#onError = options.onError;
-    this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
-    const procDir = options.procDir ?? "/proc";
-    this.#procDir = procDir;
-    this.#ownerEvidence = (async () => ({
-      host: hostname(),
-      pid: process.pid,
-      start_ticks: await readProcessStartTicks(procDir, process.pid)
-    }))();
-    this.#initialSweep = this.#sweepStaleArtifacts();
-    this.#unsubscribe = this.#progress.onChange(() => this.#request());
-    this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
-    this.#heartbeat.unref();
-    this.#request();
-  }
-  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
-  async close() {
-    this.#closed = true;
-    clearInterval(this.#heartbeat);
-    this.#unsubscribe();
-    while (this.#writing !== null) {
-      await this.#writing;
-    }
-    await this.#removeSnapshot();
-  }
-  #request() {
-    if (this.#closed) {
-      return;
-    }
-    this.#dirty = true;
-    this.#drain();
-  }
-  #drain() {
-    if (this.#writing !== null || !this.#dirty) {
-      return;
-    }
-    this.#dirty = false;
-    this.#writing = this.#write().finally(() => {
-      this.#writing = null;
-      this.#drain();
-    });
-  }
-  async #write() {
-    try {
-      await this.#writeAtomic(this.#progress.snapshot());
-    } catch (error) {
-      if (!isNodeError2(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
-      }
-    }
-  }
-  async #writeAtomic(snapshot) {
-    await this.#initialSweep;
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
-    await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
-`, "utf8");
-    await this.#fileOperations.rename(tmp, target);
-  }
-  async #removeSnapshot() {
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
-    try {
-      await this.#fileOperations.rename(target, claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-      return;
-    }
-    let belongsToAnotherRun = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      belongsToAnotherRun = typeof current2.runId === "string" && current2.runId !== this.#progress.runId;
-    } catch {
-    }
-    if (belongsToAnotherRun) {
-      try {
-        await this.#fileOperations.link(claim, target);
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "EEXIST") {
-          this.#reportError(error);
-          try {
-            await this.#fileOperations.rename(claim, target);
-          } catch (renameError) {
-            this.#reportError(renameError);
-          }
-          return;
-        }
-      }
-    }
-    try {
-      await this.#fileOperations.unlink(claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-    }
-  }
-  async #sweepStaleArtifacts() {
-    let entries;
-    try {
-      entries = await this.#fileOperations.readdir(this.#dir);
-    } catch (error) {
-      if (!isNodeError2(error) || error.code !== "ENOENT") {
-        this.#reportError(error);
-      }
-      return;
-    }
-    for (const entry of entries) {
-      const prefix = `${STATUS_FILENAME}.`;
-      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
-      const ownerPid = Number(match?.[1]);
-      if (!Number.isSafeInteger(ownerPid) || isProcessAlive2(ownerPid)) {
-        continue;
-      }
-      try {
-        await this.#fileOperations.unlink(path11.join(this.#dir, entry));
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "ENOENT") {
-          this.#reportError(error);
-        }
-      }
-    }
-    const target = path11.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID6()}.remove`;
-    try {
-      await this.#fileOperations.rename(target, claim);
-    } catch {
-      return;
-    }
-    let ownerGone = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
-    } catch {
-    }
-    if (ownerGone) {
-      await this.#fileOperations.unlink(claim).catch(() => void 0);
-      return;
-    }
-    try {
-      await this.#fileOperations.link(claim, target);
-      await this.#fileOperations.unlink(claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "EEXIST") {
-        await this.#fileOperations.unlink(claim).catch(() => void 0);
-        return;
-      }
-      try {
-        await this.#fileOperations.rename(claim, target);
-      } catch (renameError) {
-        this.#reportError(renameError);
-      }
-    }
-  }
-  #reportError(error) {
-    try {
-      this.#onError?.(error);
-    } catch {
-    }
-  }
-};
-function isNodeError2(error) {
-  return typeof error === "object" && error !== null && "code" in error;
-}
-function isProcessAlive2(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isNodeError2(error) || error.code !== "ESRCH";
-  }
-}
-
 // src/index.ts
 async function createRuntime2(options = {}) {
   return createRuntime(options);
@@ -28373,7 +28581,8 @@ var AGENT_INVOCATION_OPTIONS = {
   "agent-ceiling": { type: "string" },
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
-  "caller-identity": { type: "string" }
+  "caller-identity": { type: "string" },
+  "hold-scope": { type: "string" }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -28383,6 +28592,9 @@ async function runEnsembleCli(argv, options = {}) {
   const env = options.env ?? process.env;
   if (argv[0] === "--help" || argv[0] === "-h") {
     stdout.write(usage());
+    stdout.write(
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Results are JSON on stdout; diagnostics on stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
+    );
     return 0;
   }
   if (argv[0] === "--version") {
@@ -28420,21 +28632,53 @@ async function runEnsembleCli(argv, options = {}) {
   }
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage());
+    stdout.write(
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
+    );
     return 0;
   }
   if (argv[0] === "holds") {
+    const holdsUsage = "Usage: ensemble holds [--json] [--scope <scope> | --all]\nLists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;\n--scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.\n";
     if (argv[1] === "--help" || argv[1] === "-h") {
-      stdout.write("Usage: ensemble holds [--json]\nLists open holds across runs; --json emits the full records.\n");
+      stdout.write(holdsUsage);
       return 0;
     }
-    const json = argv.includes("--json");
-    if (argv.length > (json ? 2 : 1)) {
-      stderr.write("Usage: ensemble holds [--json]\n");
+    let json = false;
+    let all = false;
+    let scopeFlag;
+    const rest = argv.slice(1);
+    for (let index = 0; index < rest.length; index += 1) {
+      const arg = rest[index];
+      if (arg === "--json") {
+        json = true;
+      } else if (arg === "--all") {
+        all = true;
+      } else if (arg === "--scope") {
+        scopeFlag = rest[index + 1];
+        index += 1;
+        if (scopeFlag === void 0 || scopeFlag.trim().length === 0) {
+          stderr.write(holdsUsage);
+          return 2;
+        }
+      } else if (arg !== void 0 && arg.startsWith("--scope=")) {
+        scopeFlag = arg.slice("--scope=".length);
+        if (scopeFlag.trim().length === 0) {
+          stderr.write(holdsUsage);
+          return 2;
+        }
+      } else {
+        stderr.write(holdsUsage);
+        return 2;
+      }
+    }
+    if (all && scopeFlag !== void 0) {
+      stderr.write(holdsUsage);
       return 2;
     }
-    let holds;
+    const scope = scopeFlag ?? (all ? null : resolveHoldScope(void 0, env));
+    let enumeration;
     try {
-      holds = await enumerateHolds(defaultHoldsDirectory(env));
+      enumeration = await enumerateHolds(defaultHoldsDirectory(env), scope !== null ? { scope } : {});
     } catch (error) {
       stderr.write(
         `cannot enumerate holds under ${defaultHoldsDirectory(env)}: ${error instanceof Error ? error.message : String(error)}
@@ -28443,19 +28687,29 @@ async function runEnsembleCli(argv, options = {}) {
       return 1;
     }
     if (json) {
-      stdout.write(`${JSON.stringify(holds.map((hold) => ({ ...hold.record, live: hold.live })))}
+      stdout.write(
+        `${JSON.stringify({
+          holds: enumeration.holds.map((hold) => hold.record),
+          retired: enumeration.retired
+        })}
+`
+      );
+      return 0;
+    }
+    for (const record of enumeration.retired) {
+      stdout.write(`retired ${record.hold_id} \u2014 raiser provably gone; nothing could await its answer
+`);
+    }
+    if (enumeration.holds.length === 0) {
+      const view = scope !== null ? `scope ${scope}` : "any scope";
+      stdout.write(`No open holds for ${view} under ${defaultHoldsDirectory(env)}
 `);
       return 0;
     }
-    if (holds.length === 0) {
-      stdout.write(`No open holds under ${defaultHoldsDirectory(env)}
-`);
-      return 0;
-    }
-    for (const hold of holds) {
+    for (const hold of enumeration.holds) {
       const { record } = hold;
       stdout.write(
-        `${record.hold_id}	${hold.live ? "live" : "orphaned"}	raised ${record.raised_at}${record.timeout_at !== null ? `	times out ${record.timeout_at}` : ""}
+        `${record.hold_id}	scope ${record.scope ?? "(shared)"}	raised ${record.raised_at}${record.timeout_at !== null ? `	times out ${record.timeout_at}` : ""}
 `
       );
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
@@ -28482,7 +28736,7 @@ async function runEnsembleCli(argv, options = {}) {
       }
     });
   } catch (error) {
-    stderr.write(`${formatError3(error)}
+    stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
 `);
     return 2;
   }
@@ -28499,15 +28753,17 @@ async function runEnsembleCli(argv, options = {}) {
   const sentinel = new CompletionSentinel();
   let interrupt = null;
   const reportSentinelError = (error) => {
-    stderr.write(`[sentinel] ${formatError3(error)}
+    stderr.write(`[sentinel] ${formatError2(error)}
 `);
   };
   let exitCode = 1;
   try {
     const prepared = await prepareRun(invocation, cwd);
+    const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
+      ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
@@ -28552,7 +28808,7 @@ async function runEnsembleCli(argv, options = {}) {
         progress,
         dir: statusDir,
         onError: (error) => {
-          stderr.write(`[status] failed to write progress snapshot: ${formatError3(error)}
+          stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
 `);
         }
       });
@@ -28632,7 +28888,7 @@ async function runEnsembleCli(argv, options = {}) {
         try {
           await runRecordWriter?.recordWorkflowInvocation({ ...invocation2, parentOrdinal: 0 });
         } catch (error) {
-          stderr.write(`[run-record] failed to archive a workflow invocation: ${formatError3(error)}
+          stderr.write(`[run-record] failed to archive a workflow invocation: ${formatError2(error)}
 `);
         }
       }
@@ -28668,7 +28924,7 @@ async function runEnsembleCli(argv, options = {}) {
       archiveDir: runRecordWriter?.archiveDir ?? null,
       lastAgentRecord: runtime?.lastAgentRecord?.() ?? null
     });
-    stderr.write(`${diagnosis ?? formatError3(error)}
+    stderr.write(`${diagnosis ?? formatError2(error)}
 `);
     exitCode = 1;
   } finally {
@@ -28688,7 +28944,7 @@ async function runEnsembleCli(argv, options = {}) {
         }
       } catch (error) {
         teardownError = describeError(error);
-        stderr.write(`[teardown] the run failed to end cleanly: ${formatError3(error)}
+        stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
       try {
@@ -28701,7 +28957,7 @@ async function runEnsembleCli(argv, options = {}) {
         }
       } catch (error) {
         teardownError ??= describeError(error);
-        stderr.write(`[teardown] the archive failed to seal: ${formatError3(error)}
+        stderr.write(`[teardown] the archive failed to seal: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
     } finally {
@@ -28896,7 +29152,8 @@ async function parseWorkflowInvocation(argv, cwd) {
         concurrency: { type: "string", multiple: true },
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
-        "caller-identity": { type: "string" }
+        "caller-identity": { type: "string" },
+        "hold-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -28914,6 +29171,7 @@ async function parseWorkflowInvocation(argv, cwd) {
   const timeoutMs = parseTimeoutMs(parsed.values.timeout);
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
+  const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -28924,7 +29182,8 @@ async function parseWorkflowInvocation(argv, cwd) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
-    ...callerIdentity !== void 0 ? { callerIdentity } : {}
+    ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
@@ -28963,6 +29222,7 @@ async function parseAgentInvocation(argv, cwd, stdin) {
   const maxAttempts = parseMaxAttempts(parsed.values["max-attempts"]);
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
+  const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -28986,7 +29246,8 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     ...agentCeiling !== void 0 ? { agentCeiling } : {},
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
-    ...callerIdentity !== void 0 ? { callerIdentity } : {}
+    ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
 async function readPrompt(stdin) {
@@ -29075,6 +29336,11 @@ function rejectMisplacedAgentTuningFlags(argv) {
     if (promptSeen && (isKnownOption(value) || isKnownInlineOption(value))) {
       throw new CliUsageError(`Tuning flag ${value} appears after the agent prompt; put tuning flags before the prompt`);
     }
+    if (promptSeen && (isKnownAgentOption(value) || isKnownInlineAgentOption(value))) {
+      throw new CliUsageError(
+        `Flag ${value} appears after the agent prompt; put flags before the prompt, or put \`--\` before a dash-leading prompt`
+      );
+    }
     if (isKnownInlineOption(value) || isBooleanAgentFlag(value)) {
       continue;
     }
@@ -29116,6 +29382,12 @@ function isRepeatableOption(flag) {
 function isKnownAgentOption(value) {
   return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
 }
+function isKnownInlineAgentOption(value) {
+  if (!value.startsWith("--") || !value.includes("=")) {
+    return false;
+  }
+  return Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2, value.indexOf("=")));
+}
 function isBooleanAgentFlag(value) {
   if (!isKnownAgentOption(value)) {
     return false;
@@ -29124,10 +29396,10 @@ function isBooleanAgentFlag(value) {
   return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -29243,6 +29515,15 @@ function parseCallerIdentity(value) {
   }
   return value;
 }
+function parseHoldScope(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  if (value.trim().length === 0) {
+    throw new CliUsageError("--hold-scope must be a non-empty string");
+  }
+  return value;
+}
 function resolveCallerIdentity(flag, env) {
   if (flag !== void 0) {
     return flag;
@@ -29266,13 +29547,13 @@ function announceRunRecord(writer, stderr) {
 }
 function usage() {
   return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] <script.js> [args...]",
+    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
     "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>]",
+    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
-    "       ensemble holds [--json]",
+    "       ensemble holds [--json] [--scope <scope> | --all]",
     ""
   ].join("\n");
 }
@@ -29284,7 +29565,7 @@ function serialiseResult(result) {
     return "null";
   }
 }
-function formatError3(error) {
+function formatError2(error) {
   if (error instanceof CliUsageError) {
     return error.message;
   }

@@ -218,15 +218,40 @@ async function codexThreadConfig(
   };
 }
 
-async function discoveredCodexSkillNames(transport: RuntimeTransport, cwd: string | undefined): Promise<readonly string[]> {
-  if (transport.listSkills === undefined) {
+/**
+ * Discovery results cached per (transport, cwd) for the transport's — and
+ * so the run's — life: the stabilisation loop is seconds of wall-clock paid
+ * inside a held admission slot, and retries, sibling dispatches, and thread
+ * re-opens must not re-pay it. A failed discovery clears its entry so the
+ * next dispatch retries rather than inheriting the failure for ever; the
+ * WeakMap keys on the transport instance, so a fresh run's transport never
+ * sees a predecessor's set.
+ */
+const codexSkillDiscoveryCache = new WeakMap<RuntimeTransport, Map<string, Promise<readonly string[]>>>();
+
+function discoveredCodexSkillNames(transport: RuntimeTransport, cwd: string | undefined): Promise<readonly string[]> {
+  const listSkills = transport.listSkills;
+  if (listSkills === undefined) {
     throw new CapabilityStripUnsupportedError(
       "codex",
       "skills",
       "the transport cannot retrieve the app-server's stabilised skill discovery result"
     );
   }
-  return transport.listSkills(cwd);
+  let byCwd = codexSkillDiscoveryCache.get(transport);
+  if (byCwd === undefined) {
+    byCwd = new Map();
+    codexSkillDiscoveryCache.set(transport, byCwd);
+  }
+  const key = cwd ?? "";
+  const cached = byCwd.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const discovery = listSkills.call(transport, cwd);
+  byCwd.set(key, discovery);
+  discovery.catch(() => byCwd.delete(key));
+  return discovery;
 }
 
 export class CodexEngineAdapter implements EngineAdapter {
@@ -245,16 +270,24 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   against a real worker is what re-checks this judgement per release.
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
-   *   growing filesystem-and-plugin set and then repeat it. This rejects a
-   *   repeated cold state rather than mistaking it for complete discovery;
-   *   bundled skills are disabled and every accepted name gets an exact
-   *   `skills.config` deny.
+   *   growing filesystem-and-plugin set and then repeat it (sampled up to
+   *   10 times at 1000 ms spacing by default; the transport's discovery
+   *   deadline, checked between samples, stops the loop once its elapsed
+   *   budget is spent — each call itself is bounded by the request
+   *   timeout). This rejects a repeated cold state
+   *   rather than mistaking it for complete discovery; bundled skills are
+   *   disabled and every accepted name gets an exact `skills.config` deny.
+   *   Discovery has no protocol-level completion signal — the
+   *   grow-then-repeat heuristic is a measured judgement of one release's
+   *   timing, so **re-verify it on every codex-cli upgrade**: a future
+   *   multi-stage or slower-than-interval discovery would stabilise early
+   *   and silently under-strip.
    */
   readonly capabilities: EngineCapabilityTable = {
     skills: {
       route: "config",
       detail:
-        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
     },
     agents: {
       route: "config",

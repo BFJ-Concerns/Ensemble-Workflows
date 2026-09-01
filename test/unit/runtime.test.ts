@@ -305,7 +305,7 @@ test("identity: true resolves the identified envelope; default resolution is unc
     phase: "hunt",
     identity: true
   });
-  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" } });
+  assert.deepEqual(identified, { label: "finder", phase: "hunt", output: { answer: "yes" }, failure: null });
 
   const bare = await runtime.agent("go", { engine: "codex", schema });
   assert.deepEqual(bare, { answer: "yes" });
@@ -314,15 +314,26 @@ test("identity: true resolves the identified envelope; default resolution is unc
 test("an identified schema collapse still carries the worker's identity", async () => {
   // The envelope wraps every resolution, the null collapse included — the
   // fan-in filtering idiom under identity is on `output`, and a failed leg
-  // keeps saying which worker it was.
+  // keeps saying which worker it was. The discrimination: this
+  // exhausted collapse carries a non-null `failure`, so it can never be
+  // mistaken in-script for a worker legitimately answering null.
   const runtime = new EnsembleRuntime({
     transport: new FakeTransport([turn("not json")]),
     concurrencyCaps: { codex: 1 },
     defaultMaxAttempts: 1
   });
 
-  const collapsed = await runtime.agent("go", { engine: "codex", schema, label: "verifier", identity: true });
-  assert.deepEqual(collapsed, { label: "verifier", phase: null, output: null });
+  const collapsed = (await runtime.agent("go", {
+    engine: "codex",
+    schema,
+    label: "verifier",
+    identity: true
+  })) as { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null };
+  assert.equal(collapsed.label, "verifier");
+  assert.equal(collapsed.phase, null);
+  assert.equal(collapsed.output, null);
+  assert.ok(collapsed.failure !== null, "an exhausted collapse must carry its failure");
+  assert.ok(collapsed.failure.message.length > 0);
 });
 
 test("a non-boolean identity value is rejected before any worker spawns", async () => {
@@ -1997,10 +2008,57 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
         }
       }
     });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("codex skill discovery is paid once per transport and cwd, not per stripped dispatch", async () => {
+  // The stabilisation loop is seconds of wall-clock inside a held admission
+  // slot: sibling stripped dispatches, retries, and thread re-opens read
+  // the cached result rather than re-paying it. Pre-fix, each dispatch ran
+  // its own discovery.
+  const transport = new FakeTransport([turn("one"), turn("two")], ["repo-skill"]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  try {
+    await runtime.agent("first stripped", { engine: "codex", strip: ["skills"] });
+    await runtime.agent("second stripped", { engine: "codex", strip: ["skills"] });
+    assert.equal(transport.discoveredSkillCwds.length, 1);
+    // Both dispatches still carry the complete overlay.
+    for (const opened of transport.openedThreads) {
+      assert.deepEqual(opened.threadConfig, {
+        skills: { bundled: { enabled: false }, config: [{ name: "repo-skill", enabled: false }] }
+      });
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a codex session under a skills strip pays discovery once across its turns", async () => {
+  const transport = new FakeTransport([turn("one"), turn("two")], ["repo-skill"]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  try {
+    const session = runtime.createWorkerSession({ engine: "codex", strip: ["skills"] });
+    await session.send("first turn");
+    await session.send("second turn");
+    assert.equal(transport.discoveredSkillCwds.length, 1, "one discovery serves the session's whole life");
+    assert.deepEqual(transport.openedThreads[0]?.threadConfig, {
+      skills: { bundled: { enabled: false }, config: [{ name: "repo-skill", enabled: false }] }
+    });
+    await session.close();
   } finally {
     await runtime.close();
   }
@@ -2107,10 +2165,40 @@ test("fallbackModel is rejected on the Codex engine before any worker spawns", a
   assert.equal(transport.openedThreads.length, 0);
 });
 
+test("a non-Error rejection cannot shed an identified leg's discrimination", async () => {
+  // Promises may reject with any value; the identity carrier is a property
+  // on an Error, so agent() wraps a non-Error rejection rather than let the
+  // rejection's spelling reopen the silent-empty-success case.
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: () => Promise.reject("string rejection, not an Error")
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1
+  });
+
+  const results = await parallel<unknown>(
+    [() => runtime.agent("fail oddly", { engine: "claude", identity: true, label: "verify" })],
+    () => undefined
+  );
+  const [identified] = results as [{ label: string | null; output: unknown; failure: { message: string } | null }];
+  assert.equal(identified.label, "verify");
+  assert.equal(identified.output, null);
+  assert.ok(identified.failure !== null, "the wrapped rejection still carries the discrimination");
+  assert.match(identified.failure.message, /string rejection, not an Error/);
+});
+
 test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
-  // agent() attaches the call's declared identity to the operational
-  // failure it throws, and the combinator's collapse resolves the
-  // envelope. An unidentified sibling still collapses to bare null.
+  // An identified operational failure resolves to an envelope carrying
+  // the call's identity and failure account. parallel() preserves that
+  // value; the unidentified sibling resolves to bare null.
   const engine: EngineAdapter = {
     name: "claude",
     concurrency: 2,
@@ -2136,7 +2224,16 @@ test("an identified operational failure inside parallel resolves its envelope, n
     () => undefined
   );
 
-  assert.deepEqual(results, [{ label: "verify", phase: "check", output: null }, null]);
+  const [identified, bare] = results as [
+    { label: string | null; phase: string | null; output: unknown; failure: { message: string } | null },
+    unknown
+  ];
+  assert.equal(bare, null);
+  assert.equal(identified.label, "verify");
+  assert.equal(identified.phase, "check");
+  assert.equal(identified.output, null);
+  assert.ok(identified.failure !== null, "a collapsed identified leg must carry its failure");
+  assert.ok(identified.failure.message.length > 0);
 });
 
 test("an engine-reported attempt duration is recorded as the engine measured it", async () => {

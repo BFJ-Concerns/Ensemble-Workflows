@@ -2008,10 +2008,57 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope"
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
         }
       }
     });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("codex skill discovery is paid once per transport and cwd, not per stripped dispatch", async () => {
+  // The stabilisation loop is seconds of wall-clock inside a held admission
+  // slot: sibling stripped dispatches, retries, and thread re-opens read
+  // the cached result rather than re-paying it. Pre-fix, each dispatch ran
+  // its own discovery.
+  const transport = new FakeTransport([turn("one"), turn("two")], ["repo-skill"]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  try {
+    await runtime.agent("first stripped", { engine: "codex", strip: ["skills"] });
+    await runtime.agent("second stripped", { engine: "codex", strip: ["skills"] });
+    assert.equal(transport.discoveredSkillCwds.length, 1);
+    // Both dispatches still carry the complete overlay.
+    for (const opened of transport.openedThreads) {
+      assert.deepEqual(opened.threadConfig, {
+        skills: { bundled: { enabled: false }, config: [{ name: "repo-skill", enabled: false }] }
+      });
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a codex session under a skills strip pays discovery once across its turns", async () => {
+  const transport = new FakeTransport([turn("one"), turn("two")], ["repo-skill"]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  try {
+    const session = runtime.createWorkerSession({ engine: "codex", strip: ["skills"] });
+    await session.send("first turn");
+    await session.send("second turn");
+    assert.equal(transport.discoveredSkillCwds.length, 1, "one discovery serves the session's whole life");
+    assert.deepEqual(transport.openedThreads[0]?.threadConfig, {
+      skills: { bundled: { enabled: false }, config: [{ name: "repo-skill", enabled: false }] }
+    });
+    await session.close();
   } finally {
     await runtime.close();
   }
@@ -2119,9 +2166,9 @@ test("fallbackModel is rejected on the Codex engine before any worker spawns", a
 });
 
 test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
-  // agent() attaches the call's declared identity to the operational
-  // failure it throws, and the combinator's collapse resolves the
-  // envelope. An unidentified sibling still collapses to bare null.
+  // An identified operational failure resolves to an envelope carrying
+  // the call's identity and failure account. parallel() preserves that
+  // value; the unidentified sibling resolves to bare null.
   const engine: EngineAdapter = {
     name: "claude",
     concurrency: 2,

@@ -112,6 +112,14 @@ const DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
 const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 const SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1_000;
 const MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
+/**
+ * Aggregate wall-clock bound on one discovery: the sampling loop's own
+ * attempt cap bounds the call count, and this bounds the elapsed time even
+ * when individual calls run long — discovery is paid inside a held
+ * admission slot, so an unbounded stabilisation wait would hold that slot
+ * hostage.
+ */
+const SKILL_DISCOVERY_DEADLINE_MS = 30_000;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -133,6 +141,8 @@ export interface CodexAppServerTransportOptions {
   onEvent?: (event: RuntimeEvent) => void;
   /** Test seam for discovery's deliberately time-spaced cold-start sampling. */
   skillDiscoveryStabilityIntervalMs?: number;
+  /** Aggregate wall-clock bound on one discovery's whole sampling loop. */
+  skillDiscoveryDeadlineMs?: number;
 }
 
 /**
@@ -207,6 +217,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #firstOutputTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #skillDiscoveryStabilityIntervalMs: number;
+  #skillDiscoveryDeadlineMs: number;
   #nextId = 0;
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
@@ -225,6 +236,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#skillDiscoveryStabilityIntervalMs =
       options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
+    this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
     this.#onEvent = options.onEvent;
     this.#process = spawn(options.codexBin, ["app-server"], {
       cwd: options.cwd,
@@ -312,6 +324,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {
+    const startedAt = Date.now();
     let previousNames: readonly string[] | undefined;
     let observedExpansion = false;
     for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
@@ -330,6 +343,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
         }
       }
       previousNames = names;
+      if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
+        // The attempt cap bounds calls; this bounds elapsed time when the
+        // calls themselves run long. Failing loud keeps the strip contract:
+        // a deadline can never dispatch a partial deny overlay.
+        throw new AppServerRequestError("skills/list", {
+          code: "discovery_deadline",
+          message: `skill discovery exceeded its ${this.#skillDiscoveryDeadlineMs}ms aggregate bound before stabilising`
+        });
+      }
       if (attempt < MAX_SKILL_DISCOVERY_ATTEMPTS) {
         await new Promise((resolve) => setTimeout(resolve, this.#skillDiscoveryStabilityIntervalMs));
       }

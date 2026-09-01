@@ -473,7 +473,13 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   when, and by which run — for a record a killed run left `"in-progress"`.
 - `termination_cause`: the `{ kind, message }` that settled this agent at that
   status when the runtime decided it — a run that ended under the worker, or a
-  turn timeout — and `null` when the attempts already name the cause.
+  deadline the runtime enforced — and `null` when the attempts already name the
+  cause. Two deadline kinds are distinguished, because they fail for different
+  reasons: `"turn-timeout"` is the per-agent turn deadline expiring, meaning the
+  worker was still going when its own time ran out; `"request-timeout"` is a
+  transport request deadline expiring, meaning the engine never answered a
+  request the client had sent. A consumer telling one from the other is telling
+  a slow worker from an unresponsive engine.
 - `schema`: requested JSON Schema for schema agents, otherwise `null`.
 - `strip`: requested capability names and resolved enforcement routes.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.

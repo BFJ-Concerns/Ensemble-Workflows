@@ -17,8 +17,42 @@ export interface ProcessResult {
  * archives and schema caches to the machine's real store — the exact
  * pollution the runner's per-run temp store exists to prevent. A test that
  * needs to escape them overrides explicitly (undefined removes the key).
+ * The runner's nesting depth is likewise exempt: stripping it would reset
+ * the runner's recursion cap at every estate spawn, disarming the guard
+ * exactly where a recursive spawn storm would pass through it.
  */
-const SUITE_ISOLATION_KEYS = ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY"];
+const SUITE_ISOLATION_KEYS = [
+  "ENSEMBLE_RUN_RECORD_DIR",
+  "ENSEMBLE_CODEX_SCHEMA_CACHE_DIRECTORY",
+  "ENSEMBLE_SUITE_RUNNER_DEPTH"
+];
+
+/**
+ * Set by every test that spawns scripts/run-test-suite.mjs, in the
+ * environment of that spawn, naming the spawning test file. The runner
+ * hands its whole environment to its test child, so if a spawned suite
+ * ever resolves to more than its intended leaf test — the recursive
+ * failure mode, e.g. a runner version that ignores its test-path argument
+ * and runs the full glob — the nested copy of the spawning test finds the
+ * marker in its own environment and refuses before spawning anything.
+ * That cuts the recursion at generation two regardless of which runner
+ * version sits in between, where the runner's own depth cap cannot reach.
+ */
+export const SUITE_SPAWNING_TEST_MARKER = "ENSEMBLE_SUITE_SPAWNING_TEST";
+
+/**
+ * Called at the top of every runner-spawning test body, before any spawn.
+ * Fails the nested test instance loudly instead of letting it multiply
+ * process trees; unbounded, that multiplication has hard-wedged the host.
+ */
+export function assertNotInsideSuiteSpawningTest(): void {
+  const spawner = process.env[SUITE_SPAWNING_TEST_MARKER];
+  assert.equal(
+    spawner,
+    undefined,
+    `refusing to run a suite-spawning test inside a suite already spawned by ${spawner}: the child suite resolved to more than its intended leaf test, which is the head of a recursive spawn storm`
+  );
+}
 
 /**
  * The child environment every gate-run estate spawn runs under: the

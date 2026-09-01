@@ -199,9 +199,10 @@ test("operator diagnostics strip 7-bit terminal controls while UTF-8 renders a C
   // eslint-disable-next-line no-control-regex -- the assertion proves the 7-bit escape bytes are absent.
   assert.doesNotMatch(rendered, /\u001b\[/);
   assert.match(rendered, /before red after \u009b31mC1/);
-  // U+009B is encoded as UTF-8 text, not emitted as a lone 0x9B C1 byte for
-  // a UTF-8 terminal to interpret as CSI.
-  assert.deepEqual([...Buffer.from("\u009b", "utf8")], [0xc2, 0x9b]);
+  // The rendered diagnostic emits U+009B in UTF-8, not as a lone 0x9B C1
+  // byte for a UTF-8 terminal to interpret as CSI.
+  const renderedBytes = Buffer.from(rendered, "utf8");
+  assert.deepEqual([...renderedBytes.subarray(-13)], [0x61, 0x66, 0x74, 0x65, 0x72, 0x20, 0xc2, 0x9b, 0x33, 0x31, 0x6d, 0x43, 0x31]);
 });
 
 test("a teardown-time engine shutdown is attributed to the run ending, not the author's call", () => {

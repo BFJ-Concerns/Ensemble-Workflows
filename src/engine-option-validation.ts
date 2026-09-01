@@ -3,6 +3,7 @@ import {
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
+  UnreadableAgentOptionError,
   UnrecognisedAgentOptionError
 } from "./errors.js";
 import { assertValidStripOption } from "./capability-stripping.js";
@@ -86,15 +87,26 @@ export function assertValidAgentOptions(options: object): void {
   assertPositiveIntegerOption(values, "maxAttempts");
   // Judged here, with the other option values, because everything downstream
   // reads `cwd` rather than checking it: `resolveAgentCwd` hands it straight
-  // to `path.resolve`, which touches the value to report it. A non-string —
-  // an object with a throwing getter, a Proxy whose traps throw — therefore
-  // raises whatever it likes from inside the placement check, escaping the
-  // named-rejection discipline every other bad option value follows and
-  // taking the agent record with it: the throw lands before the call is
-  // queued, so the run archives with no `agents/` directory at all and an
-  // operator-facing error that describes nothing.
-  if (values.cwd !== undefined && typeof values.cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  // to `path.resolve`, which touches the value to report it. Two ways the
+  // value defeats that, and both end as a named rejection here. The read
+  // itself can throw — a getter or Proxy trap on the options object — in
+  // which case the author's own error escapes from inside the placement
+  // check as the call's whole outcome, describing nothing and naming no
+  // option; the value is read once, here, so that throw is caught where the
+  // option it belongs to is still known. And a value that reads back as a
+  // non-string reaches `path.resolve`, which raises its own type error from
+  // the same place. Both are pre-spawn author errors like any other rejected
+  // option value, and the judgement runs on the single snapshot rather than
+  // re-reading, so a value that answers differently each time cannot be
+  // judged as one thing and used as another.
+  let cwd: unknown;
+  try {
+    cwd = values.cwd;
+  } catch (error) {
+    throw new UnreadableAgentOptionError("cwd", "a string path", error);
+  }
+  if (cwd !== undefined && typeof cwd !== "string") {
+    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
   }
   if (values.identity !== undefined && typeof values.identity !== "boolean") {
     throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");

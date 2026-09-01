@@ -1265,6 +1265,48 @@ test("a cwd that refuses to describe itself is rejected by name, not by its own 
   assert.equal(transport.turns.length, 0);
 });
 
+test("a cwd whose property access throws is rejected by name, not by the author's own error", async () => {
+  const transport = new FakeTransport([turn("unused")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  // The reproduction as it actually occurs: not a hostile *value* but an
+  // options object that refuses the read. Nothing downstream checks `cwd`
+  // before using it, so without a named rejection this error escapes from
+  // inside the placement check as the call's entire outcome — naming no
+  // option, and reaching the operator and the archive's terminal error as
+  // whatever the workflow's object chose to raise.
+  const options: Record<string, unknown> = { engine: "codex" };
+  const refusal = new Error("cwd getter witness");
+  Object.defineProperty(options, "cwd", {
+    enumerable: true,
+    get() {
+      throw refusal;
+    }
+  });
+
+  await assert.rejects(
+    () => unsafeAgent("never starts", options),
+    (error: unknown) => {
+      assert.ok(error instanceof AgentOptionRejectedError);
+      assert.match(error.message, /option "cwd"/);
+      assert.match(error.message, /reading its value threw/);
+      assert.match(error.message, /expected a string path/);
+      assert.equal((error as Error).cause, refusal);
+      return true;
+    }
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  assert.equal(transport.turns.length, 0);
+});
+
 test("an invalid isolation value fails before a Codex thread opens", async () => {
   const transport = new FakeTransport([turn("unused")]);
   const runtime = new EnsembleRuntime({

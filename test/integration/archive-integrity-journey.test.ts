@@ -11,6 +11,7 @@ import { findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-proce
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
+const archivedAgentsConsumerPath = path.resolve("test/consumers/read-archived-agents.mjs");
 test("a sealed archive attests itself and its sentinel attests it back", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archive-attested-"));
   const store = path.join(directory, "records");
@@ -243,10 +244,22 @@ test("an archive whose agent records are gone fails verification, named", async 
 
   try {
     await mkdir(unplaceable);
+    // Two records, because the sibling consumer below discovers records by
+    // walking the store: with only one, removing it leaves nothing to walk
+    // and the failure would come from that consumer's pre-existing "expected
+    // at least one agent.json" assertion rather than from the manifest
+    // comparison under test.
     await writeFile(
       workflowPath,
       `export const meta = { name: "agent-records" };\n` +
-        `return await agent("unreachable", ${JSON.stringify({ engine: "codex", isolation: "worktree", cwd: unplaceable, maxAttempts: 1 })});\n`
+        `for (const attempt of ["first", "second"]) {\n` +
+        `  try {\n` +
+        `    await agent(attempt, ${JSON.stringify({ engine: "codex", isolation: "worktree", cwd: unplaceable, maxAttempts: 1 })});\n` +
+        `  } catch (error) {\n` +
+        `    if (attempt === "second") throw error;\n` +
+        `  }\n` +
+        `}\n` +
+        `return "unreached";\n`
     );
     const run = await runNode([bundledCliPath, workflowPath], { ENSEMBLE_RUN_RECORD_DIR: store });
     assert.notEqual(run.code, 0);
@@ -258,7 +271,9 @@ test("an archive whose agent records are gone fails verification, named", async 
 
     const sound = await readArchiveIntegrity(archiveDir);
     assert.equal(sound.manifestVerified, true);
-    assert.equal(sound.agentRecordsVerified, 1);
+    assert.equal(sound.agentRecordsVerified, 2);
+    const soundAgents = await runNode([archivedAgentsConsumerPath, store]);
+    assert.equal(soundAgents.code, 0, soundAgents.stderr);
 
     // Removed outright: the manifest still names the record, so verification
     // must fail on the record's absence rather than on whichever read faults
@@ -285,6 +300,16 @@ test("an archive whose agent records are gone fails verification, named", async 
     const excused = await runNode([consumerPath, archiveDir]);
     assert.notEqual(excused.code, 0);
     assert.match(excused.stderr, new RegExp(`agent record ${recordPath} is named by the manifest but recorded lost`));
+
+    // The same laundered archive read by the other consumer model, which
+    // reaches the archive by walking the store rather than by being handed
+    // one. Its own copy of the comparison has to catch this independently:
+    // the surviving record satisfies every shape assertion it makes, so
+    // without the manifest comparison it reports a clean read of a run whose
+    // records are half gone.
+    const walkedAgents = await runNode([archivedAgentsConsumerPath, store]);
+    assert.notEqual(walkedAgents.code, 0);
+    assert.match(walkedAgents.stderr, new RegExp(`agent record ${recordPath} is named by .* but recorded lost`));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -1045,7 +1045,7 @@ test("built CLI keeps the complete engine map and gives mapped flags their own i
       const rejected = await fixture.runArgs([`${flag}=unknown=1`, fixture.script]);
       assert.equal(rejected.code, 2);
       assert.equal(rejected.stdout, "");
-      assert.equal(rejected.stderr, `${flag} engine must be codex, claude, or opencode, got unknown\n`);
+      assert.equal(rejected.stderr, `${flag} engine must be codex, claude, or opencode; got unknown\n`);
     }
   } finally {
     await fixture.cleanup();

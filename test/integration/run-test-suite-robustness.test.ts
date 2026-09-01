@@ -72,13 +72,17 @@ test("suite runner does not mistake a non-SGR CSI sequence for an empty-suite su
 
 test("suite runner reports a seeded hold assertion failure instead of hanging on its poll", async () => {
   assertNotInsideSuiteSpawningTest();
-  const run = startSuiteProgram(failedHoldTestPath);
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-seeded-hold-estate-"));
+  const cleanupMarker = path.join(directory, "published-and-rejected");
+  const run = startSuiteProgram(failedHoldTestPath, { ENSEMBLE_FAILED_HOLD_CLEANUP_MARKER: cleanupMarker });
   try {
     const result = await awaitCompletion(run.completed, "runner hung after the seeded hold assertion failure");
     assert.equal(result.code, 1, result.output);
     assert.match(result.output, /seeded assertion failure/);
+    await access(cleanupMarker);
   } finally {
     await stopSuite(run);
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

@@ -176,11 +176,13 @@ test("close() abandons open holds: the wait rejects and the file is removed", as
     const events: RuntimeEvent[] = [];
     const holds = manager(dir, events);
     const decision = holds.raise({ content: "left open at run end", verdicts: ["ok"] });
-    await publishedHold(dir);
+    const record = await publishedHold(dir);
 
     const rejected = assert.rejects(decision, HoldRejectedError);
     holds.close();
-    await rejected;
+    await requireRejectionWithin(rejected, "close() did not reject the open hold", async () => {
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "ok" }));
+    });
     assert.deepEqual((await enumerateHolds(dir)).holds, []);
     await assert.rejects(holds.raise({ content: "too late", verdicts: ["ok"] }), HoldRejectedError);
   });
@@ -246,10 +248,37 @@ test("holds publish under their launcher-supplied scope, and the two listing con
     } finally {
       leadA.close();
       shared.close();
-      await abandoned;
+      await requireRejectionWithin(abandoned, "close() did not reject the scoped open holds", async () => {
+        const { holds } = await enumerateHolds(dir);
+        await Promise.all(
+          holds.map(({ record }) => writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: record.verdicts[0] })))
+        );
+      });
     }
   });
 });
+
+async function requireRejectionWithin(
+  expected: Promise<unknown>,
+  message: string,
+  releaseForTeardown: () => Promise<void>
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      expected,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${message} within 500ms`)), 500);
+      })
+    ]);
+  } catch (error) {
+    await releaseForTeardown();
+    await expected.catch(() => undefined);
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 test("the scope resolves explicit-over-environment, and neither means the shared scope", () => {
   assert.equal(resolveHoldScope("flag-scope", { ENSEMBLE_HOLD_SCOPE: "env-scope" }), "flag-scope");

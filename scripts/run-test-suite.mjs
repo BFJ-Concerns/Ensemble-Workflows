@@ -217,8 +217,11 @@ async function recoverFinishedSuites(directory) {
             // named in its hand-off identity is dead: age bounds a leak, but
             // cannot distinguish a slow live wrapper from an abandoned one.
             const handoffParentProcess = handoffParentProcessId(entry.name);
+            await waitForTestHandoffAgePause(suiteDirectory);
+            const age = await directoryAgeMilliseconds(suiteDirectory);
             if (
-              await directoryAgeMilliseconds(suiteDirectory) > unstampedHandoffRetentionMilliseconds &&
+              age !== null &&
+              age > unstampedHandoffRetentionMilliseconds &&
               (handoffParentProcess === null || await processIsDead(handoffParentProcess))
             ) {
               await rm(suiteDirectory, { recursive: true, force: true });
@@ -263,8 +266,32 @@ async function recoverSuiteNamespace(namespace) {
 }
 
 async function directoryAgeMilliseconds(directory) {
-  const { mtimeMs } = await stat(directory);
-  return Date.now() - mtimeMs;
+  try {
+    const { mtimeMs } = await stat(directory);
+    return Date.now() - mtimeMs;
+  } catch (error) {
+    // The scan selected this hand-off from readdir(), but a concurrent
+    // recovery can remove it before its age is read. Absence is then already
+    // the desired terminal state; other stat failures remain operational.
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function waitForTestHandoffAgePause(directory) {
+  const pausePath = process.env.ENSEMBLE_SUITE_TEST_PAUSE_BEFORE_HANDOFF_AGE_PATH;
+  if (pausePath === undefined) return;
+  await writeFile(`${pausePath}.ready`, `${directory}\n`);
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(pausePath);
+      return;
+    } catch {
+      await delay(10);
+    }
+  }
+  throw new Error("timed out waiting for the suite hand-off age test pause");
 }
 
 function pendingSuitePrefix(parentProcess) {

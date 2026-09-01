@@ -21443,7 +21443,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = null;
+    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
   async #runAgent(engine, prompt, options, agentId, agentRecord) {
     const placement = await this.#placement.open(options);
@@ -21863,12 +21863,53 @@ function recordOperationalFailure(record, attempt, startedAtMs, result) {
 function failureFromError(error) {
   return describeError(error);
 }
-function settledFailureMessage(record) {
+function attemptedFailureAccount(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
     const failure = record.attempts[index]?.failure;
     if (failure !== void 0 && failure !== null) {
-      return `${failure.kind}: ${failure.message}`;
+      return failure;
     }
+  }
+  return null;
+}
+function failedWithoutAttemptCause(error) {
+  if (error === null || error === void 0) {
+    return unavailableCause("no error was reported to the runtime");
+  }
+  const described = describedRejection(error);
+  if (described === null) {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+  }
+  if (described.message.trim() === "") {
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+  }
+  return described;
+}
+function unavailableCause(reason) {
+  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+}
+function describedRejection(error) {
+  try {
+    const described = failureFromError(error);
+    return described.message === "[object Object]" ? null : described;
+  } catch {
+    return null;
+  }
+}
+function rejectionShape(error) {
+  try {
+    if (error instanceof Error) {
+      return String(error.name);
+    }
+  } catch {
+    return "an undescribable value";
+  }
+  return `a value of type ${typeof error}`;
+}
+function settledFailureMessage(record) {
+  const attempted = attemptedFailureAccount(record);
+  if (attempted !== null) {
+    return `${attempted.kind}: ${attempted.message}`;
   }
   return record.terminationCause !== null ? `${record.terminationCause.kind}: ${record.terminationCause.message}` : "the agent failed without a recorded cause";
 }
@@ -29363,7 +29404,7 @@ function parseIsolation(value) {
     return void 0;
   }
   if (value !== "worktree") {
-    throw new CliUsageError(`--isolation must be worktree, got ${value}`);
+    throw new CliUsageError(`--isolation must be worktree; got ${value}`);
   }
   return value;
 }
@@ -29555,19 +29596,19 @@ function parseEngineName(value, flagName) {
   if (flagName === "--engine") {
     throw new CliUsageError(`${flagName} must be codex, claude, or opencode; got ${value}`);
   }
-  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode, got ${value}`);
+  throw new CliUsageError(`${flagName} engine must be codex, claude, or opencode; got ${value}`);
 }
 function parseBudgetCeiling(value) {
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 0) {
-    throw new CliUsageError(`--budget value must be a non-negative integer, got ${value}`);
+    throw new CliUsageError(`--budget value must be a non-negative integer; got ${value}`);
   }
   return ceiling;
 }
 function parseConcurrencyCap(value) {
   const cap = Number(value);
   if (!Number.isInteger(cap) || cap < 1) {
-    throw new CliUsageError(`--concurrency value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--concurrency value must be a positive integer; got ${value}`);
   }
   return cap;
 }
@@ -29580,7 +29621,7 @@ function parseAgentCeiling(value) {
   }
   const ceiling = Number(value);
   if (!Number.isInteger(ceiling) || ceiling < 1) {
-    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null, got ${value}`);
+    throw new CliUsageError(`--agent-ceiling value must be a positive integer or null; got ${value}`);
   }
   return ceiling;
 }
@@ -29590,10 +29631,10 @@ function parseTimeoutMs(value) {
   }
   const timeoutMs = Number(value);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
-    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be a positive integer of milliseconds; got ${value}`);
   }
   if (timeoutMs > MAX_TIMER_DELAY_MS) {
-    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds, got ${value}`);
+    throw new CliUsageError(`--timeout value must be at most ${MAX_TIMER_DELAY_MS} milliseconds; got ${value}`);
   }
   return timeoutMs;
 }
@@ -29603,7 +29644,7 @@ function parseMaxAttempts(value) {
   }
   const maxAttempts = Number(value);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new CliUsageError(`--max-attempts value must be a positive integer, got ${value}`);
+    throw new CliUsageError(`--max-attempts value must be a positive integer; got ${value}`);
   }
   return maxAttempts;
 }

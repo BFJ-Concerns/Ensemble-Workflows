@@ -1061,6 +1061,14 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
       assert.equal(result.text, "hello");
       assert.ok(result.transcripts?.[0]?.content.includes("turn/completed"));
       assert.ok(result.transcripts?.[0]?.content.includes(prompt));
+      if (prompt === "third turn") {
+        // The third turn is the regression boundary: a buffer retained from
+        // either earlier turn still gives it a plausible transcript, so count
+        // and identity checks alone would miss the leak. The final app-server
+        // consumer must see only the third turn's own protocol traffic.
+        assert.doesNotMatch(result.transcripts?.[0]?.content ?? "", /first turn/);
+        assert.doesNotMatch(result.transcripts?.[0]?.content ?? "", /second turn/);
+      }
       assert.equal(transport.openTranscripts(), 0);
       results.push(result);
     }

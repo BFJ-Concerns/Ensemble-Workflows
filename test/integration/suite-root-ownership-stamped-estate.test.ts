@@ -28,6 +28,14 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
     await runAndRequireClean(temporaryRoot);
     await access(freshHandoffRoot);
 
+    const livePendingRoot = await createLiveParentPendingRoot(temporaryRoot);
+    await agePastUnstampedHandoffRetention(livePendingRoot.root);
+    await runAndRequireClean(temporaryRoot);
+    await access(livePendingRoot.root);
+    await livePendingRoot.stop();
+    await runAndRequireClean(temporaryRoot);
+    await assertMissing(livePendingRoot.root, "recovery must reclaim an aged pending root after its parent dies");
+
     const held = await createStampedHeldRoot(temporaryRoot);
     heldChildren.push(held.child);
     await Promise.all([runAndRequireClean(temporaryRoot), runAndRequireClean(temporaryRoot)]);
@@ -40,7 +48,7 @@ test("suite-root recovery bounds unstamped hand-off retention and preserves stam
 
     await requirePausedLiveRunnerToExecuteTests(temporaryRoot);
 
-    t.diagnostic("real suite-runner recovery reclaimed dead parent-owned and stale unstamped hand-off roots, retained a fresh unstamped root and a live stamped child group, then reclaimed the stamped root after release; a live parent paused after child spawn still ran tests and reported a non-zero test count");
+    t.diagnostic("real suite-runner recovery reclaimed dead parent-owned and stale unstamped hand-off roots, retained fresh and aged-live pending roots, retained a live stamped child group, then reclaimed each once its owner died; a live parent paused after child spawn still ran tests and reported a non-zero test count");
   } finally {
     await Promise.all(heldChildren.map(stopHeldChild));
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -78,6 +86,22 @@ async function runAndRequireClean(temporaryRoot: string): Promise<void> {
 async function createDeadParentPendingRoot(temporaryRoot: string): Promise<string> {
   const parentProcessId = await createDeadProcessId();
   return mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-pending-parent-${parentProcessId}-`));
+}
+
+async function createLiveParentPendingRoot(temporaryRoot: string): Promise<{ root: string; stop: () => Promise<void> }> {
+  const parent = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { stdio: "ignore" });
+  assert.ok(parent.pid, "the live pending root needs a process id");
+  const root = await mkdtemp(path.join(temporaryRoot, `ensemble-test-suite-pending-parent-${parent.pid}-`));
+  return {
+    root,
+    stop: async () => {
+      parent.kill("SIGTERM");
+      await new Promise<void>((resolve, reject) => {
+        parent.once("error", reject);
+        parent.once("exit", () => resolve());
+      });
+    }
+  };
 }
 
 async function createDeadProcessId(): Promise<number> {

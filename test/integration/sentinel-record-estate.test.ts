@@ -43,11 +43,14 @@ test("cold archive reader retains failed-attempt duration and per-attempt retry 
         { model: "gpt-first", effort: "low" },
         { model: "gpt-second", effort: "high" }
       ]),
-      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([[], []])
+      ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify([
+        [{ method: "item/agentMessage/delta", params: { itemId: "first-streamed-attempt", delta: "first streamed attempt" } }],
+        [{ method: "item/agentMessage/delta", params: { itemId: "second-streamed-attempt", delta: "second streamed attempt" } }]
+      ])
     });
     assert.equal(run.code, 0, run.stderr);
     const archive = await estate.archive();
-    const agent = await json<{ attempts: Array<{ status: string; duration_ms: number | null; resolved_model: string | null; resolved_effort: string | null }> }>(await findOnlyFile(archive, "agent.json"));
+    const agent = await json<{ attempts: Array<{ status: string; duration_ms: number | null; first_delta_ms: number | null; resolved_model: string | null; resolved_effort: string | null }> }>(await findOnlyFile(archive, "agent.json"));
     assert.equal(agent.attempts.length, 2);
     const firstAttempt = agent.attempts[0];
     assert.ok(firstAttempt);
@@ -58,6 +61,8 @@ test("cold archive reader retains failed-attempt duration and per-attempt retry 
       ["gpt-first", "low"],
       ["gpt-second", "high"]
     ]);
+    assert.notEqual(agent.attempts[0]?.first_delta_ms, null, "the first declared notification sequence must reach the archive");
+    assert.notEqual(agent.attempts[1]?.first_delta_ms, null, "the second declared notification sequence must reach the archive");
   });
 });
 

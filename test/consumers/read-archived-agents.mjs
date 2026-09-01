@@ -16,6 +16,7 @@ const agentPaths = entries
 assert.ok(agentPaths.length > 0, `expected at least one agent.json below ${dataHome}`);
 
 const agents = await Promise.all(agentPaths.map((agentPath) => readJson(agentPath)));
+const referencedTranscriptPaths = new Set();
 const v3AgentKeys = [
   "attempts", "concurrency_group", "creation_order", "decode_failure", "effort", "engine", "execution_ms",
   "fallback_model", "id", "isolation", "kind", "label", "model", "options", "parse_route", "phase", "prompt",
@@ -43,7 +44,18 @@ for (const [index, agent] of agents.entries()) {
     assert.equal(typeof transcript.source, "string");
     assert.ok(transcript.thread_id === null || typeof transcript.thread_id === "string");
     assert.ok(transcript.session_id === null || typeof transcript.session_id === "string");
-    const contents = await readFile(path.join(archiveDirectory, transcript.path), "utf8");
+    const transcriptPath = path.posix.normalize(transcript.path);
+    const ownTranscriptPrefix = `${path.relative(archiveDirectory, path.dirname(agentPaths[index])).split(path.sep).join("/")}/`;
+    assert.ok(
+      transcriptPath.startsWith(ownTranscriptPrefix),
+      `agent ${agent.id} transcript must remain below ${ownTranscriptPrefix}: ${transcript.path}`
+    );
+    assert.ok(
+      !referencedTranscriptPaths.has(transcriptPath),
+      `transcript reference must belong to exactly one agent: ${transcript.path}`
+    );
+    referencedTranscriptPaths.add(transcriptPath);
+    const contents = await readFile(path.join(archiveDirectory, transcriptPath), "utf8");
     assert.notEqual(contents, "", `expected transcript ${transcript.path} to retain its contents`);
   }
 }

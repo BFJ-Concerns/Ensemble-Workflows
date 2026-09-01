@@ -7,7 +7,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as delay } from "node:timers/promises";
 
 const testGlob = process.argv[2] ?? "dist/test/**/*.test.js";
-const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*m`, "g");
+const ansiSgrSequence = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 // A descendant can retain the test process's output pipe after that process
 // exits. Keep accepting its final output, but do not let that inherited pipe
 // hold the gate open indefinitely.

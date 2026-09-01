@@ -2463,3 +2463,139 @@ test("an engine's own failure stays the attempt's cause, with nothing beside it"
   assert.equal(attempt?.observedFailure, null);
   assert.equal(records.at(-1)?.terminationCause, null);
 });
+
+test("a dispatch the engine refuses before any attempt records the engine's own diagnostic", async () => {
+  // The raising case for this record's truthfulness: a call naming a model
+  // the engine does not serve is rejected as the invocation is created, so
+  // no attempt is ever pushed. The record must still say why — a `failed`
+  // status beside a null cause and an empty attempts array leaves a cold
+  // consumer unable to distinguish an explicit refusal from a lost account.
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      // Stands for the engine's own rejection, carrying its wording: the
+      // adapter raises whatever its transport reported rather than a
+      // runtime-shaped error.
+      const rejection = new Error("model 'gpt-5.6-nonesuch' is not available");
+      rejection.name = "ModelNotFoundError";
+      throw rejection;
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("work the engine will not take", { engine: "codex", model: "gpt-5.6-nonesuch" }),
+    /model 'gpt-5\.6-nonesuch' is not available/
+  );
+
+  const settled = records.at(-1);
+  assert.equal(settled?.status, "failed");
+  assert.deepEqual(settled?.attempts, []);
+  assert.deepEqual(settled?.terminationCause, {
+    kind: "ModelNotFoundError",
+    message: "model 'gpt-5.6-nonesuch' is not available"
+  });
+  await runtime.close();
+});
+
+test("a refusal the runtime cannot read an account from records the absence and its reason", async () => {
+  // The honesty rule in its other direction. Where an engine's rejection
+  // arrives as something with no legible account, the record must neither
+  // crash the settlement nor publish wording the engine never produced: it
+  // says the account is unavailable and names the shape it holds, so a cold
+  // consumer can tell an engine that said nothing from a lost diagnostic.
+  const undescribable = { toString: () => { throw new Error("this value refuses to describe itself"); } };
+  const silentError = new Error("");
+  silentError.name = "SilentEngineError";
+
+  const cases: { label: string; rejection: unknown; expected: string }[] = [
+    {
+      label: "an Error carrying no message",
+      rejection: silentError,
+      expected: "the agent failed with no attempt recorded and the rejection the runtime holds (SilentEngineError) carried no message"
+    },
+    {
+      label: "a plain object with nothing to say",
+      rejection: { code: 7 },
+      expected:
+        "the agent failed with no attempt recorded and the rejection the runtime holds (a value of type object) could not be described"
+    },
+    {
+      label: "a value whose own toString throws",
+      rejection: undescribable,
+      expected:
+        "the agent failed with no attempt recorded and the rejection the runtime holds (a value of type object) could not be described"
+    }
+  ];
+
+  for (const { label, rejection, expected } of cases) {
+    const engine: EngineAdapter = {
+      name: "codex",
+      concurrency: 1,
+      schedule: async (task) => task(),
+      createInvocation: () => {
+        throw rejection;
+      },
+      close: async () => undefined
+    };
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    await assert.rejects(() => runtime.agent(`dispatch rejected by ${label}`, { engine: "codex" }));
+
+    // The refusal still settles the record the dispatch wrote, rather than
+    // leaving the in-progress write as the archive's last word on it.
+    assert.equal(records.length, 2, label);
+    assert.equal(records[0]?.status, "in-progress", label);
+    const settled = records.at(-1);
+    assert.equal(settled?.status, "failed", label);
+    assert.deepEqual(settled?.attempts, [], label);
+    // Not a generic "failed": the kind marks the account as unavailable and
+    // the message says why it is unavailable rather than inventing a cause.
+    assert.deepEqual(settled?.terminationCause, { kind: "unavailable", message: expected }, label);
+    await runtime.close();
+  }
+});
+
+test("a thrown string reaches the record as the words the engine actually threw", async () => {
+  // A non-Error rejection still carries a real account when it has one; the
+  // unavailable branch must not swallow it.
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      throw "unknown model: gpt-5.6-nonesuch";
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(() => runtime.agent("work the engine will not take", { engine: "codex" }));
+
+  assert.deepEqual(records.at(-1)?.terminationCause, {
+    kind: "error",
+    message: "unknown model: gpt-5.6-nonesuch"
+  });
+  await runtime.close();
+});

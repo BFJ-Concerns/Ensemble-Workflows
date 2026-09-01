@@ -1330,24 +1330,25 @@ test("the reaper resolves a reaped run's in-progress agent records and leaves se
   try {
     await writeProcStat(proc, process.pid, "1111");
     const host = hostname();
-    await writeAttestedRunManifest(namespaceDir, "dead-run", {
-      status: "in-progress",
-      owner: { pid: 999999, start_ticks: "3333", host }
-    });
     // The discriminating pair: a dispatch-time record the death stranded,
-    // and a sibling whose settlement landed before the death.
-    await writeAgentRecord(namespaceDir, "dead-run", "000001", {
-      kind: "agent_record",
-      id: 1,
-      status: "in-progress",
-      attempts: []
-    });
-    await writeAgentRecord(namespaceDir, "dead-run", "000002", {
+    // and a sibling whose settlement landed before the death. Both are
+    // tracked in the manifest's files table with their digests, as the
+    // real writer tracks every write — a reaped archive must still verify.
+    const strandedBytes = `${JSON.stringify({ kind: "agent_record", id: 1, status: "in-progress", attempts: [] })}\n`;
+    const settledBytes = `${JSON.stringify({
       kind: "agent_record",
       id: 2,
       status: "complete",
       attempts: [{ attempt: 1, status: "complete" }]
-    });
+    })}\n`;
+    await writeAgentRecordBytes(namespaceDir, "dead-run", "000001", strandedBytes);
+    await writeAgentRecordBytes(namespaceDir, "dead-run", "000002", settledBytes);
+    await writeAttestedRunManifest(
+      namespaceDir,
+      "dead-run",
+      { status: "in-progress", owner: { pid: 999999, start_ticks: "3333", host } },
+      [fileEntry("agents/000001/agent.json", strandedBytes), fileEntry("agents/000002/agent.json", settledBytes)]
+    );
 
     const reaped = await reapAbandonedRuns({
       namespaceDir,
@@ -1365,6 +1366,16 @@ test("the reaper resolves a reaped run's in-progress agent records and leaves se
     const settled = await readAgentRecord(namespaceDir, "dead-run", "000002");
     assert.equal(settled.status, "complete", "a landed settlement is evidence, never rewritten");
     assert.equal(settled.abandonment, undefined);
+    // The one manifest write carried the rewritten record's refreshed
+    // table entry, so every declared digest still matches its bytes and
+    // the manifest's own self-attestation holds.
+    const reapedManifest = await readRunManifest(namespaceDir, "dead-run");
+    for (const declared of reapedManifest.files as Array<{ path: string; size: number; sha256: string }>) {
+      const bytes = await readFile(path.join(namespaceDir, "dead-run", declared.path), "utf8");
+      assert.equal(declared.sha256, createHash("sha256").update(bytes).digest("hex"), declared.path);
+      assert.equal(declared.size, Buffer.byteLength(bytes), declared.path);
+    }
+    assert.equal(manifestSelfDigest(reapedManifest), (reapedManifest.integrity as { manifest_sha256: string }).manifest_sha256);
   } finally {
     await rm(namespaceDir, { recursive: true, force: true });
     await rm(proc, { recursive: true, force: true });
@@ -1504,30 +1515,39 @@ async function writeRunManifest(namespaceDir: string, runName: string, manifest:
 async function writeAttestedRunManifest(
   namespaceDir: string,
   runName: string,
-  manifest: Record<string, unknown>
+  manifest: Record<string, unknown>,
+  files: Array<{ path: string; size: number; sha256: string }> = []
 ): Promise<void> {
   const attested = {
     ...manifest,
-    files: [],
+    files,
     integrity: { algorithm: "sha256", files_lost: [], manifest_sha256: null as string | null }
   };
   attested.integrity.manifest_sha256 = manifestSelfDigest(attested);
   await writeRunManifest(namespaceDir, runName, attested);
 }
 
-async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(path.join(namespaceDir, runName, "manifest.json"), "utf8")) as Record<string, unknown>;
+function fileEntry(relativePath: string, bytes: string): { path: string; size: number; sha256: string } {
+  return {
+    path: relativePath,
+    size: Buffer.byteLength(bytes),
+    sha256: createHash("sha256").update(bytes).digest("hex")
+  };
 }
 
-async function writeAgentRecord(
+async function writeAgentRecordBytes(
   namespaceDir: string,
   runName: string,
   agentDir: string,
-  record: unknown
+  bytes: string
 ): Promise<void> {
   const dir = path.join(namespaceDir, runName, "agents", agentDir);
   await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, "agent.json"), `${JSON.stringify(record)}\n`);
+  await writeFile(path.join(dir, "agent.json"), bytes);
+}
+
+async function readRunManifest(namespaceDir: string, runName: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(path.join(namespaceDir, runName, "manifest.json"), "utf8")) as Record<string, unknown>;
 }
 
 async function readAgentRecord(

@@ -2165,6 +2165,36 @@ test("fallbackModel is rejected on the Codex engine before any worker spawns", a
   assert.equal(transport.openedThreads.length, 0);
 });
 
+test("a non-Error rejection cannot shed an identified leg's discrimination", async () => {
+  // Promises may reject with any value; the identity carrier is a property
+  // on an Error, so agent() wraps a non-Error rejection rather than let the
+  // rejection's spelling reopen the silent-empty-success case.
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: () => Promise.reject("string rejection, not an Error")
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([engine]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1
+  });
+
+  const results = await parallel<unknown>(
+    [() => runtime.agent("fail oddly", { engine: "claude", identity: true, label: "verify" })],
+    () => undefined
+  );
+  const [identified] = results as [{ label: string | null; output: unknown; failure: { message: string } | null }];
+  assert.equal(identified.label, "verify");
+  assert.equal(identified.output, null);
+  assert.ok(identified.failure !== null, "the wrapped rejection still carries the discrimination");
+  assert.match(identified.failure.message, /string rejection, not an Error/);
+});
+
 test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
   // An identified operational failure resolves to an envelope carrying
   // the call's identity and failure account. parallel() preserves that

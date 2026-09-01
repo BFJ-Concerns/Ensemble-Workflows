@@ -15234,6 +15234,16 @@ async function reapAbandonedRuns(options) {
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      const rewritten = await resolveAbandonedAgentRecords(path3.join(options.namespaceDir, entry.name), abandonment);
+      if (Array.isArray(fresh.files)) {
+        for (const fileEntry of fresh.files) {
+          const update = rewritten.get(fileEntry.path);
+          if (update !== void 0) {
+            fileEntry.size = update.size;
+            fileEntry.sha256 = update.sha256;
+          }
+        }
+      }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
       if (fresh.integrity !== void 0 && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
@@ -15242,7 +15252,6 @@ async function reapAbandonedRuns(options) {
       }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
 `);
-      await resolveAbandonedAgentRecords(path3.join(options.namespaceDir, entry.name), abandonment);
       reaped.push(entry.name);
     } catch {
     }
@@ -15250,10 +15259,11 @@ async function reapAbandonedRuns(options) {
   return reaped;
 }
 async function resolveAbandonedAgentRecords(runDir, abandonment) {
+  const rewritten = /* @__PURE__ */ new Map();
   const agentsDir = path3.join(runDir, "agents");
   const agentEntries = await readdir(agentsDir, { withFileTypes: true }).catch(() => null);
   if (agentEntries === null) {
-    return;
+    return rewritten;
   }
   for (const agentEntry of agentEntries) {
     if (!agentEntry.isDirectory()) {
@@ -15267,11 +15277,17 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
-      await writeStandaloneText(agentJsonPath, `${canonicalJson(agentRecord)}
-`);
+      const content = `${canonicalJson(agentRecord)}
+`;
+      await writeStandaloneText(agentJsonPath, content);
+      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
+        size: Buffer.byteLength(content),
+        sha256: sha256(content)
+      });
     } catch {
     }
   }
+  return rewritten;
 }
 async function judgeOwnerGone(owner, procDir, host) {
   if (owner === void 0 || owner === null) {
@@ -16310,10 +16326,10 @@ function diagnose(error, context) {
   if (error instanceof Error && error.name === "AppServerExitedError") {
     const exit = workerExitStatusOf(error);
     const how = exit?.signal !== null && exit?.signal !== void 0 ? `terminated by ${exit.signal}` : exit?.exitCode !== null && exit?.exitCode !== void 0 ? `exited with code ${exit.exitCode}` : "exited unexpectedly";
-    const lines = [`Codex app-server ${how}`, ...error.message.split("\n")];
+    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      lines.push(`server diagnostic: ${diagnostic.message}`);
+      lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
     }
     return lines;
   }
@@ -16329,8 +16345,11 @@ var TERMINAL_CONTROL_SEQUENCES = (
   // eslint-disable-next-line no-control-regex -- the control characters are the subject of the strip
   /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B\[[0-?]*[ -/]*[@-~]?|\u001B[@-_]?|\u0007/g
 );
+function stripControl(text) {
+  return text.replace(TERMINAL_CONTROL_SEQUENCES, "");
+}
 function bounded(text, limit = 400) {
-  const flat = text.replace(TERMINAL_CONTROL_SEQUENCES, "").replace(/\s+/g, " ").trim();
+  const flat = stripControl(text).replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}\u2026` : flat;
 }
 function isInterrupt(error) {
@@ -20142,8 +20161,10 @@ var CodexEngineAdapter = class {
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
    *   growing filesystem-and-plugin set and then repeat it (sampled up to
-   *   10 times at 1000 ms spacing by default, the aggregate bounded by the
-   *   transport's discovery deadline). This rejects a repeated cold state
+   *   10 times at 1000 ms spacing by default; the transport's discovery
+   *   deadline, checked between samples, stops the loop once its elapsed
+   *   budget is spent — each call itself is bounded by the request
+   *   timeout). This rejects a repeated cold state
    *   rather than mistaking it for complete discovery; bundled skills are
    *   disabled and every accepted name gets an exact `skills.config` deny.
    *   Discovery has no protocol-level completion signal — the
@@ -20781,8 +20802,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       return output;
     } catch (error) {
-      if (options.identity === true && error instanceof Error) {
-        attachAgentIdentity(error, { label: options.label ?? null, phase: options.phase ?? null });
+      if (options.identity === true) {
+        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        throw carrier;
       }
       throw error;
     } finally {

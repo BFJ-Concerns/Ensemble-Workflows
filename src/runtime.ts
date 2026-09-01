@@ -329,8 +329,8 @@ export class EnsembleRuntime {
     this.#defaultTurnTimeoutMs = options.defaultTurnTimeoutMs;
     this.#defaultMaxAttempts = options.defaultMaxAttempts;
     // 1 hour on both by default: Claude's is the injected cache TTL's
-    // cliff, Codex's the measured 60-minute coin-flip point —
-    // numerically equal, semantically distinct knobs.
+    // cliff, Codex's the measured 60-minute coin-flip point — numerically
+    // equal, semantically distinct knobs.
     this.#claudeSessionStaleAfterMs = options.claudeSessionStaleAfterMs ?? 3_600_000;
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
@@ -560,26 +560,30 @@ export class EnsembleRuntime {
       }
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        // Identified resolution (result identity is opt-in): the
-        // envelope wraps every resolution, a schema call's null collapse
-        // included, so a fan-in that keeps the envelope still knows which
-        // worker failed — and `failure` carries the discrimination: null
-        // exactly when the settlement completed, so a worker's genuine null
-        // answer and an exhausted collapse never read alike. The durable
-        // record is unchanged — it already carries label and phase as
-        // first-class fields.
+        // Identified resolution (opt-in): the envelope wraps every
+        // resolution, a schema call's null collapse included, so a fan-in
+        // that keeps the envelope still knows which worker failed — and
+        // `failure` discriminates: null exactly when the settlement
+        // completed, so a worker's genuine null answer and an exhausted
+        // collapse never read alike. The durable record is unchanged — it
+        // already carries label and phase as first-class fields.
         const failure =
           agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
       }
       return output;
     } catch (error) {
-      if (options.identity === true && error instanceof Error) {
+      if (options.identity === true) {
         // An identified call keeps its identity through operational failure:
         // the combinators' collapse reads this carrier and resolves
-        // { label, phase, output: null } instead of bare null. The call's
-        // own contract is unchanged — the error still propagates.
-        attachAgentIdentity(error, { label: options.label ?? null, phase: options.phase ?? null });
+        // the failure-bearing envelope instead of bare null. A non-Error
+        // rejection cannot carry the property, so it is wrapped — losing
+        // the discrimination to a rejection's spelling would re-open the
+        // silent-empty-success case. The call's own contract is otherwise
+        // unchanged — the error still propagates.
+        const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        throw carrier;
       }
       throw error;
     } finally {
@@ -1124,8 +1128,8 @@ export class EnsembleRuntime {
     );
     // Teardown failures are collected, never thrown mid-cleanup: cleanup
     // runs to completion first, then close() rejects carrying every cause —
-    // a silently discarded engine or session teardown failure would make
-    // the cancellation promise unattributable.
+    // a silently discarded engine or session teardown failure would leave
+    // a cancelled run's failure unattributable.
     const teardownFailures: unknown[] = [];
     try {
       await this.#engines.close();

@@ -271,8 +271,10 @@ export class CodexEngineAdapter implements EngineAdapter {
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
    *   growing filesystem-and-plugin set and then repeat it (sampled up to
-   *   10 times at 1000 ms spacing by default, the aggregate bounded by the
-   *   transport's discovery deadline). This rejects a repeated cold state
+   *   10 times at 1000 ms spacing by default; the transport's discovery
+   *   deadline, checked between samples, stops the loop once its elapsed
+   *   budget is spent — each call itself is bounded by the request
+   *   timeout). This rejects a repeated cold state
    *   rather than mistaking it for complete discovery; bundled skills are
    *   disabled and every accepted name gets an exact `skills.config` deny.
    *   Discovery has no protocol-level completion signal — the

@@ -113,11 +113,12 @@ const DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 const SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1_000;
 const MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
 /**
- * Aggregate wall-clock bound on one discovery: the sampling loop's own
- * attempt cap bounds the call count, and this bounds the elapsed time even
- * when individual calls run long — discovery is paid inside a held
- * admission slot, so an unbounded stabilisation wait would hold that slot
- * hostage.
+ * Aggregate wall-clock bound on one discovery, checked between samples:
+ * the attempt cap bounds the call count, each call is bounded by the
+ * request timeout, and this deadline stops the loop from starting another
+ * sample once the elapsed budget is spent — discovery is paid inside a
+ * held admission slot. An in-flight sample is not raced against it, so
+ * the true ceiling is this deadline plus one request timeout.
  */
 const SKILL_DISCOVERY_DEADLINE_MS = 30_000;
 
@@ -344,8 +345,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       previousNames = names;
       if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
-        // The attempt cap bounds calls; this bounds elapsed time when the
-        // calls themselves run long. Failing loud keeps the strip contract:
+        // Checked between samples (an in-flight call keeps its own request
+        // timeout): once the elapsed budget is spent, no further sample
+        // starts. Failing loud keeps the strip contract:
         // a deadline can never dispatch a partial deny overlay.
         throw new AppServerRequestError("skills/list", {
           code: "discovery_deadline",

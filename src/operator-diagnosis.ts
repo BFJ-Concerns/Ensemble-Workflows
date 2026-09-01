@@ -130,10 +130,13 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
         : exit?.exitCode !== null && exit?.exitCode !== undefined
           ? `exited with code ${exit.exitCode}`
           : "exited unexpectedly";
-    const lines = [`Codex app-server ${how}`, ...error.message.split("\n")];
+    // The server's message is kept whole but stripped of terminal
+    // control: its stderr tail is engine-controlled bytes, and evidence
+    // preservation never licenses control injection.
+    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      lines.push(`server diagnostic: ${diagnostic.message}`);
+      lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
     }
     return lines;
   }
@@ -160,8 +163,13 @@ const TERMINAL_CONTROL_SEQUENCES =
   // eslint-disable-next-line no-control-regex -- the control characters are the subject of the strip
   /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|\u001B\[[0-?]*[ -/]*[@-~]?|\u001B[@-_]?|\u0007/g;
 
+/** Strip only — for evidence kept whole that must still never carry terminal control. */
+function stripControl(text: string): string {
+  return text.replace(TERMINAL_CONTROL_SEQUENCES, "");
+}
+
 function bounded(text: string, limit = 400): string {
-  const flat = text.replace(TERMINAL_CONTROL_SEQUENCES, "").replace(/\s+/g, " ").trim();
+  const flat = stripControl(text).replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 

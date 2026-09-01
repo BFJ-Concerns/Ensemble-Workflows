@@ -1263,9 +1263,10 @@ test("Codex app-server fails closed after ten cold skill discoveries", async () 
 });
 
 test("Codex skill discovery is bounded by an aggregate wall-clock deadline", async () => {
-  // The attempt cap bounds the call count; the deadline bounds elapsed time
-  // when the calls themselves run long — discovery holds an admission slot,
-  // and the bound fails loud rather than dispatching a partial deny set.
+  // The attempt cap bounds the call count; the deadline, checked between
+  // samples, stops the loop from starting another once its elapsed budget
+  // is spent (an in-flight call keeps its own request timeout) — and the
+  // bound fails loud rather than dispatching a partial deny set.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-deadline-"));
   const capturePath = path.join(directory, "requests.jsonl");
   const codexBin = await fakeCodexTurnServer({ capturePath, skillResponses: [["repo-skill"]] });

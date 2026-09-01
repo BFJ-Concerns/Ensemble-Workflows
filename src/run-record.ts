@@ -1146,9 +1146,11 @@ export interface ReapAbandonedRunsOptions {
  * ran, nothing spent" — a claim the run's death made undecidable, not
  * false. `abandoned` marks the recording as truncated: whatever attempts
  * and usage the record carries are what was recorded before the death,
- * and their absence is unobserved, never zero. The reaper still never
- * deletes, never invents usage or attempts, and never touches a record
- * whose own terminal status landed.
+ * and their absence is unobserved, never zero. Each rewritten record's
+ * entry in the manifest's files table is refreshed in the same manifest
+ * write as the status flip, so a reaped archive still verifies. The
+ * reaper still never deletes, never invents usage or attempts, and never
+ * touches a record whose own terminal status landed.
  * Never-fail throughout — a sweep failure must never fail the run that
  * triggered it (it is awaited, so its cost is bounded by the namespace's
  * own run and agent counts). Returns the run uuids it flipped.
@@ -1190,6 +1192,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       const fresh = JSON.parse(await readFile(manifestPath, "utf8")) as {
         status?: unknown;
         abandonment?: AbandonmentRecord;
+        files?: FileEntry[];
         integrity?: { manifest_sha256?: string | null } | null;
       };
       if (fresh.status !== "in-progress") {
@@ -1200,6 +1203,23 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         reason,
         observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
       };
+      // Agent records first, manifest last: the manifest's files table
+      // carries each agent.json's size and digest from the dead writer's
+      // own tracking, so the one manifest write below must also carry the
+      // rewritten records' refreshed entries or a reaped archive stops
+      // verifying. A reaper dying between the two writes leaves the
+      // manifest `in-progress` and the next sweep re-runs both —
+      // resolution is idempotent (already-abandoned records are skipped).
+      const rewritten = await resolveAbandonedAgentRecords(path.join(options.namespaceDir, entry.name), abandonment);
+      if (Array.isArray(fresh.files)) {
+        for (const fileEntry of fresh.files) {
+          const update = rewritten.get(fileEntry.path);
+          if (update !== undefined) {
+            fileEntry.size = update.size;
+            fileEntry.sha256 = update.sha256;
+          }
+        }
+      }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
       // The reaper changes an attested manifest itself, so renew its
@@ -1212,7 +1232,6 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
         fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
       }
       await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
-      await resolveAbandonedAgentRecords(path.join(options.namespaceDir, entry.name), abandonment);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.
@@ -1230,13 +1249,19 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
  * the dead process made is visible, and a settled record shows its
  * terminal status and is skipped. Status resolution only: nothing else in
  * the record changes, and a record that cannot be read or written is left
- * as it stands rather than ending the sweep.
+ * as it stands rather than ending the sweep. Returns the rewritten files'
+ * refreshed table entries, keyed by archive-relative path, for the
+ * caller's single manifest write.
  */
-async function resolveAbandonedAgentRecords(runDir: string, abandonment: AbandonmentRecord): Promise<void> {
+async function resolveAbandonedAgentRecords(
+  runDir: string,
+  abandonment: AbandonmentRecord
+): Promise<Map<string, { size: number; sha256: string }>> {
+  const rewritten = new Map<string, { size: number; sha256: string }>();
   const agentsDir = path.join(runDir, "agents");
   const agentEntries = await readdir(agentsDir, { withFileTypes: true }).catch(() => null);
   if (agentEntries === null) {
-    return;
+    return rewritten;
   }
   for (const agentEntry of agentEntries) {
     if (!agentEntry.isDirectory()) {
@@ -1253,11 +1278,17 @@ async function resolveAbandonedAgentRecords(runDir: string, abandonment: Abandon
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
-      await writeStandaloneText(agentJsonPath, `${canonicalJson(agentRecord)}\n`);
+      const content = `${canonicalJson(agentRecord)}\n`;
+      await writeStandaloneText(agentJsonPath, content);
+      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
+        size: Buffer.byteLength(content),
+        sha256: sha256(content)
+      });
     } catch {
       // One unresolvable agent record must not end the sweep.
     }
   }
+  return rewritten;
 }
 
 async function judgeOwnerGone(

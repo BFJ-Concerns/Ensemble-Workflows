@@ -1621,29 +1621,6 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
       return;
     }
-    send({ id: message.id, result: {} });
-    send({ method: "turn/started", params: { threadId } });
-    if (mode === "system-error-then-schema-error-follow-up") {
-      if (turnCounter === 1) {
-        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
-        send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
-        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
-      } else {
-        // This lands after the first turn's 50ms diagnostic grace. If the
-        // first rejection leaves that timer armed, it terminalises this
-        // follow-up turn before the answer can arrive.
-        setTimeout(() => {
-          send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the intact follow-up answer" } } });
-          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
-        }, 120);
-      }
-      return;
-    }
-    if (mode === "no-first-delta") {
-      // The accepted turn stays alive but never produces output: only the
-      // client's first-output deadline can free the worker slot.
-      return;
-    }
     if (mode === "recycled-thread-stragglers" || mode === "recycled-thread-straggler-before-ack") {
       if (turnCounter === 1) {
         // Turn one: acknowledged with its id (so the client learns turn-1
@@ -1674,6 +1651,29 @@ reader.on("line", (line) => {
         send({ method: "item/completed", params: { threadId, turnId: "turn-2", item: { itemType: "agentMessage", text: "the live turn's own answer" } } });
         send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
       }, 200);
+      return;
+    }
+    send({ id: message.id, result: {} });
+    send({ method: "turn/started", params: { threadId } });
+    if (mode === "system-error-then-schema-error-follow-up") {
+      if (turnCounter === 1) {
+        send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "nine tenths of an answer" } });
+        send({ method: "thread/status/changed", params: { threadId, status: { type: "systemError" } } });
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "Invalid schema for response_format", codexErrorInfo: "invalid_json_schema" } } });
+      } else {
+        // This lands after the first turn's 50ms diagnostic grace. If the
+        // first rejection leaves that timer armed, it terminalises this
+        // follow-up turn before the answer can arrive.
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, item: { itemType: "agentMessage", text: "the intact follow-up answer" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
+        }, 120);
+      }
+      return;
+    }
+    if (mode === "no-first-delta") {
+      // The accepted turn stays alive but never produces output: only the
+      // client's first-output deadline can free the worker slot.
       return;
     }
     if (mode === "delayed-first-delta") {

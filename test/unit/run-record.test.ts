@@ -1947,14 +1947,18 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
     args: [],
     cliFlags: {}
   });
+  // The Codex attempt spent tokens (a worker lost mid-flight) but reported
+  // no served model; the agent-level resolved model is the Claude answer's.
+  // The Codex spend must land under codex/unresolved, never under the
+  // Claude model the agent-level field now carries.
   const record = agentRecord(1, "codex", "gpt-5.6-sol", 3);
   const refused = record.attempts[0]!;
   refused.status = "failed";
-  refused.failure = { kind: "AppServerRequestError", message: "refused" };
-  refused.classification = { class: "availability", rule: "codex.usage-limit" };
+  refused.failure = { kind: "AppServerExitedError", message: "died mid-flight" };
+  refused.classification = { class: "availability", rule: "codex.substrate-dead" };
   refused.target = { engine: "codex", model: "gpt-5.6-sol" };
   refused.resolvedModel = null;
-  refused.tokenUsageEvents = [];
+  record.resolvedModel = "claude-opus-5";
   record.attempts.push({
     ...structuredClone(refused),
     attempt: 2,
@@ -1973,8 +1977,10 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     cost_rollup: Record<string, Record<string, { tokens: { totalTokens: number } }>>;
   };
-  assert.deepEqual(Object.keys(manifest.cost_rollup), ["claude"]);
+  assert.deepEqual(Object.keys(manifest.cost_rollup).sort(), ["claude", "codex"]);
   assert.equal(manifest.cost_rollup.claude?.["claude-opus-5"]?.tokens.totalTokens, 7);
+  assert.deepEqual(Object.keys(manifest.cost_rollup.codex ?? {}), ["unresolved"]);
+  assert.equal(manifest.cost_rollup.codex?.unresolved?.tokens.totalTokens, 3);
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
     engine: string;
     answered_by: unknown;
@@ -1983,7 +1989,7 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
   };
   assert.equal(agent.engine, "codex");
   assert.deepEqual(agent.answered_by, { entry: 0, engine: "claude", model: "opus" });
-  assert.equal(agent.usage.summary.totalTokens, 7);
+  assert.equal(agent.usage.summary.totalTokens, 10);
   assert.deepEqual(
     agent.attempts.map((attempt) => [attempt.target, attempt.classification]),
     [
@@ -1991,6 +1997,30 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
       [{ engine: "claude", model: "opus" }, null]
     ]
   );
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("a tally named __proto__ is recorded as an own property, not swallowed by the inherited setter", async () => {
+  const cwd = await gitRepo("ensemble-record-tally-proto-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-tally-proto",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: {}
+  });
+  await writer.recordTally("__proto__", 1);
+  await writer.recordTally("constructor", 2);
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    tallies: Record<string, number>;
+  };
+  assert.equal(Object.hasOwn(manifest.tallies, "__proto__"), true);
+  assert.equal(manifest.tallies["__proto__"], 1);
+  assert.equal(manifest.tallies.constructor, 2);
   await rm(store, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });

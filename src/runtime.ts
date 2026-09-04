@@ -973,6 +973,7 @@ export class EnsembleRuntime {
     state.stalenessThresholdMs =
       targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
+    state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
     // Placement is the session's, opened once at its first turn and closed
     // with the session — a worktree session works one tree for its life.
     state.placement ??= await this.#placement.open({
@@ -1144,7 +1145,7 @@ export class EnsembleRuntime {
     maxAttempts: number | undefined,
     agentId: number,
     agentRecord: RuntimeAgentRecord,
-    queuedAt: number,
+    initialQueuedAt: number,
     runTarget: (
       target: ChainTarget,
       engine: EngineAdapter,
@@ -1152,6 +1153,7 @@ export class EnsembleRuntime {
       chainRemains: boolean
     ) => Promise<AgentExecutionOutcome>
   ): Promise<unknown> {
+    let queuedAt = initialQueuedAt;
     const ledger: AttemptLedger = {
       maxAttempts: maxAttempts ?? this.#defaultMaxAttempts,
       dispatched: 0,
@@ -1188,6 +1190,9 @@ export class EnsembleRuntime {
       admittedEngine = this.#engineFor(outcome.engine);
       readmitting = true;
       this.progress.requeueAgent(agentId, admittedEngine.name);
+      // The next step's queue time starts now; the execution time already
+      // spent on the refused engine stays accumulated on the record.
+      queuedAt = Date.now();
     }
   }
 
@@ -1222,10 +1227,11 @@ export class EnsembleRuntime {
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
         // The task never started, so this leg was still queued — its
-        // termination record must not claim an in-flight turn.
+        // termination record must not claim an in-flight turn. Times
+        // accumulate: a chained leg refused on one engine and rejected at
+        // re-admission on the next keeps the execution it already spent.
         this.#settleTerminalStatus(agentRecord, error, "queued");
-        agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-        agentRecord.executionMs = 0;
+        agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
       }
       throw error;
@@ -1249,14 +1255,15 @@ export class EnsembleRuntime {
       const execution = await run();
       if (execution instanceof ChainAdvance) {
         // Not a settlement: the leg is leaving this engine for the next
-        // target's. The record stays in progress and the execution time
-        // spent here still counts toward the leg's total.
+        // target's. The record stays in progress, and both times spent so
+        // far — this step's wait and its execution — accumulate.
+        agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
         agentRecord.executionMs += Math.max(0, Date.now() - executionStartedAt);
         return execution;
       }
       const outcome = execution.status === "complete" ? "done" : "failed";
       const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
@@ -1282,7 +1289,7 @@ export class EnsembleRuntime {
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
       agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
@@ -1557,6 +1564,7 @@ export class EnsembleRuntime {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
+    this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation: EngineInvocation | undefined;
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
@@ -1938,6 +1946,26 @@ export class EnsembleRuntime {
       )
     );
     return { refused };
+  }
+
+  /**
+   * The strip enforcement routes the archive records are the *dispatching*
+   * engine's: a chain step onto another engine re-resolves them against
+   * that engine's table (every chain engine was judged enforceable
+   * pre-spawn, so this cannot newly throw) and rewrites the record, so a
+   * Claude worker is never archived under Codex's routes.
+   */
+  #recordStripRoutesFor(
+    record: RuntimeAgentRecord,
+    engine: EngineAdapter,
+    strip: readonly StrippableCapability[] | undefined
+  ): Partial<Record<StrippableCapability, DischargedEnforcement>> | null {
+    if (strip === undefined || strip.length === 0) {
+      return null;
+    }
+    const enforcement = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    record.strip = { requested: [...strip], enforcement };
+    return enforcement;
   }
 
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */

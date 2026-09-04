@@ -3071,3 +3071,49 @@ test("a malformed or opencode chain entry is rejected before any worker spawns",
   assert.equal(codex.dispatches.length, 0);
   await runtime.close();
 });
+
+test("a cross-engine advance re-resolves the capability strip against the answering engine and archives that route", async () => {
+  // Enforcement routes are engine-specific: archiving Codex's route for a
+  // Claude worker would let a reader believe the wrong mechanism restricted
+  // the worker that actually answered. The chain re-resolves on advance.
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("from claude")]);
+  Object.assign(codex, { capabilities: { skills: { route: "config", detail: "thread/start overlay" }, agents: { route: "config", detail: "thread/start overlay" } } });
+  Object.assign(claude, { capabilities: { skills: { route: "config", detail: "settings deny rules" }, agents: { route: "config", detail: "settings deny rules" } } });
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+
+  await runtime.agent("restricted", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    strip: ["skills"],
+    fallback: [{ engine: "claude", model: "opus" }]
+  });
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.strip, {
+    requested: ["skills"],
+    enforcement: { skills: { route: "config", detail: "settings deny rules" } }
+  });
+  // The dispatch-time record (before any attempt) carried the declared
+  // engine's route; the settlement carries the answering engine's.
+  assert.deepEqual(records[0]?.strip?.enforcement, { skills: { route: "config", detail: "thread/start overlay" } });
+  await runtime.close();
+});
+
+test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded")]);
+  const claude = new ChainEngine("claude", [
+    async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return turn("from claude");
+    }
+  ]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+
+  await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
+  const settled = records.at(-1)!;
+  // Execution spans both engines' work (at least the Claude step's 30ms);
+  // queued time is only the waits, never a re-count of earlier execution.
+  assert.ok(settled.executionMs >= 30, `executionMs ${settled.executionMs}`);
+  assert.ok(settled.queuedMs < settled.executionMs, `queuedMs ${settled.queuedMs} should not absorb execution`);
+  await runtime.close();
+});

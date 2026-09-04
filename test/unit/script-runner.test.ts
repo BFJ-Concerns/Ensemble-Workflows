@@ -12,7 +12,11 @@ import {
   runWorkflowScript
 } from "../../src/script-runner.js";
 import { TokenBudget } from "../../src/budget.js";
-import { FallbackTargetRejectedError, OpenCodeModelNotRegisteredError } from "../../src/errors.js";
+import { FallbackTargetRejectedError, OpenCodeModelNotRegisteredError, TallyRejectedError } from "../../src/errors.js";
+import { EngineRegistry } from "../../src/engines.js";
+import { EnsembleRuntime } from "../../src/runtime.js";
+
+import type { RunRecordWriter } from "../../src/run-record.js";
 
 import type { WorkflowRuntime } from "../../src/hooks.js";
 import type { EngineName } from "../../src/types.js";
@@ -1678,13 +1682,22 @@ test("a script path containing parentheses still gets its frames rewritten", asy
 test("the tally hook records a named count into the run, replacing on repeat, and fails loud on an unusable value", async () => {
   // The script body records counts the runtime cannot know. The hook
   // is bound like every other, so the load-time free-identifier check
-  // admits it; the recording runtime captures what reached it.
+  // admits it; a real runtime's recordTally validates and forwards to the
+  // recorder, which is what the capturing recorder here observes.
   const tallies: Array<[string, number]> = [];
-  const tallyingRuntime: WorkflowRuntime = {
-    ...runtime,
-    recordTally: async (name, value) => {
+  const realRuntime = new EnsembleRuntime({
+    engines: new EngineRegistry([]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1
+  });
+  realRuntime.setRunRecorder({
+    recordTally: async (name: string, value: number) => {
       tallies.push([name, value]);
     }
+  } as unknown as RunRecordWriter);
+  const tallyingRuntime: WorkflowRuntime = {
+    ...runtime,
+    recordTally: (name, value) => realRuntime.recordTally(name, value)
   };
 
   const result = await runWorkflowScript({
@@ -1705,6 +1718,34 @@ test("the tally hook records a named count into the run, replacing on repeat, an
     ["accepted", 5],
     ["fix rounds", 3]
   ]);
+
+  // The unusable values: a blank name and a non-finite number each throw
+  // the author-family error before the recorder sees anything.
+  for (const [source, expected] of [
+    ['await tally("", 1);', /tally name must be a non-empty string/],
+    ['await tally("count", Number.NaN);', /must be a finite number/],
+    ['await tally("count", "3");', /must be a finite number/]
+  ] as const) {
+    await assert.rejects(
+      () =>
+        runWorkflowScript({
+          filename: "tally-invalid.js",
+          runtime: tallyingRuntime,
+          log: () => {},
+          source: `
+            export const meta = { name: "tally-invalid" };
+            ${source}
+            return "never";
+          `
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof TallyRejectedError);
+        assert.match(error.message, expected);
+        return true;
+      }
+    );
+  }
+  assert.equal(tallies.length, 3, "an invalid tally never reaches the recorder");
 
   // A runtime without the capability fails the hook loud, pre-spawn.
   await assert.rejects(

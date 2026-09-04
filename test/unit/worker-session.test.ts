@@ -653,7 +653,13 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
 async function withClaudeRuntime(
   turns: ScriptedClaudeTurn[],
   body: (runtime: EnsembleRuntime, controlPlane: SessionFakeControlPlane) => Promise<void>,
-  options: { tmux?: boolean; now?: () => number; staleAfterMs?: number; alongside?: EngineAdapter[] } = {}
+  options: {
+    tmux?: boolean;
+    now?: () => number;
+    staleAfterMs?: number;
+    codexStaleAfterMs?: number;
+    alongside?: EngineAdapter[];
+  } = {}
 ): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-worker-session-"));
   try {
@@ -669,7 +675,8 @@ async function withClaudeRuntime(
       defaultTurnTimeoutMs: 5_000,
       defaultMaxAttempts: 2,
       ...(options.now !== undefined ? { now: options.now } : {}),
-      ...(options.staleAfterMs !== undefined ? { claudeSessionStaleAfterMs: options.staleAfterMs } : {})
+      ...(options.staleAfterMs !== undefined ? { claudeSessionStaleAfterMs: options.staleAfterMs } : {}),
+      ...(options.codexStaleAfterMs !== undefined ? { codexSessionStaleAfterMs: options.codexStaleAfterMs } : {})
     });
     await body(runtime, controlPlane);
   } finally {
@@ -788,46 +795,75 @@ test("a session's chain applies to the creating turn alone, and the answering ta
     },
     close: async () => {}
   };
+  // The refused Codex target's held session must be closed on the advance
+  // — observed here as the adapter's close-time registry: a leaked session
+  // would still be tracked by the adapter after the chain moved on.
+  let codexSessionClosed = 0;
   const codex = new CodexEngineAdapter({ transport: refusingTransport, concurrency: 2 });
+  const createSession = codex.createSession.bind(codex);
+  codex.createSession = (options) => {
+    const session = createSession(options);
+    const close = session.close.bind(session);
+    session.close = async () => {
+      codexSessionClosed += 1;
+      await close();
+    };
+    return session;
+  };
   const claudeTurns = [
     { text: "claude answers turn one" },
     { text: "", apiError: { status: 429, code: "rate_limit" } }
   ];
-  await withClaudeRuntime(claudeTurns, async (runtime, controlPlane) => {
-    const records: RuntimeAgentRecord[] = [];
-    runtime.setRunRecorder({
-      recordAgent: async (record) => {
-        records.push(structuredClone(record));
-      }
-    } as RunRecordWriter);
-    const session = runtime.createWorkerSession({
-      engine: "codex",
-      model: "gpt-5.6-sol",
-      fallback: [{ engine: "claude", model: "opus" }],
-      maxAttempts: 1
-    });
+  await withClaudeRuntime(
+    claudeTurns,
+    async (runtime, controlPlane) => {
+      const records: RuntimeAgentRecord[] = [];
+      runtime.setRunRecorder({
+        recordAgent: async (record) => {
+          records.push(structuredClone(record));
+        }
+      } as RunRecordWriter);
+      // Distinct staleness cliffs per engine: the session must read the
+      // *answering* engine's cliff after the advance, not the declared one.
+      const session = runtime.createWorkerSession({
+        engine: "codex",
+        model: "gpt-5.6-sol",
+        effort: "high",
+        fallback: [{ engine: "claude", model: "opus", effort: "low" }],
+        maxAttempts: 1
+      });
+      assert.equal(session.staleAfterMs, 60_000, "before the first turn the cliff is Codex's");
 
-    assert.equal(await session.send("turn one"), "claude answers turn one");
-    assert.equal(session.engine, "claude");
-    const turnOne = records.at(-1)!;
-    assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: "claude", model: "opus" });
-    assert.deepEqual(
-      turnOne.attempts.map((attempt) => [attempt.target.engine, attempt.classification?.class ?? null]),
-      [
-        ["codex", "availability"],
-        ["claude", null]
-      ]
-    );
-    assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(await session.send("turn one"), "claude answers turn one");
+      assert.equal(session.engine, "claude");
+      assert.equal(session.staleAfterMs, 7_000, "after the advance the cliff is Claude's");
+      // The Claude dispatch carried the *target's* model and effort, not
+      // the declared Codex pin: state.options was re-pointed, not merely
+      // the engine.
+      assert.equal(controlPlane.dispatched[0]?.model, "opus");
+      assert.equal(controlPlane.dispatched[0]?.effort, "low");
+      assert.equal(codexSessionClosed, 1, "the refused Codex session was closed on the advance");
+      const turnOne = records.at(-1)!;
+      assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: "claude", model: "opus" });
+      assert.deepEqual(
+        turnOne.attempts.map((attempt) => [attempt.target.engine, attempt.target.model, attempt.classification?.class ?? null]),
+        [
+          ["codex", "gpt-5.6-sol", "availability"],
+          ["claude", "opus", null]
+        ]
+      );
+      assert.equal(controlPlane.dispatchCount, 1);
 
-    // Turn two's refusal is the turn's own failure: still one Claude
-    // dispatch ever, and the record names no chain for the turn.
-    await assert.rejects(session.send("turn two"), EmptyAgentOutputError);
-    assert.equal(controlPlane.dispatchCount, 1);
-    const turnTwo = records.at(-1)!;
-    assert.equal(turnTwo.fallback, null);
-    assert.equal(turnTwo.status, "failed");
-    assert.deepEqual(turnTwo.attempts[0]?.classification, { class: "availability", rule: "claude.rate-limit" });
-    await runtime.close();
-  }, { alongside: [codex] });
+      // Turn two's refusal is the turn's own failure: still one Claude
+      // dispatch ever, and the record names no chain for the turn.
+      await assert.rejects(session.send("turn two"), EmptyAgentOutputError);
+      assert.equal(controlPlane.dispatchCount, 1);
+      const turnTwo = records.at(-1)!;
+      assert.equal(turnTwo.fallback, null);
+      assert.equal(turnTwo.status, "failed");
+      assert.deepEqual(turnTwo.attempts[0]?.classification, { class: "availability", rule: "claude.rate-limit" });
+      await runtime.close();
+    },
+    { alongside: [codex], staleAfterMs: 7_000, codexStaleAfterMs: 60_000 }
+  );
 });

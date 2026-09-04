@@ -809,7 +809,10 @@ export class RunRecordWriter {
       if (this.#sealed) {
         return;
       }
-      this.manifest.tallies[name] = value;
+      // Names are the author's, reserved words included: a plain assignment
+      // of `__proto__` would invoke the inherited setter and record nothing,
+      // so the count is always defined as an own enumerable property.
+      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
       await this.#writeManifest();
     });
   }
@@ -1144,13 +1147,20 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     // about what was asked for. A no-event attempt adds no bucket —
     // the agent's own record says why (its `usage.unavailable` reason); a
     // zero bucket would read as zero spend, which is a different claim.
+    // An attempt that reported no served model of its own may borrow the
+    // agent-level answer only when that answer came from its own engine:
+    // the agent-level field is last-write-wins across attempts, and under
+    // a cross-engine chain the last writer is the answering engine, whose
+    // model must never label a refused engine's spend.
+    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
     for (const attempt of record.attempts) {
       const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
       if (summary === null) {
         continue;
       }
-      const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
+      const borrowed = engine === lastReporter ? record.resolvedModel : null;
+      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
       const key = `${engine}\u0000${model}`;

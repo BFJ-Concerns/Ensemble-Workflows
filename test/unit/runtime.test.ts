@@ -2792,18 +2792,27 @@ test("a thrown string reaches the record as the words the engine actually threw"
 // records the chain wrote.
 // ---------------------------------------------------------------------------
 
-/** One scripted engine: each createInvocation consumes the next step for its model. */
+/**
+ * One scripted engine: each createInvocation consumes the next step for its
+ * model. The cap is the adapter's own — the runtime reads an injected
+ * adapter's `concurrency`, never the `concurrencyCaps` option, which only
+ * shapes the default registry — so a test that wants a cap of one says so
+ * here.
+ */
 class ChainEngine implements EngineAdapter {
-  readonly concurrency = 4;
+  readonly concurrency: number;
   readonly dispatches: Array<{ model: string | undefined; effort: string | undefined; prompt: string }> = [];
-  readonly scheduler = new Scheduler(4);
+  readonly scheduler: Scheduler;
   #steps: Array<() => Promise<EngineAttemptResult>>;
 
   constructor(
     readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>
+    steps: Array<() => Promise<EngineAttemptResult>>,
+    concurrency = 4
   ) {
     this.#steps = [...steps];
+    this.concurrency = concurrency;
+    this.scheduler = new Scheduler(concurrency);
   }
 
   schedule<T>(task: () => Promise<T>): Promise<T> {
@@ -2907,19 +2916,31 @@ test("a cross-engine advance releases the refused engine's slot and re-admits on
   const claudeGate = new Promise<void>((resolve) => {
     releaseClaude = resolve;
   });
-  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded"), answers("second codex call")]);
-  const claude = new ChainEngine("claude", [
-    async () => {
-      await claudeGate;
-      return turn("from claude");
-    }
-  ]);
+  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded"), answers("second codex call")], 1);
+  const claude = new ChainEngine(
+    "claude",
+    [
+      async () => {
+        await claudeGate;
+        return turn("from claude");
+      }
+    ],
+    1
+  );
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([codex, claude]),
     cwd: "/fake/repo",
-    concurrencyCaps: { codex: 1, claude: 1 },
     defaultMaxAttempts: 1
   });
+  // The discriminating fact: both caps really are one at the admission
+  // controller, so a held Codex slot would starve the second call.
+  assert.deepEqual(
+    Object.entries(runtime.progress.snapshot().engines).map(([name, engine]) => [name, engine.cap]),
+    [
+      ["codex", 1],
+      ["claude", 1]
+    ]
+  );
   const first = runtime.agent("chained", {
     engine: "codex",
     model: "gpt-5.6-sol",

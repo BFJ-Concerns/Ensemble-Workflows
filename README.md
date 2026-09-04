@@ -371,15 +371,19 @@ rewritten.
 
 Every JSON artefact carries:
 
-- `schema_version`: currently `3`. Version 3 rewrites usage rollups in the
-  declared summary vocabulary keyed per served model; `strip` and `owner`
-  arrived later as additive version-3 fields. Version 2 added worktree
-  provenance and cross-engine token derivations over version 1.
+- `schema_version`: currently `4`. Version 4 replaces the agent record's
+  `fallback_model` with the declared `fallback` chain and the `answered_by`
+  target, gives every attempt its `target` and (when failed) its
+  `classification`, and adds the manifest's script-recorded `tallies`.
+  Version 3 rewrote usage rollups in the declared summary vocabulary keyed
+  per served model; `strip`, `owner`, and `transcript_capture` arrived
+  later as additive version-3 fields. Version 2 added worktree provenance
+  and cross-engine token derivations over version 1.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
-- `schema_version`: `3`.
+- `schema_version`: `4`.
 - `kind`: `"run_manifest"`.
 - `run_id`: namespaced run id.
 - `run_uuid`: the runtime UUID before namespacing.

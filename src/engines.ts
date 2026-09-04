@@ -1,17 +1,14 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
-import {
-  assertFallbackModelSupported,
-  requireRegisteredOpenCodeModel
-} from "./engine-option-validation.js";
+import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
   CapabilityStripUnsupportedError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelRequiredError
 } from "./errors.js";
-import { OpenCodeCliRunner, OpenCodeEngineInvocation, rejectUnsupportedOpenCodeOptions } from "./opencode-engine.js";
+import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
@@ -41,8 +38,6 @@ export interface EngineTurnOptions {
   schema?: JsonSchema;
   model?: string;
   effort?: string;
-  /** Claude only: declared degradation when the pinned model is unavailable. */
-  fallbackModel?: string;
   cwd?: string;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
   timeoutMs?: number;
@@ -310,7 +305,6 @@ export class CodexEngineAdapter implements EngineAdapter {
   }
 
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -319,7 +313,6 @@ export class CodexEngineAdapter implements EngineAdapter {
   }
 
   createSession(options: EngineTurnOptions): EngineWorkerSession {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
     return new CodexWorkerSession({ options, transport: this.#transport });
   }
 
@@ -654,7 +647,6 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
-    rejectUnsupportedOpenCodeOptions(options);
     if (options.model === undefined) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }

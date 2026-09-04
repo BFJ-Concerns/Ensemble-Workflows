@@ -14,24 +14,29 @@ import {
   AgentPromptRejectedError,
   AppServerExitedError,
   AppServerOverloadedError,
+  AppServerRequestError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   EmptyAgentOutputError,
   EngineShutdownError,
   CapabilityStripUnsupportedError,
-  FallbackModelUnsupportedError,
+  FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   InvalidAgentSchemaError,
   MissingEngineError,
+  RemovedAgentOptionError,
   TurnTimeoutError,
   WorktreePlacementRejectedError
 } from "../../src/errors.js";
 
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
-import type { EngineAdapter } from "../../src/engines.js";
+import { Scheduler } from "../../src/scheduler.js";
+
+import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 
 import type {
   AgentOptions,
+  EngineName,
   RuntimeTransport,
   ThreadStartOptions,
   TurnResult,
@@ -1087,19 +1092,38 @@ test("placement closes a worktree when invocation option validation rejects the 
     worktreeManager
   });
 
+  // An engine that refuses the call as the invocation is created — after
+  // the placement opened, before any worker spawned — must still see its
+  // worktree finalised.
+  const refusing: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      throw new InvalidAgentOptionValueError("effort", "sideways", "a canonical level");
+    },
+    close: async () => undefined
+  };
+  const refusingRuntime = new EnsembleRuntime({
+    engines: new EngineRegistry([refusing]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    worktreeManager
+  });
+
   await assert.rejects(
     () =>
-      runtime.agent("never starts", {
+      refusingRuntime.agent("never starts", {
         engine: "codex",
-        fallbackModel: "sonnet",
         isolation: "worktree"
       }),
-    FallbackModelUnsupportedError
+    InvalidAgentOptionValueError
   );
 
   assert.equal(transport.openedThreads.length, 0);
   assert.equal(worktreeManager.finished.length, 1);
-  assert.equal(runtime.worktrees[0]?.removed, true);
+  assert.equal(refusingRuntime.worktrees[0]?.removed, true);
+  void runtime;
 });
 
 test("invocation shutdown completes before worktree finalisation", async () => {
@@ -2437,7 +2461,7 @@ function usage(totalTokens: number) {
   };
 }
 
-test("fallbackModel is rejected on the Codex engine before any worker spawns", async () => {
+test("the retired fallbackModel option is rejected by name, pointing at the chain that replaced it", async () => {
   const transport = new FakeTransport([turn("never reached")]);
   const runtime = new EnsembleRuntime({
     transport,
@@ -2445,11 +2469,16 @@ test("fallbackModel is rejected on the Codex engine before any worker spawns", a
     defaultMaxAttempts: 1
   });
 
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
   await assert.rejects(
-    () => runtime.agent("read", { engine: "codex", fallbackModel: "sonnet" }),
+    () => unsafeAgent("read", { engine: "claude", fallbackModel: "sonnet" }),
     (error: unknown) => {
-      assert.ok(error instanceof FallbackModelUnsupportedError);
-      assert.match(error.message, /not supported on the codex engine/);
+      assert.ok(error instanceof RemovedAgentOptionError);
+      assert.match(error.message, /"fallbackModel" was removed/);
+      assert.match(error.message, /fallback: \[\{ engine, model, effort\? \}/);
       return true;
     }
   );
@@ -2752,5 +2781,293 @@ test("a thrown string reaches the record as the words the engine actually threw"
     kind: "error",
     message: "unknown model: gpt-5.6-nonesuch"
   });
+  await runtime.close();
+});
+
+// ---------------------------------------------------------------------------
+// The fallback chain and availability classification. The fakes
+// are scripted adapters recording which engine and which target options
+// each dispatch reached — the chain's whole point is *which target answered*,
+// so the dispatch log is the assertions' evidence, alongside the attempt
+// records the chain wrote.
+// ---------------------------------------------------------------------------
+
+/** One scripted engine: each createInvocation consumes the next step for its model. */
+class ChainEngine implements EngineAdapter {
+  readonly concurrency = 4;
+  readonly dispatches: Array<{ model: string | undefined; effort: string | undefined; prompt: string }> = [];
+  readonly scheduler = new Scheduler(4);
+  #steps: Array<() => Promise<EngineAttemptResult>>;
+
+  constructor(
+    readonly name: EngineName,
+    steps: Array<() => Promise<EngineAttemptResult>>
+  ) {
+    this.#steps = [...steps];
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
+    this.dispatches.push({ model: options.model, effort: options.effort, prompt });
+    return {
+      runAttempt: async () => {
+        const step = this.#steps.shift();
+        assert.ok(step, `${this.name} engine ran out of scripted steps`);
+        return step();
+      }
+    };
+  }
+
+  async close(): Promise<void> {}
+}
+
+/** A Codex refusal as the transport raises it: the app-server's own code riding the error. */
+function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
+  return async () => {
+    throw appServerErrorFromPayload("turn notification", { code, message: `refused: ${code}` });
+  };
+}
+
+/** A Claude refusal as the engine returns it: a failed result carrying the API's status and code. */
+function claudeRefusal(status: number, code: string): () => Promise<EngineAttemptResult> {
+  return async () => ({
+    ...turn(""),
+    attemptFailure: { kind: "claude-worker-diagnostic", message: `API Error: Request rejected (${status})` },
+    diagnostics: { apiError: { status, code } }
+  });
+}
+
+function answers(text: string): () => Promise<EngineAttemptResult> {
+  return async () => turn(text);
+}
+
+function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
+  runtime: EnsembleRuntime;
+  records: RuntimeAgentRecord[];
+} {
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry(engines),
+    cwd: "/fake/repo",
+    defaultMaxAttempts
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  return { runtime, records };
+}
+
+test("an availability refusal advances the chain to the next target on the same engine, costing no attempt", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("from the fallback")]);
+  const { runtime, records } = chainRuntime([codex], 1);
+
+  const output = await runtime.agent("work", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    effort: "high",
+    fallback: [{ engine: "codex", model: "gpt-5.6-terra" }]
+  });
+
+  assert.equal(output, "from the fallback");
+  // Two dispatches on one engine: the pin, then the chain entry — which took
+  // the call's own effort because it named none.
+  assert.deepEqual(
+    codex.dispatches.map((dispatch) => [dispatch.model, dispatch.effort]),
+    [
+      ["gpt-5.6-sol", "high"],
+      ["gpt-5.6-terra", "high"]
+    ]
+  );
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "complete");
+  // maxAttempts 1 and yet two attempt records: the refusal consumed none.
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.attempt, attempt.status, attempt.target, attempt.classification]),
+    [
+      [1, "failed", { engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.usage-limit" }],
+      [2, "complete", { engine: "codex", model: "gpt-5.6-terra" }, null]
+    ]
+  );
+  assert.deepEqual(settled.fallback, [{ engine: "codex", model: "gpt-5.6-terra" }]);
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-5.6-terra" });
+  await runtime.close();
+});
+
+test("a cross-engine advance releases the refused engine's slot and re-admits on the next engine", async () => {
+  // Codex cap 1: if the refused Codex slot were held across the Claude step,
+  // the second Codex call queued behind it could never start until the
+  // Claude answer landed. The release is observed by that second call
+  // running while the first is still waiting on Claude.
+  let releaseClaude: () => void = () => undefined;
+  const claudeGate = new Promise<void>((resolve) => {
+    releaseClaude = resolve;
+  });
+  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded"), answers("second codex call")]);
+  const claude = new ChainEngine("claude", [
+    async () => {
+      await claudeGate;
+      return turn("from claude");
+    }
+  ]);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    concurrencyCaps: { codex: 1, claude: 1 },
+    defaultMaxAttempts: 1
+  });
+  const first = runtime.agent("chained", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    fallback: [{ engine: "claude", model: "opus", effort: "low" }]
+  });
+  // Wait until the chained call has reached Claude (its dispatch recorded).
+  while (claude.dispatches.length === 0) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  // Settles while the chained call is still waiting on Claude: the Codex
+  // slot the refused target held has been released.
+  const second = await runtime.agent("independent", { engine: "codex", model: "gpt-5.6-terra" });
+  assert.equal(second, "second codex call");
+  releaseClaude();
+  assert.equal(await first, "from claude");
+  assert.deepEqual(claude.dispatches[0], { model: "opus", effort: "low", prompt: "chained" });
+  await runtime.close();
+});
+
+test("an output failure retries in place and never advances the chain", async () => {
+  const codex = new ChainEngine("codex", [answers("not json"), answers("still not json")]);
+  const claude = new ChainEngine("claude", [answers('{"answer":"yes"}')]);
+  const { runtime, records } = chainRuntime([codex, claude], 2);
+
+  const output = await runtime.agent("return JSON", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    schema,
+    fallback: [{ engine: "claude", model: "opus" }]
+  });
+
+  // Both attempts on the pinned target, the chain untouched, the collapse
+  // returned as it always was: a bad answer is the prompt's problem.
+  assert.equal(output, null);
+  assert.equal(codex.dispatches.length, 1);
+  assert.equal(claude.dispatches.length, 0);
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.target.model, attempt.classification]),
+    [
+      ["gpt-5.6-sol", { class: "output", rule: "output" }],
+      ["gpt-5.6-sol", { class: "output", rule: "output" }]
+    ]
+  );
+  assert.equal(settled.answeredBy, null);
+  await runtime.close();
+});
+
+test("the bound counts answered attempts across the chain, and a refusal on the last target keeps in-place retry", async () => {
+  // Two bad answers on the pin, then an allowance wall: a per-target bound
+  // or a refusal charged as an attempt would hand the fallback nothing. The
+  // fallback answers on its first try and the record shows all four.
+  const codex = new ChainEngine("codex", [answers(""), answers(""), codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("finally")]);
+  const { runtime, records } = chainRuntime([codex, claude], 3);
+
+  const output = await runtime.agent("work", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    fallback: [{ engine: "claude", model: "opus" }]
+  });
+  assert.equal(output, "finally");
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.attempt, attempt.status, attempt.target.engine, attempt.classification?.class ?? null]),
+    [
+      [1, "failed", "codex", "output"],
+      [2, "failed", "codex", "output"],
+      [3, "failed", "codex", "availability"],
+      [4, "complete", "claude", null]
+    ]
+  );
+  await runtime.close();
+});
+
+test("every target refused fails the call with the last target's own failure, every attempt classified", async () => {
+  // The last target keeps today's behaviour whole: its availability failure
+  // is the call's failure — here Claude's operational failure surfacing as
+  // the empty-output exhaustion it always was — never a new error class.
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [claudeRefusal(429, "rate_limit")]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+
+  await assert.rejects(
+    () => runtime.agent("work", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
+    (error: unknown) => {
+      assert.ok(error instanceof EmptyAgentOutputError);
+      assert.match(error.message, /Request rejected \(429\)/);
+      return true;
+    }
+  );
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "failed");
+  assert.equal(settled.answeredBy, null);
+  assert.deepEqual(
+    settled.attempts.map((attempt) => attempt.classification),
+    [
+      { class: "availability", rule: "codex.usage-limit" },
+      { class: "availability", rule: "claude.rate-limit" }
+    ]
+  );
+  await runtime.close();
+});
+
+test("with no chain declared, an availability failure is the call's own failure, exactly as before", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const { runtime, records } = chainRuntime([codex], 1);
+
+  await assert.rejects(() => runtime.agent("work", { engine: "codex" }), AppServerRequestError);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "failed");
+  // Classified all the same: the archive can be asked how often the tier
+  // refused, chain or no chain.
+  assert.deepEqual(settled.attempts[0]?.classification, { class: "availability", rule: "codex.usage-limit" });
+  assert.deepEqual(settled.attempts[0]?.target, { engine: "codex", model: null });
+  await runtime.close();
+});
+
+test("a malformed or opencode chain entry is rejected before any worker spawns", async () => {
+  const codex = new ChainEngine("codex", []);
+  const { runtime } = chainRuntime([codex], 1);
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (
+    prompt: string,
+    options: Record<string, unknown>
+  ) => Promise<unknown>;
+
+  for (const [chain, expected] of [
+    [[{ engine: "opencode", model: "glm-5.2" }], /entry 0 names the opencode engine/],
+    [[{ engine: "claude" }], /entry 0 must name its model/],
+    [[{ engine: "claude", model: "opus", effort: "ultra" }], /entry 0 effort must be one of/],
+    [[{ engine: "claude", model: "opus", cwd: "/elsewhere" }], /unrecognised key "cwd"/],
+    ["opus", /must be an array/]
+  ] as const) {
+    await assert.rejects(
+      () => unsafeAgent("work", { engine: "codex", fallback: chain }),
+      (error: unknown) => {
+        assert.ok(error instanceof FallbackTargetRejectedError);
+        assert.match(error.message, expected);
+        return true;
+      }
+    );
+  }
+  // An entry naming an engine this runtime does not carry: the validator
+  // admits it, the runtime refuses it.
+  await assert.rejects(
+    () => runtime.agent("work", { engine: "codex", fallback: [{ engine: "claude", model: "opus" }] }),
+    /the claude engine is not available to this run/
+  );
+  assert.equal(codex.dispatches.length, 0);
   await runtime.close();
 });

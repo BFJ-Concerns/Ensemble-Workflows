@@ -11,9 +11,9 @@ assert.ok(expected === "clean" || expected === "decode", "expected clean or deco
 
 const agentPath = await findOnlyFile(dataHome, "agent.json");
 const agent = await readJson(agentPath);
-const fixtureKeys = await readJson(new URL("../fixtures/run-record/v3-agent-keys.json", import.meta.url));
+const fixtureKeys = await readJson(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url));
 
-assert.equal(agent.schema_version, 3);
+assert.equal(agent.schema_version, 4);
 assert.equal(agent.kind, "agent_record");
 assert.deepEqual(Object.keys(agent).sort(), fixtureKeys);
 

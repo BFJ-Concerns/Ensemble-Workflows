@@ -75,7 +75,7 @@ test(
       assert.ok(snapshots.every((snapshot) => snapshot.agents.every((agent) => agent.label !== "blocked-live")));
 
       const archive = await readArchiveAsConsumer(recordStore);
-      assert.equal(archive.manifest.schema_version, 3);
+      assert.equal(archive.manifest.schema_version, 4);
       assert.deepEqual(archive.manifest.meta.task, {
         id: "budget-ordering-live-proof",
         family: "budget-ordering"

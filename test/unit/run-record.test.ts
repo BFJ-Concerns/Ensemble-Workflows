@@ -184,19 +184,19 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
 
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as Record<string, unknown>;
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as Record<string, unknown>;
-  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v3-manifest-keys.json", "utf8")) as {
+  const manifestKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-manifest-keys.json", "utf8")) as {
     manifest: string[];
     args: string[];
   };
-  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v3-agent-keys.json", "utf8"));
+  const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-agent-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
-  assert.equal(manifest.schema_version, 3);
+  assert.equal(manifest.schema_version, 4);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
-  assert.equal(agent.schema_version, 3);
+  assert.equal(agent.schema_version, 4);
   assert.equal(agent.kind, "agent_record");
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: null, layer: "default" },
@@ -962,7 +962,8 @@ function agentRecord(
     session: null,
     model,
     effort: null,
-    fallbackModel: null,
+    fallback: null,
+    answeredBy: null,
     resolvedModel: null,
     resolvedEffort: null,
     resolvedCwd: "/fixture/repo",
@@ -987,7 +988,9 @@ function agentRecord(
       {
         attempt: 1,
         status: "complete" as const,
+        target: { engine, model: null },
         failure: null,
+        classification: null,
         observedFailure: null,
         workerExit: null,
         appServerDiagnostic: null,
@@ -1694,7 +1697,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   // This is a cold read of the real writer's v3 record. No transcript
   // survives an interruption, but the array's type remains stable and its
   // sibling carries the reason a consumer needs to interpret the empty list.
-  assert.equal(interruptedAgent.schema_version, 3);
+  assert.equal(interruptedAgent.schema_version, 4);
   assert.ok(Array.isArray(interruptedAgent.transcripts));
   assert.deepEqual(interruptedAgent.transcripts, []);
   assert.equal(interruptedAgent.transcripts_unavailable, "worker-interrupted");
@@ -1888,4 +1891,106 @@ test("a failed agent's account is readable cold from its archived record", async
     message:
       "the agent failed with no attempt recorded and the rejection the runtime holds (SilentEngineError) carried no message"
   });
+});
+
+test("script-recorded tallies land in the manifest beside the usage rollup, last write per name winning", async () => {
+  // The count is in the archive before finish() and survives it; a consumer
+  // reads it from the manifest without a transcript.
+  const cwd = await gitRepo("ensemble-record-tallies-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-tallies",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: {}
+  });
+  await writer.recordTally("fix rounds", 2);
+  await writer.recordTally("rejected", 3);
+  await writer.recordTally("fix rounds", 4);
+
+  const midRun = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    tallies: Record<string, number>;
+  };
+  assert.deepEqual(midRun.tallies, { "fix rounds": 4, rejected: 3 });
+
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+  const sealed = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    tallies: Record<string, number>;
+  };
+  assert.deepEqual(sealed.tallies, { "fix rounds": 4, rejected: 3 });
+  // A tally after the seal is dropped, like every other late write.
+  await writer.recordTally("late", 1);
+  const afterSeal = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    tallies: Record<string, number>;
+  };
+  assert.deepEqual(afterSeal.tallies, { "fix rounds": 4, rejected: 3 });
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("a chained agent's usage is keyed under each attempt's own engine and served model", async () => {
+  // One agent, two engines: the rollup must not book the Claude
+  // attempt's spend under the agent's declared Codex engine, and the
+  // agent's own summary must fold both engines' events under their own
+  // inclusion rules.
+  const cwd = await gitRepo("ensemble-record-chain-usage-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-chain-usage",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: {}
+  });
+  const record = agentRecord(1, "codex", "gpt-5.6-sol", 3);
+  const refused = record.attempts[0]!;
+  refused.status = "failed";
+  refused.failure = { kind: "AppServerRequestError", message: "refused" };
+  refused.classification = { class: "availability", rule: "codex.usage-limit" };
+  refused.target = { engine: "codex", model: "gpt-5.6-sol" };
+  refused.resolvedModel = null;
+  refused.tokenUsageEvents = [];
+  record.attempts.push({
+    ...structuredClone(refused),
+    attempt: 2,
+    status: "complete",
+    failure: null,
+    classification: null,
+    target: { engine: "claude", model: "opus" },
+    resolvedModel: "claude-opus-5",
+    tokenUsageEvents: agentRecord(2, "claude", "claude-opus-5", 7).attempts[0]!.tokenUsageEvents
+  });
+  record.fallback = [{ engine: "claude", model: "opus" }];
+  record.answeredBy = { entry: 0, engine: "claude", model: "opus" };
+  await writer.recordAgent(record);
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    cost_rollup: Record<string, Record<string, { tokens: { totalTokens: number } }>>;
+  };
+  assert.deepEqual(Object.keys(manifest.cost_rollup), ["claude"]);
+  assert.equal(manifest.cost_rollup.claude?.["claude-opus-5"]?.tokens.totalTokens, 7);
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    engine: string;
+    answered_by: unknown;
+    usage: { summary: { totalTokens: number } };
+    attempts: Array<{ target: { engine: string; model: string | null }; classification: unknown }>;
+  };
+  assert.equal(agent.engine, "codex");
+  assert.deepEqual(agent.answered_by, { entry: 0, engine: "claude", model: "opus" });
+  assert.equal(agent.usage.summary.totalTokens, 7);
+  assert.deepEqual(
+    agent.attempts.map((attempt) => [attempt.target, attempt.classification]),
+    [
+      [{ engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.usage-limit" }],
+      [{ engine: "claude", model: "opus" }, null]
+    ]
+  );
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
 });

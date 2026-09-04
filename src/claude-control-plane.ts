@@ -47,8 +47,6 @@ export interface ClaudeDispatchOptions {
   cwd: string;
   model?: string;
   effort?: string;
-  /** Declared degradation: passed as `--fallback-model` when the pinned model is unavailable. */
-  fallbackModel?: string;
   /**
    * Permission deny rules for the worker session (capability stripping).
    * Delivered through the per-dispatch settings file — the surface
@@ -186,9 +184,6 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (options.effort !== undefined) {
       args.push("--effort", options.effort);
-    }
-    if (options.fallbackModel !== undefined) {
-      args.push("--fallback-model", options.fallbackModel);
     }
     // The worker session runs under the per-user daemon, whose environment
     // predates this run — inheritance cannot deliver the declared variables

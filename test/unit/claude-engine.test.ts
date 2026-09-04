@@ -1049,13 +1049,21 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
   }
 }
 
-test("fallbackModel rides the Claude dispatch as declared degradation", async () => {
+test("a Claude dispatch never carries the engine's own fallback-model switch", async () => {
+  // Every fallback step is the harness's own recorded dispatch: the
+  // control plane's dispatch options have no fallback field at all, so a
+  // chained call reaches Claude Code with its pinned model and nothing
+  // that could let the engine swap models behind the record's back.
   await withControlPlane([{ assistant: { text: "ok" } }], async (controlPlane) => {
     const runtime = makeRuntime(controlPlane);
     try {
-      await runtime.agent("say something", { engine: "claude", model: "opus", fallbackModel: "sonnet" });
+      await runtime.agent("say something", {
+        engine: "claude",
+        model: "opus",
+        fallback: [{ engine: "claude", model: "sonnet" }]
+      });
       assert.equal(controlPlane.dispatched[0]?.model, "opus");
-      assert.equal(controlPlane.dispatched[0]?.fallbackModel, "sonnet");
+      assert.equal("fallbackModel" in (controlPlane.dispatched[0] ?? {}), false);
     } finally {
       await runtime.close();
     }

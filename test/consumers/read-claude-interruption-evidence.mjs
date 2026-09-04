@@ -11,7 +11,7 @@ assert.ok(recordStore, "usage: read-claude-interruption-evidence.mjs <record-sto
 
 const agentPath = await findOnlyFile(recordStore, "agent.json");
 const agent = await readJson(agentPath);
-assert.equal(agent.schema_version, 3);
+assert.equal(agent.schema_version, 4);
 assert.equal(agent.status, "interrupted");
 assert.ok(Array.isArray(agent.transcripts), "an interrupted turn that left a transcript must list it");
 assert.equal(agent.transcripts.length, 1);

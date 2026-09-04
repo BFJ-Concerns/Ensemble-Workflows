@@ -7,6 +7,7 @@ import type {
   AgentOptions,
   Budget,
   EngineName,
+  FallbackTarget,
   IdentifiedAgentResult,
   JsonSchema,
   WorkerSessionOptions
@@ -43,13 +44,23 @@ export interface WorkflowRuntime {
    */
   raiseHold?: (options: RaiseHoldOptions) => Promise<HoldDecision>;
   notePhase: (title: string) => void;
+  /**
+   * Script-recorded tallies; see EnsembleRuntime.recordTally.
+   * Optional on the same terms as the other capabilities; the `tally`
+   * hook fails loud when absent.
+   */
+  recordTally?: (name: string, value: number) => Promise<void>;
 }
 
-/** The per-engine policy knobs a script's `export const defaults` may set. */
+/**
+ * The per-engine policy knobs a script's `export const defaults` may set.
+ * The chain is engine-agnostic — a Codex block may name a Claude target —
+ * and is judged whole at load time like the rest of the block.
+ */
 export interface WorkflowEngineDefaults {
   model?: string;
   effort?: string;
-  fallbackModel?: string;
+  fallback?: FallbackTarget[];
 }
 
 export type WorkflowDefaults = Partial<Record<EngineName, WorkflowEngineDefaults>>;
@@ -61,7 +72,7 @@ export interface WorkflowHooks {
   /**
    * Create a multi-turn worker session. Script defaults merge exactly
    * as for `agent()`: the session's engine block supplies model, effort,
-   * and fallbackModel where the call leaves them unset.
+   * and the fallback chain where the call leaves them unset.
    */
   session: (options: WorkerSessionOptions) => WorkerSession;
   /**
@@ -78,6 +89,13 @@ export interface WorkflowHooks {
   ) => Promise<unknown[]>;
   phase: (title: string) => void;
   log: (message: string) => void;
+  /**
+   * Record a named count into the run record: `await tally("fix
+   * rounds", 3)`. Numbers only, last write wins per name; the archive
+   * carries them beside the usage summary for a reader who never opens a
+   * transcript.
+   */
+  tally: (name: string, value: number) => Promise<void>;
   budget: Budget;
   worktrees: readonly IsolatedWorktreeRecord[];
   args: unknown;
@@ -137,6 +155,13 @@ export function createWorkflowHooks(options: {
     },
     log: (message) => {
       writeLog(message);
+    },
+    tally: (name, value) => {
+      const recordTally = options.runtime.recordTally;
+      if (recordTally === undefined) {
+        throw new PreSpawnAuthorError("this runtime does not support tallies");
+      }
+      return recordTally.call(options.runtime, name, value);
     },
     // A read-only facade: handing the live TokenBudget to the script would
     // expose record() and the events array to script mutation.
@@ -260,7 +285,7 @@ function mergeAgentDefaults(
 
 /**
  * The session analogue of {@link mergeAgentDefaults}: the engine block's
- * model/effort/fallbackModel apply where the creation call leaves them
+ * model, effort, and fallback chain apply where the creation call leaves them
  * unset, and defined call-site values win. Validation stays the runtime's —
  * this merge must not pre-judge keys.
  */

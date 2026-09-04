@@ -15,6 +15,7 @@ import {
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { appServerErrorFromPayload } from "../../src/app-server.js";
 
 import type {
   ClaudeControlPlane,
@@ -24,7 +25,7 @@ import type {
 } from "../../src/claude-control-plane.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
-import type { EngineAttemptResult } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
@@ -560,6 +561,8 @@ test("a machine-declared Claude cache TTL sets the staleness cliff, so mark and 
 
 interface ScriptedClaudeTurn {
   text?: string;
+  /** Script this turn as Claude Code's synthetic API refusal, annotated as the live transcript annotates it. */
+  apiError?: { status: number; code: string };
 }
 
 class SessionFakeControlPlane implements ClaudeControlPlane {
@@ -626,6 +629,20 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     if (turn?.text === undefined) {
       return "";
     }
+    if (turn.apiError !== undefined) {
+      return `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          model: "<synthetic>",
+          content: [{ type: "text", text: `API Error: Request rejected (${turn.apiError.status})` }],
+          stop_reason: "stop_sequence"
+        },
+        isApiErrorMessage: true,
+        apiErrorStatus: turn.apiError.status,
+        error: turn.apiError.code
+      })}\n`;
+    }
     return `${JSON.stringify({
       type: "assistant",
       message: { role: "assistant", content: [{ type: "text", text: turn.text }], stop_reason: "end_turn" }
@@ -636,7 +653,7 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
 async function withClaudeRuntime(
   turns: ScriptedClaudeTurn[],
   body: (runtime: EnsembleRuntime, controlPlane: SessionFakeControlPlane) => Promise<void>,
-  options: { tmux?: boolean; now?: () => number; staleAfterMs?: number } = {}
+  options: { tmux?: boolean; now?: () => number; staleAfterMs?: number; alongside?: EngineAdapter[] } = {}
 ): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-worker-session-"));
   try {
@@ -648,7 +665,7 @@ async function withClaudeRuntime(
       config: { pollIntervalMs: 1, receiptTimeoutMs: 200 }
     });
     const runtime = new EnsembleRuntime({
-      engines: new EngineRegistry([adapter]),
+      engines: new EngineRegistry([adapter, ...(options.alongside ?? [])]),
       defaultTurnTimeoutMs: 5_000,
       defaultMaxAttempts: 2,
       ...(options.now !== undefined ? { now: options.now } : {}),
@@ -754,4 +771,63 @@ test("the run's end closes every held session, and later sends throw", async () 
     assert.equal(controlPlane.stopCount, 1);
     await assert.rejects(session.send("too late"), SessionClosedError);
   });
+});
+
+test("a session's chain applies to the creating turn alone, and the answering target fixes the session's engine", async () => {
+  // Turn one: Codex refuses for availability, the chain advances to Claude,
+  // which answers and becomes the session's engine for its life. Turn two:
+  // a later availability failure fails that turn — no chain, no fresh
+  // dispatch on another engine — because escalation is a fresh dispatch,
+  // not a silent mid-session switch.
+  const transport = new ScriptedTransport([], () => undefined);
+  const refusingTransport: RuntimeTransport = {
+    cwd: "/fake/repo",
+    openThread: transport.openThread.bind(transport),
+    runTurn: async () => {
+      throw appServerErrorFromPayload("turn notification", { code: "usageLimitExceeded", message: "refused" });
+    },
+    close: async () => {}
+  };
+  const codex = new CodexEngineAdapter({ transport: refusingTransport, concurrency: 2 });
+  const claudeTurns = [
+    { text: "claude answers turn one" },
+    { text: "", apiError: { status: 429, code: "rate_limit" } }
+  ];
+  await withClaudeRuntime(claudeTurns, async (runtime, controlPlane) => {
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+    const session = runtime.createWorkerSession({
+      engine: "codex",
+      model: "gpt-5.6-sol",
+      fallback: [{ engine: "claude", model: "opus" }],
+      maxAttempts: 1
+    });
+
+    assert.equal(await session.send("turn one"), "claude answers turn one");
+    assert.equal(session.engine, "claude");
+    const turnOne = records.at(-1)!;
+    assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: "claude", model: "opus" });
+    assert.deepEqual(
+      turnOne.attempts.map((attempt) => [attempt.target.engine, attempt.classification?.class ?? null]),
+      [
+        ["codex", "availability"],
+        ["claude", null]
+      ]
+    );
+    assert.equal(controlPlane.dispatchCount, 1);
+
+    // Turn two's refusal is the turn's own failure: still one Claude
+    // dispatch ever, and the record names no chain for the turn.
+    await assert.rejects(session.send("turn two"), EmptyAgentOutputError);
+    assert.equal(controlPlane.dispatchCount, 1);
+    const turnTwo = records.at(-1)!;
+    assert.equal(turnTwo.fallback, null);
+    assert.equal(turnTwo.status, "failed");
+    assert.deepEqual(turnTwo.attempts[0]?.classification, { class: "availability", rule: "claude.rate-limit" });
+    await runtime.close();
+  }, { alongside: [codex] });
 });

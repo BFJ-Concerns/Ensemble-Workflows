@@ -44,12 +44,19 @@ any worker spawns.
   `null` after bounded retry; without a schema, it returns final text. Every
   worker runs unrestricted with filesystem and network access. Unrecognised
   option keys throw before that call's worker spawns; the removed `sandbox`,
-  `network`, and `webSearch` keys name their removal. A Claude call with no
-  `model` pin is flagged on stderr, and `fallbackModel` (Claude only) declares
-  degradation when a pinned tier is unavailable.
+  `network`, `webSearch`, and `fallbackModel` keys name their removal. A
+  Claude call with no `model` pin is flagged on stderr. `fallback` declares an
+  ordered chain of full targets — `[{ engine, model, effort? }, …]`, Codex or
+  Claude in any position — that the harness re-dispatches the call on when a
+  target fails for **availability** (allowance exhausted, provider overload
+  past its own retry, a dead or unstartable substrate); output failures retry
+  in place and never advance it, an opencode entry throws before any worker
+  spawns, and every step is the harness's own recorded dispatch — the engine
+  never swaps models behind the record's back.
 - `export const defaults = { … }` — an optional second export after `meta` —
-  sets per-engine `model`/`effort`/`fallbackModel` that every `agent()` call
-  inherits and call-site options override.
+  sets per-engine `model`/`effort`/`fallback` that every `agent()` call
+  inherits and call-site options override; the chain is engine-agnostic, so
+  a Codex block may name a Claude target.
 - `session(opts)` creates a multi-turn worker on `"claude"` or `"codex"`
   (`"opencode"` throws before spawn): engine, model, and effort are fixed at
   creation, and the returned handle's `send(prompt, { schema? })` runs
@@ -105,6 +112,11 @@ any worker spawns.
   committable source files, not live-status artefacts.
 - `phase(title)` and `log(message)` write to the run log; `phase()` also updates
   the live progress snapshot when enabled.
+- `tally(name, value)` records a named numeric count from the script body
+  into the run record's manifest (`tallies`), beside the usage rollup: how
+  many of a gate's inputs it accepted, how many fix rounds ran. Numbers
+  only; a name recorded again replaces its value; a blank name or a
+  non-finite value throws before anything is recorded.
 - `budget.spent(engine)` / `budget.remaining(engine)` expose per-engine token
   accounting, matching the names used by `agent()`. opencode accounts from the
   session export when available and from token-bearing step events on the stream
@@ -408,6 +420,10 @@ The manifest is `manifest.json`. Its top-level fields are:
   answer, timeout, and dead-raiser retirements this run's sweep observed)
   in event order, each entry carrying `hold_id`, `event`,
   `verdict`/`reason` where applicable, and a timestamp.
+- `tallies`: `name -> number`, the counts the script recorded through the
+  `tally` hook, stored verbatim (last write per name wins) and present in
+  the manifest from the moment each is recorded — a count recorded before
+  the run ended is in the archive whether or not the run finished cleanly.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
   all-`null` outside a git repository.
 - `environment`: OS, Node, and available tool versions.
@@ -417,8 +433,10 @@ The manifest is `manifest.json`. Its top-level fields are:
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
   run ended cleanly. Present on both the manifest and `result.json`.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
-  keys under each attempt's *served* model — the literal `"unresolved"` when
-  no served model was ever learned, never the requested pin. Cost entries carry
+  keys under each attempt's *own target engine* and *served* model — an agent
+  whose fallback chain advanced across engines books each attempt under the
+  engine that ran it — the literal `"unresolved"` when no served model was
+  ever learned, never the requested pin. Cost entries carry
   `amount`, `currency`, and `source: "provider-reported"` — the only source
   there is, because the harness never estimates money. A bucket with no
   provider figure carries no amount at all: it reads
@@ -451,15 +469,22 @@ The manifest is `manifest.json`. Its top-level fields are:
 
 Agent records live at `agents/<zero-padded-id>/agent.json`:
 
-- `schema_version`: `3`.
+- `schema_version`: `4`.
 - `kind`: `"agent_record"`.
 - `id`, `creation_order`, `concurrency_group`.
 - `engine`, `model`, `effort` (what was asked for — the canonical level),
-  `fallback_model`, and `resolved_model` / `resolved_effort` — what was
-  actually served: the engine's own report where it makes one (Codex), or
-  the native value the harness's canonical-effort clamp dispatched
-  (Claude); `null` when neither exists. Attempts carry `resolved_effort`
-  too, since a retry may be served differently from the attempt before it.
+  and `resolved_model` / `resolved_effort` — what was actually served: the
+  engine's own report where it makes one (Codex), or the native value the
+  harness's canonical-effort clamp dispatched (Claude); `null` when neither
+  exists. Attempts carry `resolved_effort` too, since a retry may be served
+  differently from the attempt before it.
+- `fallback`: the declared fallback chain — the `[{ engine, model, effort? }]`
+  list as the call or its engine defaults declared it — or `null`.
+- `answered_by`: which target answered — `{ entry, engine, model }`, `entry`
+  being `-1` for the call's own target and the chain index thereafter — or
+  `null` while no attempt has completed (a failed agent names none). Read
+  beside each attempt's `target`, this is how a run that silently ran its
+  "Codex" legs on Claude is legible after the fact.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
@@ -495,15 +520,30 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
   (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
 - `queued_ms`, `execution_ms`.
-- `attempts`: array. Each entry: `attempt` (1-based), `status`, `started_at`,
+- `attempts`: array. Each entry: `attempt` (1-based, numbering every
+  dispatch the call made — refused ones included), `status`, `target`
+  (`{ engine, model }` — the engine and requested pin this attempt was
+  dispatched to; the call's own until the chain advances), `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
   `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
-  `null`), `observed_failure`, `diagnostics`, `app_server_diagnostic`,
-  `token_usage_events`, `worker_exit`. Where the run's own settlement ended
-  the turn, the attempt's `failure` names that settlement and
-  `observed_failure` keeps the transport symptom the turn saw (a closed
-  app-server, an aborted poll); `observed_failure` is `null` when the
-  engine's own failure is the cause.
+  `null`), `classification`, `observed_failure`, `diagnostics`,
+  `app_server_diagnostic`, `token_usage_events`, `worker_exit`. Where the
+  run's own settlement ended the turn, the attempt's `failure` names that
+  settlement and `observed_failure` keeps the transport symptom the turn saw
+  (a closed app-server, an aborted poll); `observed_failure` is `null` when
+  the engine's own failure is the cause.
+- `classification` on a failed attempt: `{ class, rule }` — `class` is
+  `"availability"` (the engine refused or lost the worker before it
+  answered: allowance exhausted, provider overload past its own retry, a
+  dead or unstartable substrate — the one class that advances a fallback
+  chain and consumes no attempt), `"output"` (the worker answered badly:
+  empty, unparseable, off-schema — retried in place), or `"unclassified"`;
+  `rule` names the classifier rule that matched (`codex.usage-limit`,
+  `claude.rate-limit`, `codex.substrate-dead`, `run-settlement`, …) and is
+  `null` only when no rule recognised the diagnostic — the archive's tell
+  that the table has gone stale as an engine reworded its errors. The raw
+  diagnostic stays in `failure`, `app_server_diagnostic`, and `diagnostics`
+  beside it, never folded into a class. `null` on a complete attempt.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`; empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise

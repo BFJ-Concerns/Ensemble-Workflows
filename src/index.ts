@@ -76,12 +76,14 @@ export type {
   RaiseHoldOptions
 } from "./holds.js";
 export {
+  FallbackTargetRejectedError,
   HoldRejectedError,
   HoldTimeoutError,
   MultiTurnUnsupportedError,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
+  TallyRejectedError,
   WorkflowScriptReadError,
   attachPartialWorkerText,
   partialWorkerTextOf,
@@ -131,6 +133,7 @@ export type {
   EngineConcurrencyCaps,
   EngineName,
   EngineWorkerEnvironment,
+  FallbackTarget,
   IsolationMode,
   JsonObject,
   JsonSchema,
@@ -159,6 +162,8 @@ export type {
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+export { classifyAttemptFailure } from "./failure-classification.js";
+export type { AttemptFailureEvidence, FailureClass, FailureClassification } from "./failure-classification.js";
 export { summariseUsage } from "./usage-summary.js";
 export type { UsageSummary } from "./usage-summary.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";

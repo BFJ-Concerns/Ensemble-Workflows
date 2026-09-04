@@ -12,7 +12,7 @@ import {
   runWorkflowScript
 } from "../../src/script-runner.js";
 import { TokenBudget } from "../../src/budget.js";
-import { FallbackModelUnsupportedError, OpenCodeModelNotRegisteredError } from "../../src/errors.js";
+import { FallbackTargetRejectedError, OpenCodeModelNotRegisteredError } from "../../src/errors.js";
 
 import type { WorkflowRuntime } from "../../src/hooks.js";
 import type { EngineName } from "../../src/types.js";
@@ -1163,7 +1163,7 @@ test("child workflow defaults stay lexical and call sites still override them", 
     `
       export const meta = { name: "child-defaults" };
       export const defaults = {
-        claude: { model: "child-model", fallbackModel: "child-fallback" }
+        claude: { model: "child-model", fallback: [{ engine: "codex", model: "child-fallback" }] }
       };
 
       await agent("child default", { engine: "claude" });
@@ -1204,11 +1204,11 @@ test("child workflow defaults stay lexical and call sites still override them", 
     },
     {
       prompt: "child default",
-      options: { engine: "claude", model: "child-model", fallbackModel: "child-fallback" }
+      options: { engine: "claude", model: "child-model", fallback: [{ engine: "codex", model: "child-fallback" }] }
     },
     {
       prompt: "child override",
-      options: { engine: "claude", model: "call-model", fallbackModel: "child-fallback" }
+      options: { engine: "claude", model: "call-model", fallback: [{ engine: "codex", model: "child-fallback" }] }
     }
   ]);
 });
@@ -1247,34 +1247,59 @@ test("defaults with an unsupported option key fail loudly", async () => {
   );
 });
 
-test("engine-incompatible defaults fail before the body runs", async () => {
+test("a malformed fallback chain in defaults fails before the body runs", async () => {
+  // The chain is judged whole at load, by the same validator every
+  // call site uses. An opencode entry (the engine takes no chain entries) is
+  // the one that must fail here rather than on the day the chain first
+  // advances.
   const logs: string[] = [];
   let agentCalls = 0;
-  const lateRejectingRuntime: WorkflowRuntime = {
+  const countingRuntime: WorkflowRuntime = {
     ...runtime,
     agent: (async () => {
       agentCalls += 1;
-      throw new FallbackModelUnsupportedError("codex");
+      return "never";
     }) as unknown as WorkflowRuntime["agent"]
   };
 
   await assert.rejects(
     () =>
       runWorkflowScript({
-        filename: "codex-fallback-default.js",
-        runtime: lateRejectingRuntime,
+        filename: "opencode-fallback-default.js",
+        runtime: countingRuntime,
         log: (message) => logs.push(message),
         source: `
-          export const meta = { name: "codex-fallback-default" };
-          export const defaults = { codex: { fallbackModel: "sonnet" } };
+          export const meta = { name: "opencode-fallback-default" };
+          export const defaults = { codex: { fallback: [{ engine: "opencode", model: "glm-5.2" }] } };
           log("body ran");
           return await agent("never", { engine: "codex" });
         `
       }),
-    /fallbackModel is not supported on the codex engine/
+    (error: unknown) => {
+      assert.ok(error instanceof FallbackTargetRejectedError);
+      assert.match(error.message, /entry 0 names the opencode engine/);
+      return true;
+    }
   );
   assert.deepEqual(logs, []);
   assert.equal(agentCalls, 0);
+
+  // The retired option is named at load with what replaced it.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "retired-fallback-default.js",
+        runtime: countingRuntime,
+        log: (message) => logs.push(message),
+        source: `
+          export const meta = { name: "retired-fallback-default" };
+          export const defaults = { claude: { fallbackModel: "sonnet" } };
+          return "never";
+        `
+      }),
+    /defaults\.claude\.fallbackModel was removed: declare a fallback chain instead/
+  );
+  assert.deepEqual(logs, []);
 });
 
 test("an unregistered opencode model in defaults fails before the body runs", async () => {
@@ -1647,5 +1672,53 @@ test("a script path containing parentheses still gets its frames rewritten", asy
       assert.ok(!stack.includes("ensemble-workflow-body"), stack);
       return true;
     }
+  );
+});
+
+test("the tally hook records a named count into the run, replacing on repeat, and fails loud on an unusable value", async () => {
+  // The script body records counts the runtime cannot know. The hook
+  // is bound like every other, so the load-time free-identifier check
+  // admits it; the recording runtime captures what reached it.
+  const tallies: Array<[string, number]> = [];
+  const tallyingRuntime: WorkflowRuntime = {
+    ...runtime,
+    recordTally: async (name, value) => {
+      tallies.push([name, value]);
+    }
+  };
+
+  const result = await runWorkflowScript({
+    filename: "tally.js",
+    runtime: tallyingRuntime,
+    log: () => {},
+    source: `
+      export const meta = { name: "tally", description: "test" };
+      await tally("fix rounds", 2);
+      await tally("accepted", 5);
+      await tally("fix rounds", 3);
+      return "ok";
+    `
+  });
+  assert.equal(result.result, "ok");
+  assert.deepEqual(tallies, [
+    ["fix rounds", 2],
+    ["accepted", 5],
+    ["fix rounds", 3]
+  ]);
+
+  // A runtime without the capability fails the hook loud, pre-spawn.
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "tally-unsupported.js",
+        runtime,
+        log: () => {},
+        source: `
+          export const meta = { name: "tally-unsupported" };
+          await tally("count", 1);
+          return "never";
+        `
+      }),
+    /does not support tallies/
   );
 });

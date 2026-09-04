@@ -20,7 +20,7 @@ assert.ok(recordStore, "usage: read-claude-failure-spend.mjs <record-store>");
 
 const agentPath = await findOnlyFile(recordStore, "agent.json");
 const agent = await readJson(agentPath);
-assert.equal(agent.schema_version, 3);
+assert.equal(agent.schema_version, 4);
 assert.equal(agent.kind, "agent_record");
 assert.equal(agent.status, "failed");
 assert.ok(Array.isArray(agent.transcripts), "a failed turn that left a transcript must list it");

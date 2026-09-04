@@ -19,6 +19,23 @@ import type { TokenUsageBreakdown } from "./types.js";
 export interface TranscriptEntry {
   type?: string;
   message?: TranscriptMessage;
+  /**
+   * Claude Code's own annotation on a synthetic reply written in place of
+   * a model answer because the API refused the request (observed
+   * 2026-08-30 on Claude Code 2.1.251): the HTTP status and the API's
+   * error code beside the diagnostic text. Read by `apiErrorSince` so the
+   * failure classifier judges a refusal from the engine's structured
+   * account, never from the diagnostic prose.
+   */
+  isApiErrorMessage?: unknown;
+  apiErrorStatus?: unknown;
+  error?: unknown;
+}
+
+/** The API refusal a synthetic reply reports, as its structured fields say it. */
+export interface TranscriptApiError {
+  status: number | null;
+  code: string | null;
 }
 
 export interface TranscriptFile {
@@ -110,6 +127,30 @@ export function endsInSyntheticReply(entries: TranscriptEntry[], fromIndex = 0):
     return entry.message?.model === SYNTHETIC_MODEL_PLACEHOLDER;
   }
   return false;
+}
+
+/**
+ * The API refusal behind the turn's last synthetic reply, when the entry
+ * annotates one: `{ status, code }` from Claude Code's own fields, or null
+ * where the last assistant entry is not synthetic or carries no
+ * annotation. A synthetic reply for an unknown model name arrives without
+ * these fields; one for a 429 arrives with both.
+ */
+export function apiErrorSince(entries: TranscriptEntry[], fromIndex = 0): TranscriptApiError | null {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || entry.type !== "assistant") {
+      continue;
+    }
+    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
+      return null;
+    }
+    return {
+      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
+      code: typeof entry.error === "string" ? entry.error : null
+    };
+  }
+  return null;
 }
 
 /**

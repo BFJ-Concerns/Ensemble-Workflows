@@ -4,6 +4,7 @@ import { AgentPlacementManager, resolveAgentCwd } from "./agent-placement.js";
 import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
+import { classifyAttemptFailure } from "./failure-classification.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
@@ -21,11 +22,13 @@ import {
   AgentPromptRejectedError,
   EmptyAgentOutputError,
   EngineShutdownError,
+  FallbackTargetRejectedError,
   HoldRejectedError,
   MissingEngineError,
   MultiTurnUnsupportedError,
   SessionBusyError,
   SessionClosedError,
+  TallyRejectedError,
   appServerDiagnosticOf,
   attachAgentIdentity,
   describeError,
@@ -59,6 +62,7 @@ import type {
   EngineBudgetCeilings,
   EngineConcurrencyCaps,
   EngineName,
+  FallbackTarget,
   IdentifiedAgentResult,
   JsonObject,
   JsonSchema,
@@ -80,6 +84,7 @@ import type {
 } from "./engines.js";
 import type { AgentPlacement } from "./agent-placement.js";
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { FailureClassification } from "./failure-classification.js";
 import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord, TerminalErrorRecord } from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
@@ -112,6 +117,87 @@ interface AgentExecutionResult {
   value: unknown;
 }
 
+/**
+ * What one target's bounded attempts settle to. Beside the two settled
+ * outcomes, `refused` is the fallback chain's signal: the target failed for
+ * availability while a chain entry remained, so the loop stopped without
+ * consuming an attempt and the call moves to the next target.
+ */
+type AgentExecutionOutcome = AgentExecutionResult | { status: "refused" };
+
+/**
+ * Where a call's dispatch stands on its fallback chain: `entry` is -1 for
+ * the call's own target and the chain index thereafter. Every attempt
+ * record names the target it was dispatched to, and the agent record names
+ * the one that answered.
+ */
+interface ChainTarget {
+  entry: number;
+  engine: EngineName;
+  model: string | undefined;
+  effort: string | undefined;
+}
+
+/**
+ * The attempt bound shared across every target one call dispatches to:
+ * `maxAttempts` counts *answered* attempts, so an availability refusal that
+ * advances the chain consumes none, while `dispatched` numbers every
+ * attempt record the call writes, refused ones included.
+ */
+interface AttemptLedger {
+  readonly maxAttempts: number;
+  dispatched: number;
+  answered: number;
+}
+
+/** The chain position a target's attempt loop writes its records against. */
+interface TargetAttempts {
+  target: ChainTarget;
+  ledger: AttemptLedger;
+  /** Whether a later chain entry exists — the condition under which an availability failure is a refusal rather than a settled failure. */
+  chainRemains: boolean;
+}
+
+/**
+ * A cross-engine chain step crossing the admission boundary: the refused
+ * target's admitted task ends (releasing its cap and ceiling slot) and the
+ * leg is re-admitted afresh on `engine`. A class rather than a shape so a
+ * worker's own output can never be mistaken for it.
+ */
+class ChainAdvance {
+  constructor(readonly engine: EngineName) {}
+}
+
+/** The call's own target followed by its declared chain, an omitted entry effort taking the call's own. */
+function chainTargets(
+  engine: EngineName,
+  options: { model?: string; effort?: string; fallback?: FallbackTarget[] }
+): ChainTarget[] {
+  return [
+    { entry: -1, engine, model: options.model, effort: options.effort },
+    ...(options.fallback ?? []).map((target, index) => ({
+      entry: index,
+      engine: target.engine,
+      model: target.model,
+      effort: target.effort ?? options.effort
+    }))
+  ];
+}
+
+/** The call's options re-pointed at one chain target: engine, model, and effort are the target's; everything else rides unchanged. */
+function optionsForTarget<T extends { engine?: EngineName; model?: string; effort?: string }>(options: T, target: ChainTarget): T {
+  const forTarget: T = { ...options, engine: target.engine };
+  delete forTarget.model;
+  delete forTarget.effort;
+  if (target.model !== undefined) {
+    forTarget.model = target.model;
+  }
+  if (target.effort !== undefined) {
+    forTarget.effort = target.effort;
+  }
+  return forTarget;
+}
+
 interface UnsettledAgentRecord {
   record: RuntimeAgentRecord;
   stage: "dispatching" | "admitting";
@@ -141,7 +227,7 @@ export interface ShutdownTally {
 }
 
 type AgentExecutionCompletion =
-  | { ok: true; execution: AgentExecutionResult }
+  | { ok: true; execution: AgentExecutionOutcome }
   | { ok: false; error: unknown };
 
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
@@ -461,6 +547,32 @@ export class EnsembleRuntime {
     this.progress.setPhase(title);
   }
 
+  /**
+   * Record a named count from the script body into the run record.
+   * The runtime validates the shape — a non-empty name, a finite number —
+   * and stores the value verbatim beside the usage summary; a name
+   * recorded again replaces its value. Meaning is the author's alone. A
+   * recorder write failure is observability, never a script failure, on
+   * the same contract as agent records.
+   */
+  async recordTally(name: string, value: number): Promise<void> {
+    if (typeof name !== "string" || name.trim().length === 0) {
+      throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+    }
+    try {
+      await this.#runRecorder?.recordTally(name, value);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { tally: name, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
+  }
+
   handleEngineEvent(engine: EngineName, event: RuntimeEvent): void {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
@@ -527,9 +639,18 @@ export class EnsembleRuntime {
     // call's, and every member must resolve to a config or absent route on
     // the engine's declared table — an unenforceable strip throws before
     // admission, so no worker ever dispatches under a restriction the
-    // author believes is in force but is not.
+    // author believes is in force but is not. A chain target is a
+    // dispatch on its own engine, so the same judgement is made for each
+    // entry now, before anything is paid for — a strip the fallback engine
+    // cannot enforce must not surface on the day the chain first advances.
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    for (const target of options.fallback ?? []) {
+      const targetEngine = this.#chainEngineFor(target);
+      if (strip.length > 0) {
+        resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
+      }
+    }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     // The per-engine budget is an admission boundary, judged once per
     // agent() call, synchronously here — so the outcome depends only on
@@ -666,6 +787,17 @@ export class EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    // The creating turn's chain targets are dispatches of their own:
+    // each must hold sessions and enforce the strip, judged now.
+    for (const target of options.fallback ?? []) {
+      const targetEngine = this.#chainEngineFor(target);
+      if (targetEngine.createSession === undefined) {
+        throw new MultiTurnUnsupportedError(targetEngine.name);
+      }
+      if (strip.length > 0) {
+        resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
+      }
+    }
     const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
 
     this.#sessionCounter += 1;
@@ -747,7 +879,9 @@ export class EnsembleRuntime {
         engine: engine.name,
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
-        ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
+        // The chain is the creating turn's alone: a later turn's
+        // record declares none, because none applied to it.
+        ...(options.fallback !== undefined && state.turnCount === 0 ? { fallback: options.fallback } : {}),
         ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
         ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
@@ -772,24 +906,29 @@ export class EnsembleRuntime {
         if (unsettled !== undefined) {
           unsettled.stage = "admitting";
         }
-        let started = false;
         try {
           // The engine-cap/ceiling slot spans this turn alone — from here to
           // its settlement — never the session's idle life: an idle held
           // worker costs the machine nothing, and charging it a slot would
-          // let loitering fleets starve fresh dispatches.
-          const output = await this.#admission.admit(engine.name, agentId, () =>
-            engine.schedule(async () => {
-              started = true;
-              return this.#executeAgent(
-                engine.name,
-                { label: options.label ?? null, phase: options.phase ?? null },
-                agentId,
-                agentRecord,
-                queuedAt,
-                () => this.#runSessionBody(state, prompt, turn, agentId, agentRecord)
-              );
-            })
+          // let loitering fleets starve fresh dispatches. The
+          // fallback chain applies to the creating turn alone: once a
+          // target answers, the session's engine and model are fixed for
+          // its life, so a later turn runs its own target only and an
+          // availability failure there fails the turn.
+          const targets =
+            state.turnCount === 0
+              ? chainTargets(engine.name, options)
+              : chainTargets(engine.name, { model: options.model, effort: options.effort });
+          const output = await this.#runChained(
+            engine,
+            targets,
+            { label: options.label ?? null, phase: options.phase ?? null },
+            options.maxAttempts,
+            agentId,
+            agentRecord,
+            queuedAt,
+            (target, targetEngine, ledger, chainRemains) =>
+              this.#runSessionBody(state, prompt, turn, agentId, agentRecord, target, targetEngine, ledger, chainRemains)
           );
           // Record only what the engine actually reported. A requested pin
           // is not a served-model claim, and a missing response stays null.
@@ -802,16 +941,6 @@ export class EnsembleRuntime {
           // next turn just as on the successful path.
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          if (!started) {
-            this.progress.settleAgent(agentId, "failed");
-            // Same pre-start honesty as #runAdmitted's: this session turn
-            // was still queued, so its record must not claim an in-flight
-            // turn.
-            this.#settleTerminalStatus(agentRecord, error, "queued");
-            agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-            agentRecord.executionMs = 0;
-            await this.#recordSettlementSafely(agentId, agentRecord);
-          }
           throw error;
         }
       } finally {
@@ -829,8 +958,20 @@ export class EnsembleRuntime {
     prompt: string,
     turn: SessionTurnOptions,
     agentId: number,
-    agentRecord: RuntimeAgentRecord
-  ): Promise<AgentExecutionResult> {
+    agentRecord: RuntimeAgentRecord,
+    target: ChainTarget,
+    targetEngine: EngineAdapter,
+    ledger: AttemptLedger,
+    chainRemains: boolean
+  ): Promise<AgentExecutionOutcome> {
+    // The session takes the target's identity before its worker is
+    // created, so the engine session, this turn's records, and every later
+    // turn read one answer: a refused target's engine session is closed
+    // below and the next target re-points the state afresh.
+    state.engine = targetEngine;
+    state.options = optionsForTarget(state.options, target);
+    state.stalenessThresholdMs =
+      targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
     // Placement is the session's, opened once at its first turn and closed
     // with the session — a worktree session works one tree for its life.
@@ -862,7 +1003,6 @@ export class EnsembleRuntime {
           engine: state.engine.name,
           ...(options.model !== undefined ? { model: options.model } : {}),
           ...(options.effort !== undefined ? { effort: options.effort } : {}),
-          ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
           ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
           ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {})
         },
@@ -876,19 +1016,32 @@ export class EnsembleRuntime {
       ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
       ...(options.model !== undefined ? { model: options.model } : {})
     };
+    const attempts = { target, ledger, chainRemains };
+    let outcome: AgentExecutionOutcome;
     if (turn.schema !== undefined) {
-      return this.#runSchemaAgent(
+      outcome = await this.#runSchemaAgent(
         state.engine.name,
         invocation,
         { ...sharedOptions, schema: turn.schema },
         agentId,
-        agentRecord
+        agentRecord,
+        attempts
       );
+    } else {
+      const text = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
+      outcome = text === null ? { status: "refused" } : { status: "complete", value: text };
     }
-    return {
-      status: "complete",
-      value: await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord)
-    };
+    if (outcome.status === "refused") {
+      // The refused target's held worker is not this session's: close it
+      // so the next target creates its own, fresh — no session state
+      // carries across a chain step.
+      const refused = state.engineSession;
+      state.engineSession = null;
+      await refused.close().catch(() => undefined);
+    } else if (outcome.status === "complete") {
+      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+    }
+    return outcome;
   }
 
   async #closeWorkerSession(state: WorkerSessionState): Promise<void> {
@@ -956,26 +1109,116 @@ export class EnsembleRuntime {
     agentRecord: RuntimeAgentRecord,
     queuedAt: number
   ): Promise<unknown> {
+    return this.#runChained(
+      engine,
+      chainTargets(engine.name, options),
+      { label: options.label ?? null, phase: options.phase ?? null },
+      options.maxAttempts,
+      agentId,
+      agentRecord,
+      queuedAt,
+      (target, targetEngine, ledger, chainRemains) =>
+        this.#runAgent(targetEngine, prompt, optionsForTarget(options, target), agentId, agentRecord, target, ledger, chainRemains)
+    );
+  }
+
+  /**
+   * The chain loop: the call's own target, then each declared fallback
+   * entry, each admitted on its own engine. A same-engine step keeps the
+   * slot it holds — the target loop runs inside one admitted task — while a
+   * cross-engine step ends that task, releasing the refused engine's cap
+   * and ceiling slot, and re-admits the leg afresh on the next engine
+   * against its own cap, the ceiling, and its budget. One agent record
+   * spans the whole chain: every attempt names its target, and the record
+   * names the entry that answered. The last target is never refused — with
+   * no entry remaining an availability failure is the call's own failure,
+   * exactly as with no chain — so the loop always ends in a settlement or a
+   * throw. `runTarget` is one target's whole dispatch — placement,
+   * invocation, bounded attempts — resolving `refused` to hand the chain
+   * on.
+   */
+  async #runChained(
+    engine: EngineAdapter,
+    targets: ChainTarget[],
+    identity: { label: string | null; phase: string | null },
+    maxAttempts: number | undefined,
+    agentId: number,
+    agentRecord: RuntimeAgentRecord,
+    queuedAt: number,
+    runTarget: (
+      target: ChainTarget,
+      engine: EngineAdapter,
+      ledger: AttemptLedger,
+      chainRemains: boolean
+    ) => Promise<AgentExecutionOutcome>
+  ): Promise<unknown> {
+    const ledger: AttemptLedger = {
+      maxAttempts: maxAttempts ?? this.#defaultMaxAttempts,
+      dispatched: 0,
+      answered: 0
+    };
+    const position = { next: 0 };
+    let admittedEngine = engine;
+    let readmitting = false;
+    for (;;) {
+      const outcome = await this.#admitChainStep(admittedEngine, readmitting, agentId, agentRecord, queuedAt, () =>
+        this.#executeAgent(admittedEngine.name, identity, agentId, agentRecord, queuedAt, async () => {
+          // Same-engine steps stay inside this admitted task; the loop
+          // hands back a ChainAdvance the moment the next target's engine
+          // differs, so the slot is released first.
+          for (; position.next < targets.length; position.next += 1) {
+            const target = targets[position.next]!;
+            if (target.engine !== admittedEngine.name) {
+              return new ChainAdvance(target.engine);
+            }
+            const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
+            if (settled.status !== "refused") {
+              return settled;
+            }
+          }
+          throw new Error("fallback chain ended without a settlement");
+        })
+      );
+      if (!(outcome instanceof ChainAdvance)) {
+        return outcome;
+      }
+      // Re-admission on the next engine: the progress entry re-queued so
+      // the live view shows the leg waiting on its new engine's cap, and
+      // the budget judged afresh at that dispatch, as for any call.
+      admittedEngine = this.#engineFor(outcome.engine);
+      readmitting = true;
+      this.progress.requeueAgent(agentId, admittedEngine.name);
+    }
+  }
+
+  /**
+   * One admitted step of a chain: the engine's cap and the ceiling judged
+   * by admission, the budget too on a re-admission. A rejection before the
+   * task starts (budget, admission, or scheduler shutdown) bypasses
+   * #executeAgent's own settlement, so the progress entry is settled and
+   * the record persisted here — a cancelled queued worker must not be
+   * left counted as queued for ever.
+   */
+  async #admitChainStep(
+    engine: EngineAdapter,
+    readmitting: boolean,
+    agentId: number,
+    agentRecord: RuntimeAgentRecord,
+    queuedAt: number,
+    task: () => Promise<unknown>
+  ): Promise<unknown> {
     let started = false;
     try {
+      if (readmitting) {
+        this.budget.assertCanStart(engine.name);
+      }
       return await this.#admission.admit(engine.name, agentId, () =>
         engine.schedule(async () => {
           started = true;
-          return this.#executeAgent(
-            engine.name,
-            { label: options.label ?? null, phase: options.phase ?? null },
-            agentId,
-            agentRecord,
-            queuedAt,
-            () => this.#runAgent(engine, prompt, options, agentId, agentRecord)
-          );
+          return task();
         })
       );
     } catch (error) {
-      // A rejection before the task started (admission or scheduler shutdown)
-      // bypasses #executeAgent's own settlement: settle the progress entry and
-      // persist the record here so a cancelled queued worker is not left
-      // counted as queued for ever.
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
         // The task never started, so this leg was still queued — its
@@ -995,7 +1238,7 @@ export class EnsembleRuntime {
     agentId: number,
     agentRecord: RuntimeAgentRecord,
     queuedAt: number,
-    run: () => Promise<AgentExecutionResult>
+    run: () => Promise<AgentExecutionResult | ChainAdvance>
   ): Promise<unknown> {
     const executionStartedAt = Date.now();
     this.progress.startAgent(agentId);
@@ -1004,10 +1247,17 @@ export class EnsembleRuntime {
     executingRecords.add(agentRecord);
     try {
       const execution = await run();
+      if (execution instanceof ChainAdvance) {
+        // Not a settlement: the leg is leaving this engine for the next
+        // target's. The record stays in progress and the execution time
+        // spent here still counts toward the leg's total.
+        agentRecord.executionMs += Math.max(0, Date.now() - executionStartedAt);
+        return execution;
+      }
       const outcome = execution.status === "complete" ? "done" : "failed";
       const executionEndedAt = Date.now();
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
@@ -1033,7 +1283,7 @@ export class EnsembleRuntime {
     } catch (error) {
       const executionEndedAt = Date.now();
       agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
@@ -1288,18 +1538,28 @@ export class EnsembleRuntime {
     record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
 
+  /**
+   * One target's placement, invocation, and bounded attempts. Resolves to
+   * the target's settled outcome, or `refused` when the target failed for
+   * availability with a chain entry still to try (the chain loop then
+   * moves on, the refused target's placement already closed here).
+   */
   async #runAgent(
     engine: EngineAdapter,
     prompt: string,
     options: Partial<AgentOptions>,
     agentId: number,
-    agentRecord: RuntimeAgentRecord
-  ): Promise<AgentExecutionResult> {
+    agentRecord: RuntimeAgentRecord,
+    target: ChainTarget,
+    ledger: AttemptLedger,
+    chainRemains: boolean
+  ): Promise<AgentExecutionOutcome> {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     let invocation: EngineInvocation | undefined;
     let completion: AgentExecutionCompletion | undefined;
+    const attempts = { target, ledger, chainRemains };
     try {
       invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== undefined) {
@@ -1310,16 +1570,15 @@ export class EnsembleRuntime {
             invocation,
             { ...options, schema: options.schema },
             agentId,
-            agentRecord
+            agentRecord,
+            attempts
           )
         };
       } else {
+        const text = await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts);
         completion = {
           ok: true,
-          execution: {
-            status: "complete",
-            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
-          }
+          execution: text === null ? { status: "refused" } : { status: "complete", value: text }
         };
       }
     } catch (error) {
@@ -1384,6 +1643,9 @@ export class EnsembleRuntime {
     if (!completion.ok) {
       throw completion.error;
     }
+    if (completion.execution.status === "complete") {
+      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+    }
     return completion.execution;
   }
 
@@ -1398,18 +1660,25 @@ export class EnsembleRuntime {
     };
   }
 
+  /**
+   * The bounded-attempt loop for a text call on one target. Returns the
+   * answer, or `null` when the target was refused for availability with a
+   * chain entry remaining — the loop's own signal to the chain, distinct
+   * from every failure it throws.
+   */
   async #runTextAgent(
     engine: EngineName,
     invocation: EngineInvocation,
     options: Partial<AgentOptions>,
     agentId: number,
-    agentRecord: RuntimeAgentRecord
-  ): Promise<string> {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+    agentRecord: RuntimeAgentRecord,
+    attempts: TargetAttempts
+  ): Promise<string | null> {
     let lastError: Error | null = null;
     let previousFailure: EngineAttemptFailure | undefined;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+      const attempt = ++attempts.ledger.dispatched;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -1420,54 +1689,35 @@ export class EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== undefined) {
-          previousFailure = operationalFailure;
+          if (operationalFailure.refused) {
+            return null;
+          }
+          previousFailure = operationalFailure.failure;
           lastError = new EmptyAgentOutputError(previousFailure.message);
           continue;
         }
         const text = result.text.trim();
         if (text.length > 0) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
+          attempts.ledger.answered += 1;
+          agentRecord.attempts.push(
+            attemptRecord(attempt, attempts.target, "complete", null, result.text, result.text, startedAt, result)
+          );
           return text;
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
+        const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
+        if (thrown.refused) {
+          return null;
         }
-        // Terminalisation invariant: a failed turn's attempt record carries
-        // whatever the worker had said before it died, not a bare null —
-        // and how the process died, when the engine observed it.
-        //
-        // A run that ends under an in-flight turn tears the transport down
-        // itself, so the symptom the turn observed ("app-server closed")
-        // describes the run's exit and not the attempt's cause. The cause
-        // the runtime knows is named as the failure, and the observation is
-        // kept beside it rather than published as the reason.
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
+        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -1477,17 +1727,22 @@ export class EnsembleRuntime {
     throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
   }
 
+  /**
+   * The bounded-attempt loop for a schema call on one target: the
+   * validated value, the exhausted collapse, or `refused` for the chain.
+   */
   async #runSchemaAgent(
     engine: EngineName,
     invocation: EngineInvocation,
     options: Partial<AgentOptions> & { schema: JsonSchema },
     agentId: number,
-    agentRecord: RuntimeAgentRecord
-  ): Promise<AgentExecutionResult> {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+    agentRecord: RuntimeAgentRecord,
+    attempts: TargetAttempts
+  ): Promise<AgentExecutionOutcome> {
     let previousFailure: EngineAttemptFailure | undefined;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+      const attempt = ++attempts.ledger.dispatched;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -1498,9 +1753,12 @@ export class EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== undefined) {
-          previousFailure = operationalFailure;
+          if (operationalFailure.refused) {
+            return { status: "refused" };
+          }
+          previousFailure = operationalFailure.failure;
           continue;
         }
         // A silent worker (timeout, hang) is not a JSON problem: label it
@@ -1510,7 +1768,7 @@ export class EnsembleRuntime {
             kind: "empty-output",
             message: `agent returned empty text on attempt ${attempt}`
           };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
           continue;
         }
         const selection = selectLastValidJsonFromText(result.text, options.schema);
@@ -1519,13 +1777,14 @@ export class EnsembleRuntime {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
           continue;
         }
         if (selection.kind === "valid") {
+          attempts.ledger.answered += 1;
           agentRecord.parseRoute = selection.parsed.source;
           agentRecord.attempts.push(
-            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+            attemptRecord(attempt, attempts.target, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
           return {
             status: "complete",
@@ -1536,38 +1795,13 @@ export class EnsembleRuntime {
           kind: "schema-validation",
           message: JSON.stringify(selection.validation.errors ?? [])
         };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
       } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
+        const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
+        if (thrown.refused) {
+          return { status: "refused" };
         }
-        // Terminalisation invariant: a failed turn's attempt record carries
-        // whatever the worker had said before it died, not a bare null —
-        // and how the process died, when the engine observed it.
-        //
-        // A run that ends under an in-flight turn tears the transport down
-        // itself, so the symptom the turn observed ("app-server closed")
-        // describes the run's exit and not the attempt's cause. The cause
-        // the runtime knows is named as the failure, and the observation is
-        // kept beside it rather than published as the reason.
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
+        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
       }
@@ -1578,6 +1812,144 @@ export class EnsembleRuntime {
       value: null
     };
   }
+
+  /**
+   * An attempt the worker answered badly (empty, unparseable, off-schema):
+   * an output failure, so it consumes an attempt and never advances the
+   * chain.
+   */
+  #recordAnsweredFailure(
+    record: RuntimeAgentRecord,
+    attempt: number,
+    failure: EngineAttemptFailure,
+    rawOutput: string,
+    startedAt: number,
+    result: TurnResult,
+    attempts: TargetAttempts
+  ): void {
+    attempts.ledger.answered += 1;
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        failure,
+        rawOutput,
+        null,
+        startedAt,
+        result,
+        null,
+        null,
+        null,
+        this.#classify(attempts.target.engine, failure, null, result.diagnostics)
+      )
+    );
+  }
+
+  /**
+   * An engine-classified operational failure riding a returned result (the
+   * Claude and opencode adapters' shape). Recorded with its class; an
+   * availability class with a chain entry remaining reports `refused` and
+   * consumes no attempt — the worker never answered.
+   */
+  #recordOperationalFailure(
+    record: RuntimeAgentRecord,
+    attempt: number,
+    startedAt: number,
+    result: EngineAttemptResult,
+    attempts: TargetAttempts
+  ): { failure: EngineAttemptFailure; refused: boolean } | undefined {
+    if (result.attemptFailure === undefined) {
+      return undefined;
+    }
+    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const refused = classification.class === "availability" && attempts.chainRemains;
+    if (!refused) {
+      attempts.ledger.answered += 1;
+    }
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        result.attemptFailure,
+        result.text,
+        null,
+        startedAt,
+        result,
+        result.workerExit ?? null,
+        null,
+        null,
+        classification
+      )
+    );
+    return { failure: result.attemptFailure, refused };
+  }
+
+  /**
+   * A thrown failure (the Codex transport's shape, and any engine's
+   * unexpected rejection): recorded with the terminalisation invariant's
+   * evidence and its class. A run-settlement cause is never a refusal —
+   * the run is ending, not the target.
+   */
+  #recordThrownFailure(
+    record: RuntimeAgentRecord,
+    attempt: number,
+    error: unknown,
+    startedAt: number,
+    attempts: TargetAttempts
+  ): { refused: boolean } {
+    const observed = failureFromError(error);
+    const failedResult = failedTurnResultOf(error);
+    if (failedResult !== null) {
+      recordTurnMetadata(record, failedResult);
+    }
+    // Terminalisation invariant: a failed turn's attempt record carries
+    // whatever the worker had said before it died, not a bare null —
+    // and how the process died, when the engine observed it.
+    //
+    // A run that ends under an in-flight turn tears the transport down
+    // itself, so the symptom the turn observed ("app-server closed")
+    // describes the run's exit and not the attempt's cause. The cause
+    // the runtime knows is named as the failure, and the observation is
+    // kept beside it rather than published as the reason.
+    const settlement = this.#runSettlementCause(error);
+    const failure = settlement ?? observed;
+    const appServerDiagnostic = appServerDiagnosticOf(error);
+    const classification = this.#classify(attempts.target.engine, failure, appServerDiagnostic, failedResult?.diagnostics);
+    const refused = settlement === null && classification.class === "availability" && attempts.chainRemains;
+    if (!refused) {
+      attempts.ledger.answered += 1;
+    }
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        failure,
+        partialWorkerTextOf(error),
+        null,
+        startedAt,
+        failedResult,
+        workerExitStatusOf(error),
+        appServerDiagnostic,
+        settlement === null ? null : observed,
+        classification
+      )
+    );
+    return { refused };
+  }
+
+  /** One classification call for every failed attempt, so the archive's class always came from the same table. */
+  #classify(
+    engine: EngineName,
+    failure: { kind: string; message: string },
+    appServerDiagnostic: { code: number | string | null } | null,
+    diagnostics: JsonObject | undefined
+  ): FailureClassification {
+    return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
+  }
+
 
   #emitEvent(event: RuntimeEvent): void {
     for (const listener of this.#eventListeners) {
@@ -1647,6 +2019,20 @@ export class EnsembleRuntime {
     return adapter;
   }
 
+  /**
+   * A chain entry's engine, resolved pre-spawn: the validator has already
+   * confined entries to Codex and Claude, so an entry naming an engine this
+   * runtime does not carry (a registry built without it) is a declaration
+   * the run cannot honour, rejected before anything is paid for.
+   */
+  #chainEngineFor(target: FallbackTarget): EngineAdapter {
+    const adapter = this.#engines.get(target.engine);
+    if (adapter === undefined) {
+      throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
+    }
+    return adapter;
+  }
+
   #engineTurnOptions(options: Partial<AgentOptions>, cwd: string): EngineTurnOptions {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
@@ -1654,7 +2040,6 @@ export class EnsembleRuntime {
       ...(options.schema !== undefined ? { schema: options.schema } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
-      ...(options.fallbackModel !== undefined ? { fallbackModel: options.fallbackModel } : {}),
       ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {}),
       cwd
     };
@@ -1677,7 +2062,8 @@ export class EnsembleRuntime {
       },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
-      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
+      fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
+      answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
@@ -1740,6 +2126,7 @@ function requireTransport(transport: RuntimeTransport | undefined): RuntimeTrans
 
 function attemptRecord(
   attempt: number,
+  target: ChainTarget,
   status: "complete" | "failed",
   failure: { kind: string; message: string } | null,
   rawOutput: string | null,
@@ -1757,13 +2144,16 @@ function attemptRecord(
   > | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
-  observedFailure: { kind: string; message: string } | null = null
+  observedFailure: { kind: string; message: string } | null = null,
+  classification: FailureClassification | null = null
 ): RuntimeAgentAttemptRecord {
   const endedAt = new Date();
   return {
     attempt,
     status,
+    target: { engine: target.engine, model: target.model ?? null },
     failure,
+    classification,
     observedFailure,
     workerExit,
     appServerDiagnostic,
@@ -1797,30 +2187,6 @@ function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): voi
   if (result.transcriptCapture !== undefined) {
     record.transcriptCapture = result.transcriptCapture;
   }
-}
-
-function recordOperationalFailure(
-  record: RuntimeAgentRecord,
-  attempt: number,
-  startedAtMs: number,
-  result: EngineAttemptResult
-): EngineAttemptFailure | undefined {
-  if (result.attemptFailure === undefined) {
-    return undefined;
-  }
-  record.attempts.push(
-    attemptRecord(
-      attempt,
-      "failed",
-      result.attemptFailure,
-      result.text,
-      null,
-      startedAtMs,
-      result,
-      result.workerExit ?? null
-    )
-  );
-  return result.attemptFailure;
 }
 
 function failureFromError(error: unknown): { kind: string; message: string } {

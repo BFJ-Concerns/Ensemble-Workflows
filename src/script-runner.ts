@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as acorn from "acorn";
 import detectGlobals from "acorn-globals";
 
-import { validateEngineDefaults } from "./engine-option-validation.js";
+import { assertValidFallbackChain, validateEngineDefaults } from "./engine-option-validation.js";
 import { EnsembleError, PreSpawnAuthorError, WorkflowScriptReadError } from "./errors.js";
 
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
@@ -194,6 +194,7 @@ const HOOK_BINDING_NAMES = [
   "pipeline",
   "phase",
   "log",
+  "tally",
   "budget",
   "worktrees",
   "args",
@@ -271,6 +272,7 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     pipeline: hooks.pipeline,
     phase: hooks.phase,
     log: hooks.log,
+    tally: hooks.tally,
     budget: hooks.budget,
     worktrees: hooks.worktrees,
     args: hooks.args,
@@ -502,9 +504,25 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
     }
     const engineDefaults: WorkflowEngineDefaults = {};
     for (const [option, optionValue] of Object.entries(engineValue as Record<string, unknown>)) {
-      if (option !== "model" && option !== "effort" && option !== "fallbackModel") {
+      if (option === "fallbackModel") {
         throw new WorkflowScriptError(
-          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallbackModel`
+          `Workflow defaults.${engine}.fallbackModel was removed: declare a fallback chain instead — ` +
+            "fallback: [{ engine, model, effort? }, …] — which the harness advances on every engine"
+        );
+      }
+      if (option === "fallback") {
+        // The chain is judged by the same validator every call site uses,
+        // so a static declaration fails before the body runs with the
+        // same wording a call-site chain would.
+        assertValidFallbackChain(optionValue);
+        if (optionValue !== undefined) {
+          engineDefaults.fallback = optionValue;
+        }
+        continue;
+      }
+      if (option !== "model" && option !== "effort") {
+        throw new WorkflowScriptError(
+          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallback`
         );
       }
       if (typeof optionValue !== "string" || optionValue.length === 0) {

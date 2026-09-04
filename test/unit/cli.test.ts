@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
-import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
+import { EngineRegistry } from "../../src/engines.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
@@ -20,7 +20,6 @@ import { TokenBudget } from "../../src/budget.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
-import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { Budget, EngineName, RuntimeOptions, RuntimeTransport, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -900,7 +899,7 @@ test("ensemble agent --identity prints the identified envelope and still fails o
   assert.equal(envelope.partial, true);
 });
 
-test("ensemble agent persists label and phase and forwards Claude's fallback model", async () => {
+test("ensemble agent persists label and phase in the durable record", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-parity-"));
   const runRecordDir = path.join(directory, "records");
   const engine = new FixedResponseEngine("claude", "done");
@@ -908,14 +907,7 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
   const stderr = new CaptureStream();
 
   const exitCode = await runEnsembleCli(
-    [
-      "agent",
-      "--engine=claude",
-      "--label=reviewer-a",
-      "--phase=verification",
-      "--fallback-model=claude-sonnet-fallback",
-      "check the patch"
-    ],
+    ["agent", "--engine=claude", "--label=reviewer-a", "--phase=verification", "check the patch"],
     {
       cwd: directory,
       stdout,
@@ -927,7 +919,6 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
 
   assert.equal(exitCode, 0, stderr.text());
   assert.equal(stdout.text(), '"done"\n');
-  assert.equal(engine.turnOptions[0]?.fallbackModel, "claude-sonnet-fallback");
   const records = [];
   for await (const record of glob(path.join(runRecordDir, "runs/**/agents/000001/agent.json"))) {
     records.push(record);
@@ -936,11 +927,15 @@ test("ensemble agent persists label and phase and forwards Claude's fallback mod
   const record = JSON.parse(await readFile(records[0]!, "utf8")) as {
     label: string | null;
     phase: string | null;
-    fallback_model: string | null;
+    fallback: unknown;
+    answered_by: { entry: number; engine: string; model: string | null } | null;
   };
   assert.equal(record.label, "reviewer-a");
   assert.equal(record.phase, "verification");
-  assert.equal(record.fallback_model, "claude-sonnet-fallback");
+  // A direct agent declares no chain, and the record says which target
+  // answered even so: its own (entry -1).
+  assert.equal(record.fallback, null);
+  assert.deepEqual(record.answered_by, { entry: -1, engine: "claude", model: null });
 });
 
 test("the archive records the effort the engine actually served, beside the effort that was asked for", async () => {
@@ -975,30 +970,31 @@ test("the archive records the effort the engine actually served, beside the effo
   assert.equal(record.attempts[0]?.resolved_effort, "medium");
 });
 
-test("ensemble agent leaves fallback-model support to the engine and rejects malformed flag syntax before runtime", async () => {
-  for (const engineName of ["codex", "opencode"] as const) {
-    const externalCalls: string[] = [];
-    const engine = fallbackRejectingAdapter(engineName, externalCalls);
-    const stderr = new CaptureStream();
-    const exitCode = await runEnsembleCli(
-      ["agent", `--engine=${engineName}`, "--fallback-model=unsupported", "prompt"],
-      {
-        stdout: new CaptureStream(),
-        stderr,
-        runRecordDir: null,
-        createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
-      }
-    );
-
-    assert.equal(exitCode, 1);
-    assert.deepEqual(externalCalls, []);
-    assert.match(stderr.text(), new RegExp(`fallbackModel is not supported on the ${engineName} engine`));
-  }
-
+test("the retired --fallback-model flag is unknown to the CLI, and a misplaced flag is still a placement error", async () => {
+  // The engine-side switch is retired with its flag: the CLI names an
+  // unknown option at exit 2 with no runtime created, and the chain is a
+  // script-side declaration with no direct-agent flag.
   let runtimeCreations = 0;
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(
+    ["agent", "--engine=claude", "--fallback-model=sonnet", "prompt"],
+    {
+      stdout: new CaptureStream(),
+      stderr,
+      createRuntime: async () => {
+        runtimeCreations += 1;
+        return fakeRuntime();
+      }
+    }
+  );
+  assert.equal(exitCode, 2);
+  assert.equal(runtimeCreations, 0);
+  assert.match(stderr.text(), /--fallback-model/);
+  assert.doesNotMatch(stderr.text(), /\n\s+at /);
+
   const malformedStderr = new CaptureStream();
   const malformedExit = await runEnsembleCli(
-    ["agent", "--engine=claude", "prompt", "--fallback-model"],
+    ["agent", "--engine=claude", "prompt", "--max-attempts"],
     {
       stdout: new CaptureStream(),
       stderr: malformedStderr,
@@ -1013,7 +1009,7 @@ test("ensemble agent leaves fallback-model support to the engine and rejects mal
   assert.equal(runtimeCreations, 0);
   // The placement scan runs first: a flag after the prompt is named as a
   // misplacement with its remedy, before parseArgs could misread it.
-  assert.match(malformedStderr.text(), /Flag --fallback-model appears after the agent prompt/);
+  assert.match(malformedStderr.text(), /Flag --max-attempts appears after the agent prompt/);
   assert.doesNotMatch(malformedStderr.text(), /\n\s+at /);
 });
 
@@ -1958,7 +1954,7 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   assert.equal(
     result.stderr,
       "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]\n" +
+      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]\n" +
       "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
         "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
@@ -2583,36 +2579,6 @@ function fixedEngineRuntime(
     ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
     ...(options.strip !== undefined ? { strip: options.strip } : {})
   });
-}
-
-function fallbackRejectingAdapter(engineName: "codex" | "opencode", externalCalls: string[]): EngineAdapter {
-  if (engineName === "codex") {
-    const transport: RuntimeTransport = {
-      cwd: process.cwd(),
-      openThread: async () => {
-        externalCalls.push("openThread");
-        return "unexpected";
-      },
-      runTurn: async () => {
-        externalCalls.push("runTurn");
-        return turn("unexpected");
-      },
-      close: async () => {}
-    };
-    return new CodexEngineAdapter({ transport, concurrency: 1 });
-  }
-
-  const runner: OpenCodeRunner = {
-    run: async () => {
-      externalCalls.push("run");
-      throw new Error("unexpected opencode run");
-    },
-    exportSession: async () => {
-      externalCalls.push("exportSession");
-      throw new Error("unexpected opencode export");
-    }
-  };
-  return new OpenCodeEngineAdapter({ runner, concurrency: 1 });
 }
 
 // Resolves every turn immediately except for the "hang" prompt, which never

@@ -1,5 +1,5 @@
 import {
-  FallbackModelUnsupportedError,
+  FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
@@ -10,7 +10,7 @@ import { assertValidStripOption } from "./capability-stripping.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
-import type { AgentOptions, EngineName, WorkerSessionOptions } from "./types.js";
+import type { AgentOptions, EngineName, FallbackTarget, WorkerSessionOptions } from "./types.js";
 
 /** Node's 32-bit setTimeout ceiling: above it the platform's timer silently misbehaves. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -43,7 +43,7 @@ export function assertCanonicalEffortSupported(effort: unknown): void {
 interface EngineDefaultOptions {
   model?: string;
   effort?: string;
-  fallbackModel?: string;
+  fallback?: FallbackTarget[];
 }
 
 const AGENT_OPTION_KEYS = Object.keys({
@@ -51,7 +51,7 @@ const AGENT_OPTION_KEYS = Object.keys({
   schema: true,
   model: true,
   effort: true,
-  fallbackModel: true,
+  fallback: true,
   cwd: true,
   isolation: true,
   timeoutMs: true,
@@ -62,7 +62,13 @@ const AGENT_OPTION_KEYS = Object.keys({
   strip: true
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
-const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch"]);
+/**
+ * Keys a script may still be carrying from a retired contract. Each is
+ * named at rejection so the author learns what replaced it: `fallbackModel`
+ * (the Claude-only engine-side swap) became the harness-driven `fallback`
+ * chain on every engine.
+ */
+const REMOVED_AGENT_OPTION_KEYS = new Set(["sandbox", "network", "webSearch", "fallbackModel"]);
 
 /**
  * Read and validate `cwd` once, then shadow only its later value reads.
@@ -117,13 +123,14 @@ export function assertValidAgentOptions(options: object): void {
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);
   }
+  assertValidFallbackChain(values.fallback);
 }
 
 const WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
   model: true,
   effort: true,
-  fallbackModel: true,
+  fallback: true,
   cwd: true,
   isolation: true,
   timeoutMs: true,
@@ -170,6 +177,7 @@ export function assertValidWorkerSessionOptions(options: object): void {
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);
   }
+  assertValidFallbackChain(values.fallback);
 }
 
 const SESSION_TURN_OPTION_KEYS = ["schema"];
@@ -184,10 +192,46 @@ export function assertValidSessionTurnOptions(options: object): void {
   }
 }
 
-export function assertFallbackModelSupported(engine: EngineName, fallbackModel: string | undefined): void {
-  if (fallbackModel !== undefined && engine !== "claude") {
-    throw new FallbackModelUnsupportedError(engine);
+/**
+ * A fallback chain is judged whole, pre-spawn, wherever it is declared — a
+ * call site, a session, or an engine's `defaults` block: an array of full
+ * targets, each naming an engine and a model, Codex or Claude only (opencode
+ * is held at its existing surface and skips new capability by default, so an
+ * opencode entry throws here rather than failing unnoticed on the day the
+ * chain first advances), with any effort in the canonical vocabulary. The
+ * chain's own engine is never consulted: a Codex block may name a Claude
+ * target — that cross-family step is the motivating case.
+ */
+export function assertValidFallbackChain(chain: unknown): asserts chain is FallbackTarget[] | undefined {
+  if (chain === undefined) {
+    return;
   }
+  if (!Array.isArray(chain)) {
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+  }
+  chain.forEach((entry, index) => {
+    const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;
+    if (target === null) {
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+    }
+    for (const key of Object.keys(target)) {
+      if (key !== "engine" && key !== "model" && key !== "effort") {
+        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      }
+    }
+    if (target.engine === "opencode") {
+      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
+    }
+    if (target.engine !== "codex" && target.engine !== "claude") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    }
+    if (typeof target.model !== "string" || target.model.length === 0) {
+      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
+    }
+    if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+    }
+  });
 }
 
 export function requireRegisteredOpenCodeModel(
@@ -207,7 +251,7 @@ export function validateEngineDefaults(
   defaults: EngineDefaultOptions,
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
-  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  assertValidFallbackChain(defaults.fallback);
   if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.

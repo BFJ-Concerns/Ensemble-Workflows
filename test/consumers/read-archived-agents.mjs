@@ -50,10 +50,10 @@ for (const manifestPath of manifestPaths) {
 }
 
 const agents = await Promise.all(agentPaths.map((agentPath) => readJson(agentPath)));
-const v3AgentKeys = await readJson(new URL("../fixtures/run-record/v3-agent-keys.json", import.meta.url));
+const v3AgentKeys = await readJson(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url));
 
 for (const [index, agent] of agents.entries()) {
-  assert.equal(agent.schema_version, 3);
+  assert.equal(agent.schema_version, 4);
   assert.equal(agent.kind, "agent_record");
   const hasAbandonment = agent.abandonment !== undefined;
   assert.deepEqual(Object.keys(agent).sort(), hasAbandonment ? [...v3AgentKeys, "abandonment"].sort() : v3AgentKeys);

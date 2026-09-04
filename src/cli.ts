@@ -34,7 +34,6 @@ const AGENT_INVOCATION_OPTIONS = {
   effort: { type: "string" },
   label: { type: "string" },
   phase: { type: "string" },
-  "fallback-model": { type: "string" },
   cwd: { type: "string" },
   isolation: { type: "string" },
   identity: { type: "boolean" },
@@ -959,9 +958,6 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
     ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
     ...(parsed.values.label !== undefined ? { label: parsed.values.label } : {}),
     ...(parsed.values.phase !== undefined ? { phase: parsed.values.phase } : {}),
-    ...(parsed.values["fallback-model"] !== undefined
-      ? { fallbackModel: parsed.values["fallback-model"] }
-      : {}),
     ...(parsed.values.cwd !== undefined ? { cwd: parsed.values.cwd } : {}),
     ...(isolation !== undefined ? { isolation } : {}),
     ...(parsed.values.identity === true ? { identity: true } : {}),
@@ -1371,7 +1367,7 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
 function usage(): string {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
-    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
     "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",

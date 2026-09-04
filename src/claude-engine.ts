@@ -17,6 +17,7 @@ import {
   partialWorkerTextOf
 } from "./errors.js";
 import {
+  apiErrorSince,
   endsInSyntheticReply,
   finalAssistantText,
   readTranscriptFile,
@@ -29,7 +30,7 @@ import { CANONICAL_EFFORT_DOMAIN } from "./engine-option-validation.js";
 
 import type { CanonicalEffort } from "./engine-option-validation.js";
 import type { ClaudeControlPlane, ClaudeSessionHandle } from "./claude-control-plane.js";
-import type { TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
+import type { TranscriptApiError, TranscriptEntry, TranscriptFile } from "./claude-transcript.js";
 import type {
   EngineAttemptContext,
   EngineAttemptFailure,
@@ -409,7 +410,6 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       cwd: this.#cwd,
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
-      ...(this.#options.fallbackModel !== undefined ? { fallbackModel: this.#options.fallbackModel } : {}),
       ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}),
       // Loiter pricing: only a session meant to be resumed pays the
       // 1-hour cache-write premium; one-shot workers keep the 5m default.
@@ -722,7 +722,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex)
+      usage: usageSince(transcript.entries, fromIndex),
+      apiError: apiErrorSince(transcript.entries, fromIndex)
     };
   }
 
@@ -925,6 +926,10 @@ function failedTurnResult(
     firstDeltaMs: null,
     items: {},
     tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    // The refusal's structured account rides the attempt as diagnostics,
+    // where the failure classifier reads it: a 429's status and code are
+    // the engine's own word, which the diagnostic prose is not.
+    ...(evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {}),
     ...(evidence === null
       ? {}
       : {
@@ -947,6 +952,8 @@ interface FailureEvidence {
   transcript: TranscriptFile;
   resolvedModel: string | null;
   usage: TokenUsageBreakdown;
+  /** The API refusal the synthetic reply annotated, when it did; evidence for classifying the failure. */
+  apiError: TranscriptApiError | null;
 }
 
 /**

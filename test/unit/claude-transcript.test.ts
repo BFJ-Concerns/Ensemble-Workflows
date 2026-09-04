@@ -200,3 +200,43 @@ test("readTranscript parses a real on-disk file and errors clearly when missing"
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("apiErrorSince reads the synthetic reply's structured refusal, and nothing from a model reply", async () => {
+  const { apiErrorSince } = await import("../../src/claude-transcript.js");
+  // The observed 2026-08-30 shape: Claude Code's own annotation beside its
+  // synthetic reply, status and code as fields, prose in the content.
+  const refused = parseTranscriptText(
+    [
+      JSON.stringify({ type: "user", message: { role: "user", content: "work" } }),
+      JSON.stringify({
+        type: "assistant",
+        message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "API Error: Request rejected (429)" }], stop_reason: "stop_sequence" },
+        isApiErrorMessage: true,
+        apiErrorStatus: 429,
+        error: "rate_limit"
+      })
+    ].join("\n")
+  );
+  assert.deepEqual(apiErrorSince(refused), { status: 429, code: "rate_limit" });
+
+  // A synthetic reply with no annotation (an unknown model name) is not an
+  // API refusal the classifier can read a status from.
+  const unannotated = parseTranscriptText(
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "API Error: 400 unknown provider" }] }
+    })
+  );
+  assert.equal(apiErrorSince(unannotated), null);
+
+  // A real model reply carrying stray fields is never read as a refusal.
+  const answered = parseTranscriptText(
+    JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", model: "claude-opus-5", content: [{ type: "text", text: "done" }] },
+      isApiErrorMessage: true,
+      apiErrorStatus: 429
+    })
+  );
+  assert.equal(apiErrorSince(answered), null);
+});

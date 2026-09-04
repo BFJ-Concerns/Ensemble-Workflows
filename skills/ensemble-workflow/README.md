@@ -47,7 +47,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
   [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]
 node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine <engine> [--model <model>] [--effort <effort>] \
-  [--fallback-model <model>] [--label <label>] [--phase <phase>] [--cwd <path>] \
+  [--label <label>] [--phase <phase>] [--cwd <path>] \
   [--isolation worktree] [--identity] [--schema '<json>'|@file] \
   [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] \
   [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
@@ -81,9 +81,10 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope 
   `agent()` returns in a workflow. `--max-attempts` overrides the per-call
   retry bound (default 3), as `maxAttempts` does in a script. `--label` and
   `--phase` annotate the worker in progress output and its durable run record.
-  `--fallback-model` supplies Claude's declared-degradation model and is
-  rejected by the other engines. `--task` copies an optional identity into the
-  run record for benchmark grouping.
+  There is no direct-agent fallback flag: a fallback chain is a script-side
+  declaration (`fallback` in `agent()` or `defaults`), and the retired
+  `--fallback-model` is an unknown option (exit 2). `--task` copies an
+  optional identity into the run record for benchmark grouping.
 - `--strip capability` (repeatable) strips a named tool-surface capability —
   `skills` or `agents` — from workers. Before a workflow script it applies
   run-wide to every `agent()` call; on the `agent` subcommand it applies to
@@ -294,7 +295,9 @@ Top-level fields: `run_id`, `run_uuid`, `caller_identity` (opaque invoker
 identity or `null`), `namespace` (strategy, id, hash,
 material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
 `"interrupted"`, `"incomplete"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
-`abandonment` (present on reaped manifests only), `started_at`/`ended_at` (ISO;
+`abandonment` (present on reaped manifests only), `tallies` (`name -> number`,
+the counts the script recorded through `tally()`, last write per name
+winning), `started_at`/`ended_at` (ISO;
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
 and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
@@ -317,7 +320,10 @@ semantics).
 ### Agent record (`agents/<id>/agent.json`)
 
 Top-level fields: `id`, `creation_order`, `concurrency_group`, `engine`,
-`model`, `effort`, `fallback_model`, `resolved_model` (`null` when unknown),
+`model`, `effort`, `fallback` (the declared chain or `null`), `answered_by`
+(`{ entry, engine, model }` naming the target that answered — `entry` is
+`-1` for the call's own — or `null` on a failed agent), `resolved_model`
+(`null` when unknown),
 `label`, `phase`, `status` (`"in-progress"`, `"complete"`, `"failed"`,
 `"timed-out"`, `"interrupted"`, `"abandoned"`), `prompt`, `schema` (requested
 JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
@@ -327,11 +333,18 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
 `usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`.
 
-`attempts` is an array; each entry carries: `attempt` (1-based index),
-`status`, `started_at`, `ended_at`, `duration_ms`, `first_delta_ms`,
-`raw_output`, `validated_output`, `resolved_model`, `failure` (`{ kind,
-message }` or `null`), `diagnostics`, `app_server_diagnostic`,
-`token_usage_events` (engine-native per-attempt events), `worker_exit`.
+`attempts` is an array; each entry carries: `attempt` (1-based index over
+every dispatch the call made), `status`, `target` (`{ engine, model }` the
+attempt was dispatched to), `started_at`, `ended_at`, `duration_ms`,
+`first_delta_ms`, `raw_output`, `validated_output`, `resolved_model`,
+`failure` (`{ kind, message }` or `null`), `classification` (`{ class, rule }`
+on a failed attempt — `class` one of `availability`, `output`,
+`unclassified`; `rule` the classifier rule that matched, or `null` when no
+rule recognised the diagnostic — `null` on a complete attempt),
+`diagnostics`, `app_server_diagnostic`, `token_usage_events` (engine-native
+per-attempt events), `worker_exit`. The `cost_rollup` books each attempt
+under its own `target.engine` and served model, so a chained agent's spend
+lands where it was spent.
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
 `source`, and engine-specific ids (`session_id`, `thread_id`).
@@ -342,8 +355,11 @@ names why it is empty.
 
 A workflow script must begin with `export const meta = { name, description }`
 as an object literal, optionally followed by
-`export const defaults = { <engine>: { model?, effort?, fallbackModel? } }`
-(per-engine defaults; defined per-call options win). Blank lines, `//` comments
+`export const defaults = { <engine>: { model?, effort?, fallback? } }`
+(per-engine defaults; defined per-call options win; `fallback` is the same
+ordered chain of `{ engine, model, effort? }` targets `agent()` accepts,
+engine-agnostic — a Codex block may name a Claude target — and judged whole
+at load). Blank lines, `//` comments
 ending in LF, CR, CRLF, U+2028 LINE SEPARATOR, or U+2029 PARAGRAPH SEPARATOR,
 and `/* ... */` comments may separate these exports; a
 `defaults` export declared later in the workflow body is rejected with a
@@ -394,6 +410,12 @@ orchestrator remains the real backstop.
   yields `null` for that item, with the same pre-spawn author-error
   exception as `parallel()`.
 - `phase(title)` / `log(message)` — run log; `phase` also updates live status.
+- `tally(name, value)` — record a named numeric count into the run
+  manifest's `tallies`, beside the usage rollup: `await tally("fix rounds",
+  3)`. Numbers only, last write per name wins; a blank name or a non-finite
+  value throws before anything is recorded. The runtime cannot know which
+  worker verified which, but the script does — a count it records is the
+  accountability the archive can honestly carry.
 - `budget.spent(engine)` / `budget.remaining(engine)` — token accounting
   (remaining is `Infinity` without a ceiling). opencode uses stream step usage
   when session export is unavailable; both paths charge the final input/cache
@@ -414,9 +436,13 @@ the context of what it built, instead of a cold dispatch re-briefed through a
 pasted summary. An opencode session throws before any worker spawns (the
 engine is held at its one-shot surface).
 
-- **Fixed at creation:** `engine`, `model`, `effort`, plus `fallbackModel`,
+- **Fixed at creation:** `engine`, `model`, `effort`, plus `fallback`,
   `cwd`, `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
-  and `stalenessMark` (below). Changing model or effort would invalidate the
+  and `stalenessMark` (below). The fallback chain applies to the
+  **creating turn alone**: the target that answers fixes the session's
+  engine and model for its life (`handle.engine` reads the answering
+  engine), and a later turn's availability failure fails that turn —
+  escalation is a fresh dispatch. Changing model or effort would invalidate the
   session's prompt cache — escalation is a fresh dispatch, not a mid-session
   switch. **Per turn:** `schema` alone, on `send()`; each turn gets the same
   validated-return, tolerant-parse, and bounded-retry contract as a one-shot
@@ -560,14 +586,14 @@ the time to the first agent-message delta.
 |---|---|---|---|
 | `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
 | `effort` | canonical level `minimal \| low \| medium \| high \| xhigh`, validated pre-spawn; passed to the turn natively | same canonical level, clamped to the CLI's nearest native level (`minimal`→`low`, `xhigh`→`high`); the run record's `resolved_effort` carries the clamped value | exempt: must name one of the registry entry's served variants; otherwise throws pre-spawn |
-| `fallbackModel` | throws | supported (declared degradation) | throws |
+| `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn); an opencode call may declare a chain of Codex/Claude targets |
 | `cwd` | worker working directory; defaults to the run cwd | same | same |
 | `isolation: 'worktree'` | fresh git worktree; any other defined value throws | same | same |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary test observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -753,6 +779,25 @@ rejection itself is unchanged, invoking no engine.
   in the same session when tmux is available (fresh dispatch with the failure
   appended otherwise); codex and opencode retry with the failure appended to
   the prompt.
+- **Availability failures and the fallback chain.** Every failed attempt is
+  classified from the engine's own diagnostic — `availability` (Codex's
+  `usageLimitExceeded`, `rateLimitExceeded`, `serverOverloaded`, a
+  connection the provider refused, a dead or unstartable app-server;
+  Claude's synthetic API-refusal reply carrying a 429, 503, or 529, a
+  `claude --bg` that could not dispatch, a session that never showed life),
+  `output` (empty, unparseable, off-schema), or `unclassified` (a deadline,
+  a client diagnostic about a bad model name, or a diagnostic no rule
+  recognised — recorded with `rule: null` so a stale table is visible in
+  the archive rather than silently stranding chains). With a `fallback`
+  chain declared, an availability failure with an entry remaining
+  re-dispatches the same prompt, schema, placement, and strip on the next
+  target, fresh, consuming no attempt; on the last target (or with no
+  chain) it is the call's own failure exactly as before, and an in-band
+  overload the provider promises to retry stays the bounded in-place retry
+  it always was — so a chain whose every target refuses fails with the last
+  target's own failure, every attempt classified in the record. A malformed
+  chain, an opencode entry, or an engine the run does not carry throws
+  `FallbackTargetRejectedError` before any worker spawns.
 - **Operational worker failures** on Claude and opencode (dispatch died, poll
   timed out, transcript unreadable, session settled without a provable
   completion, subprocess killed on deadline, run exited non-zero) degrade to

@@ -1621,13 +1621,6 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
       return;
     }
-    if (mode === "recycled-thread-stragglers" || mode === "recycled-thread-straggler-before-ack") {
-      // Turn one is acknowledged with its id so the client learns turn-1
-      // from the response, exactly as the real server names it.
-      send({ id: message.id, result: { turn: { id: "turn-1" } } });
-      send({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
-      return;
-    }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
     if (mode === "system-error-then-schema-error-follow-up") {
@@ -1653,9 +1646,12 @@ reader.on("line", (line) => {
     }
     if (mode === "recycled-thread-stragglers" || mode === "recycled-thread-straggler-before-ack") {
       if (turnCounter === 1) {
-        // Turn one: acknowledged with its id, then silence until the client's
-        // deadline interrupts it. Its terminal frames straggle in during the
-        // next turn.
+        // Turn one: acknowledged with its id (so the client learns turn-1
+        // from the response, as the real server names it), then silence
+        // until the client's deadline interrupts it. Its terminal frames
+        // straggle in during the next turn.
+        send({ id: message.id, result: { turn: { id: "turn-1" } } });
+        send({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
         return;
       }
       const stragglers = () => {

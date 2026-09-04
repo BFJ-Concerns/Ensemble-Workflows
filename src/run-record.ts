@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type {
   EngineName,
   EngineTranscriptArtifact,
+  FallbackTarget,
   JsonObject,
   JsonSchema,
   TokenUsageEvent
@@ -19,10 +20,18 @@ import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
+import type { FailureClassification } from "./failure-classification.js";
 import type { UsageSummary } from "./usage-summary.js";
 
 const execFileAsync = promisify(execFile);
-const SCHEMA_VERSION = 3;
+/**
+ * 4 (2026-09-04): the agent record's `fallback_model` is replaced by the
+ * declared `fallback` chain and the `answered_by` target; every attempt
+ * carries its `target` and, when failed, its `classification`; the
+ * manifest gains script-recorded `tallies`. A breaking shape change on
+ * the agent record, so the version moves.
+ */
+const SCHEMA_VERSION = 4;
 const MANIFEST_PATH = "manifest.json";
 
 /**
@@ -94,7 +103,22 @@ export interface EffectiveRunSettingsRecord {
 export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
+  /**
+   * The target this attempt was dispatched to: the call's own engine and
+   * model until the chain advances, then the entry it advanced to. The
+   * model is the *requested* pin (null when the call left it unpinned);
+   * `resolvedModel` beside it is what the engine served.
+   */
+  target: { engine: EngineName; model: string | null };
   failure: { kind: string; message: string } | null;
+  /**
+   * How the harness classified this failed attempt: the class and the
+   * classifier rule that matched, or `rule: null` for a diagnostic no rule
+   * recognised. Null on a complete attempt. An `availability` class is what
+   * advanced the chain, where one remained; the raw diagnostic stays in
+   * `failure`, `appServerDiagnostic`, and `diagnostics` beside it.
+   */
+  classification: FailureClassification | null;
   /**
    * The transport symptom this attempt observed, when what `failure` names
    * is the run's own settlement rather than an engine fault. A shutdown or
@@ -156,7 +180,14 @@ export interface RuntimeAgentRecord {
   };
   model: string | null;
   effort: string | null;
-  fallbackModel: string | null;
+  /** The declared fallback chain, as the call or its engine defaults declared it; null when none. */
+  fallback: FallbackTarget[] | null;
+  /**
+   * Which target answered: `entry` is -1 for the call's own target and
+   * the chain index thereafter, beside that target's engine and model. Null
+   * until an attempt completes — a failed agent names no answering target.
+   */
+  answeredBy: { entry: number; engine: EngineName; model: string | null } | null;
   resolvedModel: string | null;
   /** The served effort, last write wins across attempts; see the attempt field. */
   resolvedEffort: string | null;
@@ -345,7 +376,7 @@ interface AbandonmentRecord {
 }
 
 interface Manifest {
-  schema_version: 3;
+  schema_version: 4;
   kind: "run_manifest";
   run_id: string;
   run_uuid: string;
@@ -427,6 +458,13 @@ interface Manifest {
    * this list is their durable trace.
    */
   hold_events: HoldEventEntry[];
+  /**
+   * Script-recorded counts: names the author chose, numbers the
+   * script recorded through the `tally` hook, stored verbatim beside the
+   * usage rollup — a name recorded again replaces its value. The runtime
+   * validates the shape and knows nothing of the meaning.
+   */
+  tallies: Record<string, number>;
   cost_rollup: Record<string, Record<string, UsageRollup>>;
   files: FileEntry[];
   integrity: ManifestIntegrity;
@@ -625,6 +663,7 @@ export class RunRecordWriter {
         }
       ],
       hold_events: [],
+      tallies: {},
       cost_rollup: {},
       files: [],
       integrity: {
@@ -759,6 +798,22 @@ export class RunRecordWriter {
     });
   }
 
+  /**
+   * Record one named count from the script body. Last write wins per
+   * name, and the write lands in the manifest at once — a count recorded
+   * before the run ends by any handleable path is in the archive whether
+   * or not `finish()` is ever reached.
+   */
+  async recordTally(name: string, value: number): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.tallies[name] = value;
+      await this.#writeManifest();
+    });
+  }
+
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
     // Snapshot at the boundary: the runtime keeps mutating its live record
     // between the dispatch-time write and settlement, and the manifest
@@ -817,7 +872,8 @@ export class RunRecordWriter {
       },
       model: record.model,
       effort: record.effort,
-      fallback_model: record.fallbackModel,
+      fallback: record.fallback,
+      answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
       resolved_cwd: record.resolvedCwd,
@@ -861,7 +917,9 @@ export class RunRecordWriter {
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
+        target: attempt.target,
         failure: attempt.failure,
+        classification: attempt.classification,
         observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null
@@ -1051,8 +1109,17 @@ function transcriptAbsenceReason(
 function agentUsage(
   record: RuntimeAgentRecord
 ): { summary: UsageSummary } | { unavailable: "no-attempt-ran" | "engine-reported-no-usage" } {
-  const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
-  const summary = summariseUsage(record.engine, events);
+  // Summed attempt by attempt under each attempt's own engine: a fallback
+  // chain can put one agent's attempts on two engines, and each engine's
+  // native usage is read by its own inclusion rule before the summaries
+  // fold together in the declared vocabulary.
+  let summary: UsageSummary | null = null;
+  for (const attempt of record.attempts) {
+    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
+    if (attemptSummary !== null) {
+      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
+    }
+  }
   if (summary !== null) {
     return { summary };
   }
@@ -1068,16 +1135,17 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
   // rather than a cross-currency sum.
   const accumulators = new Map<string, CostAccumulator>();
   for (const record of records) {
-    const engine = record.engine;
-    // Spend is keyed under the model that actually served each attempt's
-    // turns — attempts can resolve different served models (a retry opens a
-    // fresh thread), so attribution is per attempt, falling back to the
-    // agent-level answer and then to the literal "unresolved". Never the
-    // requested pin: a rollup label is a claim about what ran, not about
-    // what was asked for. A no-event attempt adds no bucket — the
-    // agent's own record says why (its `usage.unavailable` reason); a zero
-    // bucket would read as zero spend, which is a different claim.
+    // Spend is keyed under the engine and model that actually served each
+    // attempt's turns — attempts can resolve different served models (a
+    // retry opens a fresh thread) and, under a fallback chain,
+    // different engines — so attribution is per attempt, falling back to
+    // the agent-level answer and then to the literal "unresolved". Never
+    // the requested pin: a rollup label is a claim about what ran, not
+    // about what was asked for. A no-event attempt adds no bucket —
+    // the agent's own record says why (its `usage.unavailable` reason); a
+    // zero bucket would read as zero spend, which is a different claim.
     for (const attempt of record.attempts) {
+      const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
       if (summary === null) {
         continue;

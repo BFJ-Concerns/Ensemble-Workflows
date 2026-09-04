@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { assertFallbackModelSupported } from "./engine-option-validation.js";
 import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
 
@@ -448,10 +447,6 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     lines.push("", "Task:", this.#prompt);
     return lines.join("\n");
   }
-}
-
-export function rejectUnsupportedOpenCodeOptions(options: EngineTurnOptions): void {
-  assertFallbackModelSupported("opencode", options.fallbackModel);
 }
 
 function runProcess(

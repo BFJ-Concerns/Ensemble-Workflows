@@ -14,7 +14,6 @@ import {
   CapabilityStripUnsupportedError,
   EmptyAgentOutputError,
   EngineShutdownError,
-  FallbackModelUnsupportedError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   OpenCodeModelRequiredError
@@ -417,22 +416,6 @@ test("a statically declared opencode effort outside the model's variants fails b
     InvalidAgentOptionValueError
   );
   assert.doesNotThrow(() => validateEngineDefaults("opencode", { effort: "unjudgeable-without-a-model" }));
-});
-
-test("opencode rejects fallbackModel before spawning", () => {
-  const runner = new FakeOpenCodeRunner();
-  const adapter = new OpenCodeEngineAdapter({ runner });
-
-  assert.throws(
-    () =>
-      adapter.createInvocation("fallback", {
-        timeoutMs: 1_000,
-        model: "glm-5.2",
-        fallbackModel: "glm-4"
-      }),
-    FallbackModelUnsupportedError
-  );
-  assert.equal(runner.runs.length, 0);
 });
 
 test("opencode refuses unproven capability strips before the runner starts", async () => {

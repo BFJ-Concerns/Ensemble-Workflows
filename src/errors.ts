@@ -51,6 +51,14 @@ export class WorkflowScriptReadError extends PreSpawnAuthorError {}
 export class HoldRejectedError extends PreSpawnAuthorError {}
 
 /**
+ * A tally the runtime cannot record: a blank name or a value that is
+ * not a finite number. Pre-spawn in the family's sense — the author's own
+ * call is what is wrong, and a fan-out that recorded an unusable tally
+ * must fail rather than archive a count that means nothing.
+ */
+export class TallyRejectedError extends PreSpawnAuthorError {}
+
+/**
  * An optional per-hold timeout expired with no accepted answer. An
  * operational bound, not an authoring mistake — deliberately outside the
  * pre-spawn family (like WorkflowTimeoutError), rendered as one clean line;
@@ -446,17 +454,15 @@ export class TurnTimeoutError extends EnsembleError {
 }
 
 /**
- * Thrown when a workflow asks a non-Claude engine to honour `fallbackModel`.
- * Only the Claude CLI exposes a fallback-model switch; silently dropping the
- * option would let a script believe its degradation policy was in force.
+ * Thrown before any worker spawns when a fallback chain is malformed
+ * or names a target the harness will not dispatch to. A chain that cannot
+ * be honoured must fail at declaration, not on the day it first advances:
+ * a fallback nobody exercises is exactly the silent no-op the options
+ * invariant forbids.
  */
-export class FallbackModelUnsupportedError extends AgentOptionRejectedError {
-  constructor(engine: string) {
-    super(
-      `fallbackModel is not supported on the ${engine} engine in v1: ` +
-        "only the Claude engine exposes a fallback-model switch. " +
-        "Remove fallbackModel, or use engine:'claude' for declared degradation."
-    );
+export class FallbackTargetRejectedError extends AgentOptionRejectedError {
+  constructor(detail: string) {
+    super(`Invalid fallback chain: ${detail}`);
   }
 }
 
@@ -479,8 +485,12 @@ export class CapabilityStripUnsupportedError extends AgentOptionRejectedError {
 export class RemovedAgentOptionError extends AgentOptionRejectedError {
   constructor(option: string) {
     super(
-      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. ` +
-        `Remove ${JSON.stringify(option)} from this call.`
+      option === "fallbackModel"
+        ? 'agent() option "fallbackModel" was removed: the Claude-only engine-side model swap is retired. ' +
+            "Declare an ordered fallback chain instead — `fallback: [{ engine, model, effort? }, …]` — " +
+            "which the harness advances on every engine and records in the run record."
+        : `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. ` +
+            `Remove ${JSON.stringify(option)} from this call.`
     );
   }
 }

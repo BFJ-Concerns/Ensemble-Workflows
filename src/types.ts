@@ -16,6 +16,18 @@ export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
  */
 export type EngineWorkerEnvironment = Partial<Record<EngineName, Record<string, string>>>;
 
+/**
+ * One entry of a fallback chain: a full target — engine and model
+ * both named, because a fallback that inherits an ambient default is a
+ * substitution nobody chose — with an optional effort that otherwise takes
+ * the call's own canonical level, clamped to this engine as any dispatch is.
+ */
+export interface FallbackTarget {
+  engine: EngineName;
+  model: string;
+  effort?: string;
+}
+
 export interface AgentOptions {
   engine: EngineName;
   schema?: JsonSchema;
@@ -28,8 +40,16 @@ export interface AgentOptions {
    * is exempt: its effort names the registry entry's served variants.
    */
   effort?: string;
-  /** Claude only: declared degradation when the pinned model tier is unavailable. */
-  fallbackModel?: string;
+  /**
+   * The ordered fallback chain: full targets the harness re-dispatches
+   * this call on, in order, when the current target fails for
+   * availability — allowance exhausted, provider overload past its
+   * own retry, a substrate that is dead or cannot start. Output failures
+   * never advance it. Each entry names its engine and model; an omitted
+   * effort takes the call's own. Codex or Claude in any position; an
+   * opencode entry is rejected pre-spawn.
+   */
+  fallback?: FallbackTarget[];
   cwd?: string;
   isolation?: IsolationMode;
   timeoutMs?: number;
@@ -66,8 +86,13 @@ export interface WorkerSessionOptions {
   model?: string;
   /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
-  /** Claude only: declared degradation when the pinned model tier is unavailable. */
-  fallbackModel?: string;
+  /**
+   * The fallback chain for the session's *creating* turn alone: the
+   * engine and model are fixed for the session's life once a target
+   * answers, so a later turn's availability failure fails that turn and
+   * escalation is a fresh dispatch.
+   */
+  fallback?: FallbackTarget[];
   cwd?: string;
   isolation?: IsolationMode;
   /** Per-turn deadline applied to every send; same semantics as a one-shot call's. */

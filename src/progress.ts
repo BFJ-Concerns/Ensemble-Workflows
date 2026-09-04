@@ -201,6 +201,32 @@ export class RunProgress {
     return id;
   }
 
+  /**
+   * Returns a running worker to the queue on another engine: a fallback
+   * chain step across engines releases the refused engine's slot and
+   * waits for admission on the next, and the live view says so — the leg
+   * reads queued on its new engine, its evidence timestamps reset for the
+   * fresh dispatch, its earlier engine's counters restored.
+   */
+  requeueAgent(id: number, engine: EngineName): void {
+    const record = this.#live.get(id);
+    if (record === undefined) {
+      return;
+    }
+    const previous = this.#counters(record.engine);
+    if (record.state === "running") {
+      previous.active -= 1;
+    } else {
+      previous.queued -= 1;
+    }
+    record.engine = engine;
+    record.state = "queued";
+    record.startedAt = null;
+    record.firstEvidenceAt = null;
+    this.#counters(engine).queued += 1;
+    this.#touch();
+  }
+
   /** Moves a queued worker into the running state (a scheduler slot freed up). */
   startAgent(id: number): void {
     const record = this.#live.get(id);

@@ -12,7 +12,7 @@ assert.ok(dataHome, "usage: read-run-record.mjs <resolved-data-home>");
 const manifestPath = await findOnlyFile(dataHome, "manifest.json");
 const archiveDir = path.dirname(manifestPath);
 const manifest = await readJson(manifestPath);
-assert.equal(manifest.schema_version, 3);
+assert.equal(manifest.schema_version, 4);
 assert.equal(manifest.kind, "run_manifest");
 assert.equal(manifest.status, "failed");
 assert.equal(manifest.result?.archive_path, "result.json");
@@ -25,7 +25,7 @@ for (const file of manifest.files) {
 }
 
 const result = await readJson(path.join(archiveDir, "result.json"));
-assert.equal(result.schema_version, 3);
+assert.equal(result.schema_version, 4);
 assert.equal(result.kind, "run_result");
 assert.equal(result.status, "failed");
 assert.equal(result.exit_code, 1);
@@ -35,7 +35,7 @@ assert.equal(result.value?.completed?.length, 1);
 
 const agentPath = await findOnlyFile(archiveDir, "agent.json");
 const agent = await readJson(agentPath);
-assert.equal(agent.schema_version, 3);
+assert.equal(agent.schema_version, 4);
 assert.equal(agent.kind, "agent_record");
 assert.equal(agent.status, "complete");
 assert.equal(agent.attempts?.length, 1);

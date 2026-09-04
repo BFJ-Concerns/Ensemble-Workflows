@@ -1905,7 +1905,7 @@ test("script-recorded tallies land in the manifest beside the usage rollup, last
     workflowPath: path.join(cwd, "workflow.js"),
     workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
     args: [],
-    cliFlags: {}
+    cliFlags: { jsonArgs: false }
   });
   await writer.recordTally("fix rounds", 2);
   await writer.recordTally("rejected", 3);
@@ -1945,7 +1945,7 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
     workflowPath: path.join(cwd, "workflow.js"),
     workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
     args: [],
-    cliFlags: {}
+    cliFlags: { jsonArgs: false }
   });
   // The Codex attempt spent tokens (a worker lost mid-flight) but reported
   // no served model; the agent-level resolved model is the Claude answer's.
@@ -1993,7 +1993,7 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
   assert.deepEqual(
     agent.attempts.map((attempt) => [attempt.target, attempt.classification]),
     [
-      [{ engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.usage-limit" }],
+      [{ engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.substrate-dead" }],
       [{ engine: "claude", model: "opus" }, null]
     ]
   );
@@ -2011,7 +2011,7 @@ test("a tally named __proto__ is recorded as an own property, not swallowed by t
     workflowPath: path.join(cwd, "workflow.js"),
     workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
     args: [],
-    cliFlags: {}
+    cliFlags: { jsonArgs: false }
   });
   await writer.recordTally("__proto__", 1);
   await writer.recordTally("constructor", 2);

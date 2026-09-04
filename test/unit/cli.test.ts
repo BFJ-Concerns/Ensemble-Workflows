@@ -20,7 +20,7 @@ import { TokenBudget } from "../../src/budget.js";
 import { STATUS_FILENAME } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
-import type { Budget, EngineName, RuntimeOptions, RuntimeTransport, TurnResult } from "../../src/types.js";
+import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 

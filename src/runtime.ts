@@ -184,18 +184,38 @@ function chainTargets(
   ];
 }
 
-/** The call's options re-pointed at one chain target: engine, model, and effort are the target's; everything else rides unchanged. */
+/**
+ * The same options with no chain declared: a held session's later turns run
+ * their own target only. A view over the author's object, not a copy, for
+ * the reason `optionsForTarget` gives.
+ */
+function withoutChain<T extends { fallback?: FallbackTarget[] }>(options: T): T {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return property === "fallback" ? undefined : Reflect.get(source, property, receiver);
+    }
+  });
+}
+
+/**
+ * The call's options re-pointed at one chain target: engine, model, and
+ * effort are the target's; everything else rides unchanged. The call's own
+ * target is the options object itself, and a chain entry's view is a Proxy
+ * over it rather than a copy — a copy would drop options an author's
+ * accessor or Proxy trap supplies (the same discipline as
+ * `snapshotAgentCwd`), and `in`/`ownKeys` keep answering as the author's
+ * object does.
+ */
 function optionsForTarget<T extends { engine?: EngineName; model?: string; effort?: string }>(options: T, target: ChainTarget): T {
-  const forTarget: T = { ...options, engine: target.engine };
-  delete forTarget.model;
-  delete forTarget.effort;
-  if (target.model !== undefined) {
-    forTarget.model = target.model;
+  if (target.entry === -1) {
+    return options;
   }
-  if (target.effort !== undefined) {
-    forTarget.effort = target.effort;
-  }
-  return forTarget;
+  const overrides: Record<string, unknown> = { engine: target.engine, model: target.model, effort: target.effort };
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
+    }
+  });
 }
 
 interface UnsettledAgentRecord {
@@ -915,10 +935,7 @@ export class EnsembleRuntime {
           // target answers, the session's engine and model are fixed for
           // its life, so a later turn runs its own target only and an
           // availability failure there fails the turn.
-          const targets =
-            state.turnCount === 0
-              ? chainTargets(engine.name, options)
-              : chainTargets(engine.name, { model: options.model, effort: options.effort });
+          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
           const output = await this.#runChained(
             engine,
             targets,

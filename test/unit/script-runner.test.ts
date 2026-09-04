@@ -1289,12 +1289,13 @@ test("a malformed fallback chain in defaults fails before the body runs", async 
   assert.equal(agentCalls, 0);
 
   // The retired option is named at load with what replaced it.
+  const retiredLogs: string[] = [];
   await assert.rejects(
     () =>
       runWorkflowScript({
         filename: "retired-fallback-default.js",
         runtime: countingRuntime,
-        log: (message) => logs.push(message),
+        log: (message) => retiredLogs.push(message),
         source: `
           export const meta = { name: "retired-fallback-default" };
           export const defaults = { claude: { fallbackModel: "sonnet" } };
@@ -1303,7 +1304,7 @@ test("a malformed fallback chain in defaults fails before the body runs", async 
       }),
     /defaults\.claude\.fallbackModel was removed: declare a fallback chain instead/
   );
-  assert.deepEqual(logs, []);
+  assert.deepEqual(retiredLogs, []);
 });
 
 test("an unregistered opencode model in defaults fails before the body runs", async () => {

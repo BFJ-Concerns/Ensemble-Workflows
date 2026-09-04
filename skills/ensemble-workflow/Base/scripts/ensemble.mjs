@@ -14166,6 +14166,8 @@ var WorkflowScriptReadError = class extends PreSpawnAuthorError {
 };
 var HoldRejectedError = class extends PreSpawnAuthorError {
 };
+var TallyRejectedError = class extends PreSpawnAuthorError {
+};
 var HoldTimeoutError = class extends EnsembleError {
   constructor(holdId, timeoutAt) {
     super(`hold ${holdId} timed out unanswered${timeoutAt.length > 0 ? ` at ${timeoutAt}` : ""}`);
@@ -14376,11 +14378,9 @@ var TurnTimeoutError = class extends EnsembleError {
     this.deadline = deadline;
   }
 };
-var FallbackModelUnsupportedError = class extends AgentOptionRejectedError {
-  constructor(engine) {
-    super(
-      `fallbackModel is not supported on the ${engine} engine in v1: only the Claude engine exposes a fallback-model switch. Remove fallbackModel, or use engine:'claude' for declared degradation.`
-    );
+var FallbackTargetRejectedError = class extends AgentOptionRejectedError {
+  constructor(detail) {
+    super(`Invalid fallback chain: ${detail}`);
   }
 };
 var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
@@ -14393,7 +14393,7 @@ var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
 var RemovedAgentOptionError = class extends AgentOptionRejectedError {
   constructor(option) {
     super(
-      `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
+      option === "fallbackModel" ? 'agent() option "fallbackModel" was removed: the Claude-only engine-side model swap is retired. Declare an ordered fallback chain instead \u2014 `fallback: [{ engine, model, effort? }, \u2026]` \u2014 which the harness advances on every engine and records in the run record.' : `agent() option ${JSON.stringify(option)} was removed: all workers now run unrestricted with filesystem and network access. Remove ${JSON.stringify(option)} from this call.`
     );
   }
 };
@@ -14706,7 +14706,7 @@ function addUsageSummary(target, delta) {
 
 // src/run-record.ts
 var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 3;
+var SCHEMA_VERSION = 4;
 var MANIFEST_PATH = "manifest.json";
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
@@ -14819,6 +14819,7 @@ var RunRecordWriter = class _RunRecordWriter {
         }
       ],
       hold_events: [],
+      tallies: {},
       cost_rollup: {},
       files: [],
       integrity: {
@@ -14933,6 +14934,21 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#writeManifest();
     });
   }
+  /**
+   * Record one named count from the script body. Last write wins per
+   * name, and the write lands in the manifest at once — a count recorded
+   * before the run ends by any handleable path is in the archive whether
+   * or not `finish()` is ever reached.
+   */
+  async recordTally(name, value) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      await this.#writeManifest();
+    });
+  }
   async recordAgent(record) {
     const snapshot = structuredClone(record);
     await this.#serialise(async () => {
@@ -14979,7 +14995,8 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       model: record.model,
       effort: record.effort,
-      fallback_model: record.fallbackModel,
+      fallback: record.fallback,
+      answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
       resolved_cwd: record.resolvedCwd,
@@ -15017,7 +15034,9 @@ var RunRecordWriter = class _RunRecordWriter {
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
+        target: attempt.target,
         failure: attempt.failure,
+        classification: attempt.classification,
         observed_failure: attempt.observedFailure,
         worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
         app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
@@ -15161,8 +15180,13 @@ function transcriptAbsenceReason(record) {
   return "engine-produced-no-transcript";
 }
 function agentUsage(record) {
-  const events = record.attempts.flatMap((attempt) => attempt.tokenUsageEvents);
-  const summary = summariseUsage(record.engine, events);
+  let summary = null;
+  for (const attempt of record.attempts) {
+    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
+    if (attemptSummary !== null) {
+      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
+    }
+  }
   if (summary !== null) {
     return { summary };
   }
@@ -15172,13 +15196,15 @@ function buildCostRollup(records) {
   const rollup = {};
   const accumulators = /* @__PURE__ */ new Map();
   for (const record of records) {
-    const engine = record.engine;
+    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
     for (const attempt of record.attempts) {
+      const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
       if (summary === null) {
         continue;
       }
-      const model = attempt.resolvedModel ?? record.resolvedModel ?? "unresolved";
+      const borrowed = engine === lastReporter ? record.resolvedModel : null;
+      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
       const key = `${engine}\0${model}`;
@@ -15652,7 +15678,7 @@ var AGENT_OPTION_KEYS = Object.keys({
   schema: true,
   model: true,
   effort: true,
-  fallbackModel: true,
+  fallback: true,
   cwd: true,
   isolation: true,
   timeoutMs: true,
@@ -15663,7 +15689,7 @@ var AGENT_OPTION_KEYS = Object.keys({
   strip: true
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
-var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch"]);
+var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch", "fallbackModel"]);
 function snapshotAgentCwd(options) {
   let cwd;
   try {
@@ -15704,12 +15730,13 @@ function assertValidAgentOptions(options) {
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
   }
+  assertValidFallbackChain(values.fallback);
 }
 var WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
   model: true,
   effort: true,
-  fallbackModel: true,
+  fallback: true,
   cwd: true,
   isolation: true,
   timeoutMs: true,
@@ -15744,6 +15771,7 @@ function assertValidWorkerSessionOptions(options) {
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
   }
+  assertValidFallbackChain(values.fallback);
 }
 var SESSION_TURN_OPTION_KEYS = ["schema"];
 var SESSION_TURN_OPTION_KEY_SET = new Set(SESSION_TURN_OPTION_KEYS);
@@ -15754,10 +15782,36 @@ function assertValidSessionTurnOptions(options) {
     }
   }
 }
-function assertFallbackModelSupported(engine, fallbackModel) {
-  if (fallbackModel !== void 0 && engine !== "claude") {
-    throw new FallbackModelUnsupportedError(engine);
+function assertValidFallbackChain(chain) {
+  if (chain === void 0) {
+    return;
   }
+  if (!Array.isArray(chain)) {
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+  }
+  chain.forEach((entry, index) => {
+    const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
+    if (target === null) {
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+    }
+    for (const key of Object.keys(target)) {
+      if (key !== "engine" && key !== "model" && key !== "effort") {
+        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      }
+    }
+    if (target.engine === "opencode") {
+      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
+    }
+    if (target.engine !== "codex" && target.engine !== "claude") {
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+    }
+    if (typeof target.model !== "string" || target.model.length === 0) {
+      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
+    }
+    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+    }
+  });
 }
 function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
   const registered = registry.get(model);
@@ -15767,7 +15821,7 @@ function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRe
   return registered;
 }
 function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
-  assertFallbackModelSupported(engine, defaults.fallbackModel);
+  assertValidFallbackChain(defaults.fallback);
   if (engine !== "opencode") {
     assertCanonicalEffortSupported(defaults.effort);
   }
@@ -16814,6 +16868,109 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/failure-classification.ts
+var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
+var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
+  ["usageLimitExceeded", "codex.usage-limit"],
+  ["rateLimitExceeded", "codex.rate-limit"],
+  ["serverOverloaded", "codex.server-overloaded"],
+  ["httpConnectionFailed", "codex.provider-unreachable"],
+  ["responseStreamConnectionFailed", "codex.provider-unreachable"],
+  ["internalServerError", "codex.provider-internal-error"]
+]);
+var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
+  // The substrate died or never came up: the worker was lost before answering.
+  ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
+  ["AppServerStartupTimeoutError", { class: "availability", rule: "codex.substrate-unstartable" }],
+  // The server refused to take more load (JSON-RPC -32001).
+  ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
+  // The provider promised a retry and then went silent past the bound.
+  ["AppServerRetryPromiseBrokenError", { class: "availability", rule: "codex.retry-promise-broken" }],
+  // Codex refused the schema before generation: the shape, not the engine.
+  ["CodexSchemaSubsetUnsupportedError", { class: "output", rule: "codex.schema-rejected" }],
+  // A started turn that never produced output before the transport's bound.
+  ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]
+]);
+var CLAUDE_AVAILABILITY_STATUSES = /* @__PURE__ */ new Map([
+  [429, "claude.rate-limit"],
+  [503, "claude.service-unavailable"],
+  [529, "claude.overloaded"]
+]);
+var CLAUDE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
+  ["rate_limit", "claude.rate-limit"],
+  ["rate_limit_error", "claude.rate-limit"],
+  ["overloaded_error", "claude.overloaded"]
+]);
+var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  // `claude --bg` could not start the worker at all.
+  ["claude-dispatch-error", { class: "availability", rule: "claude.dispatch-failed" }],
+  // The session registered but never produced a transcript: a dead worker.
+  ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
+  ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
+  ["claude-blocked", { class: "unclassified", rule: "claude.blocked" }],
+  ["claude-valve-error", { class: "unclassified", rule: "claude.valve" }],
+  ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
+  ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
+]);
+function classifyAttemptFailure(evidence) {
+  const { kind } = evidence.failure;
+  if (OUTPUT_FAILURE_KINDS.has(kind)) {
+    return { class: "output", rule: "output" };
+  }
+  if (kind.startsWith("run-")) {
+    return { class: "unclassified", rule: "run-settlement" };
+  }
+  if (kind === "EngineShutdownError") {
+    return { class: "unclassified", rule: "run-settlement" };
+  }
+  switch (evidence.engine) {
+    case "codex":
+      return classifyCodexFailure(kind, evidence.appServerDiagnostic);
+    case "claude":
+      return classifyClaudeFailure(kind, evidence.diagnostics);
+    case "opencode":
+      return kind === "opencode-run-error" ? { class: "unclassified", rule: "opencode.run-error" } : { class: "unclassified", rule: null };
+  }
+}
+function classifyCodexFailure(kind, diagnostic) {
+  const code = diagnostic?.code;
+  if (typeof code === "string") {
+    const rule = CODEX_AVAILABILITY_CODES.get(code);
+    if (rule !== void 0) {
+      return { class: "availability", rule };
+    }
+  }
+  return CODEX_ERROR_CLASSES.get(kind) ?? { class: "unclassified", rule: null };
+}
+function classifyClaudeFailure(kind, diagnostics) {
+  if (kind === "claude-worker-diagnostic") {
+    const apiError = claudeApiErrorOf(diagnostics);
+    if (apiError !== null) {
+      const byStatus = apiError.status === null ? void 0 : CLAUDE_AVAILABILITY_STATUSES.get(apiError.status);
+      const byCode = apiError.code === null ? void 0 : CLAUDE_AVAILABILITY_CODES.get(apiError.code);
+      const rule = byStatus ?? byCode;
+      if (rule !== void 0) {
+        return { class: "availability", rule };
+      }
+      return { class: "unclassified", rule: "claude.api-refusal" };
+    }
+    return { class: "unclassified", rule: "claude.client-diagnostic" };
+  }
+  return CLAUDE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
+}
+function claudeApiErrorOf(diagnostics) {
+  const apiError = diagnostics?.apiError;
+  if (typeof apiError !== "object" || apiError === null || Array.isArray(apiError)) {
+    return null;
+  }
+  const record = apiError;
+  return {
+    status: typeof record.status === "number" ? record.status : null,
+    code: typeof record.code === "string" ? record.code : null
+  };
+}
+
 // src/claude-control-plane.ts
 import { execFile as execFile3, spawn } from "node:child_process";
 import { access, mkdtemp, readFile as readFile4, readdir as readdir4, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
@@ -16856,9 +17013,6 @@ var ClaudeCliControlPlane = class {
     }
     if (options.effort !== void 0) {
       args.push("--effort", options.effort);
-    }
-    if (options.fallbackModel !== void 0) {
-      args.push("--fallback-model", options.fallbackModel);
     }
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
     args.push("--settings", path9.join(settingsDir, "settings.json"));
@@ -17219,6 +17373,22 @@ function endsInSyntheticReply(entries, fromIndex = 0) {
   }
   return false;
 }
+function apiErrorSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (entry.message?.model !== SYNTHETIC_MODEL_PLACEHOLDER || entry.isApiErrorMessage !== true) {
+      return null;
+    }
+    return {
+      status: typeof entry.apiErrorStatus === "number" ? entry.apiErrorStatus : null,
+      code: typeof entry.error === "string" ? entry.error : null
+    };
+  }
+  return null;
+}
 function resolvedModelSince(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
@@ -17502,7 +17672,6 @@ var ClaudeEngineInvocation = class {
       cwd: this.#cwd,
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
-      ...this.#options.fallbackModel !== void 0 ? { fallbackModel: this.#options.fallbackModel } : {},
       ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
       // Loiter pricing: only a session meant to be resumed pays the
       // 1-hour cache-write premium; one-shot workers keep the 5m default.
@@ -17753,7 +17922,8 @@ var ClaudeEngineInvocation = class {
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
-      usage: usageSince(transcript.entries, fromIndex)
+      usage: usageSince(transcript.entries, fromIndex),
+      apiError: apiErrorSince(transcript.entries, fromIndex)
     };
   }
   /** The failed turn's spend, as the same event shape the success path emits. */
@@ -17908,6 +18078,10 @@ function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
     firstDeltaMs: null,
     items: {},
     tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+    // The refusal's structured account rides the attempt as diagnostics,
+    // where the failure classifier reads it: a 429's status and code are
+    // the engine's own word, which the diagnostic prose is not.
+    ...evidence !== null && evidence.apiError !== null ? { diagnostics: { apiError: evidence.apiError } } : {},
     ...evidence === null ? {} : {
       transcripts: [
         {
@@ -18061,6 +18235,31 @@ var RunProgress = class {
     this.#counters(input.engine).queued += 1;
     this.#touch();
     return id;
+  }
+  /**
+   * Returns a running worker to the queue on another engine: a fallback
+   * chain step across engines releases the refused engine's slot and
+   * waits for admission on the next, and the live view says so — the leg
+   * reads queued on its new engine, its evidence timestamps reset for the
+   * fresh dispatch, its earlier engine's counters restored.
+   */
+  requeueAgent(id, engine) {
+    const record = this.#live.get(id);
+    if (record === void 0) {
+      return;
+    }
+    const previous = this.#counters(record.engine);
+    if (record.state === "running") {
+      previous.active -= 1;
+    } else {
+      previous.queued -= 1;
+    }
+    record.engine = engine;
+    record.state = "queued";
+    record.startedAt = null;
+    record.firstEvidenceAt = null;
+    this.#counters(engine).queued += 1;
+    this.#touch();
   }
   /** Moves a queued worker into the running state (a scheduler slot freed up). */
   startAgent(id) {
@@ -18234,6 +18433,7 @@ var DECODE_FAILURE_LINE_PREFIX_CHARACTERS = 512;
 var SKILL_DISCOVERY_STABILITY_INTERVAL_MS = 1e3;
 var MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
 var SKILL_DISCOVERY_DEADLINE_MS = 3e4;
+var MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
 var LazyCodexAppServerTransport = class {
   cwd;
   #options;
@@ -18289,6 +18489,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
   #transcripts = /* @__PURE__ */ new Map();
+  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
+  #settledTurnIds = /* @__PURE__ */ new Set();
   #stderrTail = [];
   #exitStatus = null;
   #hasExited = false;
@@ -18766,6 +18968,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "model/rerouted") {
+      if (!speaksForTurn) {
+        return;
+      }
       const toModel = params.toModel;
       const transcript = this.#transcripts.get(threadId);
       if (transcript !== void 0 && typeof toModel === "string" && toModel.length > 0) {
@@ -18811,6 +19016,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "turn/completed") {
+      if (!speaksForTurn) {
+        return;
+      }
       turn.completedAt = now;
       if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
         this.#rejectTurn(threadId, turn, turn.systemErrorDiagnosticFallback);
@@ -18820,6 +19028,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     if (method === "error") {
+      if (!speaksForTurn) {
+        return;
+      }
       if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
         void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
         return;
@@ -18838,21 +19049,26 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
           );
           return;
         }
-        if (speaksForTurn) {
-          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        }
+        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
         return;
       }
       void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
     }
   }
   /**
-   * Whether an inbound frame speaks for this turn's silence clock. Thread
+   * Whether an inbound frame speaks for the live turn on its thread. Thread
    * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must not disarm
-   * the live turn's deadline. Frames carrying no turn identity are
-   * thread-scoped and count: ephemeral threads run one turn, so the thread
-   * speaking is the turn's server speaking.
+   * straggler from an abandoned turn on a recycled thread) must neither
+   * disarm the live turn's deadline, settle it, nor stamp its served model.
+   * Frames carrying no turn identity are thread-scoped and count: ephemeral
+   * threads run one turn, so the thread speaking is the turn's server
+   * speaking.
+   *
+   * A turn learns its id from the first correlated frame when the
+   * `turn/start` response has not yet named it — except that an id this
+   * transport has already settled is never learned: a straggler arriving in
+   * that window would otherwise teach the live turn the abandoned turn's
+   * identity, and every later straggler would correlate.
    */
   #correlatesWithTurn(turn, params) {
     const turnId = turnIdFromParams(params);
@@ -18860,10 +19076,26 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return true;
     }
     if (turn.turnId === void 0) {
+      if (this.#settledTurnIds.has(turnId)) {
+        return false;
+      }
       turn.turnId = turnId;
       return true;
     }
     return turn.turnId === turnId;
+  }
+  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
+  #rememberSettledTurn(turn) {
+    if (turn.turnId === void 0) {
+      return;
+    }
+    this.#settledTurnIds.add(turn.turnId);
+    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
+      const oldest = this.#settledTurnIds.values().next().value;
+      if (oldest !== void 0) {
+        this.#settledTurnIds.delete(oldest);
+      }
+    }
   }
   /** Resolves an inbound frame's params to the live turn they speak for, if any. */
   #turnCorrelatedBy(params) {
@@ -18962,6 +19194,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
+    this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
@@ -18977,6 +19210,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   #completeTurn(threadId, turn) {
     this.#turns.delete(threadId);
+    this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
@@ -19514,9 +19748,6 @@ var OpenCodeEngineInvocation = class {
     return lines.join("\n");
   }
 };
-function rejectUnsupportedOpenCodeOptions(options) {
-  assertFallbackModelSupported("opencode", options.fallbackModel);
-}
 function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abortSignal, onFirstData, onData) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -20305,7 +20536,6 @@ var CodexEngineAdapter = class {
     return this.#scheduler.schedule(task);
   }
   createInvocation(prompt, options) {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
     return new CodexEngineInvocation({
       prompt,
       options,
@@ -20313,7 +20543,6 @@ var CodexEngineAdapter = class {
     });
   }
   createSession(options) {
-    assertFallbackModelSupported(this.name, options.fallbackModel);
     return new CodexWorkerSession({ options, transport: this.#transport });
   }
   async close() {
@@ -20545,7 +20774,6 @@ var OpenCodeEngineAdapter = class {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    rejectUnsupportedOpenCodeOptions(options);
     if (options.model === void 0) {
       throw new OpenCodeModelRequiredError(this.#modelRegistry.names());
     }
@@ -20628,6 +20856,41 @@ function assertValidAgentPrompt(prompt) {
   if (prompt.trim().length === 0) {
     throw new AgentPromptRejectedError("agent() prompt must be a non-empty string");
   }
+}
+var ChainAdvance = class {
+  constructor(engine) {
+    this.engine = engine;
+  }
+  engine;
+};
+function chainTargets(engine, options) {
+  return [
+    { entry: -1, engine, model: options.model, effort: options.effort },
+    ...(options.fallback ?? []).map((target, index) => ({
+      entry: index,
+      engine: target.engine,
+      model: target.model,
+      effort: target.effort ?? options.effort
+    }))
+  ];
+}
+function withoutChain(options) {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return property === "fallback" ? void 0 : Reflect.get(source, property, receiver);
+    }
+  });
+}
+function optionsForTarget(options, target) {
+  if (target.entry === -1) {
+    return options;
+  }
+  const overrides = { engine: target.engine, model: target.model, effort: target.effort };
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
+    }
+  });
 }
 var WorkerSession = class {
   #state;
@@ -20847,6 +21110,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
   notePhase(title) {
     this.progress.setPhase(title);
   }
+  /**
+   * Record a named count from the script body into the run record.
+   * The runtime validates the shape — a non-empty name, a finite number —
+   * and stores the value verbatim beside the usage summary; a name
+   * recorded again replaces its value. Meaning is the author's alone. A
+   * recorder write failure is observability, never a script failure, on
+   * the same contract as agent records.
+   */
+  async recordTally(name, value) {
+    if (typeof name !== "string" || name.trim().length === 0) {
+      throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
+    }
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+    }
+    try {
+      await this.#runRecorder?.recordTally(name, value);
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { tally: name, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
+  }
   handleEngineEvent(engine, event) {
     if (event.method === "thread/tokenUsage/updated") {
       const usageEvent = tokenUsageEventFromParams(event.params);
@@ -20884,6 +21172,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    for (const target of options.fallback ?? []) {
+      const targetEngine = this.#chainEngineFor(target);
+      if (strip.length > 0) {
+        resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
+      }
+    }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
@@ -20984,6 +21278,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    for (const target of options.fallback ?? []) {
+      const targetEngine = this.#chainEngineFor(target);
+      if (targetEngine.createSession === void 0) {
+        throw new MultiTurnUnsupportedError(targetEngine.name);
+      }
+      if (strip.length > 0) {
+        resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
+      }
+    }
     const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
     this.#sessionCounter += 1;
     const state = {
@@ -21059,7 +21362,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         engine: engine.name,
         ...options.model !== void 0 ? { model: options.model } : {},
         ...options.effort !== void 0 ? { effort: options.effort } : {},
-        ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
+        // The chain is the creating turn's alone: a later turn's
+        // record declares none, because none applied to it.
+        ...options.fallback !== void 0 && state.turnCount === 0 ? { fallback: options.fallback } : {},
         ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
         ...options.isolation !== void 0 ? { isolation: options.isolation } : {},
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
@@ -21080,22 +21385,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
         if (unsettled !== void 0) {
           unsettled.stage = "admitting";
         }
-        let started = false;
         try {
-          const output = await this.#admission.admit(
-            engine.name,
+          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
+          const output = await this.#runChained(
+            engine,
+            targets,
+            { label: options.label ?? null, phase: options.phase ?? null },
+            options.maxAttempts,
             agentId,
-            () => engine.schedule(async () => {
-              started = true;
-              return this.#executeAgent(
-                engine.name,
-                { label: options.label ?? null, phase: options.phase ?? null },
-                agentId,
-                agentRecord,
-                queuedAt,
-                () => this.#runSessionBody(state, prompt, turn, agentId, agentRecord)
-              );
-            })
+            agentRecord,
+            queuedAt,
+            (target, targetEngine, ledger, chainRemains) => this.#runSessionBody(state, prompt, turn, agentId, agentRecord, target, targetEngine, ledger, chainRemains)
           );
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
@@ -21103,13 +21403,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
-          if (!started) {
-            this.progress.settleAgent(agentId, "failed");
-            this.#settleTerminalStatus(agentRecord, error, "queued");
-            agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-            agentRecord.executionMs = 0;
-            await this.#recordSettlementSafely(agentId, agentRecord);
-          }
           throw error;
         }
       } finally {
@@ -21121,8 +21414,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       state.inFlight = false;
     }
   }
-  async #runSessionBody(state, prompt, turn, agentId, agentRecord) {
+  async #runSessionBody(state, prompt, turn, agentId, agentRecord, target, targetEngine, ledger, chainRemains) {
+    state.engine = targetEngine;
+    state.options = optionsForTarget(state.options, target);
+    state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
+    state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
     state.placement ??= await this.#placement.open({
       ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
       ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
@@ -21146,7 +21443,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
           engine: state.engine.name,
           ...options.model !== void 0 ? { model: options.model } : {},
           ...options.effort !== void 0 ? { effort: options.effort } : {},
-          ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
           ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
           ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {}
         },
@@ -21160,19 +21456,29 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
       ...options.model !== void 0 ? { model: options.model } : {}
     };
+    const attempts = { target, ledger, chainRemains };
+    let outcome;
     if (turn.schema !== void 0) {
-      return this.#runSchemaAgent(
+      outcome = await this.#runSchemaAgent(
         state.engine.name,
         invocation,
         { ...sharedOptions, schema: turn.schema },
         agentId,
-        agentRecord
+        agentRecord,
+        attempts
       );
+    } else {
+      const text = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
+      outcome = text === null ? { status: "refused" } : { status: "complete", value: text };
     }
-    return {
-      status: "complete",
-      value: await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord)
-    };
+    if (outcome.status === "refused") {
+      const refused = state.engineSession;
+      state.engineSession = null;
+      await refused.close().catch(() => void 0);
+    } else if (outcome.status === "complete") {
+      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+    }
+    return outcome;
   }
   async #closeWorkerSession(state) {
     if (state.closed) {
@@ -21220,29 +21526,99 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
   }
   async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+    return this.#runChained(
+      engine,
+      chainTargets(engine.name, options),
+      { label: options.label ?? null, phase: options.phase ?? null },
+      options.maxAttempts,
+      agentId,
+      agentRecord,
+      queuedAt,
+      (target, targetEngine, ledger, chainRemains) => this.#runAgent(targetEngine, prompt, optionsForTarget(options, target), agentId, agentRecord, target, ledger, chainRemains)
+    );
+  }
+  /**
+   * The chain loop: the call's own target, then each declared fallback
+   * entry, each admitted on its own engine. A same-engine step keeps the
+   * slot it holds — the target loop runs inside one admitted task — while a
+   * cross-engine step ends that task, releasing the refused engine's cap
+   * and ceiling slot, and re-admits the leg afresh on the next engine
+   * against its own cap, the ceiling, and its budget. One agent record
+   * spans the whole chain: every attempt names its target, and the record
+   * names the entry that answered. The last target is never refused — with
+   * no entry remaining an availability failure is the call's own failure,
+   * exactly as with no chain — so the loop always ends in a settlement or a
+   * throw. `runTarget` is one target's whole dispatch — placement,
+   * invocation, bounded attempts — resolving `refused` to hand the chain
+   * on.
+   */
+  async #runChained(engine, targets, identity, maxAttempts, agentId, agentRecord, initialQueuedAt, runTarget) {
+    let queuedAt = initialQueuedAt;
+    const ledger = {
+      maxAttempts: maxAttempts ?? this.#defaultMaxAttempts,
+      dispatched: 0,
+      answered: 0
+    };
+    const position = { next: 0 };
+    let admittedEngine = engine;
+    let readmitting = false;
+    for (; ; ) {
+      const outcome = await this.#admitChainStep(
+        admittedEngine,
+        readmitting,
+        agentId,
+        agentRecord,
+        queuedAt,
+        () => this.#executeAgent(admittedEngine.name, identity, agentId, agentRecord, queuedAt, async () => {
+          for (; position.next < targets.length; position.next += 1) {
+            const target = targets[position.next];
+            if (target.engine !== admittedEngine.name) {
+              return new ChainAdvance(target.engine);
+            }
+            const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
+            if (settled.status !== "refused") {
+              return settled;
+            }
+          }
+          throw new Error("fallback chain ended without a settlement");
+        })
+      );
+      if (!(outcome instanceof ChainAdvance)) {
+        return outcome;
+      }
+      admittedEngine = this.#engineFor(outcome.engine);
+      readmitting = true;
+      this.progress.requeueAgent(agentId, admittedEngine.name);
+      queuedAt = Date.now();
+    }
+  }
+  /**
+   * One admitted step of a chain: the engine's cap and the ceiling judged
+   * by admission, the budget too on a re-admission. A rejection before the
+   * task starts (budget, admission, or scheduler shutdown) bypasses
+   * #executeAgent's own settlement, so the progress entry is settled and
+   * the record persisted here — a cancelled queued worker must not be
+   * left counted as queued for ever.
+   */
+  async #admitChainStep(engine, readmitting, agentId, agentRecord, queuedAt, task) {
     let started = false;
     try {
+      if (readmitting) {
+        this.budget.assertCanStart(engine.name);
+      }
       return await this.#admission.admit(
         engine.name,
         agentId,
         () => engine.schedule(async () => {
           started = true;
-          return this.#executeAgent(
-            engine.name,
-            { label: options.label ?? null, phase: options.phase ?? null },
-            agentId,
-            agentRecord,
-            queuedAt,
-            () => this.#runAgent(engine, prompt, options, agentId, agentRecord)
-          );
+          return task();
         })
       );
     } catch (error) {
       if (!started) {
         this.progress.settleAgent(agentId, "failed");
         this.#settleTerminalStatus(agentRecord, error, "queued");
-        agentRecord.queuedMs = Math.max(0, Date.now() - queuedAt);
-        agentRecord.executionMs = 0;
+        agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
       }
       throw error;
@@ -21256,10 +21632,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
     executingRecords.add(agentRecord);
     try {
       const execution = await run();
+      if (execution instanceof ChainAdvance) {
+        agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
+        agentRecord.executionMs += Math.max(0, Date.now() - executionStartedAt);
+        return execution;
+      }
       const outcome = execution.status === "complete" ? "done" : "failed";
       const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, outcome);
       if (outcome === "done") {
         agentRecord.status = "complete";
@@ -21281,8 +21662,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
-      agentRecord.queuedMs = Math.max(0, executionStartedAt - queuedAt);
-      agentRecord.executionMs = Math.max(0, executionEndedAt - executionStartedAt);
+      agentRecord.queuedMs += Math.max(0, executionStartedAt - queuedAt);
+      agentRecord.executionMs += Math.max(0, executionEndedAt - executionStartedAt);
       this.progress.settleAgent(agentId, "failed");
       this.#settleTerminalStatus(agentRecord, error);
       agentRecord.rawOutput = lastRawOutput(agentRecord);
@@ -21476,12 +21857,20 @@ var EnsembleRuntime = class _EnsembleRuntime {
     record.status = "failed";
     record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
   }
-  async #runAgent(engine, prompt, options, agentId, agentRecord) {
+  /**
+   * One target's placement, invocation, and bounded attempts. Resolves to
+   * the target's settled outcome, or `refused` when the target failed for
+   * availability with a chain entry still to try (the chain loop then
+   * moves on, the refused target's placement already closed here).
+   */
+  async #runAgent(engine, prompt, options, agentId, agentRecord, target, ledger, chainRemains) {
     const placement = await this.#placement.open(options);
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
+    this.#recordStripRoutesFor(agentRecord, engine, options.strip);
     let invocation;
     let completion;
+    const attempts = { target, ledger, chainRemains };
     try {
       invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
       if (options.schema !== void 0) {
@@ -21492,16 +21881,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
             invocation,
             { ...options, schema: options.schema },
             agentId,
-            agentRecord
+            agentRecord,
+            attempts
           )
         };
       } else {
+        const text = await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts);
         completion = {
           ok: true,
-          execution: {
-            status: "complete",
-            value: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord)
-          }
+          execution: text === null ? { status: "refused" } : { status: "complete", value: text }
         };
       }
     } catch (error) {
@@ -21561,6 +21949,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (!completion.ok) {
       throw completion.error;
     }
+    if (completion.execution.status === "complete") {
+      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+    }
     return completion.execution;
   }
   #publishWorktree(agentRecord, worktree) {
@@ -21573,11 +21964,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
       removed: worktree.removed
     };
   }
-  async #runTextAgent(engine, invocation, options, agentId, agentRecord) {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+  /**
+   * The bounded-attempt loop for a text call on one target. Returns the
+   * answer, or `null` when the target was refused for availability with a
+   * chain entry remaining — the loop's own signal to the chain, distinct
+   * from every failure it throws.
+   */
+  async #runTextAgent(engine, invocation, options, agentId, agentRecord, attempts) {
     let lastError = null;
     let previousFailure;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+      const attempt = ++attempts.ledger.dispatched;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -21588,45 +21985,35 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== void 0) {
-          previousFailure = operationalFailure;
+          if (operationalFailure.refused) {
+            return null;
+          }
+          previousFailure = operationalFailure.failure;
           lastError = new EmptyAgentOutputError(previousFailure.message);
           continue;
         }
         const text = result.text.trim();
         if (text.length > 0) {
-          agentRecord.attempts.push(attemptRecord(attempt, "complete", null, result.text, result.text, startedAt, result));
+          attempts.ledger.answered += 1;
+          agentRecord.attempts.push(
+            attemptRecord(attempt, attempts.target, "complete", null, result.text, result.text, startedAt, result)
+          );
           return text;
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
         lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
+        const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
+        if (thrown.refused) {
+          return null;
         }
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
+        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -21634,10 +22021,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
   }
-  async #runSchemaAgent(engine, invocation, options, agentId, agentRecord) {
-    const maxAttempts = options.maxAttempts ?? this.#defaultMaxAttempts;
+  /**
+   * The bounded-attempt loop for a schema call on one target: the
+   * validated value, the exhausted collapse, or `refused` for the chain.
+   */
+  async #runSchemaAgent(engine, invocation, options, agentId, agentRecord, attempts) {
     let previousFailure;
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+      const attempt = ++attempts.ledger.dispatched;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -21648,9 +22039,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
-        const operationalFailure = recordOperationalFailure(agentRecord, attempt, startedAt, result);
+        const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== void 0) {
-          previousFailure = operationalFailure;
+          if (operationalFailure.refused) {
+            return { status: "refused" };
+          }
+          previousFailure = operationalFailure.failure;
           continue;
         }
         if (result.text.trim().length === 0) {
@@ -21658,7 +22052,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             kind: "empty-output",
             message: `agent returned empty text on attempt ${attempt}`
           };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
           continue;
         }
         const selection = selectLastValidJsonFromText(result.text, options.schema);
@@ -21667,13 +22061,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
-          agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
           continue;
         }
         if (selection.kind === "valid") {
+          attempts.ledger.answered += 1;
           agentRecord.parseRoute = selection.parsed.source;
           agentRecord.attempts.push(
-            attemptRecord(attempt, "complete", null, result.text, selection.parsed.value, startedAt, result)
+            attemptRecord(attempt, attempts.target, "complete", null, result.text, selection.parsed.value, startedAt, result)
           );
           return {
             status: "complete",
@@ -21684,29 +22079,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
           kind: "schema-validation",
           message: JSON.stringify(selection.validation.errors ?? [])
         };
-        agentRecord.attempts.push(attemptRecord(attempt, "failed", previousFailure, result.text, null, startedAt, result));
+        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
       } catch (error) {
-        const observed = failureFromError(error);
-        const failedResult = failedTurnResultOf(error);
-        if (failedResult !== null) {
-          recordTurnMetadata(agentRecord, failedResult);
+        const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
+        if (thrown.refused) {
+          return { status: "refused" };
         }
-        const settlement = this.#runSettlementCause(error);
-        agentRecord.attempts.push(
-          attemptRecord(
-            attempt,
-            "failed",
-            settlement ?? observed,
-            partialWorkerTextOf(error),
-            null,
-            startedAt,
-            failedResult,
-            workerExitStatusOf(error),
-            appServerDiagnosticOf(error),
-            settlement === null ? null : observed
-          )
-        );
-        if (!isRetryableError(error) || attempt === maxAttempts) {
+        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
       }
@@ -21715,6 +22094,120 @@ var EnsembleRuntime = class _EnsembleRuntime {
       status: "failed",
       value: null
     };
+  }
+  /**
+   * An attempt the worker answered badly (empty, unparseable, off-schema):
+   * an output failure, so it consumes an attempt and never advances the
+   * chain.
+   */
+  #recordAnsweredFailure(record, attempt, failure, rawOutput, startedAt, result, attempts) {
+    attempts.ledger.answered += 1;
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        failure,
+        rawOutput,
+        null,
+        startedAt,
+        result,
+        null,
+        null,
+        null,
+        this.#classify(attempts.target.engine, failure, null, result.diagnostics)
+      )
+    );
+  }
+  /**
+   * An engine-classified operational failure riding a returned result (the
+   * Claude and opencode adapters' shape). Recorded with its class; an
+   * availability class with a chain entry remaining reports `refused` and
+   * consumes no attempt — the worker never answered.
+   */
+  #recordOperationalFailure(record, attempt, startedAt, result, attempts) {
+    if (result.attemptFailure === void 0) {
+      return void 0;
+    }
+    const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
+    const refused = classification.class === "availability" && attempts.chainRemains;
+    if (!refused) {
+      attempts.ledger.answered += 1;
+    }
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        result.attemptFailure,
+        result.text,
+        null,
+        startedAt,
+        result,
+        result.workerExit ?? null,
+        null,
+        null,
+        classification
+      )
+    );
+    return { failure: result.attemptFailure, refused };
+  }
+  /**
+   * A thrown failure (the Codex transport's shape, and any engine's
+   * unexpected rejection): recorded with the terminalisation invariant's
+   * evidence and its class. A run-settlement cause is never a refusal —
+   * the run is ending, not the target.
+   */
+  #recordThrownFailure(record, attempt, error, startedAt, attempts) {
+    const observed = failureFromError(error);
+    const failedResult = failedTurnResultOf(error);
+    if (failedResult !== null) {
+      recordTurnMetadata(record, failedResult);
+    }
+    const settlement = this.#runSettlementCause(error);
+    const failure = settlement ?? observed;
+    const appServerDiagnostic = appServerDiagnosticOf(error);
+    const classification = this.#classify(attempts.target.engine, failure, appServerDiagnostic, failedResult?.diagnostics);
+    const refused = settlement === null && classification.class === "availability" && attempts.chainRemains;
+    if (!refused) {
+      attempts.ledger.answered += 1;
+    }
+    record.attempts.push(
+      attemptRecord(
+        attempt,
+        attempts.target,
+        "failed",
+        failure,
+        partialWorkerTextOf(error),
+        null,
+        startedAt,
+        failedResult,
+        workerExitStatusOf(error),
+        appServerDiagnostic,
+        settlement === null ? null : observed,
+        classification
+      )
+    );
+    return { refused };
+  }
+  /**
+   * The strip enforcement routes the archive records are the *dispatching*
+   * engine's: a chain step onto another engine re-resolves them against
+   * that engine's table (every chain engine was judged enforceable
+   * pre-spawn, so this cannot newly throw) and rewrites the record, so a
+   * Claude worker is never archived under Codex's routes.
+   */
+  #recordStripRoutesFor(record, engine, strip) {
+    if (strip === void 0 || strip.length === 0) {
+      return null;
+    }
+    const enforcement = resolveStripEnforcement(engine.name, engine.capabilities, strip);
+    record.strip = { requested: [...strip], enforcement };
+    return enforcement;
+  }
+  /** One classification call for every failed attempt, so the archive's class always came from the same table. */
+  #classify(engine, failure, appServerDiagnostic, diagnostics) {
+    return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
   }
   #emitEvent(event) {
     for (const listener of this.#eventListeners) {
@@ -21773,6 +22266,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     return adapter;
   }
+  /**
+   * A chain entry's engine, resolved pre-spawn: the validator has already
+   * confined entries to Codex and Claude, so an entry naming an engine this
+   * runtime does not carry (a registry built without it) is a declaration
+   * the run cannot honour, rejected before anything is paid for.
+   */
+  #chainEngineFor(target) {
+    const adapter = this.#engines.get(target.engine);
+    if (adapter === void 0) {
+      throw new FallbackTargetRejectedError(`the ${target.engine} engine is not available to this run`);
+    }
+    return adapter;
+  }
   #engineTurnOptions(options, cwd) {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
@@ -21780,7 +22286,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.schema !== void 0 ? { schema: options.schema } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
-      ...options.fallbackModel !== void 0 ? { fallbackModel: options.fallbackModel } : {},
       ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
       cwd
     };
@@ -21796,7 +22301,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       },
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
-      fallbackModel: typeof options.fallbackModel === "string" ? options.fallbackModel : null,
+      fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
+      answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
@@ -21838,12 +22344,14 @@ function requireTransport(transport) {
   }
   return transport;
 }
-function attemptRecord(attempt, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null, observedFailure = null) {
+function attemptRecord(attempt, target, status, failure, rawOutput, validatedOutput, startedAtMs, result, workerExit = null, appServerDiagnostic = null, observedFailure = null, classification = null) {
   const endedAt = /* @__PURE__ */ new Date();
   return {
     attempt,
     status,
+    target: { engine: target.engine, model: target.model ?? null },
     failure,
+    classification,
     observedFailure,
     workerExit,
     appServerDiagnostic,
@@ -21876,24 +22384,6 @@ function recordTurnMetadata(record, result) {
   if (result.transcriptCapture !== void 0) {
     record.transcriptCapture = result.transcriptCapture;
   }
-}
-function recordOperationalFailure(record, attempt, startedAtMs, result) {
-  if (result.attemptFailure === void 0) {
-    return void 0;
-  }
-  record.attempts.push(
-    attemptRecord(
-      attempt,
-      "failed",
-      result.attemptFailure,
-      result.text,
-      null,
-      startedAtMs,
-      result,
-      result.workerExit ?? null
-    )
-  );
-  return result.attemptFailure;
 }
 function failureFromError(error) {
   return describeError(error);
@@ -21995,6 +22485,13 @@ function createWorkflowHooks(options) {
     },
     log: (message) => {
       writeLog(message);
+    },
+    tally: (name, value) => {
+      const recordTally = options.runtime.recordTally;
+      if (recordTally === void 0) {
+        throw new PreSpawnAuthorError("this runtime does not support tallies");
+      }
+      return recordTally.call(options.runtime, name, value);
     },
     // A read-only facade: handing the live TokenBudget to the script would
     // expose record() and the events array to script mutation.
@@ -28024,6 +28521,7 @@ var HOOK_BINDING_NAMES = [
   "pipeline",
   "phase",
   "log",
+  "tally",
   "budget",
   "worktrees",
   "args",
@@ -28085,6 +28583,7 @@ async function runWorkflowScript(options) {
     pipeline: hooks.pipeline,
     phase: hooks.phase,
     log: hooks.log,
+    tally: hooks.tally,
     budget: hooks.budget,
     worktrees: hooks.worktrees,
     args: hooks.args,
@@ -28242,9 +28741,21 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
     }
     const engineDefaults = {};
     for (const [option, optionValue] of Object.entries(engineValue)) {
-      if (option !== "model" && option !== "effort" && option !== "fallbackModel") {
+      if (option === "fallbackModel") {
         throw new WorkflowScriptError(
-          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallbackModel`
+          `Workflow defaults.${engine}.fallbackModel was removed: declare a fallback chain instead \u2014 fallback: [{ engine, model, effort? }, \u2026] \u2014 which the harness advances on every engine`
+        );
+      }
+      if (option === "fallback") {
+        assertValidFallbackChain(optionValue);
+        if (optionValue !== void 0) {
+          engineDefaults.fallback = optionValue;
+        }
+        continue;
+      }
+      if (option !== "model" && option !== "effort") {
+        throw new WorkflowScriptError(
+          `Workflow defaults.${engine}.${option} is not supported; defaults may set model, effort, or fallback`
         );
       }
       if (typeof optionValue !== "string" || optionValue.length === 0) {
@@ -28738,7 +29249,6 @@ var AGENT_INVOCATION_OPTIONS = {
   effort: { type: "string" },
   label: { type: "string" },
   phase: { type: "string" },
-  "fallback-model": { type: "string" },
   cwd: { type: "string" },
   isolation: { type: "string" },
   identity: { type: "boolean" },
@@ -29406,7 +29916,6 @@ async function parseAgentInvocation(argv, cwd, stdin) {
     ...parsed.values.effort !== void 0 ? { effort: parsed.values.effort } : {},
     ...parsed.values.label !== void 0 ? { label: parsed.values.label } : {},
     ...parsed.values.phase !== void 0 ? { phase: parsed.values.phase } : {},
-    ...parsed.values["fallback-model"] !== void 0 ? { fallbackModel: parsed.values["fallback-model"] } : {},
     ...parsed.values.cwd !== void 0 ? { cwd: parsed.values.cwd } : {},
     ...isolation !== void 0 ? { isolation } : {},
     ...parsed.values.identity === true ? { identity: true } : {},
@@ -29725,7 +30234,7 @@ function announceRunRecord(writer, stderr) {
 function usage() {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
-    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>] [--fallback-model <model>]",
+    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]",
     "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
     "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]",
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",

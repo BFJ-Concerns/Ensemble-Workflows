@@ -41,7 +41,7 @@ test("built archive keeps a requested Codex pin distinct from the server-served 
     const readBack = await runNode([archiveReaderPath, recordStore], {}, 15_000);
     assert.equal(readBack.code, 0, readBack.stderr);
     assert.deepEqual(JSON.parse(readBack.stdout), {
-      manifestSchemaVersion: 3,
+      manifestSchemaVersion: 4,
       requestedModel: "gpt-requested",
       servedModel: "gpt-served",
       attemptServedModel: "gpt-served"

@@ -823,6 +823,56 @@ test("a frame naming a different turn does not disarm the deadline", async () =>
   }
 });
 
+test("a terminal frame from an abandoned turn cannot settle the live turn on a recycled thread", async () => {
+  // Turn one times out with its id learned from the turn/start response and
+  // is interrupted. The fake then recycles the thread: turn two starts, and
+  // the abandoned turn's `turn/completed` and `error` frames arrive naming
+  // turn-1 — a live turn ungated on identity would be settled by the first
+  // of them. Turn two must ignore both and settle only on its own frames.
+  const codexBin = await fakeCodexFailingTurnServer("recycled-thread-stragglers");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "first turn, abandoned", { timeoutMs: 60 }),
+      TurnTimeoutError
+    );
+
+    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    // Settled by its own completion, not the straggler's: the fake's turn-2
+    // answer arrives only after both turn-1 stragglers have been sent.
+    assert.equal(second.text, "the live turn's own answer");
+    // The straggler's `model/rerouted` named a model the live turn never
+    // ran on; identity gating keeps the served-model slot honest too.
+    assert.equal(second.resolvedModel, undefined);
+    // Every frame on the thread still reaches the transcript — correlation
+    // gates settlement and identity, never evidence capture.
+    assert.ok(second.transcripts?.[0]?.content.includes('"turnId":"turn-1"'));
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a straggler arriving before the live turn learns its id is not learned as that id", async () => {
+  // The narrow window: turn two's turn/start response has not yet named
+  // its id when the abandoned turn's straggler lands. Learning the
+  // straggler's id would make every later turn-1 frame correlate, so the
+  // settled-id memory refuses it and the live turn waits for its own frames.
+  const codexBin = await fakeCodexFailingTurnServer("recycled-thread-straggler-before-ack");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(
+      () => transport.runTurn(threadId, "first turn, abandoned", { timeoutMs: 60 }),
+      TurnTimeoutError
+    );
+    const second = await transport.runTurn(threadId, "second turn, live", { timeoutMs: 2_000 });
+    assert.equal(second.text, "the live turn's own answer");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("MCP tool-call progress does not reset the consecutive-promise bound", async () => {
   // 40 promise/heartbeat pairs at 5ms: without the exclusion the counter
   // resets every pair and the alternation runs without limit; with it the
@@ -1514,6 +1564,8 @@ async function fakeCodexFailingTurnServer(
     | "tool-active-output-silent"
     | "no-first-delta"
     | "delayed-first-delta"
+    | "recycled-thread-stragglers"
+    | "recycled-thread-straggler-before-ack"
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-failing-"));
   const bin = path.join(directory, "codex");
@@ -1569,6 +1621,13 @@ reader.on("line", (line) => {
       send({ method: "error", params: { threadId, willRetry: false, error: { message: "upstream fell over" } } });
       return;
     }
+    if (mode === "recycled-thread-stragglers" || mode === "recycled-thread-straggler-before-ack") {
+      // Turn one is acknowledged with its id so the client learns turn-1
+      // from the response, exactly as the real server names it.
+      send({ id: message.id, result: { turn: { id: "turn-1" } } });
+      send({ method: "turn/started", params: { threadId, turn: { id: "turn-1" } } });
+      return;
+    }
     send({ id: message.id, result: {} });
     send({ method: "turn/started", params: { threadId } });
     if (mode === "system-error-then-schema-error-follow-up") {
@@ -1590,6 +1649,35 @@ reader.on("line", (line) => {
     if (mode === "no-first-delta") {
       // The accepted turn stays alive but never produces output: only the
       // client's first-output deadline can free the worker slot.
+      return;
+    }
+    if (mode === "recycled-thread-stragglers" || mode === "recycled-thread-straggler-before-ack") {
+      if (turnCounter === 1) {
+        // Turn one: acknowledged with its id, then silence until the client's
+        // deadline interrupts it. Its terminal frames straggle in during the
+        // next turn.
+        return;
+      }
+      const stragglers = () => {
+        send({ method: "model/rerouted", params: { threadId, turnId: "turn-1", fromModel: "gpt-live", toModel: "gpt-straggler" } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+        send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: { message: "abandoned turn fell over" } } });
+      };
+      if (mode === "recycled-thread-straggler-before-ack") {
+        // Stragglers land before turn two's turn/start response, so the live
+        // turn has no id yet when they arrive.
+        stragglers();
+        send({ id: message.id, result: { turn: { id: "turn-2" } } });
+        send({ method: "turn/started", params: { threadId, turn: { id: "turn-2" } } });
+      } else {
+        send({ id: message.id, result: { turn: { id: "turn-2" } } });
+        send({ method: "turn/started", params: { threadId, turn: { id: "turn-2" } } });
+        setTimeout(stragglers, 50);
+      }
+      setTimeout(() => {
+        send({ method: "item/completed", params: { threadId, turnId: "turn-2", item: { itemType: "agentMessage", text: "the live turn's own answer" } } });
+        send({ method: "turn/completed", params: { threadId, turn: { id: "turn-2" } } });
+      }, 200);
       return;
     }
     if (mode === "delayed-first-delta") {

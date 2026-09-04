@@ -121,6 +121,17 @@ const MAX_SKILL_DISCOVERY_ATTEMPTS = 10;
  * the true ceiling is this deadline plus one request timeout.
  */
 const SKILL_DISCOVERY_DEADLINE_MS = 30_000;
+/**
+ * How many settled turn ids the transport remembers per process. A held
+ * thread recycles across turns, and a straggler frame from a turn already
+ * settled must never be learned as the identity of the turn now live on
+ * that thread; remembering the settled ids is what makes that refusal
+ * possible before the live turn has learned its own id. The bound keeps a
+ * long run's memory flat — stragglers arrive within seconds of the turn
+ * they belong to, so the oldest remembered ids are the ones that can no
+ * longer matter.
+ */
+const MAX_REMEMBERED_SETTLED_TURN_IDS = 256;
 
 interface ThreadTranscript {
   events: JsonObject[];
@@ -223,6 +234,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
   #transcripts = new Map<string, ThreadTranscript>();
+  /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
+  #settledTurnIds = new Set<string>();
   #stderrTail: string[] = [];
   #exitStatus: WorkerExitStatus | null = null;
   #hasExited = false;
@@ -782,10 +795,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
 
-    // Correlation is deliberately narrow: it decides only whether this frame
-    // speaks for the live turn's silence clock. Every other behaviour below
-    // handles the frame as before — a gate ahead of all handlers would
-    // silently drop text, usage, and completion on any identity mismatch.
+    // Correlation is consulted where identity decides the outcome — the
+    // silence clock, the turn's settlement, and its served-model stamp — and
+    // nowhere else. Text, usage, and item accounting still take every frame
+    // on the thread: a gate ahead of all handlers was tried and silently
+    // dropped those on any identity mismatch, so each handler that cares
+    // reads `speaksForTurn` itself.
     const speaksForTurn = this.#correlatesWithTurn(turn, params);
     if (speaksForTurn) {
       this.#disarmRetryPromiseSilenceDeadline(turn);
@@ -809,6 +824,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "model/rerouted") {
+      // Served identity is the turn's, not the thread's: a reroute announced
+      // for an abandoned turn on a recycled thread must not stamp the live
+      // turn's record with a model it never ran on.
+      if (!speaksForTurn) {
+        return;
+      }
       const toModel = params.toModel;
       const transcript = this.#transcripts.get(threadId);
       if (transcript !== undefined && typeof toModel === "string" && toModel.length > 0) {
@@ -860,6 +881,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "turn/completed") {
+      // Settlement is gated on identity: a completion straggling in from a
+      // turn already settled on this thread (interrupted after its deadline,
+      // say) settles nothing — the live turn keeps waiting for its own.
+      if (!speaksForTurn) {
+        return;
+      }
       turn.completedAt = now;
       // A systemError has already made this turn terminal. Codex normally
       // follows it with an error notification carrying the useful diagnostic,
@@ -873,6 +900,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     if (method === "error") {
+      // Same identity gate as completion: an error frame from a settled
+      // turn neither terminalises the live turn nor counts toward its
+      // retry-promise bound.
+      if (!speaksForTurn) {
+        return;
+      }
       // systemError is terminal, but Codex 0.151.0 puts its useful diagnostic
       // in this following notification. It is not a retry promise in this
       // state: the terminal status has already settled the turn's direction.
@@ -896,12 +929,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
         }
         // The promise is now the most recent frame on the turn — the only
         // state in which the silence clock runs. The disarm above cleared any
-        // earlier deadline, so this cannot stack timers. Correlation gates
-        // arming exactly as it gates disarming: the clock is the one
-        // behaviour turn identity decides.
-        if (speaksForTurn) {
-          this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
-        }
+        // earlier deadline, so this cannot stack timers.
+        this.#armRetryPromiseSilenceDeadline(threadId, turn, params);
         return;
       }
       void this.#rejectTurn(threadId, turn, appServerErrorFromNotification(params));
@@ -909,12 +938,19 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   /**
-   * Whether an inbound frame speaks for this turn's silence clock. Thread
+   * Whether an inbound frame speaks for the live turn on its thread. Thread
    * identity has already matched; a frame naming a different turn (a
-   * straggler from an abandoned turn on a recycled thread) must not disarm
-   * the live turn's deadline. Frames carrying no turn identity are
-   * thread-scoped and count: ephemeral threads run one turn, so the thread
-   * speaking is the turn's server speaking.
+   * straggler from an abandoned turn on a recycled thread) must neither
+   * disarm the live turn's deadline, settle it, nor stamp its served model.
+   * Frames carrying no turn identity are thread-scoped and count: ephemeral
+   * threads run one turn, so the thread speaking is the turn's server
+   * speaking.
+   *
+   * A turn learns its id from the first correlated frame when the
+   * `turn/start` response has not yet named it — except that an id this
+   * transport has already settled is never learned: a straggler arriving in
+   * that window would otherwise teach the live turn the abandoned turn's
+   * identity, and every later straggler would correlate.
    */
   #correlatesWithTurn(turn: TurnState, params: JsonObject): boolean {
     const turnId = turnIdFromParams(params);
@@ -922,10 +958,27 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return true;
     }
     if (turn.turnId === undefined) {
+      if (this.#settledTurnIds.has(turnId)) {
+        return false;
+      }
       turn.turnId = turnId;
       return true;
     }
     return turn.turnId === turnId;
+  }
+
+  /** Remember a settled turn's id so its stragglers can never be learned as a later turn's identity. */
+  #rememberSettledTurn(turn: TurnState): void {
+    if (turn.turnId === undefined) {
+      return;
+    }
+    this.#settledTurnIds.add(turn.turnId);
+    if (this.#settledTurnIds.size > MAX_REMEMBERED_SETTLED_TURN_IDS) {
+      const oldest = this.#settledTurnIds.values().next().value;
+      if (oldest !== undefined) {
+        this.#settledTurnIds.delete(oldest);
+      }
+    }
   }
 
   /** Resolves an inbound frame's params to the live turn they speak for, if any. */
@@ -1041,6 +1094,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // as a completed item rather than deltas has still said it.
     this.#turns.delete(threadId);
     this.#transcripts.delete(threadId);
+    this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
@@ -1062,6 +1116,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   #completeTurn(threadId: string, turn: TurnState): void {
     this.#turns.delete(threadId);
+    this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);

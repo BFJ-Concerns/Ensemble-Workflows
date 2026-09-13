@@ -253,13 +253,24 @@ test("a SIGINT delivered as the sentinel path is announced still writes the inte
       createRuntime: async () => fakeRuntime()
     });
 
-    assert.equal(exitCode, 1);
-    assert.deepEqual(JSON.parse(stdout.text()), { partial: true, reason: "interrupted", completed: [] });
+    // A signal-stopped run exits by the shell convention (128 + the signal
+    // number), and every durable surface records that same code.
+    assert.equal(exitCode, 130);
+    assert.deepEqual(JSON.parse(stdout.text()), {
+      partial: true,
+      reason: "interrupted",
+      error: { kind: "WorkflowInterruptedError", message: "Workflow interrupted by SIGINT" },
+      completed: []
+    });
     const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
     assert.ok(announced, "the interrupted run must retain the announced sentinel path");
     const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
     assert.equal(sentinel.outcome, "interrupted");
-    assert.equal(sentinel.exit_code, 1);
+    assert.equal(sentinel.exit_code, 130);
+    const result = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "result.json"), "utf8")) as {
+      exit_code: number;
+    };
+    assert.equal(result.exit_code, 130);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -693,7 +704,10 @@ test("ensemble agent makes a missing worker result a failed terminal run with a 
   });
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout.text(), '{"partial":true,"reason":"failed","completed":[]}\n');
+  assert.equal(
+    stdout.text(),
+    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
+  );
   assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
   const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
   assert.ok(announced, "a no-dispatch failure must retain the announced wake signal");
@@ -752,7 +766,10 @@ test("ensemble agent turns schema retry exhaustion into a failed-run envelope", 
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout.text(), '{"partial":true,"reason":"failed","completed":[]}\n');
+  assert.equal(
+    stdout.text(),
+    '{"partial":true,"reason":"failed","error":{"kind":"SingleAgentFailedError","message":"Agent exhausted its attempts without producing a result"},"completed":[]}\n'
+  );
   assert.doesNotMatch(stdout.text(), /^null/m);
   assert.match(stderr.text(), /Agent exhausted its attempts without producing a result/);
   assert.equal(engine.attempts, 2);
@@ -1023,14 +1040,16 @@ test("--timeout above the 32-bit timer bound is a usage error, not a platform su
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
 
   // The bound is inclusive: the maximum representable delay is accepted (and
-  // then fails on the missing script, which is the next check in line).
+  // then the invocation is rejected on the missing script, which is the next
+  // check in line — still exit 2, but for the script, not the flag).
   const boundaryStderr = new CaptureStream();
   const boundaryExit = await runEnsembleCli(["--timeout=2147483647", "no-such-workflow.js"], {
     stdout: new CaptureStream(),
     stderr: boundaryStderr
   });
-  assert.equal(boundaryExit, 1);
+  assert.equal(boundaryExit, 2);
   assert.doesNotMatch(boundaryStderr.text(), /--timeout value/);
+  assert.match(boundaryStderr.text(), /Could not read workflow script/);
 });
 
 test("ensemble agent reports option mistakes as stack-free usage errors", async () => {
@@ -1615,8 +1634,12 @@ test("CLI --timeout caps the whole-workflow run and times out a hanging script",
 
   assert.equal(exitCode, 1);
   // No worker completed before the deadline, so the partial envelope is empty —
-  // but it is still emitted, marking the stopped run rather than total loss.
-  assert.equal(stdout.text(), `{"partial":true,"reason":"timed-out","completed":[]}\n`);
+  // but it is still emitted, marking the stopped run rather than total loss,
+  // and it names the deadline that ended it.
+  assert.equal(
+    stdout.text(),
+    `{"partial":true,"reason":"timed-out","error":{"kind":"WorkflowTimeoutError","message":"Workflow timed out after 50ms"},"completed":[]}\n`
+  );
   assert.match(stderr.text(), /Workflow timed out after 50ms/);
 });
 
@@ -1700,16 +1723,18 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
       })
   });
 
-  assert.equal(exitCode, 1);
+  assert.equal(exitCode, 130);
   assert.equal(hangingEngine.cancelCount, 1);
 
   const envelope = JSON.parse(stdout.text()) as {
     partial: boolean;
     reason: string;
+    error: { kind: string; message: string };
     completed: Array<{ engine: string; label: string | null; output: unknown }>;
   };
   assert.equal(envelope.partial, true);
   assert.equal(envelope.reason, "interrupted");
+  assert.deepEqual(envelope.error, { kind: "WorkflowInterruptedError", message: "Workflow interrupted by SIGINT" });
   assert.equal(envelope.completed.length, 1);
   assert.equal(envelope.completed[0]?.engine, "codex");
   assert.equal(envelope.completed[0]?.label, "alpha");
@@ -1760,7 +1785,10 @@ test("CLI returns non-zero and writes errors to stderr when the script throws", 
   });
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout.text(), `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assert.equal(
+    stdout.text(),
+    `{"partial":true,"reason":"failed","error":{"kind":"Error","message":"bad workflow"},"completed":[]}\n`
+  );
   assert.match(stderr.text(), /Error: bad workflow/);
 });
 
@@ -1907,8 +1935,13 @@ test("CLI fails the run loudly when the return value is not a JSON value", async
     });
 
     assert.equal(exitCode, 1, `${scenario.name}: ${stderr.text()}`);
-    // The failure still salvages completed work through the partial envelope.
-    assert.equal(stdout.text(), `{"partial":true,"reason":"failed","completed":[]}\n`);
+    // The failure still salvages completed work through the partial envelope,
+    // and the envelope carries the settlement error that ended the run.
+    const envelope = JSON.parse(stdout.text()) as { reason: string; error: { kind: string; message: string }; completed: unknown[] };
+    assert.equal(envelope.reason, "failed");
+    assert.equal(envelope.error.kind, "WorkflowScriptError");
+    assert.match(envelope.error.message, /workflow return value must be a JSON value/);
+    assert.deepEqual(envelope.completed, []);
     assert.match(stderr.text(), /WorkflowScriptError: workflow return value must be a JSON value/);
     assert.match(stderr.text(), scenario.offence);
     // An authoring error is the author's to fix: one clean line, no stack.
@@ -2767,8 +2800,14 @@ test("CLI logs the resolved Codex default and stays quiet when the model is pinn
   assert.doesNotMatch(withoutSentinelAnnouncement(pinnedStderr.text()), /resolved ambient default/);
 });
 
-test("a missing workflow script path is one clean pre-spawn line naming the path", async () => {
+test("a missing workflow script path is a rejected invocation: exit 2, one clean line, no run", async () => {
+  // The acceptance boundary: a run begins when the invocation is accepted,
+  // and an unreadable script is a rejection before that point. So it takes
+  // the usage-error exit, prints nothing on stdout (no envelope claiming a
+  // run that lost everything), announces no sentinel, and writes no archive
+  // — the same shape as `--engine bogus` on the agent form.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-missing-script-"));
+  const runRecordDir = path.join(directory, "records");
   const missing = path.join(directory, "nowhere.js");
 
   const stdout = new CaptureStream();
@@ -2777,10 +2816,12 @@ test("a missing workflow script path is one clean pre-spawn line naming the path
     cwd: directory,
     stdout,
     stderr,
+    runRecordDir,
     createRuntime: async () => fakeRuntime()
   });
 
-  assert.equal(exitCode, 1);
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
   // Exactly one clean line: the read fails before the sentinel announce or
   // any worker machinery, so nothing else may reach stderr — an inclusion
   // check would let a builder extend this surface with noisy output unseen.
@@ -2788,6 +2829,33 @@ test("a missing workflow script path is one clean pre-spawn line naming the path
     stderr.text(),
     `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
   );
+  await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
+});
+
+test("a direct agent whose --cwd is missing is rejected the same way, before any run artefact exists", async () => {
+  // The same boundary from the other side: this path must not write an
+  // archive or a sentinel for a rejection that comes before either. One rule,
+  // both forms.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-cwd-"));
+  const runRecordDir = path.join(directory, "records");
+  const missingCwd = path.join(directory, "nowhere");
+  const engine = new FixedResponseEngine("codex", "never reached");
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli(["agent", "--engine=codex", `--cwd=${missingCwd}`, "place me"], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+  });
+
+  assert.equal(exitCode, 2);
+  assert.equal(stdout.text(), "");
+  assert.equal(stderr.text(), `--cwd must name an existing directory; got ${missingCwd}\n`);
+  assert.equal(engine.attempts, 0);
+  await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
 });
 
 test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {
@@ -2895,8 +2963,8 @@ test("a clean run's durable surfaces carry no invented cause", async () => {
 });
 
 test("a workflow's failed worker is announced on stderr under its engine tag, with the record's own account", async () => {
-  // A dispatched worker's failure resolves to the script as a value,
-  // so the notice is where an operator watching the terminal learns which
+  // A dispatched worker's failure resolves to the script as a value, so the
+  // notice is where an operator watching the terminal learns which
   // worker failed and why. The direct-agent form is exempt: its collapse
   // is the run's own failure and the terminal diagnosis renders it.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-failed-notice-"));

@@ -13821,7 +13821,7 @@ import path13 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile8 } from "node:fs/promises";
+import { readFile as readFile8, stat as stat3 } from "node:fs/promises";
 import path12 from "node:path";
 import { parseArgs } from "node:util";
 
@@ -29444,6 +29444,14 @@ async function runEnsembleCli(argv, options = {}) {
     stderr.write(usage());
     return 2;
   }
+  let prepared;
+  try {
+    prepared = await prepareRun(invocation, cwd);
+  } catch (error) {
+    stderr.write(`${presentOperationalError(error) ?? formatError2(error)}
+`);
+    return 2;
+  }
   let runtime = null;
   let progress;
   let statusWriter = null;
@@ -29458,7 +29466,6 @@ async function runEnsembleCli(argv, options = {}) {
   };
   let exitCode = 1;
   try {
-    const prepared = await prepareRun(invocation, cwd);
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
@@ -29631,19 +29638,19 @@ async function runEnsembleCli(argv, options = {}) {
     }
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    const partial = partialResult(runtime, status);
+    terminalError = describeError(error);
+    const partial = partialResult(runtime, status, terminalError);
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}
 `);
-    finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
-    terminalError = describeError(error);
+    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: JSON.parse(serialised) };
     const diagnosis = presentTerminalError(error, {
       archiveDir: runRecordWriter?.archiveDir ?? null,
       lastAgentRecord: runtime?.lastAgentRecord?.() ?? null
     });
     stderr.write(`${diagnosis ?? formatError2(error)}
 `);
-    exitCode = 1;
+    exitCode = finalRecord.exitCode;
   } finally {
     let teardownError = null;
     try {
@@ -29693,9 +29700,9 @@ async function runEnsembleCli(argv, options = {}) {
   }
   return exitCode;
 }
-function partialResult(runtime, reason) {
+function partialResult(runtime, reason, error) {
   const completed = runtime?.completedOutputs?.() ?? [];
-  return { partial: true, reason, completed };
+  return { partial: true, reason, error, completed };
 }
 function workerOutcomes(progress, runtime) {
   const tally = runtime?.shutdownTally?.() ?? null;
@@ -29721,6 +29728,18 @@ function workflowName(meta) {
 }
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
+    if (invocation.agentOptions.cwd !== void 0) {
+      const requestedCwd = path12.resolve(cwd, invocation.agentOptions.cwd);
+      let isDirectory2 = false;
+      try {
+        isDirectory2 = (await stat3(requestedCwd)).isDirectory();
+      } catch {
+        isDirectory2 = false;
+      }
+      if (!isDirectory2) {
+        throw new CliUsageError(`--cwd must name an existing directory; got ${requestedCwd}`);
+      }
+    }
     return {
       workflowPath: path12.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
@@ -29816,7 +29835,12 @@ var WorkflowInterruptedError = class extends Error {
     this.name = new.target.name;
   }
   signal;
+  /** The shell convention for a signal-stopped process: 128 + the signal number. */
+  get exitCode() {
+    return 128 + INTERRUPT_SIGNAL_NUMBERS[this.signal];
+  }
 };
+var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
 function watchWorkflowInterrupts() {
   const signals = ["SIGINT", "SIGTERM"];
   const handlers = /* @__PURE__ */ new Map();
@@ -30300,6 +30324,11 @@ function isError(error) {
 
 // src/cli/ensemble.ts
 var isMain = process.argv[1] !== void 0 && realpathSync(path13.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+function flushed(stream) {
+  return new Promise((resolve) => {
+    stream.write("", () => resolve());
+  });
+}
 if (isMain) {
   const versionError = nodeVersionError();
   if (versionError !== null) {
@@ -30312,5 +30341,7 @@ if (isMain) {
       cwd
     });
     process.exitCode = exitCode;
+    await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+    process.exit(exitCode);
   }
 }

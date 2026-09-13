@@ -84,7 +84,12 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
         );
 
         t.diagnostic(JSON.stringify({ ingress: ingress.name, ...result }));
-        assert.notEqual(result.code, 0);
+        // The fixture's refusal kills the app-server at dispatch: a
+        // dispatched worker's failure, so the run completes on the script's
+        // null and the refusal is legible on the failure notice.
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(result.stdout, "null\n");
+        assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
         if (ingress.diagnostic === "refusal") {
           assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
         } else if (ingress.diagnostic === "generation-refusal") {
@@ -193,7 +198,9 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
       survivors: await processGroupMembers(group)
     })));
     t.diagnostic(JSON.stringify({ recorded: records, observations, result }));
-    assert.notEqual(result.code, 0);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
     assert.match(result.stderr, /Codex fixture schema command timed out after 30000ms/);
     for (const observation of observations) {
       assert.deepEqual(observation.survivors, []);
@@ -232,8 +239,9 @@ exit 0
     );
 
     t.diagnostic(JSON.stringify(result));
-    assert.notEqual(result.code, 0);
-    assert.match(result.stdout, /"partial":true/);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
     assert.match(result.stderr, /Codex fixture schema command produced no usable protocol schema/);
     assert.doesNotMatch(result.stderr, /ENOENT/);
   } finally {

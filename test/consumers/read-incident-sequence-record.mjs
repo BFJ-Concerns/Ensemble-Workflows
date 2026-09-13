@@ -11,7 +11,9 @@ assert.ok(identifier, "an incident identifier is required");
 const manifestPath = await findOnlyFile(dataHome, "manifest.json");
 const archiveDir = path.dirname(manifestPath);
 const manifest = await readJson(manifestPath);
-assert.equal(manifest.status, "failed");
+// The worker failed and the script returned its null: the run itself
+// completed, and the failure lives on the agent record beneath it.
+assert.equal(manifest.status, "complete");
 assert.equal(manifest.meta.task.id, identifier);
 
 const agent = await readJson(await findOnlyFile(archiveDir, "agent.json"));

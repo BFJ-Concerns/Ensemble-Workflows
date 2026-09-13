@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runNode } from "./estate-process.js";
+import { assertSalvageEnvelope, runNode } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
-const failedEnvelope = { partial: true, reason: "failed", completed: [] };
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;
@@ -25,7 +24,12 @@ for (const scenario of [
   test(`built CLI rejects ${scenario.name} returns with their path and a salvage envelope`, async () => {
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
-    assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
+    const envelope = assertSalvageEnvelope(result.stdout, "failed");
+    // The envelope names what ended the run, as the diagnostic does.
+    assert.deepEqual(envelope.error, {
+      kind: "WorkflowScriptError",
+      message: `workflow return value must be a JSON value: ${scenario.path}`
+    });
     const diagnostic = withoutSentinelAnnouncement(result.stderr);
     assert.equal(
       diagnostic,
@@ -42,7 +46,7 @@ test("built CLI rejects workflow arguments before resolving or executing the chi
   );
 
   assert.equal(result.code, 1, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
+  assertSalvageEnvelope(result.stdout, "failed");
   const diagnostic = withoutSentinelAnnouncement(result.stderr);
   assert.equal(
     diagnostic,
@@ -71,7 +75,7 @@ for (const scenario of [
   test(`built CLI routes the ${scenario.name} disagreement through a clean author error`, async () => {
     const result = await runWorkflow(scenario.name, scenario.body);
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
-    assert.deepEqual(JSON.parse(result.stdout), failedEnvelope);
+    assertSalvageEnvelope(result.stdout, "failed");
     const diagnostic = withoutSentinelAnnouncement(result.stderr);
     assert.match(diagnostic, /^WorkflowScriptError: workflow return value must be a JSON value:/);
     assert.match(diagnostic, new RegExp(escapeRegExp(scenario.path)));

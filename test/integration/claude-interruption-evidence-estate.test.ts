@@ -51,7 +51,8 @@ test("built CLI archives an interrupted Claude worker's already-served evidence"
       }
     );
 
-    assert.equal(run.code, 1, run.stderr);
+    // SIGINT ends the process with the shell convention's 130.
+    assert.equal(run.code, 130, run.stderr);
     assert.match(run.stdout, /"partial":true/);
     assert.match(run.stderr, /interrupted/i);
 
@@ -107,7 +108,7 @@ test("built CLI retains Claude evidence when interruption races the initial disp
       }
     );
 
-    assert.equal(run.code, 1, run.stderr);
+    assert.equal(run.code, 130, run.stderr);
     assert.match(run.stdout, /"partial":true/);
     assert.match(run.stderr, /interrupted/i);
 

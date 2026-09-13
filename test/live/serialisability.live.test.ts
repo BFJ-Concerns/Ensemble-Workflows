@@ -83,6 +83,10 @@ test(
       assert.deepEqual(envelope, {
         partial: true,
         reason: "failed",
+        error: {
+          kind: "WorkflowScriptError",
+          message: "workflow return value must be a JSON value: return value.settlementFailure is a BigInt"
+        },
         completed: [{ id: 1, engine: "codex", label: "live-serialisability-worker", phase: null, output: { token } }]
       });
 
@@ -111,6 +115,7 @@ test(
 interface SalvageEnvelope {
   partial: true;
   reason: "failed";
+  error: { kind: string; message: string };
   completed: Array<{ id: number; engine: string; label: string | null; phase: string | null; output: unknown }>;
 }
 

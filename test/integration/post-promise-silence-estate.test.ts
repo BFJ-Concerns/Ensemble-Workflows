@@ -41,9 +41,9 @@ test("built consumer terminalises permanent silence after a retry promise with i
       1
     );
 
-    assert.equal(result.code, 1, result.stderr);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerRetryPromiseBrokenError/);
     assert.match(result.stderr, /silent for 900000ms after a promised retry/);
     assert.match(result.stderr, /PROMISE_ABANDONED_41/);
 
@@ -107,8 +107,9 @@ test("built consumer rejects promise and MCP-progress alternation at the bounded
 
     const result = await fixture.run([alternating], 1);
 
-    assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerRetryPromiseBrokenError/);
     assert.doesNotMatch(result.stderr, /silent for 900000ms after a promised retry/);
     assert.match(result.stderr, /ALTERNATING_PROMISE_5/);
     const attempts = await fixture.attempts();
@@ -176,8 +177,9 @@ test("built consumer rejects the post-promise fixture's malformed partial assist
       { type: "success", text: "must-not-arrive" }
     ]], 1);
 
-    assert.notEqual(result.code, 0, result.stderr);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
     assert.match(result.stderr, /ServerNotification\.json validation for item\/agentMessage\/delta/);
     assert.match(result.stderr, /must have required property 'itemId'/);
   });

@@ -10,7 +10,7 @@ import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { LEGACY_STATUS_FILENAME, StatusFileWriter, statusFileName } from "../../src/status-file.js";
 import { readProcessStartTicks } from "../../src/run-record.js";
-import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
+import { assertSalvageEnvelope, executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -90,6 +90,7 @@ test("built CLI salvages a top-level failure with its recorder enabled by defaul
   const expectedEnvelope = {
     partial: true,
     reason: "failed",
+    error: { kind: "Error", message: "ESTATE_TOP_LEVEL_FAILURE" },
     completed: []
   };
 
@@ -232,7 +233,7 @@ test("built CLI rejects a removed agent option with its removal reason", async (
     const result = await runNode([cliPath, script], { ENSEMBLE_RUN_RECORD: "off" });
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(result.stderr, /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -606,7 +607,7 @@ test("built CLI rejects an unrecognised option before opening that worker", asyn
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(result.stderr, /unrecognised agent\(\) option[\s\S]*typoedLabel/i);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
@@ -645,7 +646,7 @@ test("built CLI reports an author error without Codex on PATH", async () => {
     const result = await runNode([bundledCliPath, script], env);
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(result.stderr, /unrecognised agent\(\) option[\s\S]*typoedLabel/i);
     assert.doesNotMatch(result.stderr, /spawn codex ENOENT/);
   } finally {
@@ -680,7 +681,7 @@ test("built CLI rejects harness-owned invalid values before worker creation with
       const result = await fixture.run();
 
       assert.equal(result.code, 1);
-      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assertSalvageEnvelope(result.stdout, "failed");
       assert.match(result.stderr, new RegExp(scenario.option));
       assert.ok(result.stderr.includes(JSON.stringify(scenario.value)));
       diagnostics.push(result.stderr);
@@ -719,7 +720,7 @@ test("built CLI rejects a per-turn timeout above Node's faithful timer limit bef
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(result.stderr, /timeoutMs/);
     assert.match(result.stderr, new RegExp(String(timeoutMs)));
     assert.match(result.stderr, new RegExp(String(maximumTimeoutMs)));
@@ -753,7 +754,7 @@ test("built CLI rejects a per-turn timeout above Node's timer limit on every aff
       const result = await fixture.run();
 
       assert.equal(result.code, 1);
-      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assertSalvageEnvelope(result.stdout, "failed");
       assert.equal(
         withoutSentinelAnnouncement(result.stderr),
         'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
@@ -784,7 +785,7 @@ test("built CLI keeps a stack for an ordinary workflow-body error", async () => 
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(withoutSentinelAnnouncement(result.stderr), /^Error: ordinary workflow bug\n\s+at /);
   } finally {
     await fixture.cleanup();
@@ -811,7 +812,7 @@ test("built CLI falls back to an ordinary error's name and message when its stac
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.equal(withoutSentinelAnnouncement(result.stderr), "Error: stackless error\n");
   } finally {
     await fixture.cleanup();
@@ -836,7 +837,7 @@ test("built CLI does not trust a stack field on a thrown non-Error object", asyn
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(result.stdout, "failed");
     const diagnostic = withoutSentinelAnnouncement(result.stderr);
     assert.equal(diagnostic, "[object Object]\n");
     assert.doesNotMatch(diagnostic, /not actually a stack trace/);
@@ -939,10 +940,7 @@ test("built CLI propagates a computed removed option from pipeline", async () =>
     const result = await fixture.run();
 
     assert.equal(result.code, 1);
-    assert.equal(
-      result.stdout,
-      `{"partial":true,"reason":"failed","completed":[{"id":1,"engine":"codex","label":null,"phase":null,"output":"sandbox"}]}\n`
-    );
+    assertSalvageEnvelope(result.stdout, "failed", [{ id: 1, engine: "codex", label: null, phase: null, output: "sandbox" }]);
     assert.match(result.stderr, /sandbox[\s\S]*removed/i);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
@@ -987,7 +985,7 @@ test("built CLI propagates malformed schemas from both combinators before openin
       const result = await fixture.run();
 
       assert.equal(result.code, 1);
-      assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+      assertSalvageEnvelope(result.stdout, "failed");
       assert.match(result.stderr, /InvalidAgentSchemaError/);
       assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
     } finally {
@@ -1065,7 +1063,7 @@ test("built CLI reports a direct-agent malformed --schema before the Codex worke
     ]);
 
     assert.equal(result.code, 1);
-    assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
+    assertSalvageEnvelope(result.stdout, "failed");
     assert.match(result.stderr, /InvalidAgentSchemaError/);
     assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
     assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
@@ -1492,7 +1490,7 @@ test("ensemble agent reports retry exhaustion as a failed partial run through th
     ]);
 
     assert.equal(direct.code, 1);
-    assert.equal(direct.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(direct.stdout, "failed");
     assert.doesNotMatch(direct.stdout, /^null$/m);
     assert.match(direct.stderr, /Agent exhausted its attempts without producing a result/);
     assert.equal(
@@ -1516,7 +1514,8 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
     response: string;
     args: string[];
     exitCode: number;
-    stdout: string;
+    /** The exact stdout, or the salvage envelope's reason where stdout is an envelope. */
+    stdout: string | { reason: "failed" };
     outcome: "complete" | "failed";
     error?: RegExp;
     agentStatus: "complete" | "failed" | null;
@@ -1540,7 +1539,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       response: "unused",
       args: ["agent", "--engine=opencode", "--strip=skills", "must not dispatch"],
       exitCode: 1,
-      stdout: '{"partial":true,"reason":"failed","completed":[]}\n',
+      stdout: { reason: "failed" as const },
       outcome: "failed",
       error: /The worker was not dispatched/,
       agentStatus: null
@@ -1550,7 +1549,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       response: "not JSON",
       args: ["agent", "--engine=codex", `--schema=${JSON.stringify(schema)}`, "return a finding"],
       exitCode: 1,
-      stdout: '{"partial":true,"reason":"failed","completed":[]}\n',
+      stdout: { reason: "failed" as const },
       outcome: "failed",
       error: /Agent exhausted its attempts without producing a result/,
       agentStatus: "failed"
@@ -1570,7 +1569,11 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
             : await fixture.runRedirectedBackgroundArgs(terminal.args, { ENSEMBLE_RUN_RECORD: "1" });
 
         assert.equal(result.code, terminal.exitCode, `${shape} ${terminal.name}: ${result.stderr}`);
-        assert.equal(result.stdout, terminal.stdout, `${shape} ${terminal.name}: ${result.stderr}`);
+        if (typeof terminal.stdout === "string") {
+          assert.equal(result.stdout, terminal.stdout, `${shape} ${terminal.name}: ${result.stderr}`);
+        } else {
+          assertSalvageEnvelope(result.stdout, terminal.stdout.reason);
+        }
         if (terminal.error !== undefined) {
           assert.match(result.stderr, terminal.error, `${shape} ${terminal.name}`);
         }
@@ -1591,7 +1594,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
         };
         assert.equal(resultRecord.status, terminal.outcome, `${shape} ${terminal.name}`);
         assert.equal(resultRecord.exit_code, terminal.exitCode, `${shape} ${terminal.name}`);
-        assert.deepEqual(resultRecord.value, JSON.parse(terminal.stdout), `${shape} ${terminal.name}`);
+        assert.deepEqual(resultRecord.value, JSON.parse(result.stdout), `${shape} ${terminal.name}`);
 
         const agentPaths = (await readdir(runDirectory, { recursive: true })).filter((entry) => path.basename(entry) === "agent.json");
         assert.equal(agentPaths.length, terminal.agentStatus === null ? 0 : 1, `${shape} ${terminal.name}`);
@@ -2320,6 +2323,92 @@ test("built CLI settles a live turn when its thread enters systemError", async (
     await fixture.cleanup();
   }
 });
+
+test("the launcher exits once its terminal work is done, whatever the script body left pending", { timeout: 30_000 }, async () => {
+  // The body is ordinary Node, so a timer it forgets would hold the event
+  // loop open for its whole duration. Both endings — a clean return and a
+  // handled SIGINT — must end the process as soon as the result or envelope
+  // is printed, the archive sealed, and the sentinel written; the 60 s timer
+  // below is what makes a linger measurable (the estate's hang guard is far
+  // shorter than it). The recorded exit code must be the code the process
+  // exits with — 130 for SIGINT, by the shell convention.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-launcher-exit-estate-"));
+  const dataHome = path.join(directory, "data");
+  const returning = path.join(directory, "returning.js");
+  const interrupted = path.join(directory, "interrupted.js");
+  const readyMarker = path.join(directory, "interrupted.ready");
+  try {
+    await writeFile(
+      returning,
+      `export const meta = { name: "pending-timer-return" };\nsetTimeout(() => {}, 60_000);\nreturn { returned: true };\n`
+    );
+    await writeFile(
+      interrupted,
+      `export const meta = { name: "pending-timer-interrupt" };\nsetTimeout(() => {}, 60_000);\nrequire("node:fs").writeFileSync(${JSON.stringify(readyMarker)}, "ready");\nawait new Promise((resolve) => setTimeout(resolve, 60_000));\nreturn "unreached";\n`
+    );
+    const env: NodeJS.ProcessEnv = { XDG_DATA_HOME: dataHome, ENSEMBLE_RUN_RECORD_DIR: undefined, ENSEMBLE_STATUS: "0" };
+
+    const startedReturn = Date.now();
+    const returned = await runNode([bundledCliPath, returning], env, 20_000);
+    assert.equal(returned.code, 0, returned.stderr);
+    assert.equal(returned.stdout, `{"returned":true}\n`);
+    assert.ok(Date.now() - startedReturn < 15_000, "a returned run must not outlive the script's pending timer");
+
+    const child = spawn(process.execPath, [bundledCliPath, interrupted], {
+      env: hermeticEstateEnvironment(env),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    });
+    const deadline = Date.now() + 15_000;
+    while (!(await exists(readyMarker))) {
+      assert.ok(Date.now() < deadline, `the interrupted script never signalled readiness\n${stderr}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const signalledAt = Date.now();
+    child.kill("SIGINT");
+    const ended = await exit;
+    assert.ok(Date.now() - signalledAt < 15_000, `an interrupted run must not outlive the script's pending timer\n${stderr}`);
+    assert.equal(ended.signal, null, "the launcher exits on its own account, not by the signal's default");
+    assert.equal(ended.code, 130, stderr);
+    const envelope = assertSalvageEnvelope(stdout, "interrupted");
+    assert.equal(envelope.error.kind, "WorkflowInterruptedError");
+
+    // Every durable surface records the code the process exited with.
+    const announced = stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, stderr);
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.deepEqual({ outcome: sentinel.outcome, exit_code: sentinel.exit_code }, { outcome: "interrupted", exit_code: 130 });
+    const runDirectory = path.dirname(announced[1]!);
+    const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8")) as {
+      status: string;
+      result: { exit_code: number | null };
+    };
+    assert.equal(manifest.status, "interrupted");
+    assert.equal(manifest.result.exit_code, 130);
+    const recorded = JSON.parse(await readFile(path.join(runDirectory, "result.json"), "utf8")) as { exit_code: number };
+    assert.equal(recorded.exit_code, 130);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    await readFile(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface RecordedMessage {
   method?: string;

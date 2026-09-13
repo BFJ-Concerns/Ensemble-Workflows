@@ -65,9 +65,11 @@ test("accepted request, partial output, overload, and termination retain one cau
     // The fixture supplies only the on-demand overload. The built bundle,
     // caller-visible process result, dispatch protocol, and archive are real.
     const caller = await runNode([bundledCliPath, workflowPath], environment);
-    assert.equal(caller.code, 1, caller.stderr);
-    assert.equal(caller.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
-    assert.match(caller.stderr, /AppServerOverloadedError/);
+    // The terminal overload is the dispatched worker's failure: the script
+    // receives null and the run completes; the notice carries the cause.
+    assert.equal(caller.code, 0, caller.stderr);
+    assert.equal(caller.stdout, "null\n");
+    assert.match(caller.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerOverloadedError/);
     assert.match(caller.stderr, new RegExp(`overload ${identifier}`));
     assert.equal((caller.stderr.match(/AppServerOverloadedError/g) ?? []).length, 1);
 

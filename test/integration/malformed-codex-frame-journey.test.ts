@@ -41,8 +41,12 @@ test("built CLI exposes rejection of a malformed partial assistant delta from it
       XDG_DATA_HOME: path.join(directory, "data")
     });
 
-    assert.notEqual(result.code, 0);
-    assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
+    // The fixture's validation rejection kills the app-server mid-turn: a
+    // dispatched worker's failure, so the script's null completes the run
+    // and the rejection is legible on the failure notice.
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
     assert.match(result.stderr, /ServerNotification\.json validation for item\/agentMessage\/delta/);
     assert.match(result.stderr, /must have required property 'itemId'/);
   } finally {

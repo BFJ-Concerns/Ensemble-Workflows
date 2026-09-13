@@ -36,9 +36,11 @@ test("built consumer terminalises a turn with no output before its ordinary time
       // writes armed:first-output:<id>.
     });
 
-    assert.equal(result.code, 1, result.stderr);
-    assert.equal(result.stdout, '{"partial":true,"reason":"failed","completed":[]}\n');
-    assert.match(result.stderr, /AppServerFirstOutputTimeoutError/);
+    // A dispatched worker's failure is the script's value: the run
+    // completes with null, and the failure notice names the class.
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerFirstOutputTimeoutError/);
     const attempt = await fixture.onlyAttempt();
     assert.equal(attempt.status, "failed");
     assert.equal(attempt.failure?.kind, "AppServerFirstOutputTimeoutError");
@@ -55,7 +57,8 @@ test("the first-output accelerator leaves post-promise silence at its own deadli
       ]])
     });
 
-    assert.equal(result.code, 1, result.stderr);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
     const control = await fixture.firstOutputControl();
     assert.match(control, /armed:first-output:1/);
     assert.match(control, /disarmed:first-output:1/);

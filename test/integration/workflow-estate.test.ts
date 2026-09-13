@@ -8,7 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { runEnsembleCli } from "../../src/cli.js";
-import { hermeticEstateEnvironment } from "./estate-process.js";
+import { assertSalvageEnvelope, hermeticEstateEnvironment } from "./estate-process.js";
 import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -374,7 +374,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
   );
 
   assert.equal(missingExitCode, 1);
-  assert.equal(missingStdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assertSalvageEnvelope(missingStdout, "failed");
   assert.match(
     missingStderr,
     /agent\(\) requires an engine field: use engine: 'codex', engine: 'claude', or engine: 'opencode'/
@@ -390,7 +390,7 @@ test("engine routing rejects missing and unknown engines through the real CLI", 
   );
 
   assert.equal(unknownExitCode, 1);
-  assert.equal(unknownStdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assertSalvageEnvelope(unknownStdout, "failed");
   assert.match(unknownStderr, /Unknown agent engine "gemini"; expected 'codex', 'claude', or 'opencode'/);
 });
 
@@ -955,7 +955,7 @@ test("removed options fail loudly on the real agent path before spawning", async
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(stdout, "failed");
     assert.match(stderr, scenario.message);
     assert.equal(codex.invocations.length, 0);
   }
@@ -1000,7 +1000,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   assert.equal(unsupported.exitCode, 0, unsupported.stderr);
   assert.equal(unsupported.stdout, "null\n");
   const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
-  assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — CodexSchemaSubsetUnsupportedError: /);
+  assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Use a schema supported by Codex outputSchema/);
   assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
@@ -1110,7 +1110,7 @@ test("parallel and pipeline propagate rejected options before a worker opens", a
     );
 
     assert.equal(exitCode, 1);
-    assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assertSalvageEnvelope(stdout, "failed");
     assert.match(stderr, scenario.message);
     assert.equal(transport.openedThreads.length, 0);
   }
@@ -1191,7 +1191,7 @@ test("parallel propagates repeated malformed schemas before a worker opens", asy
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assertSalvageEnvelope(stdout, "failed");
   assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
   assert.equal(transport.openedThreads.length, 0);
 });
@@ -1210,7 +1210,7 @@ test("pipeline propagates repeated malformed schemas before a worker opens", asy
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assertSalvageEnvelope(stdout, "failed");
   assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
   assert.equal(transport.openedThreads.length, 0);
 });
@@ -1471,7 +1471,7 @@ test("CLI workflow returns non-zero, stderr error, and a salvage envelope when t
   );
 
   assert.equal(exitCode, 1);
-  assert.equal(stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  assertSalvageEnvelope(stdout, "failed");
   assert.match(stderr, /before throw/);
   assert.match(stderr, /Error: script exploded/);
 });

@@ -154,3 +154,31 @@ export function runProcess(
     child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
+
+/**
+ * The salvage envelope a stopped or failed run prints on stdout, checked
+ * as a consumer reads it: `partial`, the `reason`, the finished workers,
+ * and the `error` that ended the run — present with a kind and a message
+ * on every envelope, so stdout alone answers why. Returns the parsed
+ * envelope so a caller can pin the error's kind where it matters.
+ */
+export function assertSalvageEnvelope(
+  stdout: string,
+  reason: "failed" | "timed-out" | "interrupted",
+  completed: unknown[] = []
+): { partial: true; reason: string; error: { kind: string; message: string }; completed: unknown[] } {
+  const envelope = JSON.parse(stdout) as {
+    partial: true;
+    reason: string;
+    error: { kind: string; message: string };
+    completed: unknown[];
+  };
+  assert.deepEqual(Object.keys(envelope), ["partial", "reason", "error", "completed"], stdout);
+  assert.equal(envelope.partial, true, stdout);
+  assert.equal(envelope.reason, reason, stdout);
+  assert.deepEqual(envelope.completed, completed, stdout);
+  assert.equal(typeof envelope.error.kind, "string", stdout);
+  assert.ok(envelope.error.kind.length > 0, stdout);
+  assert.equal(typeof envelope.error.message, "string", stdout);
+  return envelope;
+}

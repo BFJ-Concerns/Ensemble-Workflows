@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -274,6 +274,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     return 2;
   }
 
+  // The acceptance boundary: a run begins when the invocation is accepted —
+  // flags parsed above, and here the script read (or the direct agent's
+  // placement usable). Everything the launcher does for a run — the
+  // sentinel's announcement, the archive, the status file, the envelope on
+  // stdout — is downstream of this point, so a rejection here is a
+  // rejection and nothing else: one clean line on stderr at exit 2, no
+  // stdout, no sentinel, no archive. Every ending after it is a run ending.
+  let prepared: PreparedRun;
+  try {
+    prepared = await prepareRun(invocation, cwd);
+  } catch (error) {
+    stderr.write(`${presentOperationalError(error) ?? formatError(error)}\n`);
+    return 2;
+  }
+
   let runtime: EnsembleRuntime | null = null;
   let progress: RunProgress | undefined;
   let statusWriter: StatusFileWriter | null = null;
@@ -297,7 +312,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let exitCode = 1;
 
   try {
-    const prepared = await prepareRun(invocation, cwd);
     // Flag outranks the inherited variable; resolved here against the
     // injectable env so a library-driven CLI call scopes consistently.
     const holdScope = resolveHoldScope(invocation.holdScope, env);
@@ -509,11 +523,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // the exit code stays non-zero, so callers that gate on it are unaffected.
     const status =
       error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
-    const partial = partialResult(runtime, status);
+    terminalError = describeError(error);
+    // The envelope carries what ended the run: a consumer capturing stdout,
+    // as the contract directs, must not have to scrape stderr to learn why.
+    const partial = partialResult(runtime, status, terminalError);
     const serialised = serialiseResult(partial);
     stdout.write(`${serialised}\n`);
-    finalRecord = { status, exitCode: 1, result: JSON.parse(serialised) };
-    terminalError = describeError(error);
+    // The recorded exit code is the code the process exits with: a
+    // signal-stopped run takes the shell convention (128 + the signal
+    // number) so an archive reconciled against `$?` agrees with it.
+    finalRecord = { status, exitCode: error instanceof WorkflowInterruptedError ? error.exitCode : 1, result: JSON.parse(serialised) };
     // Operational failures present a cause-first operator diagnosis;
     // author errors keep their clean line, and only a genuinely unknown
     // error falls through to its stack — internals as evidence, never as
@@ -524,7 +543,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         (runtime as { lastAgentRecord?: () => RuntimeAgentRecord | null } | null)?.lastAgentRecord?.() ?? null
     });
     stderr.write(`${diagnosis ?? formatError(error)}\n`);
-    exitCode = 1;
+    exitCode = finalRecord.exitCode;
   } finally {
     // A teardown failure is the run's own failure to end cleanly: workers
     // may still be alive, the archive may be unsealed. It surfaces here —
@@ -609,20 +628,26 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
  * A failed run's recovered work, marked so a driver can tell it apart from a clean
  * return. The `partial: true` flag plus the non-zero exit code distinguish it
  * from a normal result (which is the script's raw return value); `reason` says
- * how the run ended.
+ * how the run ended and `error` what ended it — the same `{ kind, message }`
+ * the manifest and the sentinel carry, so stdout alone answers "why".
  */
 interface PartialResult {
   partial: true;
   reason: "interrupted" | "timed-out" | "failed";
+  error: { kind: string; message: string };
   completed: readonly CompletedAgentOutput[];
 }
 
-function partialResult(runtime: EnsembleRuntime | null, reason: PartialResult["reason"]): PartialResult {
+function partialResult(
+  runtime: EnsembleRuntime | null,
+  reason: PartialResult["reason"],
+  error: PartialResult["error"]
+): PartialResult {
   // Injected test runtimes may not carry the collector; read it defensively,
   // mirroring how `progress` is read above.
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] } | null)?.completedOutputs?.() ?? [];
-  return { partial: true, reason, completed };
+  return { partial: true, reason, error, completed };
 }
 
 /**
@@ -708,6 +733,22 @@ interface PreparedRun {
 
 async function prepareRun(invocation: ParsedInvocation, cwd: string): Promise<PreparedRun> {
   if (invocation.kind === "agent") {
+    // The direct agent's own pre-run check, judged before any run artefact
+    // exists: the runtime would reject the same path at agent(), but by
+    // then a record and a sentinel would already claim a run for a worker
+    // that was never going to be placed.
+    if (invocation.agentOptions.cwd !== undefined) {
+      const requestedCwd = path.resolve(cwd, invocation.agentOptions.cwd);
+      let isDirectory = false;
+      try {
+        isDirectory = (await stat(requestedCwd)).isDirectory();
+      } catch {
+        isDirectory = false;
+      }
+      if (!isDirectory) {
+        throw new CliUsageError(`--cwd must name an existing directory; got ${requestedCwd}`);
+      }
+    }
     return {
       workflowPath: path.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
@@ -837,7 +878,14 @@ class WorkflowInterruptedError extends Error {
     super(`Workflow interrupted by ${signal}`);
     this.name = new.target.name;
   }
+
+  /** The shell convention for a signal-stopped process: 128 + the signal number. */
+  get exitCode(): number {
+    return 128 + INTERRUPT_SIGNAL_NUMBERS[this.signal];
+  }
 }
+
+const INTERRUPT_SIGNAL_NUMBERS: Record<InterruptSignal, number> = { SIGINT: 2, SIGTERM: 15 };
 
 function watchWorkflowInterrupts(): { promise: Promise<never>; dispose: () => void } {
   const signals: readonly InterruptSignal[] = ["SIGINT", "SIGTERM"];

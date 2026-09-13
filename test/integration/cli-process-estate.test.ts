@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
@@ -8,7 +8,8 @@ import test from "node:test";
 import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
-import { STATUS_FILENAME, StatusFileWriter } from "../../src/status-file.js";
+import { LEGACY_STATUS_FILENAME, StatusFileWriter, statusFileName } from "../../src/status-file.js";
+import { readProcessStartTicks } from "../../src/run-record.js";
 import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";
@@ -1073,9 +1074,13 @@ test("built CLI reports a direct-agent malformed --schema before the Codex worke
   }
 });
 
-test("status artefact sweep removes dead owners without touching a live run or lookalike", async () => {
+test("status file sweep removes dead runs' files and temp files without touching a live run or lookalike", async () => {
+  // The per-run status directory as a real process estate leaves it: a run
+  // killed outright (its file and a half-written temp file both attributable
+  // to a dead pid), a run still going (a live decoy process owns its file),
+  // and lookalike names the sweep must never judge. Owner evidence is read
+  // from the real /proc, so the dead pid's refutation is genuine.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-estate-"));
-  const target = path.join(directory, STATUS_FILENAME);
   const decoyProgram = "setInterval(() => {}, 1_000)";
   const deadOwner = spawn(process.execPath, ["-e", ""], { env: hermeticEstateEnvironment() });
   const deadPid = deadOwner.pid;
@@ -1092,38 +1097,46 @@ test("status artefact sweep removes dead owners without touching a live run or l
     liveOwner.once("error", reject);
     liveOwner.once("spawn", () => resolve());
   });
+  const liveTicks = await readProcessStartTicks("/proc", livePid);
+  assert.ok(liveTicks !== null, "the estate needs a readable /proc to judge liveness");
+  const host = hostname();
 
-  const staleTmp = `${target}.${deadPid}.1.tmp`;
-  const staleRemove = `${target}.${deadPid}.00000000-0000-4000-8000-000000000001.remove`;
-  const liveTmp = `${target}.${livePid}.1.tmp`;
-  const liveRemove = `${target}.${livePid}.00000000-0000-4000-8000-000000000002.remove`;
-  const lookalike = `${target}.${deadPid}.1.tmp.backup`;
-  const postStartupTmp = `${target}.${deadPid}.2.tmp`;
+  const deadFile = path.join(directory, statusFileName("dead-run"));
+  const liveFile = path.join(directory, statusFileName("live-run"));
+  const legacyFile = path.join(directory, LEGACY_STATUS_FILENAME);
+  const staleTmp = `${deadFile}.${deadPid}.1.tmp`;
+  const liveTmp = `${liveFile}.${livePid}.1.tmp`;
+  const lookalike = `${deadFile}.${deadPid}.1.tmp.backup`;
+  const foreign = path.join(directory, "settings.local.json");
+  const postStartupTmp = `${deadFile}.${deadPid}.2.tmp`;
 
   try {
-    const staleSnapshot = `${JSON.stringify({ runId: "dead-run", pid: deadPid, state: "running" })}\n`;
-    const liveSnapshot = `${JSON.stringify({ runId: "live-run", pid: livePid, state: "running" })}\n`;
     await Promise.all([
-      writeFile(staleTmp, staleSnapshot),
-      writeFile(staleRemove, staleSnapshot),
-      writeFile(liveTmp, liveSnapshot),
-      writeFile(liveRemove, liveSnapshot),
-      writeFile(lookalike, "not a status artefact\n")
+      writeFile(deadFile, `${JSON.stringify({ runId: "dead-run", state: "running", owner: { host, pid: deadPid, start_ticks: "1" } })}\n`),
+      writeFile(liveFile, `${JSON.stringify({ runId: "live-run", state: "running", owner: { host, pid: livePid, start_ticks: liveTicks } })}\n`),
+      writeFile(legacyFile, `${JSON.stringify({ runId: "old-run", state: "running", owner: { host, pid: deadPid, start_ticks: "1" } })}\n`),
+      writeFile(staleTmp, "half-written\n"),
+      writeFile(liveTmp, "half-written\n"),
+      writeFile(lookalike, "not a status artefact\n"),
+      writeFile(foreign, "{}\n")
     ]);
 
     const progress = new RunProgress({ runId: "sweeper-run", budget: new UnboundedBudget() });
     const writer = new StatusFileWriter({ progress, dir: directory });
-    await waitForFile(target);
-    await writeFile(postStartupTmp, staleSnapshot);
+    await waitForFile(writer.path);
+    await writeFile(postStartupTmp, "half-written\n");
     await writer.close();
 
     const survivors = new Set(await readdir(directory));
+    assert.equal(survivors.has(path.basename(deadFile)), false);
+    assert.equal(survivors.has(path.basename(legacyFile)), false);
     assert.equal(survivors.has(path.basename(staleTmp)), false);
-    assert.equal(survivors.has(path.basename(staleRemove)), false);
+    assert.equal(survivors.has(path.basename(liveFile)), true);
     assert.equal(survivors.has(path.basename(liveTmp)), true);
-    assert.equal(survivors.has(path.basename(liveRemove)), true);
     assert.equal(survivors.has(path.basename(lookalike)), true);
+    assert.equal(survivors.has(path.basename(foreign)), true);
     assert.equal(survivors.has(path.basename(postStartupTmp)), true);
+    assert.equal(survivors.has(path.basename(writer.path)), false);
   } finally {
     liveOwner.kill("SIGTERM");
     await new Promise<void>((resolve) => {
@@ -1709,7 +1722,11 @@ test("built CLI records observed request and notification diagnostics, but not a
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
-      assert.equal(result.code, 1, result.stderr);
+      // A dispatched worker's failure is the script's value: the
+      // script returns null, the run completes, and the diagnostic reaches
+      // stderr on the failure notice.
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stdout, "null\n");
       assert.match(result.stderr, entry.stderr);
 
       const diagnostic = (await loadOnlyAgentRecord(recordStore)).attempts[0]?.app_server_diagnostic;
@@ -1806,7 +1823,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
   }
 });
 
-test("built CLI interrupts a turn that times out before any turn notification", { timeout: 45_000 }, async () => {
+test("built CLI interrupts and settles a turn that times out before any turn notification", { timeout: 45_000 }, async () => {
   const fixture = await createProcessFixture("interrupt-timeout-before-notification");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const timeoutControl = path.join(path.dirname(fixture.script), "turn-timeout-control");
@@ -1838,11 +1855,12 @@ test("built CLI interrupts a turn that times out before any turn notification", 
       45_000,
     );
 
-    assert.equal(result.code, 1, `turn timeout did not reject before the test kill switch\n${result.stderr}`);
-    // The shipped bundle renders the deadline through the diagnosis seam:
-    // the operator gets the lever they hold, not the class name and the
-    // timer frames behind it.
-    assert.match(result.stderr, /Worker exceeded its per-agent turn deadline of 30001ms/);
+    assert.equal(result.code, 0, `turn timeout did not settle before the test kill switch\n${result.stderr}`);
+    assert.equal(result.stdout, "null\n");
+    // The shipped bundle renders the deadline through the diagnosis seam on
+    // the failure notice: the operator gets the lever they hold, not the
+    // class name and the timer frames behind it.
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Worker exceeded its per-agent turn deadline of 30001ms/);
     assert.match(result.stderr, /timeoutMs on this agent\(\) call/);
     assert.doesNotMatch(result.stderr, /TurnTimeoutError/);
     const messages = await fixture.messages();
@@ -1933,8 +1951,9 @@ test("built bundle times out an output-silent worker while its tool remains acti
       15_000
     );
 
-    assert.equal(result.code, 1, `tool-active run must fail when its deadline fires\n${result.stderr}`);
-    assert.match(result.stderr, /Worker exceeded its per-agent turn deadline of 3000ms/);
+    assert.equal(result.code, 0, `tool-active run must settle when its deadline fires\n${result.stderr}`);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Worker exceeded its per-agent turn deadline of 3000ms/);
     assert.doesNotMatch(result.stderr, /TurnTimeoutError/);
     const messages = await fixture.messages();
     assert.deepEqual(messages.at(-1)?.params, { threadId: "thread-1", turnId: "turn-1" });
@@ -1980,8 +1999,9 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
       ENSEMBLE_RUN_RECORD_DIR: recordStore
     });
 
-    assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerRequestError: /);
     assert.match(result.stderr, /unauthorized/);
     assert.match(result.stderr, /Provider credentials were rejected/);
     assert.equal(
@@ -1999,7 +2019,7 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
   }
 });
 
-test("built CLI throws a scoped overload after the bounded attempts", async () => {
+test("built CLI settles a scoped overload as the worker's failure after the bounded attempts", async () => {
   const fixture = await createProcessFixture("scoped-overload-exhaustion");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const overload = {
@@ -2040,9 +2060,9 @@ test("built CLI throws a scoped overload after the bounded attempts", async () =
       ENSEMBLE_RUN_RECORD_DIR: recordStore
     });
 
-    assert.equal(result.code, 1);
-    assert.equal(result.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
-    assert.match(result.stderr, /AppServerOverloadedError/);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 2 attempts — AppServerOverloadedError/);
     assert.match(result.stderr, /serverOverloaded/);
     assert.match(result.stderr, /Upstream remained overloaded/);
     assert.equal(
@@ -2119,7 +2139,7 @@ test("built CLI lets the app-server complete a turn when its notification says i
   }
 });
 
-test("built CLI rejects a broken app-server retry promise with its last diagnostic", async () => {
+test("built CLI settles a broken app-server retry promise with its last diagnostic", async () => {
   const fixture = await createProcessFixture("broken-internal-retry");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const brokenPromise = {
@@ -2164,8 +2184,9 @@ test("built CLI rejects a broken app-server retry promise with its last diagnost
       estateProcessHangGuardMs,
     );
 
-    assert.equal(result.code, 1, `guard did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /AppServerRetryPromiseBrokenError/);
+    assert.equal(result.code, 0, `guard did not settle before the test kill switch\n${result.stderr}`);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 2 attempts — AppServerRetryPromiseBrokenError/);
     assert.match(result.stderr, /BROKEN_PROMISE_DIAGNOSTIC_91/);
     assert.equal(
       (await fixture.messages()).filter((message) => message.method === "turn/start").length,
@@ -2240,7 +2261,7 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
   }
 });
 
-test("built CLI rejects a live turn when its thread enters systemError", async () => {
+test("built CLI settles a live turn when its thread enters systemError", async () => {
   const fixture = await createProcessFixture("thread-system-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const systemErrorSequence = [
@@ -2278,8 +2299,9 @@ test("built CLI rejects a live turn when its thread enters systemError", async (
       estateProcessHangGuardMs,
     );
 
-    assert.equal(result.code, 1, `systemError did not reject before the test kill switch\n${result.stderr}`);
-    assert.match(result.stderr, /AppServerSystemError/);
+    assert.equal(result.code, 0, `systemError did not settle before the test kill switch\n${result.stderr}`);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerSystemError/);
     assert.match(result.stderr, /systemError without a diagnostic/);
     const messages = await fixture.messages();
     assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);

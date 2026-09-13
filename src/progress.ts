@@ -59,8 +59,12 @@ export interface OpenHoldSnapshot {
 }
 
 export interface ProgressSnapshot {
-  /** Snapshot schema version, bumped if the shape ever changes. */
-  schema: 1;
+  /**
+   * Snapshot schema version. 2: one file per run in the status directory
+   * (`ensemble.<run-uuid>.local.json`), each carrying its writer's owner
+   * evidence; 1 was the single-slot `ensemble.local.json`.
+   */
+  schema: 2;
   runId: string;
   pid: number;
   workflow: string | null;
@@ -345,7 +349,7 @@ export class RunProgress {
     }
 
     return {
-      schema: 1,
+      schema: 2,
       runId: this.runId,
       pid: this.#pid,
       workflow: this.#workflow,

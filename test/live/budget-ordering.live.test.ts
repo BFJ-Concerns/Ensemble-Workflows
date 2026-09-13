@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { isStatusFileName } from "../../src/status-file.js";
+
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
@@ -57,7 +59,7 @@ test(
           ENSEMBLE_STATUS_DIR: statusDirectory,
           XDG_DATA_HOME: path.join(directory, "data")
         },
-        path.join(statusDirectory, "ensemble.local.json"),
+        statusDirectory,
         snapshots
       );
 
@@ -114,16 +116,22 @@ interface AgentRecord {
 async function runNodeAndReadStatus(
   args: string[],
   env: NodeJS.ProcessEnv,
-  statusPath: string,
+  statusDirectory: string,
   snapshots: ProgressSnapshot[]
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { cwd: process.cwd(), env });
     let stdout = "";
     let stderr = "";
+    // The run publishes under its own name, which the poller learns by
+    // listing the directory — the consumer's own discovery step.
     const poll = setInterval(() => {
-      void readFile(statusPath, "utf8")
-        .then((contents) => snapshots.push(JSON.parse(contents) as ProgressSnapshot))
+      void readdir(statusDirectory)
+        .then(async (entries) => {
+          for (const entry of entries.filter(isStatusFileName)) {
+            snapshots.push(JSON.parse(await readFile(path.join(statusDirectory, entry), "utf8")) as ProgressSnapshot);
+          }
+        })
         .catch((error: NodeJS.ErrnoException) => {
           if (error.code !== "ENOENT") reject(error);
         });

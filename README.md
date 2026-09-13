@@ -153,14 +153,20 @@ it directly. Any shell-capable orchestrator runs the same CLI that way.
 
 A run continuously publishes a small JSON snapshot of what it is doing — current
 phase, per-engine active/queued/done/failed counts, per-engine token spend, and
-the live worker list — to `.claude/ensemble.local.json` in the run's working
-directory, written atomically so a reader never sees a half-written file. The
-default is present-only: Ensemble writes the file only when that `.claude/`
-directory already exists, and never creates it. The file is live-only and is
-removed when the run finishes, so an absent file means nothing is in flight. It
-is the producer half of a faithful one-line compression of Claude Code's
-`/workflows` view; it is *not* the live tree, and it adds no script-facing API
-(`phase()`/`log()` are unchanged).
+the live worker list — to its **own file** in the status directory,
+`.claude/ensemble.<run-uuid>.local.json` under the run's working directory,
+written atomically so a reader never sees a half-written file. One file per run
+is what keeps concurrent runs in one directory each observable for their own
+lifetime: a later run never overwrites an earlier run's view, and a run ending
+removes only its own file, so a watcher of one run is never told "nothing in
+flight" because another finished. The default is present-only: Ensemble writes
+into `.claude/` only when that directory already exists, and never creates it.
+Each file is live-only and removed when its run finishes; the next run's
+startup sweep removes any file whose writer is provably dead (below), so on an
+idle machine the directory holds no status files. It is the producer half of a
+faithful one-line compression of Claude Code's `/workflows` view; it is *not*
+the live tree, and it adds no script-facing API (`phase()`/`log()` are
+unchanged).
 
 The side-channel is an ambient, environment-level concern, so it is configured by
 environment variable rather than a run-tuning flag:
@@ -169,18 +175,28 @@ environment variable rather than a run-tuning flag:
 - `ENSEMBLE_STATUS_DIR` overrides the directory; as with the default, it is
   honoured only when the path is an existing directory.
 
-Consumers read and parse this file directly; Ensemble deliberately provides no
-rendering command. Treat a snapshot whose `updatedAt` is more than 30 seconds
-old as stale. The writer refreshes a quiet live run every 10 seconds, so a fresh
-publisher remains comfortably inside that window. Per-engine spend must remain
-separate because the engines denominate different, non-comparable cost models.
+Consumers list the directory for `ensemble.*.local.json` and parse each file
+directly; Ensemble deliberately provides no rendering command. A reader
+decides liveness by evidence, in this order: (1) a file whose `owner` is
+**refuted** — same host, `start_ticks` recorded, and the pid either gone or
+running with different start ticks — is a killed run's leftover, not a run
+(`snapshotOwnerGone` implements the rule; the writer's own startup sweep
+applies it too); (2) a file whose owner cannot be judged (another host,
+`start_ticks: null`) falls back to age — treat a snapshot whose `updatedAt` is
+more than 30 seconds old as stale, since the writer refreshes a quiet live run
+every 10 seconds; (3) everything else is a run in flight. A consumer with no
+proc filesystem to judge from applies rule (2) alone. Per-engine spend must
+remain separate because the engines denominate different, non-comparable cost
+models. A runtime older than schema 2 published one shared `ensemble.local.json`
+for every run; readers that still meet one may parse it under the same rules,
+and the sweep retires it on the same evidence.
 
-### `ensemble.local.json` schema
+### `ensemble.<run-uuid>.local.json` schema
 
-The status file is a published interface for status consumers. It contains one
+Each status file is a published interface for status consumers. It contains one
 JSON object with these fields:
 
-- `schema`: `1`.
+- `schema`: `2`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `workflow`: string or `null`, from `meta.name` when present.
@@ -216,8 +232,8 @@ JSON object with these fields:
 The published file also carries an `owner` object (`host`, `pid`,
 `start_ticks`) — the writer's own liveness evidence, added at publication
 rather than being part of the in-memory snapshot — so a poller can refute a
-snapshot a killed run left behind (`snapshotOwnerGone` implements the
-judgement).
+snapshot a killed run left behind by the rule above (`snapshotOwnerGone`
+implements the judgement).
 
 Example:
 
@@ -283,9 +299,9 @@ Example:
 ## Durable run record
 
 By default, a run writes a permanent archive of what happened. This is separate
-from `.claude/ensemble.local.json`: the status file is live-only and removed at
-the end; the run record is archival and kept for audit and for tools that
-evaluate runs after the fact.
+from the run's `.claude/ensemble.<run-uuid>.local.json`: the status file is
+live-only and removed at the end; the run record is archival and kept for audit
+and for tools that evaluate runs after the fact.
 
 The archive is an ambient, machine-level data store, configured by environment:
 

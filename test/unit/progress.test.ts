@@ -31,9 +31,9 @@ function progressAt(clock: () => number, budget: BudgetView = new StubBudget()):
 
 function documentedStatusSchemaSection(): string {
   const readme = readFileSync("README.md", "utf8");
-  const start = readme.indexOf("### `ensemble.local.json` schema");
+  const start = readme.indexOf("### `ensemble.<run-uuid>.local.json` schema");
   const end = readme.indexOf("Example:", start);
-  assert.notEqual(start, -1, "README must document the ensemble.local.json schema");
+  assert.notEqual(start, -1, "README must document the status file schema");
   assert.notEqual(end, -1, "README schema section must end before the example");
   return readme.slice(start, end);
 }
@@ -92,7 +92,7 @@ test("queue → start → settle tracks per-engine and total counts", () => {
   assert.equal(snapshot.agents.length, 0);
 });
 
-test("README ensemble.local.json schema stays in sync with progress snapshots", () => {
+test("README status file schema stays in sync with progress snapshots", () => {
   const clock = 1_000;
   const budget = new StubBudget();
   budget.ceilings.codex = 100;

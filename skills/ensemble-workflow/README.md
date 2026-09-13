@@ -242,14 +242,16 @@ already exist.
 
 ## Live status snapshot
 
-While a run is active, Ensemble writes `ensemble.local.json` — a small JSON
-object describing the run's current state — atomically to the status directory.
-The file is removed when the run finishes; absence means no run is in flight.
-The full schema and a worked example are in the repository's root
-[README](../../README.md#ensemblelocaljson-schema) (outside this bundle; see
-the source repository); the fields are:
+While a run is active, Ensemble writes `ensemble.<run-uuid>.local.json` — a
+small JSON object describing that run's current state — atomically to the
+status directory. One file per run: concurrent runs in one directory are each
+visible for their own lifetime, a later run never overwrites an earlier one's
+view, and a run ending removes only its own file. A consumer lists the
+directory for `ensemble.*.local.json`. The full schema and a worked example
+are in the source repository's root README (outside this bundle); the fields
+are:
 
-- `schema`: `1`.
+- `schema`: `2`.
 - `runId`: string.
 - `pid`: number, the launcher process id.
 - `workflow`: string or `null` (from `meta.name`).
@@ -275,8 +277,14 @@ the source repository); the fields are:
 - `owner`: object (`host`, `pid`, `start_ticks`) — the writer's liveness
   evidence, so a poller can refute a snapshot a killed run left behind.
 
-Treat a snapshot whose `updatedAt` is more than 30 seconds old as stale; the
-writer refreshes a quiet run every 10 seconds.
+A reader judges liveness by evidence first: a file whose `owner` is refuted —
+same host, `start_ticks` present, and the pid gone or running with different
+start ticks — is a killed run's leftover, not a run (the next run's startup
+sweep removes such files on the same evidence). Where the owner cannot be
+judged (another host, `start_ticks: null`), treat a snapshot whose
+`updatedAt` is more than 30 seconds old as stale; the writer refreshes a quiet
+run every 10 seconds. Everything else is a run in flight. Runtimes before
+schema 2 published one shared `ensemble.local.json`; the same rules read it.
 
 ## Durable run record
 
@@ -592,14 +600,14 @@ the time to the first agent-message delta.
 |---|---|---|---|
 | `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
 | `effort` | canonical level `minimal \| low \| medium \| high \| xhigh`, validated pre-spawn; passed to the turn natively | same canonical level, clamped to the CLI's nearest native level (`minimal`→`low`, `xhigh`→`high`); the run record's `resolved_effort` carries the clamped value | exempt: must name one of the registry entry's served variants; otherwise throws pre-spawn |
-| `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn); an opencode call may declare a chain of Codex/Claude targets |
+| `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn under the engine's hold); an opencode call may declare a chain of Codex/Claude targets |
 | `cwd` | worker working directory; defaults to the run cwd | same | same |
 | `isolation: 'worktree'` | fresh git worktree; any other defined value throws | same | same |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary test observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode. | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -671,7 +679,7 @@ selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`, `muse-glimmer-30b`.
-The `local/…` entries are served by a self-hosted router and track
+The `local/…` entries are served by a local router and track
 what it actually serves; `src/opencode-model-registry.ts` carries the
 re-survey contract.
 

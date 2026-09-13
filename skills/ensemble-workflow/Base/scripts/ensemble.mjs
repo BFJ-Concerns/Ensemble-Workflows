@@ -15843,19 +15843,29 @@ function assertPositiveIntegerOption(options, option, maximum) {
 }
 
 // src/holds.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2, hostname as hostname2 } from "node:os";
 import path6 from "node:path";
 
 // src/status-file.ts
-import { randomUUID } from "node:crypto";
-import { link, readFile as readFile2, readdir as readdir2, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
+import { readdir as readdir2, readFile as readFile2, rename as rename3, unlink, writeFile as writeFile3 } from "node:fs/promises";
 import { hostname } from "node:os";
 import path5 from "node:path";
-var STATUS_FILENAME = "ensemble.local.json";
+var STATUS_FILE_PREFIX = "ensemble.";
+var STATUS_FILE_SUFFIX = ".local.json";
+var LEGACY_STATUS_FILENAME = "ensemble.local.json";
+function statusFileName(runId) {
+  return `${STATUS_FILE_PREFIX}${runId}${STATUS_FILE_SUFFIX}`;
+}
+function isStatusFileName(name) {
+  if (name === LEGACY_STATUS_FILENAME) {
+    return true;
+  }
+  return name.startsWith(STATUS_FILE_PREFIX) && name.endsWith(STATUS_FILE_SUFFIX) && name.length > STATUS_FILE_PREFIX.length + STATUS_FILE_SUFFIX.length;
+}
 var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_ARTIFACT_SUFFIX_PATTERN = /^([1-9]\d*)\.(?:[1-9]\d*\.tmp|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.remove)$/;
+var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
 async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
     return false;
@@ -15872,10 +15882,10 @@ async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   }
   return true;
 }
-var DEFAULT_FILE_OPERATIONS = { link, readFile: readFile2, readdir: readdir2, rename: rename3, unlink, writeFile: writeFile3 };
+var DEFAULT_FILE_OPERATIONS = { readFile: readFile2, readdir: readdir2, rename: rename3, unlink, writeFile: writeFile3 };
 var StatusFileWriter = class {
   #progress;
-  #dir;
+  #target;
   #onError;
   #fileOperations;
   #unsubscribe;
@@ -15889,7 +15899,7 @@ var StatusFileWriter = class {
   #procDir;
   constructor(options) {
     this.#progress = options.progress;
-    this.#dir = options.dir;
+    this.#target = path5.join(options.dir, statusFileName(options.progress.runId));
     this.#onError = options.onError;
     this.#fileOperations = { ...DEFAULT_FILE_OPERATIONS, ...options.fileOperations };
     const procDir = options.procDir ?? "/proc";
@@ -15899,13 +15909,17 @@ var StatusFileWriter = class {
       pid: process.pid,
       start_ticks: await readProcessStartTicks(procDir, process.pid)
     }))();
-    this.#initialSweep = this.#sweepStaleArtifacts();
+    this.#initialSweep = this.#sweepDeadRuns(options.dir);
     this.#unsubscribe = this.#progress.onChange(() => this.#request());
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
     this.#request();
   }
-  /** Flushes any in-flight write, removes the live snapshot, and stops listening. */
+  /** The path this run publishes to. */
+  get path() {
+    return this.#target;
+  }
+  /** Flushes any in-flight write, removes this run's file, and stops listening. */
   async close() {
     this.#closed = true;
     clearInterval(this.#heartbeat);
@@ -15913,7 +15927,13 @@ var StatusFileWriter = class {
     while (this.#writing !== null) {
       await this.#writing;
     }
-    await this.#removeSnapshot();
+    try {
+      await this.#fileOperations.unlink(this.#target);
+    } catch (error) {
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
+      }
+    }
   }
   #request() {
     if (this.#closed) {
@@ -15943,59 +15963,24 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     await this.#initialSweep;
-    const target = path5.join(this.#dir, STATUS_FILENAME);
-    const tmp = `${target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
+    const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
     const published = { ...snapshot, owner: await this.#ownerEvidence };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
-    await this.#fileOperations.rename(tmp, target);
+    await this.#fileOperations.rename(tmp, this.#target);
   }
-  async #removeSnapshot() {
-    const target = path5.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
-    try {
-      await this.#fileOperations.rename(target, claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-      return;
-    }
-    let belongsToAnotherRun = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      belongsToAnotherRun = typeof current2.runId === "string" && current2.runId !== this.#progress.runId;
-    } catch {
-    }
-    if (belongsToAnotherRun) {
-      try {
-        await this.#fileOperations.link(claim, target);
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "EEXIST") {
-          this.#reportError(error);
-          try {
-            await this.#fileOperations.rename(claim, target);
-          } catch (renameError) {
-            this.#reportError(renameError);
-          }
-          return;
-        }
-      }
-    }
-    try {
-      await this.#fileOperations.unlink(claim);
-    } catch (error) {
-      if (isNodeError2(error) && error.code === "ENOENT") {
-        return;
-      }
-      this.#reportError(error);
-    }
-  }
-  async #sweepStaleArtifacts() {
+  /**
+   * The new-writer trigger for what a killed run left behind (the same
+   * discipline as the archive reaper): every status file in the directory
+   * whose owner is *provably* gone is removed, and a temp file whose writer
+   * pid is dead with it. The judgement is the owner evidence, never age —
+   * a slow run is not an orphan, an unparseable file is not this writer's
+   * to destroy, and a file with no evidence is left for its owner.
+   */
+  async #sweepDeadRuns(dir) {
     let entries;
     try {
-      entries = await this.#fileOperations.readdir(this.#dir);
+      entries = await this.#fileOperations.readdir(dir);
     } catch (error) {
       if (!isNodeError2(error) || error.code !== "ENOENT") {
         this.#reportError(error);
@@ -16003,49 +15988,35 @@ var StatusFileWriter = class {
       return;
     }
     for (const entry of entries) {
-      const prefix = `${STATUS_FILENAME}.`;
-      const match = entry.startsWith(prefix) ? STATUS_ARTIFACT_SUFFIX_PATTERN.exec(entry.slice(prefix.length)) : null;
-      const ownerPid = Number(match?.[1]);
-      if (!Number.isSafeInteger(ownerPid) || isProcessAlive(ownerPid)) {
+      const file = path5.join(dir, entry);
+      const temp = STATUS_TEMP_SUFFIX_PATTERN.exec(entry);
+      if (temp !== null) {
+        const ownerPid = Number(temp[1]);
+        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && !isProcessAlive(ownerPid)) {
+          await this.#unlinkQuietly(file);
+        }
         continue;
       }
+      if (!isStatusFileName(entry)) {
+        continue;
+      }
+      let ownerGone = false;
       try {
-        await this.#fileOperations.unlink(path5.join(this.#dir, entry));
-      } catch (error) {
-        if (!isNodeError2(error) || error.code !== "ENOENT") {
-          this.#reportError(error);
-        }
+        const current2 = JSON.parse(await this.#fileOperations.readFile(file, "utf8"));
+        ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
+      } catch {
+      }
+      if (ownerGone) {
+        await this.#unlinkQuietly(file);
       }
     }
-    const target = path5.join(this.#dir, STATUS_FILENAME);
-    const claim = `${target}.${process.pid}.${randomUUID()}.remove`;
+  }
+  async #unlinkQuietly(file) {
     try {
-      await this.#fileOperations.rename(target, claim);
-    } catch {
-      return;
-    }
-    let ownerGone = false;
-    try {
-      const current2 = JSON.parse(await this.#fileOperations.readFile(claim, "utf8"));
-      ownerGone = await snapshotOwnerGone(current2.owner, this.#procDir);
-    } catch {
-    }
-    if (ownerGone) {
-      await this.#fileOperations.unlink(claim).catch(() => void 0);
-      return;
-    }
-    try {
-      await this.#fileOperations.link(claim, target);
-      await this.#fileOperations.unlink(claim);
+      await this.#fileOperations.unlink(file);
     } catch (error) {
-      if (isNodeError2(error) && error.code === "EEXIST") {
-        await this.#fileOperations.unlink(claim).catch(() => void 0);
-        return;
-      }
-      try {
-        await this.#fileOperations.rename(claim, target);
-      } catch (renameError) {
-        this.#reportError(renameError);
+      if (!isNodeError2(error) || error.code !== "ENOENT") {
+        this.#reportError(error);
       }
     }
   }
@@ -16119,7 +16090,7 @@ var HoldManager = class {
     }
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
-    const nonce = randomUUID2();
+    const nonce = randomUUID();
     const holdPath = path6.join(this.#dir, `${holdId}.json`);
     const decisionPath = path6.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
@@ -16509,14 +16480,14 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
 import { stat as stat2 } from "node:fs/promises";
 import path8 from "node:path";
 
 // src/worktree-isolation.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { execFile as execFile2 } from "node:child_process";
 import { mkdir as mkdir4, rmdir } from "node:fs/promises";
 import path7 from "node:path";
@@ -16592,7 +16563,7 @@ var GitWorktreeIsolationManager = class {
   }
   #uniqueName() {
     this.#counter += 1;
-    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID3().slice(0, 8)}`;
+    return `${process.pid}-${Date.now()}-${this.#counter}-${randomUUID2().slice(0, 8)}`;
   }
 };
 async function git2(cwd, args) {
@@ -17324,7 +17295,7 @@ function delay(ms) {
 }
 
 // src/claude-engine.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
 import { readFile as readFile5 } from "node:fs/promises";
@@ -18061,7 +18032,7 @@ var ClaudeEngineInvocation = class {
   }
   #nextName() {
     dispatchCounter += 1;
-    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID4().slice(0, 8)}`;
+    return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
   }
 };
 function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
@@ -18371,7 +18342,7 @@ var RunProgress = class {
       totals.failed += counters.failed;
     }
     return {
-      schema: 1,
+      schema: 2,
       runId: this.runId,
       pid: this.#pid,
       workflow: this.#workflow,
@@ -19452,7 +19423,7 @@ function itemTypeFromItem(item) {
 
 // src/opencode-engine.ts
 import { spawn as spawn3 } from "node:child_process";
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 var OpenCodeCliRunner = class {
   #bin;
   #killGraceMs;
@@ -19691,7 +19662,7 @@ var OpenCodeEngineInvocation = class {
    * mistakes it for a real opencode session id.
    */
   #syntheticSessionId() {
-    return `opencode-no-session-${randomUUID5()}`;
+    return `opencode-no-session-${randomUUID4()}`;
   }
   #reportUsage(sessionId, total, cost) {
     const last = subtractUsage(total, this.#reportedUsage);
@@ -21006,7 +20977,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID6(),
+      runId: options.runId ?? randomUUID5(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });
@@ -21675,7 +21646,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (error instanceof PreSpawnAuthorError || this.#runSettlementCause(error) !== null || agentRecord.attempts.length === 0) {
         throw error;
       }
-      return this.#failedValue(engineName, identity, agentId, agentRecord);
+      return this.#failedValue(engineName, identity, agentId, agentRecord, error);
     } finally {
       this.#lastSettledAgentRecord = agentRecord;
       executingRecords.delete(agentRecord);
@@ -21695,10 +21666,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * announced instead, on the engine-tagged notice channel the CLI
    * renders, so an operator watching stderr still sees each worker that
    * failed and why — the archive and the identity envelope carry the same
-   * account for a reader arriving later.
+   * account for a reader arriving later. Where the failure was a thrown
+   * error the operator-diagnosis seam already knows how to present (a
+   * turn deadline and its lever, a dead app-server and how it died), the
+   * notice carries that diagnosis rather than the class name.
    */
-  #failedValue(engine, identity, agentId, agentRecord) {
+  #failedValue(engine, identity, agentId, agentRecord, thrown) {
     const failure = settledFailureAccount(agentRecord);
+    const diagnosis = thrown === void 0 ? null : presentOperationalError(thrown);
     this.#emitEvent({
       method: `${engine}/agentFailed`,
       params: {
@@ -21707,7 +21682,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        failure: { kind: failure.kind, message: failure.message }
+        failure: { kind: failure.kind, message: failure.message },
+        diagnosis
       },
       receivedAt: Date.now()
     });
@@ -29579,8 +29555,9 @@ async function runEnsembleCli(argv, options = {}) {
         const failure = event.params.failure;
         const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
         const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const diagnosis = typeof event.params.diagnosis === "string" ? event.params.diagnosis : null;
         const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
-        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} \u2014 ${kind}: ${message}
+        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} \u2014 ${diagnosis ?? `${kind}: ${message}`}
 `);
         return;
       }

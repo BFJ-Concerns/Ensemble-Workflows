@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, glob, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, glob, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -17,7 +17,7 @@ import { EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
-import { STATUS_FILENAME } from "../../src/status-file.js";
+import { isStatusFileName } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
@@ -2310,7 +2310,8 @@ test("CLI removes the live status snapshot after a run", async () => {
   });
 
   assert.equal(exitCode, 0, stderr.text());
-  await assert.rejects(access(path.join(statusDir, STATUS_FILENAME)));
+  // The run's own file is gone: nothing published remains in the directory.
+  assert.deepEqual((await readdir(statusDir)).filter(isStatusFileName), []);
 });
 
 test("CLI leaves a missing status namespace absent and silent", async () => {

@@ -102,7 +102,15 @@ export {
   resolveRunRecordDir,
   resolveStatusDir
 } from "./ambient-settings.js";
-export { StatusFileWriter, STATUS_FILENAME, snapshotOwnerGone } from "./status-file.js";
+export {
+  LEGACY_STATUS_FILENAME,
+  STATUS_FILE_PREFIX,
+  STATUS_FILE_SUFFIX,
+  StatusFileWriter,
+  isStatusFileName,
+  snapshotOwnerGone,
+  statusFileName
+} from "./status-file.js";
 export type { SnapshotOwnerEvidence } from "./status-file.js";
 export {
   NestedWorkflowError,

@@ -41,6 +41,7 @@ import {
 import { CLAUDE_CACHE_TTL_VARIABLE } from "./claude-control-plane.js";
 import { claudeCacheTtlToMs } from "./claude-engine.js";
 import { HoldManager, defaultHoldsDirectory, resolveHoldScope } from "./holds.js";
+import { presentOperationalError } from "./operator-diagnosis.js";
 import { RunProgress } from "./progress.js";
 
 import type { HoldDecision } from "./holds.js";
@@ -1335,7 +1336,7 @@ export class EnsembleRuntime {
       ) {
         throw error;
       }
-      return this.#failedValue(engineName, identity, agentId, agentRecord);
+      return this.#failedValue(engineName, identity, agentId, agentRecord, error);
     } finally {
       // The most recent settled record, kept for operator diagnosis: an
       // exhausted direct agent's per-attempt evidence is here whether or
@@ -1360,15 +1361,20 @@ export class EnsembleRuntime {
    * announced instead, on the engine-tagged notice channel the CLI
    * renders, so an operator watching stderr still sees each worker that
    * failed and why — the archive and the identity envelope carry the same
-   * account for a reader arriving later.
+   * account for a reader arriving later. Where the failure was a thrown
+   * error the operator-diagnosis seam already knows how to present (a
+   * turn deadline and its lever, a dead app-server and how it died), the
+   * notice carries that diagnosis rather than the class name.
    */
   #failedValue(
     engine: EngineName,
     identity: { label: string | null; phase: string | null },
     agentId: number,
-    agentRecord: RuntimeAgentRecord
+    agentRecord: RuntimeAgentRecord,
+    thrown?: unknown
   ): null {
     const failure = settledFailureAccount(agentRecord);
+    const diagnosis = thrown === undefined ? null : presentOperationalError(thrown);
     this.#emitEvent({
       method: `${engine}/agentFailed`,
       params: {
@@ -1377,7 +1383,8 @@ export class EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        failure: { kind: failure.kind, message: failure.message }
+        failure: { kind: failure.kind, message: failure.message },
+        diagnosis
       },
       receivedAt: Date.now()
     });

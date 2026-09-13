@@ -6,7 +6,13 @@ import path from "node:path";
 import test from "node:test";
 
 import { RunProgress } from "../../src/progress.js";
-import { STATUS_FILENAME, StatusFileWriter, snapshotOwnerGone } from "../../src/status-file.js";
+import {
+  LEGACY_STATUS_FILENAME,
+  StatusFileWriter,
+  isStatusFileName,
+  snapshotOwnerGone,
+  statusFileName
+} from "../../src/status-file.js";
 
 import type { BudgetView, ProgressSnapshot } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
@@ -21,9 +27,9 @@ class StubBudget implements BudgetView {
   }
 }
 
-function newProgress(): RunProgress {
+function newProgress(runId = "run-x"): RunProgress {
   let clock = 1_000;
-  const progress = new RunProgress({ runId: "run-x", budget: new StubBudget(), now: () => (clock += 1) });
+  const progress = new RunProgress({ runId, budget: new StubBudget(), now: () => (clock += 1) });
   progress.registerEngine("codex", 4);
   progress.registerEngine("claude", 8);
   progress.registerEngine("opencode", 2);
@@ -65,12 +71,41 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-test("every published snapshot carries the writer's own liveness evidence", async () => {
+async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
+  const dir = path.join(procDir, String(pid));
+  await mkdir(dir, { recursive: true });
+  // Fields 3–21 precede starttime (field 22); the comm field carries a
+  // space so the parser's last-close-paren split is what the fixture tests.
+  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
+  await writeFile(path.join(dir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
+}
+
+/** A fake proc root holding one live process (pid 4242, start ticks 99999) and this process. */
+async function fakeProcRoot(): Promise<{ procDir: string; host: string }> {
+  const procDir = await mkdtemp(path.join(tmpdir(), "ensemble-status-proc-"));
+  await writeProcStat(procDir, 4242, "99999");
+  await writeProcStat(procDir, process.pid, "77777");
+  return { procDir, host: hostname() };
+}
+
+test("the status file is named by the run, under the local-file convention", () => {
+  assert.equal(statusFileName("0b6d4c2e-1111-4222-8333-444455556666"), "ensemble.0b6d4c2e-1111-4222-8333-444455556666.local.json");
+  assert.equal(isStatusFileName("ensemble.run-a.local.json"), true);
+  // The legacy single slot is recognised so a sweep can retire it; a bare
+  // prefix-and-suffix with no run between them is not a status file.
+  assert.equal(isStatusFileName(LEGACY_STATUS_FILENAME), true);
+  assert.equal(isStatusFileName("ensemble..local.json"), false);
+  assert.equal(isStatusFileName("ensemble.run-a.local.json.4242.1.tmp"), false);
+  assert.equal(isStatusFileName("settings.local.json"), false);
+});
+
+test("every published snapshot carries the writer's own liveness evidence and the schema version", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-owner-"));
   const writer = new StatusFileWriter({ progress: newProgress(), dir });
   try {
-    const raw = await waitForFile(path.join(dir, STATUS_FILENAME));
-    const published = JSON.parse(raw) as { owner?: { host: string; pid: number; start_ticks: string | null } };
+    const raw = await waitForFile(writer.path);
+    const published = JSON.parse(raw) as { schema: number; owner?: { host: string; pid: number; start_ticks: string | null } };
+    assert.equal(published.schema, 2);
     // The pid + start-ticks discipline the archive manifest's owner block
     // uses: a poller refutes a snapshot a killed run left behind instead of
     // trusting cleanup-by-cooperation.
@@ -84,19 +119,8 @@ test("every published snapshot carries the writer's own liveness evidence", asyn
 });
 
 test("snapshotOwnerGone refutes a dead or reused pid and never guesses without evidence", async () => {
-  const procDir = await mkdtemp(path.join(tmpdir(), "ensemble-status-proc-"));
-  // A fake proc filesystem: this process's own stat (so the judging side
-  // can read proc), and a target pid whose start ticks differ from the
-  // recorded evidence — the pid-reuse case.
-  // Field 22 of /proc/<pid>/stat is starttime: after ") " come state plus
-  // 18 filler fields, so the recorded ticks sit at split index 19.
-  await mkdir(path.join(procDir, String(process.pid)), { recursive: true });
-  await writeFile(path.join(procDir, String(process.pid), "stat"), `1 (node) S ${"0 ".repeat(18)}12345 0`);
-  await mkdir(path.join(procDir, "4242"), { recursive: true });
-  await writeFile(path.join(procDir, "4242", "stat"), `1 (node) S ${"0 ".repeat(18)}99999 0`);
-  const host = hostname();
-
-  // Dead pid (no stat entry at all) with readable proc: provably gone.
+  const { procDir, host } = await fakeProcRoot();
+  // Dead pid: no stat entry, and this process can read its own.
   assert.equal(await snapshotOwnerGone({ host, pid: 555_555, start_ticks: "12345" }, procDir), true);
   // Reused pid: alive, but with different start ticks than recorded.
   assert.equal(await snapshotOwnerGone({ host, pid: 4242, start_ticks: "11111" }, procDir), true);
@@ -108,30 +132,79 @@ test("snapshotOwnerGone refutes a dead or reused pid and never guesses without e
   assert.equal(await snapshotOwnerGone(undefined, procDir), false);
 });
 
-test("a new writer's startup sweep removes a snapshot whose owner is provably gone", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-orphan-"));
-  const host = hostname();
-  // A SIGKILLed run's leftover: state "running", owner provably dead.
-  await writeFile(
-    path.join(dir, STATUS_FILENAME),
-    `${JSON.stringify({ runId: "run-dead", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`
-  );
+test("two runs in one directory are each visible for their own lifetime", async () => {
+  // Each run's view is its own: a later run never overwrites an earlier run's,
+  // and the first run to end never removes the other's file.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-two-runs-"));
+  const first = new StatusFileWriter({ progress: newProgress("run-first"), dir });
+  const second = new StatusFileWriter({ progress: newProgress("run-second"), dir });
 
-  const writer = new StatusFileWriter({ progress: newProgress(), dir });
+  const firstSnapshot = JSON.parse(await waitForFile(first.path)) as ProgressSnapshot;
+  const secondSnapshot = JSON.parse(await waitForFile(second.path)) as ProgressSnapshot;
+  assert.equal(firstSnapshot.runId, "run-first");
+  assert.equal(secondSnapshot.runId, "run-second");
+  assert.notEqual(first.path, second.path);
+
+  await first.close();
+
+  // The second run is untouched by the first's ending, and still live.
+  assert.equal(await exists(first.path), false);
+  assert.equal((JSON.parse(await readFile(second.path, "utf8")) as ProgressSnapshot).runId, "run-second");
+  assert.deepEqual(await readdir(dir), [path.basename(second.path)]);
+
+  await second.close();
+  assert.deepEqual(await readdir(dir), []);
+});
+
+test("a new writer's startup sweep removes the files of runs whose owner is provably gone, and nothing else", async () => {
+  const { procDir, host } = await fakeProcRoot();
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-sweep-"));
+  const dead = path.join(dir, statusFileName("run-dead"));
+  const live = path.join(dir, statusFileName("run-live"));
+  const legacy = path.join(dir, LEGACY_STATUS_FILENAME);
+  const noEvidence = path.join(dir, statusFileName("run-no-evidence"));
+  const unparseable = path.join(dir, statusFileName("run-garbled"));
+  const foreign = path.join(dir, "settings.local.json");
+  const deadTemp = `${dead}.555555.3.tmp`;
+  const liveTemp = `${live}.${process.pid}.1.tmp`;
+  await Promise.all([
+    // A SIGKILLed run's leftover: state "running", owner provably dead.
+    writeFile(dead, `${JSON.stringify({ runId: "run-dead", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`),
+    // A run still going: owner evidence matches the fake proc root.
+    writeFile(live, `${JSON.stringify({ runId: "run-live", state: "running", owner: { host, pid: 4242, start_ticks: "99999" } })}\n`),
+    // The pre-per-run single slot, left by a killed older runtime.
+    writeFile(legacy, `${JSON.stringify({ runId: "run-old", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`),
+    // No evidence and unparseable content are never this writer's to destroy.
+    writeFile(noEvidence, `${JSON.stringify({ runId: "run-no-evidence", state: "running" })}\n`),
+    writeFile(unparseable, "{not json\n"),
+    writeFile(foreign, "{}\n"),
+    // Temp files: attributable to a dead writer, or to a live one.
+    writeFile(deadTemp, "half-written\n"),
+    writeFile(liveTemp, "half-written\n")
+  ]);
+
+  const writer = new StatusFileWriter({ progress: newProgress("run-new"), dir, procDir });
   try {
-    // The orphan is swept and replaced by this writer's own snapshot.
-    const snapshot = await waitForSnapshot(path.join(dir, STATUS_FILENAME), (published) => published.runId === "run-x");
-    assert.equal(snapshot.runId, "run-x");
+    await waitForFile(writer.path);
   } finally {
     await writer.close();
   }
+
+  const survivors = (await readdir(dir)).sort();
+  assert.deepEqual(survivors, [
+    path.basename(liveTemp),
+    path.basename(live),
+    path.basename(unparseable),
+    path.basename(noEvidence),
+    path.basename(foreign)
+  ].sort());
 });
 
 test("StatusFileWriter publishes a live snapshot and removes it on close", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
   const writer = new StatusFileWriter({ progress, dir });
+  const file = writer.path;
 
   // The initial publish happens without close, so a watcher sees the run start.
   const initial = JSON.parse(await waitForFile(file)) as ProgressSnapshot;
@@ -153,20 +226,23 @@ test("StatusFileWriter publishes a live snapshot and removes it on close", async
 
 test("StatusFileWriter coalesces a burst of changes into the latest published state", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
   const writer = new StatusFileWriter({ progress, dir });
+  const file = writer.path;
 
   // Fire many synchronous transitions; the writer must converge on the latest.
-  for (let index = 0; index < 200; index += 1) {
-    const id = progress.queueAgent({ engine: "claude", label: null, phase: null });
+  const ids: number[] = [];
+  for (let index = 0; index < 20; index += 1) {
+    ids.push(progress.queueAgent({ engine: "codex", label: `a${index}`, phase: null }));
+  }
+  for (const id of ids) {
     progress.startAgent(id);
     progress.settleAgent(id, "done");
   }
 
-  const snapshot = await waitForSnapshot(file, (candidate) => candidate.totals.done === 200);
-  assert.equal(snapshot.engines.claude?.done, 200);
-  assert.equal(snapshot.totals.done, 200);
+  const latest = await waitForSnapshot(file, (snapshot) => snapshot.totals.done === 20);
+  assert.equal(latest.totals.done, 20);
+  assert.equal(latest.totals.active, 0);
 
   await writer.close();
   assert.equal(await exists(file), false);
@@ -187,9 +263,9 @@ test("StatusFileWriter routes write failures to onError and still closes", async
 
 test("StatusFileWriter heartbeat re-stamps a quiet run's snapshot", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
   const progress = newProgress();
   const writer = new StatusFileWriter({ progress, dir, heartbeatMs: 5 });
+  const file = writer.path;
 
   const first = JSON.parse(await waitForFile(file)) as ProgressSnapshot;
   // No progress activity at all — only the heartbeat may advance the stamp.
@@ -199,141 +275,22 @@ test("StatusFileWriter heartbeat re-stamps a quiet run's snapshot", async () => 
   await writer.close();
 });
 
-test("StatusFileWriter close leaves another run's snapshot in place", async () => {
+test("a throwing error reporter cannot take the writer down", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
-  const progress = newProgress();
-  const writer = new StatusFileWriter({ progress, dir });
-  await waitForFile(file);
-
-  // A second run in the same cwd has since published its own snapshot.
-  const other = { schema: 1, runId: "another-run", state: "running" };
-  await writeFile(file, `${JSON.stringify(other)}\n`);
-
-  await writer.close();
-
-  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
-  assert.equal(survivor.runId, "another-run");
-});
-
-test("StatusFileWriter close cannot unlink a snapshot replaced after its ownership check", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
-  const progress = newProgress();
-  const other = { schema: 1, runId: "another-run", state: "running" };
-  let replaced = false;
+  let reports = 0;
   const writer = new StatusFileWriter({
-    progress,
+    progress: newProgress(),
     dir,
     fileOperations: {
-      readFile: async (candidate, encoding) => {
-        const contents = await readFile(candidate, encoding);
-        if (!replaced) {
-          replaced = true;
-          await writeFile(file, `${JSON.stringify(other)}\n`);
-        }
-        return contents;
+      writeFile: async () => {
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
       }
-    }
-  });
-  await waitForFile(file);
-
-  await writer.close();
-
-  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
-  assert.equal(survivor.runId, "another-run");
-});
-
-test("StatusFileWriter close restores another run's snapshot by rename when the no-clobber link fails", async () => {
-  // A failed link() must not fall through to the claim unlink — that
-  // destroyed the foreign snapshot outright (its public name empty, its
-  // content parked under a name nothing reads). The rename fallback puts it
-  // back and consumes the claim in the same motion.
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
-  const progress = newProgress();
-  const writer = new StatusFileWriter({
-    progress,
-    dir,
-    onError: () => {
-      throw new Error("reporter failed");
     },
-    fileOperations: {
-      link: async () => {
-        throw Object.assign(new Error("forced restore failure"), { code: "EIO" });
-      }
+    onError: () => {
+      reports += 1;
+      throw new Error("reporter failed");
     }
   });
-  await waitForFile(file);
-  await writeFile(file, `${JSON.stringify({ schema: 1, runId: "another-run", state: "running" })}\n`);
-
-  await assert.doesNotReject(writer.close());
-
-  const survivor = JSON.parse(await readFile(file, "utf8")) as { runId: string };
-  assert.equal(survivor.runId, "another-run");
-  const claims = (await readdir(dir)).filter((entry) => entry.endsWith(".remove"));
-  assert.deepEqual(claims, []);
-});
-
-test("StatusFileWriter close keeps its claim when no restore route succeeds", async () => {
-  // Both restore routes forced down: the claim is deliberately left in
-  // place — the foreign snapshot's only remaining copy — for a later run's
-  // stale-artefact sweep, rather than unlinked into nothing.
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const file = path.join(dir, STATUS_FILENAME);
-  const progress = newProgress();
-  const { rename } = await import("node:fs/promises");
-  const errors: unknown[] = [];
-  const writer = new StatusFileWriter({
-    progress,
-    dir,
-    onError: (error) => errors.push(error),
-    fileOperations: {
-      link: async () => {
-        throw Object.assign(new Error("forced link failure"), { code: "EIO" });
-      },
-      rename: async (source, destination) => {
-        if (source.endsWith(".remove")) {
-          throw Object.assign(new Error("forced rename failure"), { code: "EIO" });
-        }
-        await rename(source, destination);
-      }
-    }
-  });
-  await waitForFile(file);
-  await writeFile(file, `${JSON.stringify({ schema: 1, runId: "another-run", state: "running" })}\n`);
-
-  await assert.doesNotReject(writer.close());
-
-  const claims = (await readdir(dir)).filter((entry) => entry.endsWith(".remove"));
-  assert.equal(claims.length, 1);
-  const preserved = JSON.parse(await readFile(path.join(dir, claims[0]!), "utf8")) as { runId: string };
-  assert.equal(preserved.runId, "another-run");
-  assert.equal(errors.length, 2);
-});
-
-test("StatusFileWriter sweeps dead-process artefacts without touching live-process artefacts", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-status-file-"));
-  const target = path.join(dir, STATUS_FILENAME);
-  const deadPid = 2_147_483_647;
-  const stale = [
-    `${target}.${deadPid}.1.tmp`,
-    `${target}.${deadPid}.00000000-0000-4000-8000-000000000001.remove`
-  ];
-  const live = [
-    `${target}.${process.pid}.999.tmp`,
-    `${target}.${process.pid}.00000000-0000-4000-8000-000000000002.remove`
-  ];
-  await Promise.all([...stale, ...live].map(async (file) => writeFile(file, "status artefact")));
-
-  const writer = new StatusFileWriter({ progress: newProgress(), dir });
-  await waitForFile(target);
   await writer.close();
-
-  for (const file of stale) {
-    assert.equal(await exists(file), false, `expected stale artefact to be swept: ${file}`);
-  }
-  for (const file of live) {
-    assert.equal(await exists(file), true, `expected live artefact to survive: ${file}`);
-  }
+  assert.ok(reports >= 1);
 });

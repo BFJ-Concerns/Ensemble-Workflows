@@ -45,7 +45,7 @@ test(
           "Read marker.txt from your current working directory using your tools. Return the file's exact contents.",
           options
         );
-        assert.match(result, new RegExp(marker), `${engine.name} did not return the marker read from its cwd`);
+        assert.match(result ?? "", new RegExp(marker), `${engine.name} did not return the marker read from its cwd`);
       }
     } finally {
       await runtime.close();
@@ -91,7 +91,7 @@ test(
           options
         );
 
-        assert.match(result, new RegExp(token), `${engine.name} did not report the committed token`);
+        assert.match(result ?? "", new RegExp(token), `${engine.name} did not report the committed token`);
         assert.equal(runtime.worktrees.length, previousWorktrees + 1);
         const worktree = runtime.worktrees.at(-1);
         assert.ok(worktree, `${engine.name} produced no worktree record`);

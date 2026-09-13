@@ -20,12 +20,12 @@ import {
   AppServerOverloadedError,
   AppServerRetryPromiseBrokenError,
   AgentPromptRejectedError,
-  EmptyAgentOutputError,
   EngineShutdownError,
   FallbackTargetRejectedError,
   HoldRejectedError,
   MissingEngineError,
   MultiTurnUnsupportedError,
+  PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
   TallyRejectedError,
@@ -350,7 +350,7 @@ export class WorkerSession {
   }
 
   send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string>;
+  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string | null>;
   send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
   send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
     return this.#sendTurn(prompt, turn);
@@ -629,7 +629,7 @@ export class EnsembleRuntime {
   // to the honest union instead of needing a cast at the caller.
   async agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
   async agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+  async agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
   async agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
   async agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
     if (this.#closed) {
@@ -1046,8 +1046,7 @@ export class EnsembleRuntime {
         attempts
       );
     } else {
-      const text = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
-      outcome = text === null ? { status: "refused" } : { status: "complete", value: text };
+      outcome = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
     }
     if (outcome.status === "refused") {
       // The refused target's held worker is not this session's: close it
@@ -1303,6 +1302,9 @@ export class EnsembleRuntime {
         });
       }
       await this.#recordSettlementSafely(agentId, agentRecord);
+      if (outcome === "failed") {
+        return this.#failedValue(engineName, identity, agentId, agentRecord);
+      }
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -1313,7 +1315,27 @@ export class EnsembleRuntime {
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
-      throw error;
+      // The spawn boundary. Three throws cross it unchanged: a member
+      // of the pre-spawn author family, judged at its raise site (an
+      // unenforceable strip discovered as the thread is configured) and
+      // required to fail loudly wherever it surfaces; a throw that
+      // reached here with no attempt on the record, raised before any
+      // worker existed (an engine refusing the dispatch itself, a
+      // placement that never opened); and the run's own ending, which is
+      // not the worker's failure — a leg the shutdown tore down rethrows
+      // so the combinators' collapse and a bare await both see the run
+      // stop, and the cut-short accounting keeps its evidence. Everything
+      // else is a worker that was dispatched and failed on its own
+      // account, which the record now states in full — so the call
+      // resolves it as a value.
+      if (
+        error instanceof PreSpawnAuthorError ||
+        this.#runSettlementCause(error) !== null ||
+        agentRecord.attempts.length === 0
+      ) {
+        throw error;
+      }
+      return this.#failedValue(engineName, identity, agentId, agentRecord);
     } finally {
       // The most recent settled record, kept for operator diagnosis: an
       // exhausted direct agent's per-attempt evidence is here whether or
@@ -1329,6 +1351,37 @@ export class EnsembleRuntime {
   /** The last settled agent record, or null before any settlement. */
   lastAgentRecord(): RuntimeAgentRecord | null {
     return this.#lastSettledAgentRecord;
+  }
+
+  /**
+   * A dispatched worker's failure as the call's value: `null`, on the
+   * text shape as on the schema shape, once its settlement is on the
+   * record. The account the script no longer receives as a throw is
+   * announced instead, on the engine-tagged notice channel the CLI
+   * renders, so an operator watching stderr still sees each worker that
+   * failed and why — the archive and the identity envelope carry the same
+   * account for a reader arriving later.
+   */
+  #failedValue(
+    engine: EngineName,
+    identity: { label: string | null; phase: string | null },
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
+  ): null {
+    const failure = settledFailureAccount(agentRecord);
+    this.#emitEvent({
+      method: `${engine}/agentFailed`,
+      params: {
+        agentId,
+        label: identity.label,
+        phase: identity.phase,
+        status: agentRecord.status,
+        attempts: agentRecord.attempts.length,
+        failure: { kind: failure.kind, message: failure.message }
+      },
+      receivedAt: Date.now()
+    });
+    return null;
   }
 
   /**
@@ -1600,10 +1653,9 @@ export class EnsembleRuntime {
           )
         };
       } else {
-        const text = await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts);
         completion = {
           ok: true,
-          execution: text === null ? { status: "refused" } : { status: "complete", value: text }
+          execution: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts)
         };
       }
     } catch (error) {
@@ -1686,10 +1738,14 @@ export class EnsembleRuntime {
   }
 
   /**
-   * The bounded-attempt loop for a text call on one target. Returns the
-   * answer, or `null` when the target was refused for availability with a
-   * chain entry remaining — the loop's own signal to the chain, distinct
-   * from every failure it throws.
+   * The bounded-attempt loop for a text call on one target: the trimmed
+   * answer, the exhausted collapse, or `refused` for the chain — the same
+   * three settlements as the schema loop, so the two call shapes cannot
+   * drift apart on how a worker's failure reaches the script. A
+   * thrown transport error leaves the loop as a throw so the settlement
+   * reads its evidence (a turn deadline settles `timed-out`, a run ending
+   * settles as the run's own cause); whether it then resolves as a value
+   * is `#executeAgent`'s one judgement, never the loop's.
    */
   async #runTextAgent(
     engine: EngineName,
@@ -1698,8 +1754,7 @@ export class EnsembleRuntime {
     agentId: number,
     agentRecord: RuntimeAgentRecord,
     attempts: TargetAttempts
-  ): Promise<string | null> {
-    let lastError: Error | null = null;
+  ): Promise<AgentExecutionOutcome> {
     let previousFailure: EngineAttemptFailure | undefined;
 
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
@@ -1717,10 +1772,9 @@ export class EnsembleRuntime {
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== undefined) {
           if (operationalFailure.refused) {
-            return null;
+            return { status: "refused" };
           }
           previousFailure = operationalFailure.failure;
-          lastError = new EmptyAgentOutputError(previousFailure.message);
           continue;
         }
         const text = result.text.trim();
@@ -1729,27 +1783,28 @@ export class EnsembleRuntime {
           agentRecord.attempts.push(
             attemptRecord(attempt, attempts.target, "complete", null, result.text, result.text, startedAt, result)
           );
-          return text;
+          return { status: "complete", value: text };
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
         this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
-        lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
-          return null;
+          return { status: "refused" };
         }
         if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
-        lastError = error instanceof Error ? error : new Error(String(error));
       }
     }
 
-    throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
+    return {
+      status: "failed",
+      value: null
+    };
   }
 
   /**
@@ -2324,18 +2379,22 @@ function rejectionShape(error: unknown): string {
 }
 
 /**
- * The one-line account an identified envelope's `failure` carries,
- * read from evidence the settlement already recorded: the last attempt's
- * own failure, else the runtime's termination cause, else the bare fact.
+ * The account a failed settlement left on the record, read from evidence
+ * already there: the last attempt's own failure, else the runtime's
+ * termination cause, else the bare fact — never synthesised from status.
  */
-function settledFailureMessage(record: RuntimeAgentRecord): string {
+function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } {
   const attempted = attemptedFailureAccount(record);
   if (attempted !== null) {
-    return `${attempted.kind}: ${attempted.message}`;
+    return attempted;
   }
-  return record.terminationCause !== null
-    ? `${record.terminationCause.kind}: ${record.terminationCause.message}`
-    : "the agent failed without a recorded cause";
+  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+}
+
+/** The one-line rendering of that account an identified envelope's `failure` carries. */
+function settledFailureMessage(record: RuntimeAgentRecord): string {
+  const account = settledFailureAccount(record);
+  return `${account.kind}: ${account.message}`;
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {

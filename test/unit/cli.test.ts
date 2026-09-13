@@ -2893,6 +2893,56 @@ test("a clean run's durable surfaces carry no invented cause", async () => {
   assert.equal(sentinel.error, null);
 });
 
+test("a workflow's failed worker is announced on stderr under its engine tag, with the record's own account", async () => {
+  // A dispatched worker's failure resolves to the script as a value,
+  // so the notice is where an operator watching the terminal learns which
+  // worker failed and why. The direct-agent form is exempt: its collapse
+  // is the run's own failure and the terminal diagnosis renders it.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-failed-notice-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "agent-failed-notice" };
+      const answer = await agent("fail", { engine: "codex", label: "scout", phase: "recon" });
+      return { answer };
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    // Recording off and no store: the notice is the whole of stderr.
+    runRecordDir: null,
+    createRuntime: async () => fixedEngineRuntime(new FixedResponseEngine("codex", ""), 2)
+  });
+
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(stdout.text(), '{"answer":null}\n');
+  assert.equal(
+    stderr.text(),
+    "[codex] agent 1 (scout) failed after 2 attempts — empty-output: agent returned empty text on attempt 2\n"
+  );
+
+  // The direct-agent form: the same collapse is the run's failure, rendered
+  // once by the terminal diagnosis — never doubled by the notice.
+  const directStdout = new CaptureStream();
+  const directStderr = new CaptureStream();
+  const directExit = await runEnsembleCli(["agent", "--engine=codex", "fail"], {
+    cwd: directory,
+    stdout: directStdout,
+    stderr: directStderr,
+    runRecordDir: null,
+    createRuntime: async () => fixedEngineRuntime(new AlwaysFailingEngine("codex", 1), 1)
+  });
+  assert.equal(directExit, 1);
+  assert.doesNotMatch(directStderr.text(), /failed after 1 attempt —/);
+  assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
+});
+
 test("the sentinel carries worker outcomes, so `complete` cannot mean every worker failed", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-workers-"));
   const runRecordDir = path.join(directory, "records");

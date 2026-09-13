@@ -12,7 +12,7 @@ let defaultRuntime: Promise<EnsembleRuntime> | null = null;
 // wrapper to the interface.
 export async function agent(prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResultType>;
 export async function agent(prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-export async function agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+export async function agent(prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
 export async function agent(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 export async function agent(prompt: string, options: Partial<AgentOptions> = {}): Promise<string | unknown | null> {
   const runtime = await getDefaultRuntime();

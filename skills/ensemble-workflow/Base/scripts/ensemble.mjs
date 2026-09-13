@@ -14325,8 +14325,6 @@ var EngineShutdownError = class extends EnsembleError {
     super(`${engine} engine is shutting down`);
   }
 };
-var EmptyAgentOutputError = class extends EnsembleError {
-};
 var ClaudeWorkerError = class extends EnsembleError {
 };
 var ClaudeDispatchError = class extends ClaudeWorkerError {
@@ -16489,6 +16487,9 @@ function stripControl(text) {
 function bounded(text, limit = 400) {
   const flat = stripControl(text).replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}\u2026` : flat;
+}
+function boundedEvidence(text, limit = 400) {
+  return bounded(text, limit);
 }
 function isInterrupt(error) {
   return error instanceof Error && error.name === "WorkflowInterruptedError" && typeof error.signal === "string";
@@ -21468,8 +21469,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempts
       );
     } else {
-      const text = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
-      outcome = text === null ? { status: "refused" } : { status: "complete", value: text };
+      outcome = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
     }
     if (outcome.status === "refused") {
       const refused = state.engineSession;
@@ -21659,6 +21659,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
       }
       await this.#recordSettlementSafely(agentId, agentRecord);
+      if (outcome === "failed") {
+        return this.#failedValue(engineName, identity, agentId, agentRecord);
+      }
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -21669,7 +21672,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
-      throw error;
+      if (error instanceof PreSpawnAuthorError || this.#runSettlementCause(error) !== null || agentRecord.attempts.length === 0) {
+        throw error;
+      }
+      return this.#failedValue(engineName, identity, agentId, agentRecord);
     } finally {
       this.#lastSettledAgentRecord = agentRecord;
       executingRecords.delete(agentRecord);
@@ -21681,6 +21687,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /** The last settled agent record, or null before any settlement. */
   lastAgentRecord() {
     return this.#lastSettledAgentRecord;
+  }
+  /**
+   * A dispatched worker's failure as the call's value: `null`, on the
+   * text shape as on the schema shape, once its settlement is on the
+   * record. The account the script no longer receives as a throw is
+   * announced instead, on the engine-tagged notice channel the CLI
+   * renders, so an operator watching stderr still sees each worker that
+   * failed and why — the archive and the identity envelope carry the same
+   * account for a reader arriving later.
+   */
+  #failedValue(engine, identity, agentId, agentRecord) {
+    const failure = settledFailureAccount(agentRecord);
+    this.#emitEvent({
+      method: `${engine}/agentFailed`,
+      params: {
+        agentId,
+        label: identity.label,
+        phase: identity.phase,
+        status: agentRecord.status,
+        attempts: agentRecord.attempts.length,
+        failure: { kind: failure.kind, message: failure.message }
+      },
+      receivedAt: Date.now()
+    });
+    return null;
   }
   /**
    * The archive is observability: a bookkeeping failure must not reject (or,
@@ -21886,10 +21917,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
           )
         };
       } else {
-        const text = await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts);
         completion = {
           ok: true,
-          execution: text === null ? { status: "refused" } : { status: "complete", value: text }
+          execution: await this.#runTextAgent(engine.name, invocation, options, agentId, agentRecord, attempts)
         };
       }
     } catch (error) {
@@ -21965,13 +21995,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
     };
   }
   /**
-   * The bounded-attempt loop for a text call on one target. Returns the
-   * answer, or `null` when the target was refused for availability with a
-   * chain entry remaining — the loop's own signal to the chain, distinct
-   * from every failure it throws.
+   * The bounded-attempt loop for a text call on one target: the trimmed
+   * answer, the exhausted collapse, or `refused` for the chain — the same
+   * three settlements as the schema loop, so the two call shapes cannot
+   * drift apart on how a worker's failure reaches the script. A
+   * thrown transport error leaves the loop as a throw so the settlement
+   * reads its evidence (a turn deadline settles `timed-out`, a run ending
+   * settles as the run's own cause); whether it then resolves as a value
+   * is `#executeAgent`'s one judgement, never the loop's.
    */
   async #runTextAgent(engine, invocation, options, agentId, agentRecord, attempts) {
-    let lastError = null;
     let previousFailure;
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
       const attempt = ++attempts.ledger.dispatched;
@@ -21988,10 +22021,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== void 0) {
           if (operationalFailure.refused) {
-            return null;
+            return { status: "refused" };
           }
           previousFailure = operationalFailure.failure;
-          lastError = new EmptyAgentOutputError(previousFailure.message);
           continue;
         }
         const text = result.text.trim();
@@ -22000,26 +22032,27 @@ var EnsembleRuntime = class _EnsembleRuntime {
           agentRecord.attempts.push(
             attemptRecord(attempt, attempts.target, "complete", null, result.text, result.text, startedAt, result)
           );
-          return text;
+          return { status: "complete", value: text };
         }
         previousFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
         this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
-        lastError = new EmptyAgentOutputError(previousFailure.message);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
-          return null;
+          return { status: "refused" };
         }
         if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
           throw error;
         }
-        lastError = error instanceof Error ? error : new Error(String(error));
       }
     }
-    throw lastError ?? new EmptyAgentOutputError("agent returned empty text");
+    return {
+      status: "failed",
+      value: null
+    };
   }
   /**
    * The bounded-attempt loop for a schema call on one target: the
@@ -22431,12 +22464,16 @@ function rejectionShape(error) {
   }
   return `a value of type ${typeof error}`;
 }
-function settledFailureMessage(record) {
+function settledFailureAccount(record) {
   const attempted = attemptedFailureAccount(record);
   if (attempted !== null) {
-    return `${attempted.kind}: ${attempted.message}`;
+    return attempted;
   }
-  return record.terminationCause !== null ? `${record.terminationCause.kind}: ${record.terminationCause.message}` : "the agent failed without a recorded cause";
+  return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
+}
+function settledFailureMessage(record) {
+  const account = settledFailureAccount(record);
+  return `${account.kind}: ${account.message}`;
 }
 function lastRawOutput(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -29528,6 +29565,22 @@ async function runEnsembleCli(argv, options = {}) {
       if (event.method === "runRecord/writeFailed") {
         const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
         stderr.write(`[run-record] failed to archive an agent record: ${message}
+`);
+        return;
+      }
+      if (event.method.endsWith("/agentFailed")) {
+        if (invocation.kind === "agent") {
+          return;
+        }
+        const engine = event.method.slice(0, -"/agentFailed".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const attempts = typeof event.params.attempts === "number" ? event.params.attempts : 0;
+        const failure = event.params.failure;
+        const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
+        const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
+        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} \u2014 ${kind}: ${message}
 `);
         return;
       }

@@ -12,9 +12,9 @@ const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FA
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 for (const scenario of [
-  { engine: "claude", model: null, error: /EmptyAgentOutputError: worker left the roster/ },
+  { engine: "claude", model: null, error: /claude-poll-timeout: worker left the roster/ },
   // An opencode run failure consumes its (single) attempt, so exhaustion
-  // surfaces the engine diagnostic through the empty-output error.
+  // surfaces the engine diagnostic on the failure notice.
   { engine: "opencode", model: "glm-5.2", error: /opencode run failed/ }
 ] as const) {
   test(
@@ -78,7 +78,9 @@ for (const scenario of [
 
         const result = await runNode([bundledCliPath, script], env, terminateWorker);
 
-        assert.equal(result.code, 1, result.stderr);
+        // The script returned its worker's null, so the run itself
+        // completed; the failure is announced on stderr and archived.
+        assert.equal(result.code, 0, result.stderr);
         assert.match(result.stderr, scenario.error);
         const agent = await recordedAgent(recordStore, `failure-evidence-${scenario.engine}`);
         assert.ok(

@@ -12,7 +12,6 @@ import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
   CapabilityStripUnsupportedError,
-  EmptyAgentOutputError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
@@ -150,13 +149,9 @@ test("opencode run failure preserves stream text and the engine diagnostic in th
 
   try {
     // The failure consumes the bounded attempt: with maxAttempts 1 the loop
-    // exhausts and surfaces the engine's own diagnostic in the final error,
-    // while the attempt record retains the partial text and classification.
-    await assert.rejects(runtime.agent("fail after writing", { engine: "opencode", model: "glm-5.2" }), (error: unknown) => {
-      assert.ok(error instanceof EmptyAgentOutputError);
-      assert.match(error.message, /provider connection lost/);
-      return true;
-    });
+    // exhausts and the call resolves null, the engine's own diagnostic
+    // and the partial text retained on the attempt record.
+    assert.equal(await runtime.agent("fail after writing", { engine: "opencode", model: "glm-5.2" }), null);
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       attempts: Array<{ raw_output: string | null; failure: { kind: string; message: string } }>;
     };
@@ -203,7 +198,7 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   runtime.setRunRecorder(writer);
 
   try {
-    await assert.rejects(runtime.agent("get killed", { engine: "opencode", model: "glm-5.2" }), EmptyAgentOutputError);
+    assert.equal(await runtime.agent("get killed", { engine: "opencode", model: "glm-5.2" }), null);
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
       attempts: Array<{
         worker_exit: { exit_code: number | null; signal: string | null } | null;
@@ -615,6 +610,7 @@ test("opencode export fallback recovers the complete final stopped step into the
     model: "glm-5.2"
   });
 
+  assert.ok(result !== null, "the fallback route must answer");
   assert.equal(result.length, 2_640);
   assert.match(result, /^Here is the report:/);
   assert.match(result, /neither the cached digests nor the signed headers serve this role\./);
@@ -903,6 +899,7 @@ test("opencode run record distinguishes an unparseable export from a failed expo
     model: "glm-5.2"
   });
 
+  assert.ok(result !== null, "the export route must answer");
   assert.equal(result.length, 2_640);
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
     attempts: Array<{ diagnostics: { opencode: { session_export: { status: string; error: string } } } }>;
@@ -1113,10 +1110,7 @@ test("opencode records empty-output only when neither export nor stream contains
   });
   runtime.setRunRecorder(writer);
 
-  await assert.rejects(
-    runtime.agent("return text", { engine: "opencode", model: "glm-5.2" }),
-    EmptyAgentOutputError
-  );
+  assert.equal(await runtime.agent("return text", { engine: "opencode", model: "glm-5.2" }), null);
 
   const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
     attempts: Array<{ failure: { kind: string } | null; diagnostics: unknown }>;

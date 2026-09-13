@@ -249,7 +249,7 @@ test("the hooks agent surface presents the canonical overload set", async () => 
   // surface exactly as a direct runtime call would. On the pre-fix tree the
   // hook type collapsed to the last overload alone, so the schema call
   // below did not compile and the identity call typed as Promise<string>.
-  const plain: Promise<string> = hooks.agent("p", { engine: "codex" });
+  const plain: Promise<string | null> = hooks.agent("p", { engine: "codex" });
   const structured: Promise<unknown | null> = hooks.agent("p", { engine: "codex", schema: { type: "object" } });
   const identified: Promise<IdentifiedAgentResult> = hooks.agent("p", { engine: "codex", identity: true });
 

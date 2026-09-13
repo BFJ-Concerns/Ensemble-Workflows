@@ -14,10 +14,8 @@ import {
   AgentPromptRejectedError,
   AppServerExitedError,
   AppServerOverloadedError,
-  AppServerRequestError,
   BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
-  EmptyAgentOutputError,
   EngineShutdownError,
   CapabilityStripUnsupportedError,
   FallbackTargetRejectedError,
@@ -316,6 +314,193 @@ test("identity: true resolves the identified envelope; default resolution is unc
   assert.deepEqual(bare, { answer: "yes" });
 });
 
+// ---------------------------------------------------------------------------
+// Once a worker has spawned, its failure is a value: the same three
+// settlements on the text shape as on the schema shape, the account on the
+// record and the identity envelope, the failure announced as an event — and
+// the spawn boundary, on whose far side every rejection still throws.
+
+test("a text call's exhausted attempts resolve null with the account on the record, exactly as a schema call's do", async () => {
+  // Empty answers exhaust the bound on both shapes; neither throws, both
+  // settle `failed` with the same per-attempt evidence.
+  for (const shape of ["text", "schema"] as const) {
+    const transport = new FakeTransport([turn(""), turn("   ")]);
+    const records: RuntimeAgentRecord[] = [];
+    const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+    runtime.onEvent((event) => {
+      if (event.method.endsWith("/agentFailed")) {
+        events.push({ method: event.method, params: event.params });
+      }
+    });
+
+    const value = await runtime.agent("say something", {
+      engine: "codex",
+      label: "quiet",
+      ...(shape === "schema" ? { schema } : {})
+    });
+
+    assert.equal(value, null, shape);
+    assert.equal(transport.turns.length, 2, shape);
+    const settled = records.at(-1);
+    assert.equal(settled?.status, "failed", shape);
+    assert.deepEqual(
+      settled?.attempts.map((attempt) => attempt.failure?.kind),
+      ["empty-output", "empty-output"],
+      shape
+    );
+    // The account the script no longer receives as a throw is announced
+    // instead, under the engine's tag, with the record's own words.
+    assert.deepEqual(
+      events,
+      [
+        {
+          method: "codex/agentFailed",
+          params: {
+            agentId: 1,
+            label: "quiet",
+            phase: null,
+            status: "failed",
+            attempts: 2,
+            failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" }
+          }
+        }
+      ],
+      shape
+    );
+    // A failed worker never joins the completed-output salvage list.
+    assert.deepEqual(runtime.completedOutputs(), [], shape);
+    await runtime.close();
+  }
+});
+
+test("a transport error mid-attempt resolves null with the thrown failure's class on the record", async () => {
+  // The thrown shape (the Codex transport's): the loop records the throw,
+  // the settlement reads its evidence, and the call resolves the value —
+  // the throw itself is never the script's to catch.
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    transport: new ErrorTransport(new AppServerExitedError("transport exited unexpectedly")),
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const identified = await runtime.agent("ride the transport", { engine: "codex", identity: true, label: "rider" });
+
+  // The identity envelope's discrimination carries the same account.
+  assert.deepEqual(identified, {
+    label: "rider",
+    phase: null,
+    output: null,
+    failure: { message: "AppServerExitedError: transport exited unexpectedly" }
+  });
+  assert.equal(records.at(-1)?.status, "failed");
+  assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
+  await runtime.close();
+});
+
+test("a bare text call inside parallel resolves null in its slot, never a thunk collapse", async () => {
+  // The combinators' catch is for thunks that throw; a dispatched worker's
+  // failure never reaches it. The slot holds the worker's own null, and an
+  // identified sibling's envelope discriminates the failure in-script.
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 2,
+    schedule: async (task) => task(),
+    createInvocation: (prompt) => ({
+      runAttempt: async () => {
+        if (prompt === "fail") {
+          throw new Error("worker transport died");
+        }
+        return turn("answered");
+      }
+    }),
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), cwd: "/fake/repo", defaultMaxAttempts: 1 });
+  const collapses: string[] = [];
+
+  const results = await parallel<unknown>(
+    [
+      () => runtime.agent("fail", { engine: "claude" }),
+      () => runtime.agent("fail", { engine: "claude", identity: true, label: "checked" }),
+      () => runtime.agent("answer", { engine: "claude" })
+    ],
+    (message) => collapses.push(message)
+  );
+
+  assert.deepEqual(results, [
+    null,
+    { label: "checked", phase: null, output: null, failure: { message: "Error: worker transport died" } },
+    "answered"
+  ]);
+  assert.deepEqual(collapses, [], "no thunk collapsed: the failures were values");
+  await runtime.close();
+});
+
+test("the spawn boundary: an engine refusing the dispatch itself still throws, with no attempt on the record", async () => {
+  // No worker existed, so there is nothing to resolve a value for — the
+  // refusal stays loud, and the record says why.
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      const rejection = new Error("model 'gpt-5.6-nonesuch' is not available");
+      rejection.name = "ModelNotFoundError";
+      throw rejection;
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(
+    () => runtime.agent("never dispatched", { engine: "codex", model: "gpt-5.6-nonesuch" }),
+    /model 'gpt-5\.6-nonesuch' is not available/
+  );
+  assert.deepEqual(records.at(-1)?.attempts, []);
+  assert.equal(records.at(-1)?.status, "failed");
+  await runtime.close();
+});
+
+test("the spawn boundary: the run's own ending still throws through a dispatched leg", async () => {
+  // A leg torn down by the run closing is not the worker failing: the
+  // throw is how a bare await and the combinators alike see the run stop,
+  // and the record carries the run's settlement, not a worker failure.
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  const leg = runtime.agent("outlive the run", { engine: "codex" });
+  await transport.started;
+  await runtime.close("interrupted");
+
+  await assert.rejects(leg, EngineShutdownError);
+  assert.equal(records.at(-1)?.status, "interrupted");
+  assert.equal(records.at(-1)?.terminationCause?.kind, "run-interrupted");
+});
+
 test("an identified schema collapse still carries the worker's identity", async () => {
   // The envelope wraps every resolution, the null collapse included — the
   // fan-in filtering idiom under identity is on `output`, and a failed leg
@@ -589,18 +774,24 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
     defaultMaxAttempts: 2
   });
 
-  await assert.rejects(
-    () => runtime.agent("return JSON", { engine: "codex", schema }),
-    (error: unknown) => {
-      assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
-      assert.match(error.message, /outside Codex's accepted subset or malformed/);
-      assert.doesNotMatch(error.message, /turn\/start failed/);
-      assert.match(error.message, /-32602/);
-      assert.match(error.message, /invalid_json_schema/);
-      assert.match(error.message, /required key missing from properties/);
-      return true;
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
     }
-  );
+  } as RunRecordWriter);
+
+  // The rejection arrives after the turn was dispatched, so it is the
+  // worker's failure and the call resolves null — the distinguishing
+  // class and the server's own diagnostic ride the attempt record.
+  assert.equal(await runtime.agent("return JSON", { engine: "codex", schema }), null);
+  const failure = records.at(-1)?.attempts.at(-1)?.failure;
+  assert.equal(failure?.kind, "CodexSchemaSubsetUnsupportedError");
+  assert.match(failure?.message ?? "", /outside Codex's accepted subset or malformed/);
+  assert.doesNotMatch(failure?.message ?? "", /turn\/start failed/);
+  assert.match(failure?.message ?? "", /-32602/);
+  assert.match(failure?.message ?? "", /invalid_json_schema/);
+  assert.match(failure?.message ?? "", /required key missing from properties/);
   assert.equal(transport.openedThreads.length, 1);
 });
 
@@ -740,8 +931,9 @@ test("the budget is judged at dispatch, not per attempt: exhaustion mid-retry ca
   } as RunRecordWriter);
 
   // The call was dispatched under the ceiling, so it owns its full attempt
-  // bound: every attempt runs, and the surfaced failure is the transport's.
-  await assert.rejects(() => runtime.agent("overloaded", { engine: "codex" }), AppServerOverloadedError);
+  // bound: every attempt runs, and the exhausted transport failure resolves
+  // as the call's value with the account on the record.
+  assert.equal(await runtime.agent("overloaded", { engine: "codex" }), null);
 
   assert.equal(transport.attempts, 3);
   const settled = records.at(-1);
@@ -960,10 +1152,7 @@ test("a failed worker still finishes and records its changed worktree", async ()
     }
   } as RunRecordWriter);
 
-  await assert.rejects(
-    () => runtime.agent("commit then fail", { engine: "codex", isolation: "worktree" }),
-    /worker failed after commit/
-  );
+  assert.equal(await runtime.agent("commit then fail", { engine: "codex", isolation: "worktree" }), null);
 
   assert.equal(worktreeManager.finished.length, 1);
   assert.equal(runtime.worktrees[0]?.changed, true);
@@ -1004,14 +1193,15 @@ test("a missing worktree path remains discoverable and reports its finalisation 
     }
   });
 
-  const propagated = await runtime
-    .agent("commit before removing the worktree path", { engine: "codex", isolation: "worktree" })
-    .then(
-      () => assert.fail("finalisation failure must reject the agent"),
-      (error: unknown) => error
-    );
+  // The worker answered; its placement's finalisation failed after the
+  // fact. That failure settles the dispatched leg as a value, with the
+  // finalisation error as the record's account and the event still raised.
+  assert.equal(await runtime.agent("commit before removing the worktree path", { engine: "codex", isolation: "worktree" }), null);
 
-  assert.strictEqual(propagated, finalisationError);
+  assert.deepEqual(records.at(-1)?.terminationCause, {
+    kind: "Error",
+    message: finalisationError.message
+  });
   assert.deepEqual(worktreeManager.finished, [worktree]);
   assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
   assert.deepEqual(records.at(-1)?.worktree, {
@@ -1063,14 +1253,11 @@ test("a worker error remains primary when worktree finalisation also fails", asy
     }
   });
 
-  const propagated = await runtime
-    .agent("commit then fail", { engine: "codex", isolation: "worktree" })
-    .then(
-      () => assert.fail("worker failure must reject the agent"),
-      (error: unknown) => error
-    );
+  assert.equal(await runtime.agent("commit then fail", { engine: "codex", isolation: "worktree" }), null);
 
-  assert.strictEqual(propagated, workerError);
+  // The worker's own failure is the attempt's account; the finalisation
+  // failure that followed is reported as its event, not promoted over it.
+  assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.message, workerError.message);
   assert.deepEqual(runtime.worktrees, [{ ...worktree, tipCommit: null, changed: true, removed: false }]);
   assert.equal(records.at(-1)?.worktree?.branch, worktree.branch);
   assert.deepEqual(events, [
@@ -1751,7 +1938,7 @@ test("a worker that dies uncleanly leaves its dispatch-time record", async () =>
     }
   } as RunRecordWriter);
 
-  await assert.rejects(() => runtime.agent("doomed prompt", { engine: "codex" }), /engine fell over/);
+  assert.equal(await runtime.agent("doomed prompt", { engine: "codex" }), null);
 
   // Even with the settlement write present, the dispatch-time write is the
   // evidence a crash-before-settlement scenario relies on: it must be the
@@ -1779,7 +1966,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
     }
   } as RunRecordWriter);
 
-  await assert.rejects(() => runtime.agent("record the engine cause", { engine: "codex" }));
+  assert.equal(await runtime.agent("record the engine cause", { engine: "codex" }), null);
 
   assert.deepEqual(records.at(-1)?.attempts.at(-1)?.appServerDiagnostic, {
     code: -32001,
@@ -1789,9 +1976,11 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 });
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
-  for (const [error, expected] of [
-    [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out"],
-    [new EngineShutdownError("codex"), "interrupted"]
+  // A turn deadline is the worker's own failure and resolves as a value; a
+  // shutdown is the run ending and still throws, at the spawn boundary.
+  for (const [error, expected, resolution] of [
+    [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out", "value"],
+    [new EngineShutdownError("codex"), "interrupted", "throw"]
   ] as const) {
     const records: RuntimeAgentRecord[] = [];
     const runtime = new EnsembleRuntime({
@@ -1805,7 +1994,11 @@ test("terminal timeout and shutdown errors retain their agent statuses with two 
       }
     } as RunRecordWriter);
 
-    await assert.rejects(() => runtime.agent("stop", { engine: "codex" }), error.constructor);
+    if (resolution === "value") {
+      assert.equal(await runtime.agent("stop", { engine: "codex" }), null);
+    } else {
+      await assert.rejects(() => runtime.agent("stop", { engine: "codex" }), error.constructor);
+    }
 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
@@ -1826,10 +2019,7 @@ test("a spontaneous app-server exit records a failed agent without runtime shutd
     }
   } as RunRecordWriter);
 
-  await assert.rejects(
-    () => runtime.agent("survive the transport", { engine: "codex" }),
-    AppServerExitedError
-  );
+  assert.equal(await runtime.agent("survive the transport", { engine: "codex" }), null);
 
   assert.equal(records.length, 2);
   assert.equal(records[0]?.status, "in-progress");
@@ -1840,7 +2030,6 @@ test("a spontaneous app-server exit records a failed agent without runtime shutd
 test("thrown non-shutdown failures retain failed status while the runtime closes", async () => {
   for (const error of [
     new Error("worker failed"),
-    new EmptyAgentOutputError("worker returned no output"),
     new CodexSchemaSubsetUnsupportedError({ code: -32602, message: "unsupported schema" })
   ]) {
     const records: RuntimeAgentRecord[] = [];
@@ -1859,7 +2048,9 @@ test("thrown non-shutdown failures retain failed status while the runtime closes
     const agent = runtime.agent("fail independently", { engine: "codex" });
     await transport.started;
     await runtime.close("interrupted");
-    await assert.rejects(agent, error.constructor);
+    // The worker failed on its own account during teardown, so the call
+    // resolves its value; only a run-caused settlement would throw.
+    assert.equal(await agent, null);
 
     assert.equal(records.length, 2);
     assert.equal(records[0]?.status, "in-progress");
@@ -2637,7 +2828,7 @@ test("an engine's own failure stays the attempt's cause, with nothing beside it"
     }
   } as RunRecordWriter);
 
-  await assert.rejects(() => runtime.agent("survive the transport", { engine: "codex" }), AppServerExitedError);
+  assert.equal(await runtime.agent("survive the transport", { engine: "codex" }), null);
 
   const attempt = records.at(-1)?.attempts.at(-1);
   assert.deepEqual(attempt?.failure, {
@@ -3024,17 +3215,14 @@ test("every target refused fails the call with the last target's own failure, ev
   const claude = new ChainEngine("claude", [claudeRefusal(429, "rate_limit")]);
   const { runtime, records } = chainRuntime([codex, claude], 1);
 
-  await assert.rejects(
-    () => runtime.agent("work", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
-    (error: unknown) => {
-      assert.ok(error instanceof EmptyAgentOutputError);
-      assert.match(error.message, /Request rejected \(429\)/);
-      return true;
-    }
+  assert.equal(
+    await runtime.agent("work", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
+    null
   );
   const settled = records.at(-1)!;
   assert.equal(settled.status, "failed");
   assert.equal(settled.answeredBy, null);
+  assert.match(settled.attempts.at(-1)?.failure?.message ?? "", /Request rejected \(429\)/);
   assert.deepEqual(
     settled.attempts.map((attempt) => attempt.classification),
     [
@@ -3049,9 +3237,10 @@ test("with no chain declared, an availability failure is the call's own failure,
   const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
   const { runtime, records } = chainRuntime([codex], 1);
 
-  await assert.rejects(() => runtime.agent("work", { engine: "codex" }), AppServerRequestError);
+  assert.equal(await runtime.agent("work", { engine: "codex" }), null);
   const settled = records.at(-1)!;
   assert.equal(settled.status, "failed");
+  assert.equal(settled.attempts[0]?.failure?.kind, "AppServerRequestError");
   // Classified all the same: the archive can be asked how often the tier
   // refused, chain or no chain.
   assert.deepEqual(settled.attempts[0]?.classification, { class: "availability", rule: "codex.usage-limit" });

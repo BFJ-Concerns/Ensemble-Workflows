@@ -12,7 +12,6 @@ import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
-  AppServerFirstOutputTimeoutError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
@@ -654,14 +653,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
 
   try {
     const startedAt = Date.now();
-    await assert.rejects(
-      () => runtime.agent("start but never speak", { engine: "codex", timeoutMs: 2_000, maxAttempts: 1 }),
-      (error: unknown) => {
-        assert.ok(error instanceof AppServerFirstOutputTimeoutError);
-        assert.match(error.message, /first output-bearing frame within 250ms/);
-        return true;
-      }
-    );
+    assert.equal(await runtime.agent("start but never speak", { engine: "codex", timeoutMs: 2_000, maxAttempts: 1 }), null);
     assert.ok(Date.now() - startedAt < 1_000, "first-output expiry must win over the 2s turn timeout");
     const attempt = records.at(-1)?.attempts.at(-1);
     assert.equal(records.at(-1)?.status, "failed");
@@ -693,14 +685,15 @@ test("the archive distinguishes a transport request deadline from a turn deadlin
     runtime.setRunRecorder(writer);
 
     try {
-      await assert.rejects(
-        () =>
-          runtime.agent("time out", {
-            engine: "codex",
-            maxAttempts: 1,
-            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
-          }),
-        TurnTimeoutError
+      // A deadline expiring after dispatch settles the worker `timed-out`
+      // and resolves the call as a value.
+      assert.equal(
+        await runtime.agent("time out", {
+          engine: "codex",
+          maxAttempts: 1,
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {})
+        }),
+        null
       );
     } finally {
       await runtime.close();
@@ -911,10 +904,12 @@ test("retryPromiseSilenceTimeoutMs threads from RuntimeOptions to the live trans
   });
   try {
     const startedAt = Date.now();
-    await assert.rejects(
-      () => runtime.agent("promise then vanish", { engine: "codex", maxAttempts: 1 }),
-      AppServerRetryPromiseBrokenError
-    );
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+    } as unknown as RunRecordWriter);
+    assert.equal(await runtime.agent("promise then vanish", { engine: "codex", maxAttempts: 1 }), null);
+    assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "AppServerRetryPromiseBrokenError");
     assert.ok(Date.now() - startedAt < 5_000, "the configured 250ms deadline should fire, not the 15-minute default");
   } finally {
     await runtime.close();

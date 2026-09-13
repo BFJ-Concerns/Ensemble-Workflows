@@ -122,7 +122,7 @@ export function createWorkflowHooks(options: {
   // needed anywhere in the plumbing.
   function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
   function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string>;
+  function agentWithDefaults(prompt: string, agentOptions: AgentOptions & { schema?: undefined }): Promise<string | null>;
   function agentWithDefaults(prompt: string, agentOptions: Partial<AgentOptions>): Promise<string | unknown | null>;
   function agentWithDefaults(prompt: string, agentOptions?: Partial<AgentOptions>): Promise<string | unknown | null> {
     return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));

@@ -354,8 +354,6 @@ export class EngineShutdownError extends EnsembleError {
   }
 }
 
-export class EmptyAgentOutputError extends EnsembleError {}
-
 /**
  * Base for *operational* failures of a Claude background worker — dispatch
  * died, polling timed out, the worker stalled past the recovery bound, the

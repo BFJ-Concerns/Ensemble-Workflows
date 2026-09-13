@@ -8,7 +8,6 @@ import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
-  EmptyAgentOutputError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   failedTurnResultOf,
@@ -734,7 +733,7 @@ test("a blocked Claude worker preserves transcript text and its diagnostic in th
         recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
       } as unknown as RunRecordWriter);
       try {
-        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
         const settledRecord = records.at(-1);
         assert.equal(settledRecord?.attempts[0]?.rawOutput, "Claude reached the evidence");
         assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-blocked");
@@ -756,7 +755,7 @@ test("a served model the transcript already named survives an operational failur
         recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
       } as unknown as RunRecordWriter);
       try {
-        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
         // The turn failed and produced no result value, but the transcript
         // had already named the served model — a result-less failure must
         // not un-learn evidence the engine had (failures carry their
@@ -1125,7 +1124,7 @@ test("an uncollectable settled session fails loudly with its partial text retain
       recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
     } as unknown as RunRecordWriter);
     try {
-      await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+      assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
       const settledRecord = records.at(-1);
       assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-collection-error");
       assert.match(
@@ -1151,7 +1150,7 @@ test("a settled session with no assistant text fails loudly with the collection 
       recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
     } as unknown as RunRecordWriter);
     try {
-      await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+      assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
       const settledRecord = records.at(-1);
       assert.equal(settledRecord?.attempts[0]?.failure?.kind, "claude-collection-error");
       assert.equal(controlPlane.stopCount, 1);
@@ -1299,7 +1298,7 @@ test("a failed Claude turn publishes the spend its transcript already proved", a
         recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
       } as unknown as RunRecordWriter);
       try {
-        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
         const attempt = records.at(-1)?.attempts[0];
         assert.equal(attempt?.failure?.kind, "claude-blocked");
         // The archived transcript is the reconciliation source: the failed
@@ -1530,7 +1529,7 @@ test("a failed Claude turn's spend and transcript read back cold from the archiv
           cliFlags: { jsonArgs: false }
         });
         runtime.setRunRecorder(writer);
-        await assert.rejects(runtime.agent("decide", { engine: "claude" }), EmptyAgentOutputError);
+        assert.equal(await runtime.agent("decide", { engine: "claude" }), null);
         await writer.finish({ status: "failed", exitCode: 1, result: null });
 
         const agent = JSON.parse(

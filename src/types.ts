@@ -124,7 +124,11 @@ export interface SessionTurnOptions {
   schema?: JsonSchema;
 }
 
-/** The identified resolution shape `identity: true` opts a call into. */
+/**
+ * The identified resolution shape `identity: true` opts a call into. Every
+ * resolution wears it — a text answer, a validated object, and the `null`
+ * a dispatched worker's failure resolves to alike.
+ */
 export interface IdentifiedAgentResult {
   label: string | null;
   phase: string | null;
@@ -155,7 +159,7 @@ export interface IdentifiedAgentResult {
 export interface AgentCallSignature {
   (prompt: string, options: AgentOptions & { identity: true }): Promise<IdentifiedAgentResult>;
   (prompt: string, options: AgentOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  (prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string>;
+  (prompt: string, options: AgentOptions & { schema?: undefined }): Promise<string | null>;
   (prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null>;
 }
 

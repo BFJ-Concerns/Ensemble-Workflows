@@ -41,7 +41,7 @@ test("live text agent returns non-empty text", liveOptions, async () => {
     const text = await runtime.agent("Reply with a short sentence containing the exact token TEXT_PATH_OK.", {
       engine: "codex"
     });
-    assert.match(text, /TEXT_PATH_OK/);
+    assert.match(text ?? "", /TEXT_PATH_OK/);
     assert.ok(runtime.budget.spent("codex") > 0);
   } finally {
     await runtime.close();
@@ -116,7 +116,7 @@ test("live one-process runtime runs at least eight turns concurrently", liveOpti
     for (let index = 0; index < results.length; index += 1) {
       const result = results[index];
       assert.ok(result !== undefined);
-      assert.match(result, new RegExp(`CONCURRENCY_${index}`));
+      assert.match(result ?? "", new RegExp(`CONCURRENCY_${index}`));
     }
 
     const peak = peakInFlight(events);
@@ -200,7 +200,7 @@ test("live worktree isolation gives autonomous writable agents separate git work
       "Do not create, edit, delete, or inspect files. Reply exactly CLEAN_WORKTREE_OK.",
       { engine: "codex", isolation: "worktree" }
     );
-    assert.match(clean, /CLEAN_WORKTREE_OK/);
+    assert.match(clean ?? "", /CLEAN_WORKTREE_OK/);
     assert.equal(runtime.worktrees.length, 1);
     assert.equal(runtime.worktrees[0]?.changed, false);
     assert.equal(runtime.worktrees[0]?.removed, true);
@@ -217,8 +217,8 @@ test("live worktree isolation gives autonomous writable agents separate git work
       )
     ]);
 
-    assert.match(first, /COMMIT_A_OK/);
-    assert.match(second, /WRITE_B_OK/);
+    assert.match(first ?? "", /COMMIT_A_OK/);
+    assert.match(second ?? "", /WRITE_B_OK/);
     assert.deepEqual(deniedServerRequests, []);
 
     const changedWorktrees = runtime.worktrees.filter((worktree) => worktree.changed);

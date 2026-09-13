@@ -41,7 +41,12 @@ any worker spawns.
 
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or
-  `null` after bounded retry; without a schema, it returns final text. Every
+  `null` after bounded retry; without a schema, it returns final text or
+  `null` on the same terms. Once a worker has spawned, every failure is a
+  value — `null`, with the class and account on the agent record and on an
+  identified call's `failure` field, announced on stderr under the engine's
+  tag — never a throw; only a rejection raised before a worker exists, and
+  the run's own ending, throw. Every
   worker runs unrestricted with filesystem and network access. Unrecognised
   option keys throw before that call's worker spawns; the removed `sandbox`,
   `network`, `webSearch`, and `fallbackModel` keys name their removal. A
@@ -61,9 +66,10 @@ any worker spawns.
   (`"opencode"` throws before spawn): engine, model, and effort are fixed at
   creation, and the returned handle's `send(prompt, { schema? })` runs
   successive turns against the same held worker — schema is the only per-turn
-  variation, each turn under the one-shot call's validated-return and
-  bounded-retry contract, holding an engine-cap/ceiling slot only while it
-  executes. Claude sessions are dispatched with the 1-hour prompt-cache TTL;
+  variation, each turn under the one-shot call's validated-return,
+  bounded-retry, and failure-as-value contract (a failed turn resolves `null`
+  and the session stays usable), holding an engine-cap/ceiling slot only
+  while it executes. Claude sessions are dispatched with the 1-hour prompt-cache TTL;
   `handle.stale` is the advisory staleness mark (TTL cliff on Claude, 60 idle
   minutes on Codex; `stalenessMark: false` disables it) and never blocks a
   send. Each turn is its own agent record carrying `session: { id, turn }`,
@@ -85,16 +91,18 @@ any worker spawns.
   the machinery that observes it, and every raise, answer, rejection,
   timeout, and retirement lands in the archive manifest's `hold_events`.
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
-  failed thunk becomes `null` in the returned array and is still logged, except
+  dispatched worker's failure is already the leg's own `null` (it never
+  reaches the combinator as a throw); a thunk that throws for any other
+  reason becomes `null` in the returned array and is still logged, except
   that a pre-spawn author error — a rejected `agent()` option, a malformed
   schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
   arguments, a nesting violation — propagates and fails the run. The
   documented route for telling a failed leg from one that legitimately
   answered `null` is `identity: true`: an identified call resolves
   `{ label, phase, output, failure }`, and `failure` is `null` exactly when
-  the worker's own settlement completed — a collapse (in the combinators, or
-  a schema call's exhausted attempts) carries a `{ message }` account there
-  instead.
+  the worker's own settlement completed — a collapse (a dispatched worker's
+  failure on either shape, or a thunk collapsed in the combinators) carries a
+  `{ message }` account there instead.
 - `pipeline(items, ...stages)` runs each item through each stage independently,
   with no cross-item barrier between stages. Ordinary stage failures drop that
   item to `null`; the same pre-spawn author errors propagate.

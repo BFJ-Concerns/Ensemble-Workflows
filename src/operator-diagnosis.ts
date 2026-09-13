@@ -210,6 +210,15 @@ function bounded(text: string, limit = 400): string {
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
+/**
+ * The one-line excerpt discipline for worker- or engine-controlled text on
+ * an operator surface: terminal control stripped, whitespace flattened,
+ * bounded — for a notice line whose full evidence lives in the archive.
+ */
+export function boundedEvidence(text: string, limit = 400): string {
+  return bounded(text, limit);
+}
+
 function isInterrupt(error: unknown): error is Error & { signal: string } {
   // WorkflowInterruptedError lives with the CLI's interrupt watcher;
   // matching it structurally here avoids a module cycle without weakening

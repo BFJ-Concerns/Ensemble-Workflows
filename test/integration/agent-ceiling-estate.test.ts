@@ -89,7 +89,7 @@ test(
       schema,
       maxAttempts: 2,
     });
-    let verifierCall: Promise<string> | undefined;
+    let verifierCall: Promise<string | null> | undefined;
 
     try {
       await retrying.secondAttemptStarted;
@@ -126,7 +126,7 @@ test(
     const successor = new ControlledEngine("claude", 1);
     const runtime = runtimeWithCeiling([failing, successor], 1);
     const failedCall = runtime.agent("fail-after-admission", { engine: "codex" });
-    let successorCall: Promise<string> | undefined;
+    let successorCall: Promise<string | null> | undefined;
 
     try {
       await failing.waitForStarts(1);
@@ -142,7 +142,9 @@ test(
       assert.deepEqual(successor.startedPrompts, []);
 
       failing.reject("fail-after-admission", new Error("ESTATE_CONTROLLED_FAILURE"));
-      await assert.rejects(failedCall, /ESTATE_CONTROLLED_FAILURE/);
+      // The dispatched worker's failure is the call's value; the slot
+      // it held is what the successor below observes released.
+      assert.equal(await failedCall, null);
       await successor.waitForStarts(1);
       successor.release("successor");
       assert.equal(await successorCall, "claude:successor");

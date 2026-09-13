@@ -7,7 +7,6 @@ import test from "node:test";
 import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
-  EmptyAgentOutputError,
   InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
   SessionBusyError,
@@ -220,7 +219,7 @@ test("a failed first Codex turn carries served identity into the next dispatch",
   runtime.setRunRecorder(recorder);
   const session = runtime.createWorkerSession({ engine: "codex", maxAttempts: 1 });
 
-  await assert.rejects(session.send("first prompt"));
+  assert.equal(await session.send("first prompt"), null);
   await session.send("follow-up prompt");
 
   const secondDispatch = captured.find(
@@ -757,7 +756,8 @@ test("without the valve a follow-up fails loud — the session never silently re
       const session = runtime.createWorkerSession({ engine: "claude" });
       assert.equal(await session.send("orient yourself"), "first reply");
 
-      await assert.rejects(session.send("follow up"), EmptyAgentOutputError);
+      // The failed turn is a value; the record carries the valve failure.
+      assert.equal(await session.send("follow up"), null);
       // The discriminating assertion: one dispatch, ever. A degraded
       // redispatch would answer this turn from a different session than
       // the one created, breaking the session's continuity.
@@ -856,7 +856,7 @@ test("a session's chain applies to the creating turn alone, and the answering ta
 
       // Turn two's refusal is the turn's own failure: still one Claude
       // dispatch ever, and the record names no chain for the turn.
-      await assert.rejects(session.send("turn two"), EmptyAgentOutputError);
+      assert.equal(await session.send("turn two"), null);
       assert.equal(controlPlane.dispatchCount, 1);
       const turnTwo = records.at(-1)!;
       assert.equal(turnTwo.fallback, null);

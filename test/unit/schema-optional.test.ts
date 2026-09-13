@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { appServerErrorFromPayload } from "../../src/app-server.js";
-import { CodexSchemaSubsetUnsupportedError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+
+import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import { normaliseForCodexOutputSchema, validateJsonSchema } from "../../src/schema.js";
 
 import type {
@@ -255,10 +256,17 @@ test("unsupported Codex schema shapes still fail with the distinct subset error"
     defaultMaxAttempts: 1
   });
 
-  await assert.rejects(() => runtime.agent("return verdict", { engine: "codex", schema: unsupported }), (error) => {
-    assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
-    return true;
-  });
+  // Codex's pre-generation rejection arrives after the turn was dispatched,
+  // so it is the worker's failure and resolves as a value; the record
+  // names the rejection class.
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  assert.equal(await runtime.agent("return verdict", { engine: "codex", schema: unsupported }), null);
+  assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "CodexSchemaSubsetUnsupportedError");
   assert.deepEqual(transport.turns[0]?.options.schema, unsupported);
 });
 

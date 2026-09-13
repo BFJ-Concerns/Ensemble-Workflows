@@ -9,7 +9,7 @@ import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./comp
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
 import { defaultHoldsDirectory, enumerateHolds, resolveHoldScope } from "./holds.js";
-import { presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
+import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
 import { StatusFileWriter } from "./status-file.js";
@@ -399,6 +399,26 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       if (event.method === "runRecord/writeFailed") {
         const message = typeof event.params.message === "string" ? event.params.message : "unknown error";
         stderr.write(`[run-record] failed to archive an agent record: ${message}\n`);
+        return;
+      }
+      if (event.method.endsWith("/agentFailed")) {
+        // A dispatched worker's failure resolves to the script as a value,
+        // so this notice is where the operator watching stderr learns
+        // which worker failed and why; the archive holds the full account.
+        // The direct-agent form is exempt: its collapse is the run's own
+        // failure, and the terminal diagnosis already renders every attempt.
+        if (invocation.kind === "agent") {
+          return;
+        }
+        const engine = event.method.slice(0, -"/agentFailed".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const attempts = typeof event.params.attempts === "number" ? event.params.attempts : 0;
+        const failure = event.params.failure as { kind?: unknown; message?: unknown } | undefined;
+        const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
+        const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
+        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} — ${kind}: ${message}\n`);
         return;
       }
       if (event.method === "worktree/finalisationFailed") {

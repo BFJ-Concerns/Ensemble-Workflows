@@ -992,11 +992,15 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
     }
   );
 
-  assert.equal(unsupported.exitCode, 1);
-  assert.equal(unsupported.stdout, `{"partial":true,"reason":"failed","completed":[]}\n`);
+  // The rejection arrives after the turn was dispatched, so it is the
+  // worker's failure: the call resolves null, the script completes, and
+  // the failure notice on stderr is where the operator reads the cause and
+  // remedy — the discriminator from ordinary validation failure is the
+  // pre-generation line.
+  assert.equal(unsupported.exitCode, 0, unsupported.stderr);
+  assert.equal(unsupported.stdout, "null\n");
   const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
-  // The operator seam renders the rejection cause-first with its remedy; the
-  // discriminator from ordinary validation failure is the pre-generation line.
+  assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — CodexSchemaSubsetUnsupportedError: /);
   assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Use a schema supported by Codex outputSchema/);
   assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
@@ -1028,7 +1032,12 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
 
   assert.equal(ordinaryValidation.exitCode, 0, ordinaryValidation.stderr);
   assert.deepEqual(JSON.parse(ordinaryValidation.stdout), { verdict: null });
-  assert.equal(withoutSentinelAnnouncement(ordinaryValidation.stderr), "");
+  // An exhausted schema call is announced the same way, under its own kind.
+  assert.equal(
+    withoutSentinelAnnouncement(ordinaryValidation.stderr),
+    "[codex] agent 1 failed after 1 attempt — schema-validation: " +
+      '[{"instancePath":"/answer","schemaPath":"#/properties/answer/enum","keyword":"enum","params":{"allowedValues":["yes"]},"message":"must be equal to one of the allowed values"}]\n'
+  );
 });
 
 test("pipeline workflow interleaves items and drops only the failing item", async () => {
@@ -1264,7 +1273,11 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
   );
 
   assert.equal(exitCode, 0, stderr);
-  assert.match(stderr, /parallel thunk 1 failed: Error: transport failure/);
+  // The thrown transport failure is a dispatched worker's own failure, so it
+  // resolves as the leg's value and is announced under its engine tag
+  // rather than logged as a thunk collapse.
+  assert.doesNotMatch(stderr, /parallel thunk 1 failed/);
+  assert.match(stderr, /\[codex\] agent 4 failed after 1 attempt — Error: transport failure/);
   const result = JSON.parse(stdout) as {
     validAfterRetry: { status: string; details: { count: number } };
     impossible: null;

@@ -36,14 +36,17 @@ test("a finalisation failure keeps a committed worktree discoverable in memory a
     },
   } as unknown as RunRecordWriter);
 
-  await assert.rejects(
-    runtime.agent("commit before finalisation fails", {
+  // A finalisation failure after the worker answered settles the leg as a
+  // value; the record's cause is what names the finish failure.
+  assert.equal(
+    await runtime.agent("commit before finalisation fails", {
       engine: "codex",
       isolation: "worktree",
       maxAttempts: 1,
     }),
-    /ESTATE_FINISH_FAILURE/,
+    null,
   );
+  assert.match(records.at(-1)?.terminationCause?.message ?? "", /ESTATE_FINISH_FAILURE/);
 
   assert.deepEqual(manager.finished, [worktree]);
   assert.deepEqual(

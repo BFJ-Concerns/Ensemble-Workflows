@@ -63,7 +63,12 @@ test("built CLI rejects a completed recording-fixture payload missing a required
   await withFixture(async (fixture) => {
     const result = await fixture.run({ ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: "missing-initialize-user-agent" });
 
-    assert.notEqual(result.code, 0);
+    // The drifted payload kills the fixture app-server at the handshake: a
+    // dispatched worker's failure, so the run completes on the script's null
+    // and the validation failure is legible on the failure notice.
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "null\n");
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — /);
     assert.match(result.stderr, /InitializeResponse\.json validation/);
     assert.match(result.stderr, /must have required property 'userAgent'/);
   });

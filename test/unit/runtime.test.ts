@@ -367,7 +367,10 @@ test("a text call's exhausted attempts resolve null with the account on the reco
             phase: null,
             status: "failed",
             attempts: 2,
-            failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" }
+            failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" },
+            // An answered failure has no thrown error for the diagnosis
+            // seam to present; the notice reads the record's own account.
+            diagnosis: null
           }
         }
       ],

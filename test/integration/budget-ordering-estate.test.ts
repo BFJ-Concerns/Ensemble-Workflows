@@ -41,9 +41,13 @@ test("built consumer preserves a dispatched worker's transport failure after sib
 
     assert.equal(result.code, 0, result.stderr);
     const output = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
-    assert.equal(output[0]?.status, "rejected");
-    assert.equal(output[0]?.name, "AppServerOverloadedError");
-    assert.match(String(output[0]?.message), /recording fixture overload/);
+    // The retrying worker's exhausted overload is its own failure, resolved
+    // as the call's null — not a budget rejection, which would have
+    // thrown pre-dispatch — and the notice on stderr names the transport's
+    // account, with the archive below holding both attempts.
+    assert.deepEqual(output[0], { status: "fulfilled", value: null });
+    assert.match(result.stderr, /\[codex\] agent 1 \(retrying\) failed after 2 attempts — AppServerOverloadedError/);
+    assert.match(result.stderr, /recording fixture overload/);
     assert.deepEqual(output[1], { status: "fulfilled", value: "worker-ok" });
 
     const requests = await estate.requests();

@@ -2364,9 +2364,11 @@ test("the launcher exits once its terminal work is done, whatever the script bod
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    // `close`, not `exit`: the streams are read to their end before the
+    // accumulated stdout and stderr are inspected below.
     const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject);
-      child.once("exit", (code, signal) => resolve({ code, signal }));
+      child.once("close", (code, signal) => resolve({ code, signal }));
     });
     const deadline = Date.now() + 15_000;
     while (!(await exists(readyMarker))) {

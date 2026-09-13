@@ -15992,7 +15992,7 @@ var StatusFileWriter = class {
       const temp = STATUS_TEMP_SUFFIX_PATTERN.exec(entry);
       if (temp !== null) {
         const ownerPid = Number(temp[1]);
-        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && !isProcessAlive(ownerPid)) {
+        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid)) {
           await this.#unlinkQuietly(file);
         }
         continue;
@@ -16010,6 +16010,17 @@ var StatusFileWriter = class {
         await this.#unlinkQuietly(file);
       }
     }
+  }
+  /**
+   * A temp file names only its writer's pid, so the judgement is the proc
+   * filesystem's: the pid absent where this process can read its own stat
+   * is death evidence; an unreadable proc filesystem decides nothing.
+   */
+  async #writerGone(pid) {
+    if (await readProcessStartTicks(this.#procDir, pid) !== null) {
+      return false;
+    }
+    return await readProcessStartTicks(this.#procDir, process.pid) !== null;
   }
   async #unlinkQuietly(file) {
     try {
@@ -16029,14 +16040,6 @@ var StatusFileWriter = class {
 };
 function isNodeError2(error) {
   return typeof error === "object" && error !== null && "code" in error;
-}
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !isNodeError2(error) || error.code !== "ESRCH";
-  }
 }
 
 // src/holds.ts

@@ -433,8 +433,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
         // A diagnosed failure (a deadline and its lever, a dead server and
         // how it died) reads as the diagnosis seam presents it — cause
-        // first, detail indented beneath; an undiagnosed one reads as the
-        // record's own kind and message.
+        // first, detail indented beneath, the seam's own sanitisation
+        // already applied to every worker-controlled line; an undiagnosed
+        // one reads as the record's own kind and message, bounded here.
         const diagnosis = typeof event.params.diagnosis === "string" ? event.params.diagnosis : null;
         const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
         stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} — ${diagnosis ?? `${kind}: ${message}`}\n`);

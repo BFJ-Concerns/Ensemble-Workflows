@@ -165,8 +165,10 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
   const noEvidence = path.join(dir, statusFileName("run-no-evidence"));
   const unparseable = path.join(dir, statusFileName("run-garbled"));
   const foreign = path.join(dir, "settings.local.json");
+  // Temp files are judged by their writer pid against the same proc root:
+  // 555555 has no stat entry, 4242 has one.
   const deadTemp = `${dead}.555555.3.tmp`;
-  const liveTemp = `${live}.${process.pid}.1.tmp`;
+  const liveTemp = `${live}.4242.1.tmp`;
   await Promise.all([
     // A SIGKILLed run's leftover: state "running", owner provably dead.
     writeFile(dead, `${JSON.stringify({ runId: "run-dead", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`),

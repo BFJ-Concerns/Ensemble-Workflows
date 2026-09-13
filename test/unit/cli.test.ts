@@ -1742,6 +1742,54 @@ test("CLI emits completed worker outputs when interrupted by SIGINT", async () =
   assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
 });
 
+test("a SIGTERM-stopped run exits 143 and records 143 on every durable surface", async () => {
+  // The other interrupt signal takes the same convention (128 + 15): the
+  // envelope names the signal, and the sentinel and result carry the code
+  // the process will exit with.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sigterm-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-sigterm" };
+      await agent("hang", { engine: "codex" });
+      return "never reached";
+    `
+  );
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const hangingEngine = new HangOnPromptEngine("codex", 4, () => process.emit("SIGTERM"));
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    runRecordDir,
+    createRuntime: async () =>
+      new EnsembleRuntime({
+        engines: new EngineRegistry([hangingEngine]),
+        defaultTurnTimeoutMs: 1_000,
+        defaultMaxAttempts: 1
+      })
+  });
+
+  assert.equal(exitCode, 143);
+  assert.deepEqual(JSON.parse(stdout.text()), {
+    partial: true,
+    reason: "interrupted",
+    error: { kind: "WorkflowInterruptedError", message: "Workflow interrupted by SIGTERM" },
+    completed: []
+  });
+  assert.match(stderr.text(), /Interrupted \(SIGTERM\) — partial result on stdout/);
+  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+  assert.ok(announced);
+  const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+  assert.deepEqual({ outcome: sentinel.outcome, exit_code: sentinel.exit_code }, { outcome: "interrupted", exit_code: 143 });
+  const result = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "result.json"), "utf8")) as { exit_code: number };
+  assert.equal(result.exit_code, 143);
+});
+
 test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-bad-"));
   const script = path.join(directory, "workflow.js");

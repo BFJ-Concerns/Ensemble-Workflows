@@ -11,7 +11,12 @@ import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-claude-interruption-evidence.mjs");
-const readinessPollAttempts = 200;
+// The readiness poll guards against a fixture that never dispatches, not
+// against ordinary gate contention: the built CLI's cold start plus the
+// fixture's dispatch and first poll take ~2 s alone and several times that
+// under the parallel suite runner, so the bound is the estate's hang-guard
+// scale (30 s), and the interrupt fires the moment readiness is observed.
+const readinessPollAttempts = 3_000;
 const readinessPollIntervalMs = 10;
 const dispatchGateTimeoutMs = readinessPollAttempts * readinessPollIntervalMs * 2;
 

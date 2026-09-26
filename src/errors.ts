@@ -59,6 +59,21 @@ export class HoldRejectedError extends PreSpawnAuthorError {}
 export class TallyRejectedError extends PreSpawnAuthorError {}
 
 /**
+ * An engine's substrate refused the dispatch before any worker existed —
+ * Claude Code declining to start a background session, a daemon that will
+ * not come up. Pre-spawn by the family's criterion (a substrate that exits or
+ * refuses before the worker exists is a rejection raised before a worker
+ * spawns), though the remedy is the launch
+ * environment's rather than the script's. The runtime records the refused
+ * dispatch with its availability class, spends no attempt on it, advances
+ * the call's fallback chain where an entry remains, and otherwise lets it
+ * propagate — through the combinators, out of the run — so a run can never
+ * lose a whole engine family to identical refusals and still end `complete`.
+ * Members name the substrate that refused.
+ */
+export class SubstrateRefusedError extends PreSpawnAuthorError {}
+
+/**
  * An optional per-hold timeout expired with no accepted answer. An
  * operational bound, not an authoring mistake — deliberately outside the
  * pre-spawn family (like WorkflowTimeoutError), rendered as one clean line;
@@ -355,17 +370,26 @@ export class EngineShutdownError extends EnsembleError {
 }
 
 /**
- * Base for *operational* failures of a Claude background worker — dispatch
- * died, polling timed out, the worker stalled past the recovery bound, the
- * valve couldn't inject, the transcript couldn't be read. The Claude engine
- * catches these and degrades to a graceful failed turn (the shared loop turns
- * that into `null` for a schema agent, or the empty-output error after the
- * bounded attempts for a text agent). It never lets one hang. A failure that
- * is *not* a `ClaudeWorkerError` is a genuine bug and propagates.
+ * Base for *operational* failures of a Claude background worker that
+ * existed — polling timed out, the worker stalled past the recovery bound,
+ * the valve couldn't inject, the transcript couldn't be read. The Claude
+ * engine catches these and degrades to a graceful failed turn, which the
+ * shared loop spends an attempt on and retries within the bound, resolving
+ * `null` at exhaustion on either call shape. It never lets one hang. A
+ * dispatch Claude Code refused is not a member: no worker existed, so it is
+ * a `ClaudeDispatchError` on the pre-spawn side. Any other failure that is
+ * *not* a `ClaudeWorkerError` is a genuine bug and propagates.
  */
 export class ClaudeWorkerError extends EnsembleError {}
 
-export class ClaudeDispatchError extends ClaudeWorkerError {}
+/**
+ * `claude --bg` refused to start the worker, or the dispatched session never
+ * registered: the substrate declined before a session existed. The
+ * message names the placed directory and carries Claude Code's own text,
+ * because the remedy lives in the launch environment — the operator reads
+ * it off the run's failure, never off a `null`.
+ */
+export class ClaudeDispatchError extends SubstrateRefusedError {}
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 

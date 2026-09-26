@@ -81,6 +81,7 @@ export {
   HoldTimeoutError,
   MultiTurnUnsupportedError,
   PreSpawnAuthorError,
+  SubstrateRefusedError,
   SessionBusyError,
   SessionClosedError,
   TallyRejectedError,

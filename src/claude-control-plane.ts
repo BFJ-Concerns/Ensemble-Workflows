@@ -12,7 +12,7 @@ import { ClaudeDispatchError } from "./errors.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (witnessed as orphaned
+ * worker escaped the cancellation plumbing entirely (observed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -71,6 +71,25 @@ export interface ClaudeDispatchOptions {
 /** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
 export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
+/**
+ * Declares the workspace sandboxed to every `claude` process this control
+ * plane launches. Claude Code (2.1.281 and later) gates background
+ * dispatch on the directory's trust — accepted once, interactively, per
+ * project directory, inherited by children but never by siblings — so a
+ * scratch directory, a sibling checkout, or a generated worktree starts
+ * untrusted.
+ * With this variable set on the dispatching process the trust check answers
+ * *sandboxed* for any resolvable directory and no dialog is owed; its only
+ * other effect in the binary — project-declared permission rules no longer
+ * gated on a person being present — is moot under the permission bypass
+ * every worker already runs with. It is harness bookkeeping, not
+ * configuration: it lands after the machine-declared worker environment,
+ * like the ownership tag, and is never written to the operator's own Claude
+ * configuration. A refusal that survives it is a substrate refusal
+ * (`ClaudeDispatchError`), which the runtime treats as pre-spawn.
+ */
+export const SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
+
 export interface ClaudeSessionHandle {
   /** Short daemon id — used to attach/steer/stop. */
   id: string;
@@ -115,6 +134,12 @@ export interface ClaudeCliControlPlaneOptions {
    * - **The valve's `claude attach` client** gets explicit tmux `-e` flags:
    *   a pre-existing tmux server starts pane commands from the *server's*
    *   environment, not this client's.
+   *
+   * The harness's own sandboxed-workspace declaration
+   * (`SANDBOXED_WORKSPACE_VARIABLE`) rides the second and third surfaces
+   * beside these declarations — every `claude` process the control plane
+   * launches, never the settings file, whose worker session is already
+   * running when it reads it.
    */
   workerEnv?: Record<string, string>;
   /** Defaults to `~/.claude/projects`. */
@@ -156,6 +181,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveCounter = 0;
   #env: NodeJS.ProcessEnv;
   #workerEnv: Record<string, string>;
+  /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
+  #launchEnv: Record<string, string>;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = new Map<string, string>();
 
@@ -167,7 +194,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // declared map is also kept separately: the tmux valve needs it as
     // explicit -e flags (see steer()).
     this.#workerEnv = options.workerEnv ?? {};
-    this.#env = { ...process.env, ...this.#workerEnv };
+    // The sandboxed-workspace declaration is harness bookkeeping and lands
+    // last, above any machine declaration of the same name: every `claude`
+    // this control plane launches must see it, or dispatch fails on trust.
+    this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    this.#env = { ...process.env, ...this.#launchEnv };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
@@ -204,8 +235,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // `claude --bg` prints the short id and returns; if it failed outright there
       // is no session to wait for, so surface immediately with its stderr.
       if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
+        // A refusal before any session exists: the directory is the
+        // fact the operator needs, Claude Code's own words are the reason,
+        // and the declaration is named so a refusal that survived it reads
+        // as the substrate's, not as a lift the harness forgot.
         throw new ClaudeDispatchError(
-          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
+          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
+            `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
+            `${dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message"}`
         );
       }
 
@@ -218,7 +255,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         }
         if (Date.now() >= deadline) {
           throw new ClaudeDispatchError(
-            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
           );
         }
         await delay(500);
@@ -240,7 +277,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (registered === null) {
       // Unreachable: every path that leaves the loop without a handle throws.
-      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
+      throw new ClaudeDispatchError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
     return registered;
   }
@@ -355,7 +392,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // variables must ride explicit `-e` flags (tmux >= 3.2) to reach the
       // `claude attach` child. Without them the injection silently covers
       // only the server-started-here case.
-      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
+      const environmentFlags = Object.entries(this.#launchEnv).flatMap(([name, value]) => [
         "-e",
         `${name}=${value}`
       ]);

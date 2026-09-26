@@ -50,12 +50,17 @@ export interface EngineTurnOptions {
   strip?: StrippableCapability[];
 }
 
+/**
+ * A failure an engine observed and *returned* on the attempt result, in the
+ * engine's own vocabulary. A refused Claude dispatch is not among them: it is
+ * thrown (`ClaudeDispatchError`, pre-spawn) rather than returned.
+ */
 export interface EngineAttemptFailure {
   kind:
     | "empty-output"
     | "invalid-json"
     | "schema-validation"
-    | "claude-dispatch-error"
+    | "claude-worker-error"
     | "claude-poll-timeout"
     | "claude-first-life-timeout"
     | "claude-blocked"
@@ -67,9 +72,21 @@ export interface EngineAttemptFailure {
   message: string;
 }
 
+/**
+ * What a retry carries back to the worker: the
+ * previous attempt's failure as the record holds it — an engine's returned
+ * failure under its own kind, or a thrown one under the error's class name
+ * (`TurnTimeoutError`, `AppServerSystemError`). Engines render it as prose
+ * in the correction, so the kind is open here and nowhere else.
+ */
+export interface PreviousAttemptFailure {
+  kind: string;
+  message: string;
+}
+
 export interface EngineAttemptContext {
   attempt: number;
-  previousFailure?: EngineAttemptFailure;
+  previousFailure?: PreviousAttemptFailure;
   /**
    * Called at the first observed sign of worker output — a transcript
    * appearing, a streamed frame, a first stdout chunk. Engines may call it
@@ -749,7 +766,7 @@ export async function createDefaultEngineRegistry(
   ]);
 }
 
-function promptWithFailureFeedback(prompt: string, failure: EngineAttemptFailure | undefined): string {
+function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailure | undefined): string {
   if (failure === undefined) {
     return prompt;
   }

@@ -6,7 +6,13 @@ import test from "node:test";
 
 import { spawn } from "node:child_process";
 
-import { CLAUDE_CACHE_TTL_VARIABLE, ClaudeCliControlPlane, WORKER_MARKER_VARIABLE } from "../../src/claude-control-plane.js";
+import {
+  CLAUDE_CACHE_TTL_VARIABLE,
+  ClaudeCliControlPlane,
+  SANDBOXED_WORKSPACE_VARIABLE,
+  WORKER_MARKER_VARIABLE
+} from "../../src/claude-control-plane.js";
+import { ClaudeDispatchError } from "../../src/errors.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
@@ -513,6 +519,178 @@ test("steer returns false when either tmux delivery step fails", async (context)
         await rm(dir, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("every launched claude child sees the workspace declared sandboxed, above a machine declaration, and the settings file never carries it", async () => {
+  // The declaration is what lifts Claude Code's trust gate for a scratch
+  // directory, a sibling checkout, or a worktree, so it must reach the
+  // dispatching process whatever the parent environment says — and it is
+  // harness bookkeeping, not worker configuration, so the per-dispatch
+  // settings file (the worker session's surface) carries only the declared
+  // environment and the ownership tag.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-sandboxed-"));
+  try {
+    const sessionId = "00000000-0000-4000-8000-000000000021";
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { readFile, writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          const name = args[args.indexOf("--name") + 1];
+          const settings = await readFile(args[args.indexOf("--settings") + 1], "utf8");
+          await writeFile(${JSON.stringify(dir)} + "/observed-" + name + ".json", JSON.stringify({
+            sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null,
+            settings: JSON.parse(settings)
+          }));
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          const name = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+          process.stdout.write(JSON.stringify([{
+            id: "sandboxed-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name,
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const observe = async (name: string, workerEnv: Record<string, string>) => {
+      process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
+      await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+      return JSON.parse(await readFile(path.join(dir, `observed-${name}.json`), "utf8")) as {
+        sandboxed: string | null;
+        settings: { env: Record<string, string> };
+      };
+    };
+    // The parent deliberately does not carry the variable: the declaration
+    // must be the harness's, not an inheritance the test happened to have.
+    const savedSandboxed = process.env[SANDBOXED_WORKSPACE_VARIABLE];
+    const savedRosterName = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+    delete process.env[SANDBOXED_WORKSPACE_VARIABLE];
+    try {
+      const plain = await observe("sandboxed-plain", { ANTHROPIC_BASE_URL: "https://declared.example" });
+      assert.equal(plain.sandboxed, "1");
+      assert.deepEqual(plain.settings.env, {
+        ANTHROPIC_BASE_URL: "https://declared.example",
+        [WORKER_MARKER_VARIABLE]: "sandboxed-plain"
+      });
+
+      // A machine declaration of the same name does not switch the lift off:
+      // bookkeeping lands last, as the ownership tag does.
+      const overridden = await observe("sandboxed-overridden", { [SANDBOXED_WORKSPACE_VARIABLE]: "0" });
+      assert.equal(overridden.sandboxed, "1");
+    } finally {
+      restoreEnv(SANDBOXED_WORKSPACE_VARIABLE, savedSandboxed);
+      restoreEnv("ENSEMBLE_TEST_ROSTER_NAME", savedRosterName);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the valve's attach client receives the sandboxed-workspace declaration beside the declared environment as tmux -e flags", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-sandboxed-"));
+  try {
+    const claudeStub = path.join(dir, "claude-stub.mjs");
+    const tmuxStub = path.join(dir, "tmux-stub.mjs");
+    const tmuxArgvPath = path.join(dir, "tmux-argv.json");
+    const sessionId = "00000000-0000-4000-8000-000000000022";
+    await writeFile(
+      claudeStub,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "valve-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: "valve-probe",
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "idle",
+            state: "blocked"
+          }]));
+        }
+      `
+    );
+    await writeFile(
+      tmuxStub,
+      `#!/usr/bin/env node
+        import { appendFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "new-session") {
+          await appendFile(${JSON.stringify(tmuxArgvPath)}, JSON.stringify(args) + "\\n");
+        }
+      `
+    );
+    await chmod(claudeStub, 0o755);
+    await chmod(tmuxStub, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: claudeStub,
+      tmuxBin: tmuxStub,
+      projectsDir: dir,
+      workerEnv: { ANTHROPIC_BASE_URL: "https://declared.example" },
+      valveAttachSettleMs: 0,
+      valveSubmitSettleMs: 0,
+      valveKillSettleMs: 0
+    });
+    const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
+    assert.equal(steered, true);
+
+    const newSession = JSON.parse((await readFile(tmuxArgvPath, "utf8")).trim()) as string[];
+    const flags = newSession.flatMap((argument, index) => (argument === "-e" ? [newSession[index + 1]] : []));
+    assert.deepEqual(flags, ["ANTHROPIC_BASE_URL=https://declared.example", `${SANDBOXED_WORKSPACE_VARIABLE}=1`]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directory, the declaration, and Claude Code's own text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-refused-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          process.stderr.write("Workspace not trusted. Run \`claude\` in " + ${JSON.stringify(dir)} + " once and accept the trust prompt, then retry.");
+          process.exit(1);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write("[]");
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
+    await assert.rejects(
+      () => controlPlane.dispatch({ prompt: "hello", name: "refused-probe", cwd: dir }),
+      (error: unknown) => {
+        assert.ok(error instanceof ClaudeDispatchError);
+        // The operator reads the directory, sees the lift was declared, and
+        // gets Claude Code's words whole — the remedy is in the environment.
+        assert.match(error.message, new RegExp(`refused to dispatch worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
+        assert.match(error.message, new RegExp(`declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}`));
+        assert.match(error.message, /Workspace not trusted\. Run `claude` in .* once and accept the trust prompt, then retry\.$/);
+        return true;
+      }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

@@ -92,8 +92,11 @@ const CLAUDE_AVAILABILITY_CODES = new Map<string, string>([
 ]);
 
 const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
-  // `claude --bg` could not start the worker at all.
-  ["claude-dispatch-error", { class: "availability", rule: "claude.dispatch-failed" }],
+  // Claude Code refused to start the worker at all. The engine throws
+  // it rather than returning a failed turn, so the kind is the thrown class
+  // name, as the Codex rows are keyed; the runtime spends no attempt on it —
+  // it advances the chain or propagates as a pre-spawn refusal.
+  ["ClaudeDispatchError", { class: "availability", rule: "claude.dispatch-refused" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],

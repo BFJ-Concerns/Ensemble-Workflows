@@ -13,8 +13,11 @@ import {
   AgentOptionRejectedError,
   AgentPromptRejectedError,
   AppServerExitedError,
+  AppServerFirstOutputTimeoutError,
   AppServerOverloadedError,
+  AppServerSystemError,
   BudgetExceededError,
+  ClaudeDispatchError,
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
   CapabilityStripUnsupportedError,
@@ -543,8 +546,8 @@ test("a non-boolean identity value is rejected before any worker spawns", async 
 });
 
 test("an effort outside the canonical vocabulary is rejected before any worker spawns", async () => {
-  // Harness-owned domain: the judgement runs at
-  // agent(), spending nothing — the engine-judged alternative was measured
+  // Harness-owned domain: the judgement runs
+  // at agent(), spending nothing — the engine-judged alternative was measured
   // rejecting only after a live thread was paid for.
   const transport = new FakeTransport([]);
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
@@ -1980,7 +1983,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
   // A turn deadline is the worker's own failure and resolves as a value; a
-  // shutdown is the run ending and still throws, at the spawn boundary.
+  // shutdown is the run ending and still throws (the spawn boundary).
   for (const [error, expected, resolution] of [
     [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out", "value"],
     [new EngineShutdownError("codex"), "interrupted", "throw"]
@@ -2710,9 +2713,9 @@ test("a non-Error rejection cannot shed an identified leg's discrimination", asy
 });
 
 test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
-  // An identified operational failure resolves to an envelope carrying
-  // the call's identity and failure account. parallel() preserves that
-  // value; the unidentified sibling resolves to bare null.
+  // agent() attaches the call's declared identity to the operational
+  // failure it throws, and the combinator's collapse resolves the
+  // envelope. An unidentified sibling still collapses to bare null.
   const engine: EngineAdapter = {
     name: "claude",
     concurrency: 2,
@@ -3328,5 +3331,252 @@ test("a chained leg's queued and execution times accumulate across the re-admiss
   // queued time is only the waits, never a re-count of earlier execution.
   assert.ok(settled.executionMs >= 30, `executionMs ${settled.executionMs}`);
   assert.ok(settled.queuedMs < settled.executionMs, `queuedMs ${settled.queuedMs} should not absorb execution`);
+  await runtime.close();
+});
+
+// ---------------------------------------------------------------------------
+// One retry rule on every engine: a thrown Codex
+// failure spends an attempt and retries within the bound exactly as an
+// empty answer does, the failure carried into the next attempt.
+// ---------------------------------------------------------------------------
+
+/** A transport whose first turns throw the scripted failures and whose next answers, recording every prompt it was sent. */
+class ThrowThenAnswerTransport implements RuntimeTransport {
+  readonly cwd = "/fake/repo";
+  readonly prompts: string[] = [];
+  #failures: Error[];
+  #answer: string;
+
+  constructor(failures: Error[], answer: string) {
+    this.#failures = [...failures];
+    this.#answer = answer;
+  }
+
+  async openThread(): Promise<string> {
+    return "thread-1";
+  }
+
+  async runTurn(_threadId: string, prompt: string): Promise<TurnResult> {
+    this.prompts.push(prompt);
+    const failure = this.#failures.shift();
+    if (failure !== undefined) {
+      throw failure;
+    }
+    return turn(this.#answer);
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+test("a thrown Codex failure spends an attempt and retries within the bound, carried into the next attempt's prompt", async () => {
+  const deadline = new TurnTimeoutError("turn on thread-1 timed out after 50ms", {
+    kind: "turn",
+    timeoutMs: 50,
+    threadId: "thread-1"
+  });
+  const threadFailed = new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread failed" });
+  const transport = new ThrowThenAnswerTransport([deadline, threadFailed], "third time lucky");
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  assert.equal(await runtime.agent("keep trying", { engine: "codex" }), "third time lucky");
+
+  // Three dispatches, the second and third told what went wrong before —
+  // the same correction shape an empty answer gets.
+  assert.equal(transport.prompts.length, 3);
+  assert.equal(transport.prompts[0], "keep trying");
+  assert.match(transport.prompts[1]!, /A previous attempt failed \(TurnTimeoutError\): turn on thread-1 timed out after 50ms/);
+  assert.match(transport.prompts[2]!, /A previous attempt failed \(AppServerSystemError\): turn notification failed \(threadFailed\): the thread failed/);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "complete");
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.attempt, attempt.status, attempt.failure?.kind ?? null, attempt.classification]),
+    [
+      [1, "failed", "TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }],
+      // The app-server's code is not one the table reads: recorded with the
+      // honest null rule, and retried under the one rule all the same.
+      [2, "failed", "AppServerSystemError", { class: "unclassified", rule: null }],
+      [3, "complete", null, null]
+    ]
+  );
+  await runtime.close();
+});
+
+test("each named Codex post-spawn failure exhausts the bound and settles with the last attempt's own cause", async () => {
+  for (const [error, status, causeKind] of [
+    [
+      new TurnTimeoutError("turn on thread-1 timed out after 1000ms", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }),
+      "timed-out",
+      "turn-timeout"
+    ],
+    [
+      new TurnTimeoutError("turn/start request 7 timed out after 500ms", { kind: "request", timeoutMs: 500, method: "turn/start" }),
+      "timed-out",
+      "request-timeout"
+    ],
+    [new AppServerFirstOutputTimeoutError(250), "failed", null],
+    [new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread failed" }), "failed", null]
+  ] as const) {
+    const label = error.name;
+    const transport = new ErrorTransport(error);
+    const records: RuntimeAgentRecord[] = [];
+    const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 3 });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+    runtime.onEvent((event) => {
+      if (event.method.endsWith("/agentFailed")) {
+        events.push({ method: event.method, params: event.params });
+      }
+    });
+
+    assert.equal(await runtime.agent("exhaust the bound", { engine: "codex", label: "stubborn" }), null, label);
+
+    const settled = records.at(-1)!;
+    assert.equal(settled.attempts.length, 3, label);
+    assert.deepEqual(
+      settled.attempts.map((attempt) => attempt.failure?.kind),
+      [error.name, error.name, error.name],
+      label
+    );
+    // The exhausting throw settles the record as a single-attempt throw
+    // did: a deadline keeps `timed-out` and its kind, and the notice
+    // carries the diagnosis seam's rendering rather than the class name.
+    assert.equal(settled.status, status, label);
+    assert.equal(settled.terminationCause?.kind ?? null, causeKind, label);
+    assert.equal(events.length, 1, label);
+    assert.equal(events[0]?.method, "codex/agentFailed", label);
+    assert.equal(events[0]?.params.attempts, 3, label);
+    assert.deepEqual(events[0]?.params.failure, { kind: error.name, message: error.message }, label);
+    if (error instanceof TurnTimeoutError) {
+      assert.match(String(events[0]?.params.diagnosis), /deadline/, label);
+    }
+    await runtime.close();
+  }
+});
+
+test("the spawn boundary holds under the one rule: a pre-spawn rejection raised mid-attempt is never retried", async () => {
+  // A strip found unenforceable as the thread is configured is the live
+  // case; any member of the family thrown from an attempt behaves the same.
+  let dispatches = 0;
+  const engine: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: async () => {
+        dispatches += 1;
+        throw new AgentOptionRejectedError("option judged as the thread was configured");
+      }
+    }),
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 3 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+
+  await assert.rejects(() => runtime.agent("configure", { engine: "codex" }), AgentOptionRejectedError);
+  assert.equal(dispatches, 1);
+  assert.equal(records.at(-1)?.attempts.length, 1);
+  await runtime.close();
+});
+
+// ---------------------------------------------------------------------------
+// A dispatch Claude Code refused before the session existed is a
+// substrate refusal — recorded with its class, never a spent attempt,
+// advancing the chain or failing the run.
+// ---------------------------------------------------------------------------
+
+const REFUSAL_TEXT =
+  "Claude Code refused to dispatch worker 'ensemble-1' in /scratch/blind (workspace declared sandboxed via CLAUDE_CODE_SANDBOXED): " +
+  "Workspace not trusted. Run `claude` in /scratch/blind once and accept the trust prompt, then retry.";
+
+/** A Claude dispatch refusal as the engine throws it: the control plane's error, no session behind it. */
+function claudeDispatchRefused(): () => Promise<EngineAttemptResult> {
+  return async () => {
+    throw new ClaudeDispatchError(REFUSAL_TEXT);
+  };
+}
+
+test("a refused Claude dispatch with no chain entry left throws out of agent(), recorded once and unspent", async () => {
+  const claude = new ChainEngine("claude", [claudeDispatchRefused()]);
+  const { runtime, records } = chainRuntime([claude], 3);
+
+  await assert.rejects(() => runtime.agent("blind stage", { engine: "claude", model: "opus" }), ClaudeDispatchError);
+
+  // The bound was 3 and the refusal identical each time it would have been
+  // retried: one dispatch, one refused attempt on the record, and the
+  // refusal itself is what the script (and the run) sees.
+  assert.equal(claude.dispatches.length, 1);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "failed");
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.attempt, attempt.status, attempt.target, attempt.classification]),
+    [[1, "failed", { engine: "claude", model: "opus" }, { class: "availability", rule: "claude.dispatch-refused" }]]
+  );
+  assert.deepEqual(settled.attempts[0]?.failure, { kind: "ClaudeDispatchError", message: REFUSAL_TEXT });
+  assert.equal(settled.answeredBy, null);
+  await runtime.close();
+});
+
+test("a refused Claude dispatch advances the chain where an entry remains, costing no attempt", async () => {
+  const claude = new ChainEngine("claude", [claudeDispatchRefused()]);
+  const codex = new ChainEngine("codex", [answers("from codex")]);
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+
+  const output = await runtime.agent("blind stage", {
+    engine: "claude",
+    model: "opus",
+    fallback: [{ engine: "codex", model: "gpt-6-sol" }]
+  });
+
+  assert.equal(output, "from codex");
+  assert.equal(claude.dispatches.length, 1);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "complete");
+  // maxAttempts 1 and two attempt records: the refusal consumed none.
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.attempt, attempt.status, attempt.target, attempt.classification]),
+    [
+      [1, "failed", { engine: "claude", model: "opus" }, { class: "availability", rule: "claude.dispatch-refused" }],
+      [2, "complete", { engine: "codex", model: "gpt-6-sol" }, null]
+    ]
+  );
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-6-sol" });
+  await runtime.close();
+});
+
+test("a refused Claude dispatch propagates through parallel(), failing the run rather than nulling the slot", async () => {
+  // The failure cross-engine verification exists to prevent: a fan-out
+  // whose Claude legs were all refused must not read as a two-family result
+  // with the Claude half `null`.
+  const claude = new ChainEngine("claude", [claudeDispatchRefused(), claudeDispatchRefused()]);
+  const { runtime } = chainRuntime([claude], 3);
+
+  await assert.rejects(
+    () =>
+      parallel(
+        [
+          () => runtime.agent("first blind leg", { engine: "claude", model: "opus" }),
+          () => runtime.agent("second blind leg", { engine: "claude", model: "opus" })
+        ],
+        () => undefined
+      ),
+    ClaudeDispatchError
+  );
   await runtime.close();
 });

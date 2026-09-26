@@ -122,9 +122,14 @@ test("a Claude API refusal is classified from the synthetic reply's status and c
 });
 
 test("a Claude worker that could not start or never showed life is availability; a stall is not", () => {
+  // A refused dispatch reaches the classifier as the thrown class name (the
+  // engine rethrows it rather than returning a failed turn), like Codex's
+  // thrown transport classes.
   assert.deepEqual(
-    classifyAttemptFailure(evidence({ engine: "claude", failure: { kind: "claude-dispatch-error", message: "claude --bg failed" } })),
-    { class: "availability", rule: "claude.dispatch-failed" }
+    classifyAttemptFailure(
+      evidence({ engine: "claude", failure: { kind: "ClaudeDispatchError", message: "Claude Code refused to dispatch" } })
+    ),
+    { class: "availability", rule: "claude.dispatch-refused" }
   );
   assert.deepEqual(
     classifyAttemptFailure(evidence({ engine: "claude", failure: { kind: "claude-first-life-timeout", message: "no transcript" } })),

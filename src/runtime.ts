@@ -15,16 +15,14 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
-  AppServerBackpressureError,
   AppServerExitedError,
-  AppServerOverloadedError,
-  AppServerRetryPromiseBrokenError,
   AgentPromptRejectedError,
   EngineShutdownError,
   FallbackTargetRejectedError,
   HoldRejectedError,
   MissingEngineError,
   MultiTurnUnsupportedError,
+  CodexSchemaSubsetUnsupportedError,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
@@ -34,6 +32,7 @@ import {
   describeError,
   failedTurnResultOf,
   partialWorkerTextOf,
+  SubstrateRefusedError,
   TurnTimeoutError,
   UnknownEngineError,
   workerExitStatusOf
@@ -78,6 +77,7 @@ import type {
 import type {
   EngineAdapter,
   EngineAttemptFailure,
+  PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
   EngineTurnOptions,
@@ -116,6 +116,14 @@ export interface CompletedAgentOutput {
 interface AgentExecutionResult {
   status: "complete" | "failed";
   value: unknown;
+  /**
+   * The thrown error that spent the bound's last attempt, when the
+   * exhausting failure was a throw rather than a bad answer: the
+   * settlement reads its deadline kind and the notice renders its
+   * diagnosis, exactly as for a single-attempt throw. Absent when the last
+   * attempt answered badly.
+   */
+  cause?: unknown;
 }
 
 /**
@@ -1286,7 +1294,7 @@ export class EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, null);
+        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -1304,7 +1312,7 @@ export class EnsembleRuntime {
       }
       await this.#recordSettlementSafely(agentId, agentRecord);
       if (outcome === "failed") {
-        return this.#failedValue(engineName, identity, agentId, agentRecord);
+        return this.#failedValue(engineName, identity, agentId, agentRecord, execution.cause);
       }
       return execution.value;
     } catch (error) {
@@ -1329,11 +1337,7 @@ export class EnsembleRuntime {
       // else is a worker that was dispatched and failed on its own
       // account, which the record now states in full — so the call
       // resolves it as a value.
-      if (
-        error instanceof PreSpawnAuthorError ||
-        this.#runSettlementCause(error) !== null ||
-        agentRecord.attempts.length === 0
-      ) {
+      if (this.#crossesSpawnBoundary(error) || agentRecord.attempts.length === 0) {
         throw error;
       }
       return this.#failedValue(engineName, identity, agentId, agentRecord, error);
@@ -1347,6 +1351,22 @@ export class EnsembleRuntime {
         this.#executingAgentRecords.delete(engineName);
       }
     }
+  }
+
+  /**
+   * The two throws the attempt loops never retry and `#executeAgent` never
+   * resolves as a value, judged from the error alone: a member of the
+   * pre-spawn author family (raised before any worker existed — a rejected
+   * option, a strip found unenforceable as the thread is configured, a
+   * substrate that refused the dispatch), and the run's own settlement (the
+   * run ending is not the worker failing). Every other thrown failure is a
+   * dispatched worker's, consumes an attempt, and retries within the bound
+   * like an empty answer does — one rule on every engine. The third
+   * boundary throw, a rejection that reached `#executeAgent` with no attempt
+   * on the record, is the record's to judge, not the error's.
+   */
+  #crossesSpawnBoundary(error: unknown): boolean {
+    return error instanceof PreSpawnAuthorError || this.#runSettlementCause(error) !== null;
   }
 
   /** The last settled agent record, or null before any settlement. */
@@ -1762,10 +1782,12 @@ export class EnsembleRuntime {
     agentRecord: RuntimeAgentRecord,
     attempts: TargetAttempts
   ): Promise<AgentExecutionOutcome> {
-    let previousFailure: EngineAttemptFailure | undefined;
+    let previousFailure: PreviousAttemptFailure | undefined;
+    let lastThrown: unknown;
 
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
       const attempt = ++attempts.ledger.dispatched;
+      lastThrown = undefined;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -1792,25 +1814,42 @@ export class EnsembleRuntime {
           );
           return { status: "complete", value: text };
         }
-        previousFailure = {
+        const failure: EngineAttemptFailure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
-        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+        previousFailure = failure;
+        this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
           return { status: "refused" };
         }
-        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
+        if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
+        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+          // The backend judged the call's own schema, which no retry can
+          // change: it costs one thread start with no generation, so the
+          // call ends as a value with the one attempt it spent — the rule's
+          // one exemption beside the availability refusal a chain entry
+          // answers.
+          return { status: "failed", value: null, cause: error };
+        }
+        // A dispatched worker's thrown failure — a deadline, a transport
+        // error, a thread the app-server declared failed — is one more
+        // spent attempt under the one retry rule: the next attempt carries
+        // it as the worker's previous failure, and the last one carries it
+        // out as the exhausted outcome's cause.
+        previousFailure = thrown.failure;
+        lastThrown = error;
       }
     }
 
     return {
       status: "failed",
-      value: null
+      value: null,
+      ...(lastThrown !== undefined ? { cause: lastThrown } : {})
     };
   }
 
@@ -1826,10 +1865,12 @@ export class EnsembleRuntime {
     agentRecord: RuntimeAgentRecord,
     attempts: TargetAttempts
   ): Promise<AgentExecutionOutcome> {
-    let previousFailure: EngineAttemptFailure | undefined;
+    let previousFailure: PreviousAttemptFailure | undefined;
+    let lastThrown: unknown;
 
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
       const attempt = ++attempts.ledger.dispatched;
+      lastThrown = undefined;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -1851,20 +1892,22 @@ export class EnsembleRuntime {
         // A silent worker (timeout, hang) is not a JSON problem: label it
         // empty-output so records and retry nudges point at the real failure.
         if (result.text.trim().length === 0) {
-          previousFailure = {
+          const failure: EngineAttemptFailure = {
             kind: "empty-output",
             message: `agent returned empty text on attempt ${attempt}`
           };
-          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+          previousFailure = failure;
+          this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
           continue;
         }
         const selection = selectLastValidJsonFromText(result.text, options.schema);
         if (selection.kind === "invalid-json") {
-          previousFailure = {
+          const failure: EngineAttemptFailure = {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
-          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+          previousFailure = failure;
+          this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
           continue;
         }
         if (selection.kind === "valid") {
@@ -1878,25 +1921,42 @@ export class EnsembleRuntime {
             value: selection.parsed.value
           };
         }
-        previousFailure = {
+        const failure: EngineAttemptFailure = {
           kind: "schema-validation",
           message: JSON.stringify(selection.validation.errors ?? [])
         };
-        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+        previousFailure = failure;
+        this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
           return { status: "refused" };
         }
-        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
+        if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
+        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+          // The backend judged the call's own schema, which no retry can
+          // change: it costs one thread start with no generation, so the
+          // call ends as a value with the one attempt it spent — the rule's
+          // one exemption beside the availability refusal a chain entry
+          // answers.
+          return { status: "failed", value: null, cause: error };
+        }
+        // A dispatched worker's thrown failure — a deadline, a transport
+        // error, a thread the app-server declared failed — is one more
+        // spent attempt under the one retry rule: the next attempt carries
+        // it as the worker's previous failure, and the last one carries it
+        // out as the exhausted outcome's cause.
+        previousFailure = thrown.failure;
+        lastThrown = error;
       }
     }
 
     return {
       status: "failed",
-      value: null
+      value: null,
+      ...(lastThrown !== undefined ? { cause: lastThrown } : {})
     };
   }
 
@@ -1985,7 +2045,7 @@ export class EnsembleRuntime {
     error: unknown,
     startedAt: number,
     attempts: TargetAttempts
-  ): { refused: boolean } {
+  ): { refused: boolean; failure: PreviousAttemptFailure } {
     const observed = failureFromError(error);
     const failedResult = failedTurnResultOf(error);
     if (failedResult !== null) {
@@ -2005,7 +2065,11 @@ export class EnsembleRuntime {
     const appServerDiagnostic = appServerDiagnosticOf(error);
     const classification = this.#classify(attempts.target.engine, failure, appServerDiagnostic, failedResult?.diagnostics);
     const refused = settlement === null && classification.class === "availability" && attempts.chainRemains;
-    if (!refused) {
+    // A substrate that refused before the worker existed produced no
+    // answer whether or not a chain entry remains: the dispatch is
+    // numbered and recorded with its class, but the bound is not spent on
+    // it — the call advances the chain or throws, never retries.
+    if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
     record.attempts.push(
@@ -2024,7 +2088,7 @@ export class EnsembleRuntime {
         classification
       )
     );
-    return { refused };
+    return { refused, failure: observed };
   }
 
   /**
@@ -2215,14 +2279,6 @@ export function defaultConcurrency(): number {
 }
 
 export type { Budget, TokenUsageEvent };
-
-function isRetryableError(error: unknown): boolean {
-  return (
-    error instanceof AppServerBackpressureError ||
-    error instanceof AppServerOverloadedError ||
-    error instanceof AppServerRetryPromiseBrokenError
-  );
-}
 
 function requireTransport(transport: RuntimeTransport | undefined): RuntimeTransport {
   if (transport === undefined) {

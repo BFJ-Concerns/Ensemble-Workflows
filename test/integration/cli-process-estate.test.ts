@@ -1989,9 +1989,13 @@ test("built CLI keeps a non-overload notification terminal and renders its diagn
           name: "scoped-terminal-error",
           description: "Surface a terminal in-band provider error"
         };
+        // maxAttempts 1 is the lever the one retry rule leaves an author: a
+        // terminal provider error is a spent attempt like any other, and a
+        // bound of 3 would retry it (the fixture answers on the retry) — the
+        // journey here is the diagnostic's rendering on the call's ending.
         return await agent("must fail immediately", {
           engine: "codex",
-          maxAttempts: 3
+          maxAttempts: 1
         });
       `
     );
@@ -2264,7 +2268,7 @@ test("built CLI resets the app-server retry-promise count on turn progress", asy
   }
 });
 
-test("built CLI settles a live turn when its thread enters systemError", async () => {
+test("built CLI settles a live turn when its thread enters systemError and retries it on a fresh thread", async () => {
   const fixture = await createProcessFixture("thread-system-error");
   const recordStore = path.join(path.dirname(fixture.script), "records");
   const systemErrorSequence = [
@@ -2282,7 +2286,7 @@ test("built CLI settles a live turn when its thread enters systemError", async (
       `
         export const meta = {
           name: "thread-system-error",
-          description: "Reject a live turn when its thread dies"
+          description: "Settle a live turn when its thread dies, then retry it"
         };
         return await agent("must not wait on a dead thread", {
           engine: "codex",
@@ -2303,22 +2307,35 @@ test("built CLI settles a live turn when its thread enters systemError", async (
     );
 
     assert.equal(result.code, 0, `systemError did not settle before the test kill switch\n${result.stderr}`);
-    assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — AppServerSystemError/);
-    assert.match(result.stderr, /systemError without a diagnostic/);
+    // The dead thread's turn settled without waiting, and under the one
+    // retry rule the thread-failed status is a spent attempt: the second
+    // attempt opened a fresh thread, carried the failure in its prompt, and
+    // answered — so the call's value is the worker's answer and no failure
+    // notice is owed.
+    assert.equal(result.stdout, '"worker-ok"\n');
+    assert.doesNotMatch(result.stderr, /\[codex\] agent 1 failed/);
     const messages = await fixture.messages();
-    assert.equal(messages.filter((message) => message.method === "turn/start").length, 1);
+    const turnStarts = messages.filter((message) => message.method === "turn/start");
+    assert.equal(turnStarts.length, 2);
+    assert.match(
+      JSON.stringify(turnStarts[1]?.params),
+      /A previous attempt failed \(AppServerSystemError\): .*systemError without a diagnostic/
+    );
     assert.deepEqual(
       messages.find((message) => message.method === "turn/interrupt")?.params,
       { threadId: "thread-1", turnId: "turn-1" }
     );
 
     const agent = await loadOnlyAgentRecord(recordStore);
-    assert.equal(agent.attempts.length, 1);
-    for (const attempt of agent.attempts) {
-      assert.equal(attempt.failure?.kind, "AppServerSystemError");
-      assert.match(attempt.failure?.message ?? "", /systemError without a diagnostic/);
-    }
+    assert.equal(agent.status, "complete");
+    assert.deepEqual(
+      agent.attempts.map((attempt) => [attempt.status, attempt.failure?.kind ?? null]),
+      [
+        ["failed", "AppServerSystemError"],
+        ["complete", null]
+      ]
+    );
+    assert.match(agent.attempts[0]?.failure?.message ?? "", /systemError without a diagnostic/);
   } finally {
     await fixture.cleanup();
   }

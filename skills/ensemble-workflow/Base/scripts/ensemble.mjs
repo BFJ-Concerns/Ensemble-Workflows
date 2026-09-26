@@ -14168,6 +14168,8 @@ var HoldRejectedError = class extends PreSpawnAuthorError {
 };
 var TallyRejectedError = class extends PreSpawnAuthorError {
 };
+var SubstrateRefusedError = class extends PreSpawnAuthorError {
+};
 var HoldTimeoutError = class extends EnsembleError {
   constructor(holdId, timeoutAt) {
     super(`hold ${holdId} timed out unanswered${timeoutAt.length > 0 ? ` at ${timeoutAt}` : ""}`);
@@ -14327,7 +14329,7 @@ var EngineShutdownError = class extends EnsembleError {
 };
 var ClaudeWorkerError = class extends EnsembleError {
 };
-var ClaudeDispatchError = class extends ClaudeWorkerError {
+var ClaudeDispatchError = class extends SubstrateRefusedError {
 };
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
 };
@@ -16878,8 +16880,11 @@ var CLAUDE_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["overloaded_error", "claude.overloaded"]
 ]);
 var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
-  // `claude --bg` could not start the worker at all.
-  ["claude-dispatch-error", { class: "availability", rule: "claude.dispatch-failed" }],
+  // Claude Code refused to start the worker at all. The engine throws
+  // it rather than returning a failed turn, so the kind is the thrown class
+  // name, as the Codex rows are keyed; the runtime spends no attempt on it —
+  // it advances the chain or propagates as a pre-spawn refusal.
+  ["ClaudeDispatchError", { class: "availability", rule: "claude.dispatch-refused" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
@@ -16953,6 +16958,7 @@ import { homedir as homedir3, tmpdir } from "node:os";
 import path9 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
   #tmuxBin;
@@ -16966,13 +16972,16 @@ var ClaudeCliControlPlane = class {
   #valveCounter = 0;
   #env;
   #workerEnv;
+  /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
+  #launchEnv;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
-    this.#env = { ...process.env, ...this.#workerEnv };
+    this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
+    this.#env = { ...process.env, ...this.#launchEnv };
     this.#projectsDir = options.projectsDir ?? path9.join(homedir3(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
@@ -16996,7 +17005,7 @@ var ClaudeCliControlPlane = class {
       const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
       if (!dispatch.ok && await this.#findByName(options.name) === null) {
         throw new ClaudeDispatchError(
-          `claude --bg failed to dispatch '${options.name}': ${dispatch.stderr.trim() || dispatch.stdout.trim()}`
+          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ${dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message"}`
         );
       }
       const deadline = Date.now() + this.#dispatchTimeoutMs;
@@ -17008,7 +17017,7 @@ var ClaudeCliControlPlane = class {
         }
         if (Date.now() >= deadline) {
           throw new ClaudeDispatchError(
-            `dispatched session '${options.name}' did not register within ${this.#dispatchTimeoutMs}ms`
+            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
           );
         }
         await delay(500);
@@ -17021,7 +17030,7 @@ var ClaudeCliControlPlane = class {
       }
     }
     if (registered === null) {
-      throw new ClaudeDispatchError(`dispatched session '${options.name}' was lost before registration`);
+      throw new ClaudeDispatchError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
     return registered;
   }
@@ -17101,7 +17110,7 @@ var ClaudeCliControlPlane = class {
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     try {
-      const environmentFlags = Object.entries(this.#workerEnv).flatMap(([name, value]) => [
+      const environmentFlags = Object.entries(this.#launchEnv).flatMap(([name, value]) => [
         "-e",
         `${name}=${value}`
       ]);
@@ -18107,7 +18116,7 @@ function claudeAttemptFailure(error) {
   if (error instanceof ClaudeWorkerDiagnosticError) {
     return { kind: "claude-worker-diagnostic", message: error.message };
   }
-  return { kind: "claude-dispatch-error", message: error.message };
+  return { kind: "claude-worker-error", message: error.message };
 }
 function hasAssistantEntrySince(entries, fromIndex) {
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
@@ -21512,19 +21521,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     );
   }
   /**
-   * The chain loop: the call's own target, then each declared fallback
-   * entry, each admitted on its own engine. A same-engine step keeps the
-   * slot it holds — the target loop runs inside one admitted task — while a
-   * cross-engine step ends that task, releasing the refused engine's cap
-   * and ceiling slot, and re-admits the leg afresh on the next engine
-   * against its own cap, the ceiling, and its budget. One agent record
-   * spans the whole chain: every attempt names its target, and the record
-   * names the entry that answered. The last target is never refused — with
-   * no entry remaining an availability failure is the call's own failure,
-   * exactly as with no chain — so the loop always ends in a settlement or a
-   * throw. `runTarget` is one target's whole dispatch — placement,
-   * invocation, bounded attempts — resolving `refused` to hand the chain
-   * on.
+   * The chain loop: the call's own target, then each declared
+   * fallback entry, each admitted on its own engine. A same-engine step
+   * keeps the slot it holds — the target loop runs inside one admitted
+   * task — while a cross-engine step ends that task, releasing the refused
+   * engine's cap and ceiling slot, and re-admits the leg afresh on the next
+   * engine against its own cap, the ceiling, and its budget. One agent
+   * record spans the whole
+   * chain: every attempt names its target, and the record names the entry
+   * that answered. The last target is never refused — with no entry
+   * remaining an availability failure is the call's own failure, exactly as
+   * with no chain — so the loop always ends in a settlement or a throw.
+   * `runTarget` is one target's whole dispatch — placement, invocation,
+   * bounded attempts — resolving `refused` to hand the chain on.
    */
   async #runChained(engine, targets, identity, maxAttempts, agentId, agentRecord, initialQueuedAt, runTarget) {
     let queuedAt = initialQueuedAt;
@@ -21619,7 +21628,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (outcome === "done") {
         agentRecord.status = "complete";
       } else {
-        this.#settleTerminalStatus(agentRecord, null);
+        this.#settleTerminalStatus(agentRecord, execution.cause ?? null);
       }
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = execution.value;
@@ -21634,7 +21643,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
       await this.#recordSettlementSafely(agentId, agentRecord);
       if (outcome === "failed") {
-        return this.#failedValue(engineName, identity, agentId, agentRecord);
+        return this.#failedValue(engineName, identity, agentId, agentRecord, execution.cause);
       }
       return execution.value;
     } catch (error) {
@@ -21646,7 +21655,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.rawOutput = lastRawOutput(agentRecord);
       agentRecord.validatedOutput = null;
       await this.#recordSettlementSafely(agentId, agentRecord);
-      if (error instanceof PreSpawnAuthorError || this.#runSettlementCause(error) !== null || agentRecord.attempts.length === 0) {
+      if (this.#crossesSpawnBoundary(error) || agentRecord.attempts.length === 0) {
         throw error;
       }
       return this.#failedValue(engineName, identity, agentId, agentRecord, error);
@@ -21657,6 +21666,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
         this.#executingAgentRecords.delete(engineName);
       }
     }
+  }
+  /**
+   * The two throws the attempt loops never retry and `#executeAgent` never
+   * resolves as a value, judged from the error alone: a member of the
+   * pre-spawn author family (raised before any worker existed — a rejected
+   * option, a strip found unenforceable as the thread is configured, a
+   * substrate that refused the dispatch), and the run's own settlement (the
+   * run ending is not the worker failing). Every other thrown failure is a
+   * dispatched worker's, consumes an attempt, and retries within the bound
+   * like an empty answer does — one rule on every engine. The third
+   * boundary throw, a rejection that reached `#executeAgent` with no attempt
+   * on the record, is the record's to judge, not the error's.
+   */
+  #crossesSpawnBoundary(error) {
+    return error instanceof PreSpawnAuthorError || this.#runSettlementCause(error) !== null;
   }
   /** The last settled agent record, or null before any settlement. */
   lastAgentRecord() {
@@ -21985,8 +22009,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   async #runTextAgent(engine, invocation, options, agentId, agentRecord, attempts) {
     let previousFailure;
+    let lastThrown;
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
       const attempt = ++attempts.ledger.dispatched;
+      lastThrown = void 0;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -22013,24 +22039,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
           );
           return { status: "complete", value: text };
         }
-        previousFailure = {
+        const failure = {
           kind: "empty-output",
           message: `agent returned empty text on attempt ${attempt}`
         };
-        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+        previousFailure = failure;
+        this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
           return { status: "refused" };
         }
-        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
+        if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
+        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+          return { status: "failed", value: null, cause: error };
+        }
+        previousFailure = thrown.failure;
+        lastThrown = error;
       }
     }
     return {
       status: "failed",
-      value: null
+      value: null,
+      ...lastThrown !== void 0 ? { cause: lastThrown } : {}
     };
   }
   /**
@@ -22039,8 +22072,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   async #runSchemaAgent(engine, invocation, options, agentId, agentRecord, attempts) {
     let previousFailure;
+    let lastThrown;
     while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
       const attempt = ++attempts.ledger.dispatched;
+      lastThrown = void 0;
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
@@ -22060,20 +22095,22 @@ var EnsembleRuntime = class _EnsembleRuntime {
           continue;
         }
         if (result.text.trim().length === 0) {
-          previousFailure = {
+          const failure2 = {
             kind: "empty-output",
             message: `agent returned empty text on attempt ${attempt}`
           };
-          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+          previousFailure = failure2;
+          this.#recordAnsweredFailure(agentRecord, attempt, failure2, result.text, startedAt, result, attempts);
           continue;
         }
         const selection = selectLastValidJsonFromText(result.text, options.schema);
         if (selection.kind === "invalid-json") {
-          previousFailure = {
+          const failure2 = {
             kind: "invalid-json",
             message: "agent output did not contain parseable JSON"
           };
-          this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+          previousFailure = failure2;
+          this.#recordAnsweredFailure(agentRecord, attempt, failure2, result.text, startedAt, result, attempts);
           continue;
         }
         if (selection.kind === "valid") {
@@ -22087,24 +22124,31 @@ var EnsembleRuntime = class _EnsembleRuntime {
             value: selection.parsed.value
           };
         }
-        previousFailure = {
+        const failure = {
           kind: "schema-validation",
           message: JSON.stringify(selection.validation.errors ?? [])
         };
-        this.#recordAnsweredFailure(agentRecord, attempt, previousFailure, result.text, startedAt, result, attempts);
+        previousFailure = failure;
+        this.#recordAnsweredFailure(agentRecord, attempt, failure, result.text, startedAt, result, attempts);
       } catch (error) {
         const thrown = this.#recordThrownFailure(agentRecord, attempt, error, startedAt, attempts);
         if (thrown.refused) {
           return { status: "refused" };
         }
-        if (!isRetryableError(error) || attempts.ledger.answered >= attempts.ledger.maxAttempts) {
+        if (this.#crossesSpawnBoundary(error)) {
           throw error;
         }
+        if (error instanceof CodexSchemaSubsetUnsupportedError) {
+          return { status: "failed", value: null, cause: error };
+        }
+        previousFailure = thrown.failure;
+        lastThrown = error;
       }
     }
     return {
       status: "failed",
-      value: null
+      value: null,
+      ...lastThrown !== void 0 ? { cause: lastThrown } : {}
     };
   }
   /**
@@ -22181,7 +22225,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const appServerDiagnostic = appServerDiagnosticOf(error);
     const classification = this.#classify(attempts.target.engine, failure, appServerDiagnostic, failedResult?.diagnostics);
     const refused = settlement === null && classification.class === "availability" && attempts.chainRemains;
-    if (!refused) {
+    if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
     record.attempts.push(
@@ -22200,7 +22244,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         classification
       )
     );
-    return { refused };
+    return { refused, failure: observed };
   }
   /**
    * The strip enforcement routes the archive records are the *dispatching*
@@ -22346,9 +22390,6 @@ async function createRuntime(options = {}) {
 function declaredClaudeTtlMs(workerEnvironment) {
   const declared = workerEnvironment?.claude?.[CLAUDE_CACHE_TTL_VARIABLE];
   return declared === void 0 ? null : claudeCacheTtlToMs(declared);
-}
-function isRetryableError(error) {
-  return error instanceof AppServerBackpressureError || error instanceof AppServerOverloadedError || error instanceof AppServerRetryPromiseBrokenError;
 }
 function requireTransport(transport) {
   if (transport === void 0) {

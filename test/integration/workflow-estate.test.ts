@@ -1241,7 +1241,7 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
       const impossible = await agent("never satisfies schema", { engine: "codex", schema, maxAttempts: 2 });
       const fanout = await parallel([
         () => agent("plain success", { engine: "codex" }),
-        () => agent("worker throws", { engine: "codex" })
+        () => agent("worker throws", { engine: "codex", maxAttempts: 1 })
       ]);
       const spentBeforeBlockedCall = budget.spent("codex");
       let blockedMessage = null;
@@ -1275,7 +1275,8 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
   assert.equal(exitCode, 0, stderr);
   // The thrown transport failure is a dispatched worker's own failure, so it
   // resolves as the leg's value and is announced under its engine tag
-  // rather than logged as a thunk collapse.
+  // rather than logged as a thunk collapse. maxAttempts 1 ends the call on
+  // it: under the one retry rule a wider bound would retry the throw.
   assert.doesNotMatch(stderr, /parallel thunk 1 failed/);
   assert.match(stderr, /\[codex\] agent 4 failed after 1 attempt — Error: transport failure/);
   const result = JSON.parse(stdout) as {

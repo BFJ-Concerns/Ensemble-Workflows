@@ -8,6 +8,7 @@ import { ClaudeEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
+  ClaudeDispatchError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   failedTurnResultOf,
@@ -61,6 +62,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #steerSucceeds: boolean;
   #steerConsumesTurn: boolean;
   #dispatchGate: DispatchGate | undefined;
+  #refuseDispatch: string | undefined;
   #steered = false;
 
   #sessionSeq = 0;
@@ -81,11 +83,15 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#steerSucceeds = options.steerSucceeds ?? true;
     this.#steerConsumesTurn = options.steerConsumesTurn ?? true;
     this.#dispatchGate = options.dispatchGate;
+    this.#refuseDispatch = options.refuseDispatch;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.dispatchCount += 1;
     this.dispatched.push(options);
+    if (this.#refuseDispatch !== undefined) {
+      throw new ClaudeDispatchError(this.#refuseDispatch);
+    }
     this.#sessionSeq += 1;
     const sessionId = `fake-session-${this.#sessionSeq}`;
     this.#path = path.join(this.#dir, `${sessionId}.jsonl`);
@@ -167,6 +173,8 @@ interface DispatchGate {
 
 interface FakeControlPlaneOptions {
   tmux?: boolean;
+  /** When set, `dispatch()` throws a `ClaudeDispatchError` carrying this text: Claude Code refused before any session existed. */
+  refuseDispatch?: string;
   steerSucceeds?: boolean;
   steerConsumesTurn?: boolean;
   dispatchGate?: DispatchGate;
@@ -1555,5 +1563,24 @@ test("a failed Claude turn's spend and transcript read back cold from the archiv
         await rm(cwd, { recursive: true, force: true });
       }
     }
+  );
+});
+
+test("a dispatch Claude Code refused is rethrown as the substrate's refusal, never degraded to a failed turn", async () => {
+  // No session existed, so there is no worker whose failure the
+  // attempt could carry as a value. The engine lets the refusal through to
+  // the runtime's spawn boundary instead of returning a failed result the
+  // retry loop would spend the bound on.
+  await withControlPlane(
+    [],
+    async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig, cwd: "/fake/scratch" });
+      const invocation = adapter.createInvocation("blind stage", {});
+      await assert.rejects(() => invocation.runAttempt({ attempt: 1 }), ClaudeDispatchError);
+      assert.equal(controlPlane.dispatchCount, 1);
+      assert.equal(controlPlane.stopCount, 0, "nothing was dispatched, so nothing is stopped");
+      await adapter.close();
+    },
+    { refuseDispatch: "Claude Code refused to dispatch worker 'w' in /fake/scratch: Workspace not trusted." }
   );
 });

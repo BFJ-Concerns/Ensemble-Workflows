@@ -34,6 +34,7 @@ import type { TranscriptApiError, TranscriptEntry, TranscriptFile } from "./clau
 import type {
   EngineAttemptContext,
   EngineAttemptFailure,
+  PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
   EngineSessionTurn,
@@ -53,7 +54,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but the witness cannot isolate it from
+ * messaging. `Agent` was also absent, but that witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -400,7 +401,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   async #dispatchAndCollect(
-    previousFailure: EngineAttemptFailure | undefined,
+    previousFailure: PreviousAttemptFailure | undefined,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
     const denyRules = permissionDenyRulesFor(this.#options.strip);
@@ -470,7 +471,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
   async #correctInSession(
     handle: ClaudeSessionHandle,
-    previousFailure: EngineAttemptFailure,
+    previousFailure: PreviousAttemptFailure,
     fromIndex: number,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
@@ -831,7 +832,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
   }
 
-  #buildDispatchPrompt(previousFailure: EngineAttemptFailure | undefined): string {
+  #buildDispatchPrompt(previousFailure: PreviousAttemptFailure | undefined): string {
     const lines: string[] = [
       "You are an automated worker dispatched by the Ensemble orchestration harness.",
       "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions — make a reasonable decision and finish the task."
@@ -867,7 +868,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     return lines.join("\n");
   }
 
-  #correctionMessage(previousFailure: EngineAttemptFailure): string {
+  #correctionMessage(previousFailure: PreviousAttemptFailure): string {
     switch (previousFailure.kind) {
       case "schema-validation":
         return (
@@ -1005,7 +1006,11 @@ function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   if (error instanceof ClaudeWorkerDiagnosticError) {
     return { kind: "claude-worker-diagnostic", message: error.message };
   }
-  return { kind: "claude-dispatch-error", message: error.message };
+  // No concrete member reaches here today — a refused dispatch is
+  // `ClaudeDispatchError`, on the pre-spawn side, rethrown rather than
+  // degraded. The arm keeps the mapping total for a member added without
+  // its own kind, and its `rule: null` classification says so in the archive.
+  return { kind: "claude-worker-error", message: error.message };
 }
 
 function hasAssistantEntrySince(entries: TranscriptEntry[], fromIndex: number): boolean {

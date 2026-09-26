@@ -6,7 +6,7 @@ import { subtractUsage } from "./usage-summary.js";
 
 import type {
   EngineAttemptContext,
-  EngineAttemptFailure,
+  PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
   EngineTurnOptions
@@ -430,7 +430,7 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
     return event;
   }
 
-  #buildPrompt(previousFailure: EngineAttemptFailure | undefined): string {
+  #buildPrompt(previousFailure: PreviousAttemptFailure | undefined): string {
     const lines: string[] = [
       "You are an automated worker dispatched by the Ensemble orchestration harness.",
       "Work fully autonomously: never ask for confirmation or permission, and do not pause to ask questions - make a reasonable decision and finish the task."

@@ -707,7 +707,7 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
         // Engine-controlled text on a one-line operator surface: flattened,
         // control-stripped, bounded — so the run's failure is one clean line.
         assert.match(error.message, /Workspace not trusted\. Run `claude` in .* once and accept the trust prompt, then retry\.$/);
-        assert.doesNotMatch(error.message, /[\n\u001b]/);
+        assert.ok(!error.message.includes("\n") && !error.message.includes("\u001b"), "the refusal must be one clean line");
         return true;
       }
     );

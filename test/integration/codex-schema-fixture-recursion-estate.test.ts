@@ -9,6 +9,23 @@ import test from "node:test";
 
 import { hermeticEstateEnvironment } from "./estate-process.js";
 
+/**
+ * A Codex app-server that dies at (or before) its handshake never served a
+ * thread, so no worker existed: the run fails on the substrate refusal
+ * (a failure before any worker spawns is never a worker's null) rather than
+ * completing on a null. The refusal line carries how the server died and
+ * its own stderr, so each fixture's diagnostic stays legible on it.
+ */
+function assertSubstrateRefusal(result: { code: number | null; stdout: string; stderr: string }): void {
+  assert.equal(result.code, 1, result.stderr);
+  const envelope = JSON.parse(result.stdout) as { partial: boolean; reason: string; error: { kind: string } };
+  assert.equal(envelope.partial, true);
+  assert.equal(envelope.reason, "failed");
+  assert.equal(envelope.error.kind, "CodexSubstrateRefusedError");
+  assert.match(result.stderr, /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server exited/);
+  assert.doesNotMatch(result.stderr, /failed after \d+ attempts?/);
+}
+
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const scopeProperties = ["-p", "TasksMax=60", "-p", "MemoryMax=500M", "-p", "MemorySwapMax=0"];
@@ -84,12 +101,10 @@ test("built CLI schema fixture fails closed on every recursive executable ingres
         );
 
         t.diagnostic(JSON.stringify({ ingress: ingress.name, ...result }));
-        // The fixture's refusal kills the app-server at dispatch: a
-        // dispatched worker's failure, so the run completes on the script's
-        // null and the refusal is legible on the failure notice.
-        assert.equal(result.code, 0, result.stderr);
-        assert.equal(result.stdout, "null\n");
-        assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
+        // The fixture's refusal kills the app-server at dispatch, before any
+        // thread was served: a substrate refusal that fails the run, with
+        // the fixture's diagnostic on the refusal line.
+        assertSubstrateRefusal(result);
         if (ingress.diagnostic === "refusal") {
           assert.match(result.stderr, /Codex fixture schema validation refused to execute itself recursively/);
         } else if (ingress.diagnostic === "generation-refusal") {
@@ -198,9 +213,7 @@ exec ${shellQuote(process.execPath)} ${shellQuote(hangingCodexPayload)} "$@"
       survivors: await processGroupMembers(group)
     })));
     t.diagnostic(JSON.stringify({ recorded: records, observations, result }));
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
+    assertSubstrateRefusal(result);
     assert.match(result.stderr, /Codex fixture schema command timed out after 30000ms/);
     for (const observation of observations) {
       assert.deepEqual(observation.survivors, []);
@@ -239,9 +252,7 @@ exit 0
     );
 
     t.diagnostic(JSON.stringify(result));
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
+    assertSubstrateRefusal(result);
     assert.match(result.stderr, /Codex fixture schema command produced no usable protocol schema/);
     assert.doesNotMatch(result.stderr, /ENOENT/);
   } finally {

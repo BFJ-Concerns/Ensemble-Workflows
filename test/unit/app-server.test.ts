@@ -12,6 +12,7 @@ import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import {
   AppServerBackpressureError,
   AppServerExitedError,
+  CodexSubstrateRefusedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
   AppServerStartupTimeoutError,
@@ -46,10 +47,15 @@ test("a missing Codex binary fails the first use and the failure is memoised", a
   } catch (error) {
     firstError = error;
   }
-  assert.ok(firstError instanceof AppServerExitedError);
+  // A substrate that never started is a pre-spawn refusal at the thread
+  // open, wrapping the transport's own startup failure as its cause.
+  assert.ok(firstError instanceof CodexSubstrateRefusedError);
+  assert.ok(firstError.cause instanceof AppServerExitedError);
+  assert.match(firstError.cause.message, /ENOENT/);
   assert.match(firstError.message, /ENOENT/);
 
-  // The same startup failure, not a fresh spawn attempt with a new error.
+  // The same startup failure, not a fresh spawn attempt with a new error:
+  // each use wraps the one memoised rejection.
   let secondError: unknown;
   try {
     await invocation.runAttempt({ attempt: 2 });
@@ -57,7 +63,8 @@ test("a missing Codex binary fails the first use and the failure is memoised", a
   } catch (error) {
     secondError = error;
   }
-  assert.strictEqual(secondError, firstError);
+  assert.ok(secondError instanceof CodexSubstrateRefusedError);
+  assert.strictEqual(secondError.cause, firstError.cause);
   await registry.close();
 });
 

@@ -43,12 +43,14 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
     const [stopped, ...completed] = await Promise.all([signalled, ...peers]);
 
     t.diagnostic(JSON.stringify({ stopped, completed, generated: await schemaDirectories(cacheDirectory) }));
-    // The signalled fixture is a dispatched worker dying: its failure is the
-    // script's value, so the run completes on the script's own terms,
-    // and the CLI's notice is where the kill is legible.
-    assert.equal(stopped.code, 0, stopped.stderr);
-    assert.equal(stopped.stdout, "null\n");
-    assert.match(stopped.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited unexpectedly/);
+    // The signalled fixture dies straight after its handshake, before it
+    // served a thread: no worker existed, so the run fails on the substrate
+    // refusal, which precedes any worker, and the kill is legible on it.
+    assert.equal(stopped.code, 1, stopped.stderr);
+    const envelope = JSON.parse(stopped.stdout) as { reason: string; error: { kind: string } };
+    assert.equal(envelope.reason, "failed");
+    assert.equal(envelope.error.kind, "CodexSubstrateRefusedError");
+    assert.match(stopped.stderr, /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server exited/);
     assert.match(stopped.stderr, /signal SIGKILL/);
     for (const peer of completed) {
       assert.equal(peer.code, 0, peer.stderr);

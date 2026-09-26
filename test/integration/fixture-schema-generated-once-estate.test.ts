@@ -19,7 +19,13 @@ test("parallel built-CLI fixtures generate one shared schema without signal-kill
   try {
     await mkdir(cacheDirectory);
     await mkdir(binDirectory);
-    await writeFile(workflow, 'export const meta = { name: "fixture-schema-generated-once" };\nreturn await agent("worker", { engine: "codex" });\n');
+    // maxAttempts 1: the journey kills the fixture's app-server mid-turn and
+    // reads the residue; under the one retry rule a wider bound would
+    // re-dispatch against the dead substrate before the call settled.
+    await writeFile(
+      workflow,
+      'export const meta = { name: "fixture-schema-generated-once" };\nreturn await agent("worker", { engine: "codex", maxAttempts: 1 });\n'
+    );
     const fakeCodex = path.join(binDirectory, "codex");
     await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(fixturePath)};\n`);
     await chmod(fakeCodex, 0o755);

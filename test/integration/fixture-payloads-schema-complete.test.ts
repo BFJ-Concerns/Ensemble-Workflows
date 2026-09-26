@@ -65,10 +65,13 @@ test("built CLI rejects a completed recording-fixture payload missing a required
 
     // The drifted payload kills the fixture app-server at the handshake: a
     // dispatched worker's failure, so the run completes on the script's null
-    // and the validation failure is legible on the failure notice.
+    // and the validation failure is legible on the failure notice. Under
+    // the one retry rule the dead substrate is retried once within the
+    // script's bound of 2 (the second attempt fails at once against the
+    // memoised exit), so the notice counts two attempts.
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — /);
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 2 attempts — /);
     assert.match(result.stderr, /InitializeResponse\.json validation/);
     assert.match(result.stderr, /must have required property 'userAgent'/);
   });

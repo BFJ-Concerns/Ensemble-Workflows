@@ -61,15 +61,15 @@ export class TallyRejectedError extends PreSpawnAuthorError {}
 /**
  * An engine's substrate refused the dispatch before any worker existed —
  * Claude Code declining to start a background session, a daemon that will
- * not come up. Pre-spawn by the family's criterion (a substrate that exits or
- * refuses before the worker exists is a rejection raised before a worker
- * spawns), though the remedy is the launch
- * environment's rather than the script's. The runtime records the refused
- * dispatch with its availability class, spends no attempt on it, advances
- * the call's fallback chain where an entry remains, and otherwise lets it
- * propagate — through the combinators, out of the run — so a run can never
- * lose a whole engine family to identical refusals and still end `complete`.
- * Members name the substrate that refused.
+ * not come up. Pre-spawn by the family's criterion — a substrate that exits
+ * or refuses before the worker exists is a rejection raised before a worker
+ * spawns — though the remedy is the launch environment's rather than the
+ * script's. The runtime records the refused dispatch with its availability
+ * class, spends no attempt on it, advances the call's fallback chain where
+ * an entry remains, and otherwise lets it propagate — through the
+ * combinators, out of the run — so a run can never lose a whole engine
+ * family to identical refusals and still end `complete`. Members name the
+ * substrate that refused.
  */
 export class SubstrateRefusedError extends PreSpawnAuthorError {}
 
@@ -378,23 +378,60 @@ export class EngineShutdownError extends EnsembleError {
  * `null` at exhaustion on either call shape. It never lets one hang. A
  * dispatch Claude Code refused is not a member: no worker existed, so it is
  * a `ClaudeDispatchError` on the pre-spawn side. Any other failure that is
- * *not* a `ClaudeWorkerError` is a genuine bug and propagates.
+ * *not* a `ClaudeWorkerError` is not degraded by the engine: it propagates to
+ * the runtime as the attempt's thrown failure — spent, retried within the
+ * bound, and resolved `null` at exhaustion — so a genuine bug is legible on
+ * the record and the failure notice rather than swallowed.
  */
 export class ClaudeWorkerError extends EnsembleError {}
 
 /**
- * `claude --bg` refused to start the worker, or the dispatched session never
- * registered: the substrate declined before a session existed. The
- * message names the placed directory and carries Claude Code's own text,
- * because the remedy lives in the launch environment — the operator reads
- * it off the run's failure, never off a `null`.
+ * `claude --bg` exited non-zero and no session was registered under the
+ * dispatch's name: Claude Code declined before a session existed. The
+ * message names the placed directory and the declaration, and carries Claude
+ * Code's own text bounded to one line, because the remedy lives in the
+ * launch environment — the operator reads it off the run's failure, never
+ * off a `null`. A dispatch the daemon accepted but never registered is not
+ * a refusal: see `ClaudeRegistrationTimeoutError`.
  */
 export class ClaudeDispatchError extends SubstrateRefusedError {}
+
+/**
+ * The Codex app-server could not serve a thread for this attempt because
+ * the substrate itself never started or is already gone — the handshake
+ * timed out, the process exited or failed to spawn — so no worker existed
+ * — a substrate that exits or refuses before the worker exists is pre-spawn.
+ * A `thread/start` the running server *rejected* is the server answering and
+ * is not a member: that stays the attempt's own failure. The cause is kept
+ * whole, and the app-server's exit evidence rides the carrier as it rode the
+ * cause.
+ */
+export class CodexSubstrateRefusedError extends SubstrateRefusedError {
+  /**
+   * `detail` is the cause as the raising site presents it — the diagnosis
+   * seam's rendering where one exists (how the server died, its last stderr
+   * kept whole and control-stripped), the cause's message otherwise — so the
+   * refusal line the run fails on carries the same evidence the failure
+   * notice would have.
+   */
+  constructor(cwd: string | undefined, cause: Error, detail: string = cause.message) {
+    super(`Codex app-server could not serve a thread${cwd === undefined ? "" : ` in ${cwd}`}: ${detail}`, { cause });
+  }
+}
 
 export class ClaudePollTimeoutError extends ClaudeWorkerError {}
 
 /** The background session registered but never produced a transcript at all. */
 export class ClaudeFirstLifeTimeoutError extends ClaudeWorkerError {}
+
+/**
+ * The daemon accepted the dispatch (`claude --bg` returned) but no session
+ * appeared in the roster within the dispatch bound. Not a refusal: Claude
+ * Code did not decline, and a session the roster has not yet surfaced may
+ * exist — so this is an operational failure, spent and retried within the
+ * attempt bound like a poll deadline, and the dispatch bound is the lever.
+ */
+export class ClaudeRegistrationTimeoutError extends ClaudeWorkerError {}
 
 export class ClaudeBlockedError extends ClaudeWorkerError {}
 

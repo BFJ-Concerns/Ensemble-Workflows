@@ -6,6 +6,7 @@ import {
   ClaudeCollectionError,
   ClaudeFirstLifeTimeoutError,
   ClaudePollTimeoutError,
+  ClaudeRegistrationTimeoutError,
   ClaudeTranscriptError,
   ClaudeValveError,
   ClaudeWorkerDiagnosticError,
@@ -54,7 +55,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -881,8 +882,15 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           "Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences."
         );
       case "empty-output":
-      default:
         return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+      default:
+        // An operational or thrown failure carried into the correction (the
+        // one retry rule): the worker is told what the harness observed, as
+        // a fresh dispatch's prompt would tell it.
+        return (
+          `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). ` +
+          "Please complete the task and output your final answer now."
+        );
     }
   }
 
@@ -987,6 +995,9 @@ function highWaterUsage(previous: TokenUsageBreakdown | null, total: TokenUsageB
 function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   if (error instanceof ClaudeFirstLifeTimeoutError) {
     return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeRegistrationTimeoutError) {
+    return { kind: "claude-registration-timeout", message: error.message };
   }
   if (error instanceof ClaudeBlockedError) {
     return { kind: "claude-blocked", message: error.message };

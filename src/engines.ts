@@ -3,12 +3,18 @@ import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
+  AppServerExitedError,
+  AppServerStartupTimeoutError,
+  attachWorkerExitStatus,
   CapabilityStripUnsupportedError,
+  CodexSubstrateRefusedError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
-  OpenCodeModelRequiredError
+  OpenCodeModelRequiredError,
+  workerExitStatusOf
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
+import { presentOperationalError } from "./operator-diagnosis.js";
 import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
@@ -63,6 +69,7 @@ export interface EngineAttemptFailure {
     | "claude-worker-error"
     | "claude-poll-timeout"
     | "claude-first-life-timeout"
+    | "claude-registration-timeout"
     | "claude-blocked"
     | "claude-valve-error"
     | "claude-transcript-error"
@@ -73,8 +80,8 @@ export interface EngineAttemptFailure {
 }
 
 /**
- * What a retry carries back to the worker: the
- * previous attempt's failure as the record holds it — an engine's returned
+ * What a retry carries back to the worker (one retry rule on every engine):
+ * the previous attempt's failure as the record holds it — an engine's returned
  * failure under its own kind, or a thrown one under the error's class name
  * (`TurnTimeoutError`, `AppServerSystemError`). Engines render it as prose
  * in the correction, so the kind is open here and nowhere else.
@@ -397,12 +404,7 @@ class CodexWorkerSession implements EngineWorkerSession {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
-        const threadId = await this.#transport.openThread({
-          ...(this.#options.cwd !== undefined ? { cwd: this.#options.cwd } : {}),
-          ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-          ...(threadConfig !== undefined ? { threadConfig } : {})
-        });
+        const threadId = await openCodexThread(this.#transport, this.#options, this.#options.cwd);
         this.#threadId = threadId;
         return threadId;
       } finally {
@@ -448,17 +450,7 @@ class CodexEngineInvocation implements EngineInvocation {
     cwd: string | undefined,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
-    // The overlay is sent only when this dispatch strips: an unstripped
-    // worker's thread/start stays byte-identical, keeping whatever default
-    // tool surface the machine's own config.toml gives it (stripping is opt-in
-    // in both directions — a strip removes nothing unasked, and its
-    // absence grants nothing the machine had turned off).
-    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
-    const threadId = await this.#transport.openThread({
-      ...(cwd !== undefined ? { cwd } : {}),
-      ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(threadConfig !== undefined ? { threadConfig } : {})
-    });
+    const threadId = await openCodexThread(this.#transport, this.#options, cwd);
 
     return this.#transport.runTurn(threadId, prompt, {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
@@ -764,6 +756,46 @@ export async function createDefaultEngineRegistry(
       onEvent: options.onOpenCodeEvent
     })
   ]);
+}
+
+/**
+ * Opens the thread a Codex attempt runs on: the strip overlay first, then
+ * `thread/start`. The overlay is sent only when this dispatch strips: an
+ * unstripped worker's thread/start stays byte-identical, keeping whatever
+ * default tool surface the machine's own config.toml gives it (stripping is
+ * opt-in in both directions — a strip removes nothing unasked, and its
+ * absence grants nothing the machine had turned off).
+ *
+ * A substrate that never started or is already gone when asked — the
+ * handshake timed out, the process exited or failed to spawn — is a
+ * substrate refusal: no worker existed for this attempt, so it is raised as
+ * `CodexSubstrateRefusedError` (pre-spawn) with the app-server's exit
+ * evidence carried across. A `thread/start` the running server rejected is
+ * the server answering and passes through as the attempt's own failure.
+ */
+async function openCodexThread(
+  transport: RuntimeTransport,
+  options: Pick<EngineTurnOptions, "strip" | "model">,
+  cwd: string | undefined
+): Promise<string> {
+  try {
+    const threadConfig = await codexThreadConfig(options.strip, transport, cwd);
+    return await transport.openThread({
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(threadConfig !== undefined ? { threadConfig } : {})
+    });
+  } catch (error) {
+    if (error instanceof AppServerStartupTimeoutError || error instanceof AppServerExitedError) {
+      // The refusal is what the run fails on, so it carries the cause as the
+      // failure notice would have presented it — how the server died and its
+      // last stderr, control-stripped — not just the class's one-liner.
+      const refused = new CodexSubstrateRefusedError(cwd, error, presentOperationalError(error) ?? error.message);
+      const exit = workerExitStatusOf(error);
+      throw exit === null ? refused : attachWorkerExitStatus(refused, exit);
+    }
+    throw error;
+  }
 }
 
 function promptWithFailureFeedback(prompt: string, failure: PreviousAttemptFailure | undefined): string {

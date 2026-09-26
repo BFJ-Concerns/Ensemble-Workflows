@@ -63,15 +63,19 @@ test("built CLI rejects a completed recording-fixture payload missing a required
   await withFixture(async (fixture) => {
     const result = await fixture.run({ ENSEMBLE_FAKE_CODEX_SCHEMA_DRIFT: "missing-initialize-user-agent" });
 
-    // The drifted payload kills the fixture app-server at the handshake: a
-    // dispatched worker's failure, so the run completes on the script's null
-    // and the validation failure is legible on the failure notice. Under
-    // the one retry rule the dead substrate is retried once within the
-    // script's bound of 2 (the second attempt fails at once against the
-    // memoised exit), so the notice counts two attempts.
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 2 attempts — /);
+    // The drifted payload kills the fixture app-server at the handshake, so
+    // the substrate never served a thread and no worker existed: a substrate
+    // refusal before any worker spawns, not a spent attempt. The run fails
+    // on it — one clean refusal line naming the placed directory, carrying
+    // how the server died and its own stderr so the validation failure stays
+    // legible — rather than completing on a null.
+    assert.equal(result.code, 1, result.stderr);
+    const envelope = JSON.parse(result.stdout) as { partial: boolean; reason: string; error: { kind: string } };
+    assert.equal(envelope.partial, true);
+    assert.equal(envelope.reason, "failed");
+    assert.equal(envelope.error.kind, "CodexSubstrateRefusedError");
+    assert.match(result.stderr, /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server exited/);
+    assert.doesNotMatch(result.stderr, /failed after \d+ attempts?/);
     assert.match(result.stderr, /InitializeResponse\.json validation/);
     assert.match(result.stderr, /must have required property 'userAgent'/);
   });

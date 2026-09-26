@@ -1590,7 +1590,11 @@ export class EnsembleRuntime {
    * their cause from here, so a record cannot disagree with its own attempts.
    */
   #runSettlementCause(error: unknown, dispatch: "in-flight" | "queued" = "in-flight"): TerminalErrorRecord | null {
-    if (error instanceof EngineShutdownError || (error instanceof AppServerExitedError && this.#closed)) {
+    // A substrate refusal wraps the transport's own error; a closed run's
+    // latch is read through it, so a leg torn down mid-open settles as the
+    // run's ending and not as the substrate refusing.
+    const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
+    if (error instanceof EngineShutdownError || (substrate instanceof AppServerExitedError && this.#closed)) {
       return {
         kind: `run-${this.#shutdownAgentStatus}`,
         // A queued leg's turn never reached an engine; saying it was in

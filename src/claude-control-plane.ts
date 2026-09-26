@@ -3,7 +3,8 @@ import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promi
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
-import { ClaudeDispatchError } from "./errors.js";
+import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { boundedEvidence } from "./operator-diagnosis.js";
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -12,7 +13,7 @@ import { ClaudeDispatchError } from "./errors.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (observed as orphaned
+ * worker escaped the cancellation plumbing entirely (witnessed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -238,11 +239,14 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         // A refusal before any session exists: the directory is the
         // fact the operator needs, Claude Code's own words are the reason,
         // and the declaration is named so a refusal that survived it reads
-        // as the substrate's, not as a lift the harness forgot.
+        // as the substrate's, not as a lift the harness forgot. The text is
+        // engine-controlled and lands on a one-line operator surface, so it
+        // takes the bounded-evidence discipline: control stripped,
+        // whitespace flattened, bounded.
         throw new ClaudeDispatchError(
           `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
             `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
-            `${dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message"}`
+            boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
         );
       }
 
@@ -254,7 +258,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           break;
         }
         if (Date.now() >= deadline) {
-          throw new ClaudeDispatchError(
+          // The daemon took the dispatch and never surfaced the session: an
+          // operational failure the retry loop spends an attempt on, not a
+          // refusal — Claude Code did not decline.
+          throw new ClaudeRegistrationTimeoutError(
             `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
           );
         }
@@ -277,7 +284,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (registered === null) {
       // Unreachable: every path that leaves the loop without a handle throws.
-      throw new ClaudeDispatchError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
+      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
     return registered;
   }

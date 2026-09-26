@@ -9,6 +9,7 @@ import { claudeCacheTtlToMs } from "../../src/claude-engine.js";
 import { validateEngineDefaults } from "../../src/engine-option-validation.js";
 import {
   ClaudeDispatchError,
+  ClaudeRegistrationTimeoutError,
   EngineShutdownError,
   InvalidAgentOptionValueError,
   failedTurnResultOf,
@@ -63,6 +64,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #steerConsumesTurn: boolean;
   #dispatchGate: DispatchGate | undefined;
   #refuseDispatch: string | undefined;
+  #registrationTimeout: string | undefined;
   #steered = false;
 
   #sessionSeq = 0;
@@ -84,6 +86,7 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.#steerConsumesTurn = options.steerConsumesTurn ?? true;
     this.#dispatchGate = options.dispatchGate;
     this.#refuseDispatch = options.refuseDispatch;
+    this.#registrationTimeout = options.registrationTimeout;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -91,6 +94,9 @@ class FakeControlPlane implements ClaudeControlPlane {
     this.dispatched.push(options);
     if (this.#refuseDispatch !== undefined) {
       throw new ClaudeDispatchError(this.#refuseDispatch);
+    }
+    if (this.#registrationTimeout !== undefined) {
+      throw new ClaudeRegistrationTimeoutError(this.#registrationTimeout);
     }
     this.#sessionSeq += 1;
     const sessionId = `fake-session-${this.#sessionSeq}`;
@@ -175,6 +181,8 @@ interface FakeControlPlaneOptions {
   tmux?: boolean;
   /** When set, `dispatch()` throws a `ClaudeDispatchError` carrying this text: Claude Code refused before any session existed. */
   refuseDispatch?: string;
+  /** When set, `dispatch()` throws a `ClaudeRegistrationTimeoutError`: the daemon took the dispatch but never registered the session. */
+  registrationTimeout?: string;
   steerSucceeds?: boolean;
   steerConsumesTurn?: boolean;
   dispatchGate?: DispatchGate;
@@ -1582,5 +1590,25 @@ test("a dispatch Claude Code refused is rethrown as the substrate's refusal, nev
       await adapter.close();
     },
     { refuseDispatch: "Claude Code refused to dispatch worker 'w' in /fake/scratch: Workspace not trusted." }
+  );
+});
+
+test("a dispatch the daemon took but never registered degrades to a failed turn the loop spends and retries", async () => {
+  // Not a refusal: Claude Code did not decline, and a session the roster has
+  // not surfaced may exist. The engine returns the operational failure under
+  // its own kind, so the shared loop spends an attempt and retries — the
+  // dispatch bound, not the pre-spawn boundary, is the lever.
+  await withControlPlane(
+    [],
+    async (controlPlane) => {
+      const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig, cwd: "/fake/scratch" });
+      const invocation = adapter.createInvocation("slow daemon", {});
+      const result = await invocation.runAttempt({ attempt: 1 });
+      assert.equal(result.attemptFailure?.kind, "claude-registration-timeout");
+      assert.match(result.attemptFailure?.message ?? "", /did not register within 30000ms/);
+      assert.equal(controlPlane.dispatchCount, 1);
+      await adapter.close();
+    },
+    { registrationTimeout: "dispatched session 'w' in /fake/scratch did not register within 30000ms" }
   );
 });

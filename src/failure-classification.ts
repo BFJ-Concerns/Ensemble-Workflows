@@ -63,6 +63,9 @@ const CODEX_ERROR_CLASSES = new Map<string, FailureClassification>([
   // The substrate died or never came up: the worker was lost before answering.
   ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
   ["AppServerStartupTimeoutError", { class: "availability", rule: "codex.substrate-unstartable" }],
+  // The substrate never started or was already gone when a thread was asked
+  // for: a pre-spawn refusal the runtime spends no attempt on.
+  ["CodexSubstrateRefusedError", { class: "availability", rule: "codex.substrate-refused" }],
   // The server refused to take more load (JSON-RPC -32001).
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
@@ -97,6 +100,9 @@ const CLAUDE_FAILURE_KINDS = new Map<string, FailureClassification>([
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.
   ["ClaudeDispatchError", { class: "availability", rule: "claude.dispatch-refused" }],
+  // The daemon took the dispatch but the session never registered within
+  // the bound: the substrate lost the worker before it could answer.
+  ["claude-registration-timeout", { class: "availability", rule: "claude.no-registration" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],

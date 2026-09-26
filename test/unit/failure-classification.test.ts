@@ -54,6 +54,14 @@ test("a dead or unstartable Codex substrate is availability, a deadline is recog
     classifyAttemptFailure(evidence({ engine: "codex", failure: { kind: "AppServerStartupTimeoutError", message: "handshake" } })),
     { class: "availability", rule: "codex.substrate-unstartable" }
   );
+  // The substrate never started or was gone when a thread was asked for:
+  // the pre-spawn refusal the runtime spends no attempt on.
+  assert.deepEqual(
+    classifyAttemptFailure(
+      evidence({ engine: "codex", failure: { kind: "CodexSubstrateRefusedError", message: "could not serve a thread" } })
+    ),
+    { class: "availability", rule: "codex.substrate-refused" }
+  );
   assert.deepEqual(
     classifyAttemptFailure(evidence({ engine: "codex", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
     { class: "unclassified", rule: "codex.deadline" }
@@ -130,6 +138,14 @@ test("a Claude worker that could not start or never showed life is availability;
       evidence({ engine: "claude", failure: { kind: "ClaudeDispatchError", message: "Claude Code refused to dispatch" } })
     ),
     { class: "availability", rule: "claude.dispatch-refused" }
+  );
+  // The daemon took the dispatch but never registered the session: an
+  // operational availability failure, spent and retried — not a refusal.
+  assert.deepEqual(
+    classifyAttemptFailure(
+      evidence({ engine: "claude", failure: { kind: "claude-registration-timeout", message: "did not register" } })
+    ),
+    { class: "availability", rule: "claude.no-registration" }
   );
   assert.deepEqual(
     classifyAttemptFailure(evidence({ engine: "claude", failure: { kind: "claude-first-life-timeout", message: "no transcript" } })),

@@ -639,14 +639,14 @@ the time to the first agent-message delta.
 |---|---|---|---|
 | `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
 | `effort` | canonical level `minimal \| low \| medium \| high \| xhigh`, validated pre-spawn; passed to the turn natively | same canonical level, clamped to the CLI's nearest native level (`minimal`→`low`, `xhigh`→`high`); the run record's `resolved_effort` carries the clamped value | exempt: must name one of the registry entry's served variants; otherwise throws pre-spawn |
-| `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn under the engine's hold); an opencode call may declare a chain of Codex/Claude targets |
+| `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn); an opencode call may declare a chain of Codex/Claude targets |
 | `cwd` | worker working directory; defaults to the run cwd | same | same |
 | `isolation: 'worktree'` | fresh git worktree; any other defined value throws | same | same |
 | `schema` | validated backend-side (`outputSchema`) *and* client-side | validated client-side | validated client-side |
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode. | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -718,7 +718,7 @@ selected.
 
 Registered opencode model keys (also addressable by provider id):
 `glm-5.2`, `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`, `muse-glimmer-30b`.
-The `local/…` entries are served by a local router and track
+The `local/…` entries are served by a self-hosted router and track
 what it actually serves; `src/opencode-model-registry.ts` carries the
 re-survey contract.
 
@@ -848,7 +848,7 @@ rejection itself is unchanged, invoking no engine.
   call. The boundary is spawn: a rejection raised before a worker exists — a
   bad option, a placement that never opened, an engine refusing the dispatch
   itself, an unenforceable strip discovered as the thread is configured —
-  still throws, and the run's own ending
+  still throws, so a misconfigured call fails loudly, and the run's own ending
   (interrupt, whole-run timeout) still throws through a leg it tore down,
   so a bare `await` sees the run stop.
 - **Retries** carry the previous failure back to the worker: Claude corrects
@@ -860,7 +860,9 @@ rejection itself is unchanged, invoking no engine.
   `usageLimitExceeded`, `rateLimitExceeded`, `serverOverloaded`, a
   connection the provider refused, a dead or unstartable app-server;
   Claude's synthetic API-refusal reply carrying a 429, 503, or 529, a
-  `claude --bg` that could not dispatch, a session that never showed life),
+  `claude --bg` Claude Code refused — see the dispatch bullet below: a refusal is
+  never a spent attempt — a dispatch the daemon never registered, a session
+  that never showed life),
   `output` (empty, unparseable, off-schema), or `unclassified` (a deadline,
   a client diagnostic about a bad model name, or a diagnostic no rule
   recognised — recorded with `rule: null` so a stale table is visible in
@@ -879,8 +881,8 @@ rejection itself is unchanged, invoking no engine.
   `CLAUDE_CODE_SANDBOXED` on the `claude` process it launches and on the
   reply valve's attach client — which Claude Code answers by skipping its
   per-directory trust dialog, so a worker placed by `cwd` or `isolation` in
-  a fresh scratch directory or a generated worktree dispatches
-  with no operator ceremony and no write to the operator's Claude
+  a fresh scratch directory, a sibling checkout, or a generated worktree
+  dispatches with no operator ceremony and no write to the operator's Claude
   configuration. A dispatch Claude Code still refuses before the session
   exists — a daemon that will not start, a directory it cannot resolve, a
   version that ignores the declaration — is a substrate refusal, not a
@@ -889,18 +891,26 @@ rejection itself is unchanged, invoking no engine.
   attempt, advances the fallback chain where an entry remains, and otherwise
   throws `ClaudeDispatchError` (a pre-spawn member) out of `agent()` and
   through `parallel()`/`pipeline()`, failing the run with the placed
-  directory, the declaration, and Claude Code's own refusal text on one
-  stderr line — never `null`, so a run whose every Claude worker was refused
-  can never end `complete`.
-- **Operational worker failures** on Claude and opencode (dispatch died, poll
+  directory, the declaration, and Claude Code's own refusal text (flattened
+  to one bounded line) on one stderr line — never `null`, so a run whose
+  every Claude worker was refused can never end `complete`. A dispatch the
+  daemon accepted but never registered within the dispatch bound is not a
+  refusal — Claude Code did not decline — and stays an operational failure
+  the loop spends and retries. Codex's analogue is the same substrate
+  refusal (`CodexSubstrateRefusedError`): an app-server that never started
+  or is already gone when a thread is opened refuses the dispatch pre-spawn,
+  while a `thread/start` the running server rejects (a bad model) is the
+  server answering and stays the attempt's own failure.
+- **Operational worker failures** on Claude and opencode (a dispatch the
+  daemon took but never registered, a registered session that died, poll
   timed out, transcript unreadable, session settled without a provable
   completion, subprocess killed on deadline, run exited non-zero) degrade to
   an empty attempt inside the retry loop — they consume attempts rather than
   hanging or throwing, with the worker's partial text, exit evidence, and the
   engine's own diagnostic retained in the failed attempt record. A Codex turn
   deadline, first-output deadline, or a thread the app-server declared failed
-  is the same operational failure under the one retry rule: it consumes an
-  attempt and the call retries within its bound
+  is the same operational failure under the one retry rule (settled
+  2026-09-14): it consumes an attempt and the call retries within its bound
   with the failure carried into the next attempt's prompt, resolving `null`
   at exhaustion with every attempt on the record — a call whose deadline
   should end it sets `maxAttempts: 1`. The rule's one exemption is Codex's

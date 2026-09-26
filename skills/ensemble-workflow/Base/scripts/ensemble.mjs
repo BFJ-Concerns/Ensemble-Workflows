@@ -14331,9 +14331,23 @@ var ClaudeWorkerError = class extends EnsembleError {
 };
 var ClaudeDispatchError = class extends SubstrateRefusedError {
 };
+var CodexSubstrateRefusedError = class extends SubstrateRefusedError {
+  /**
+   * `detail` is the cause as the raising site presents it — the diagnosis
+   * seam's rendering where one exists (how the server died, its last stderr
+   * kept whole and control-stripped), the cause's message otherwise — so the
+   * refusal line the run fails on carries the same evidence the failure
+   * notice would have.
+   */
+  constructor(cwd, cause, detail = cause.message) {
+    super(`Codex app-server could not serve a thread${cwd === void 0 ? "" : ` in ${cwd}`}: ${detail}`, { cause });
+  }
+};
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
 };
 var ClaudeFirstLifeTimeoutError = class extends ClaudeWorkerError {
+};
+var ClaudeRegistrationTimeoutError = class extends ClaudeWorkerError {
 };
 var ClaudeBlockedError = class extends ClaudeWorkerError {
 };
@@ -16859,6 +16873,9 @@ var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   // The substrate died or never came up: the worker was lost before answering.
   ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
   ["AppServerStartupTimeoutError", { class: "availability", rule: "codex.substrate-unstartable" }],
+  // The substrate never started or was already gone when a thread was asked
+  // for: a pre-spawn refusal the runtime spends no attempt on.
+  ["CodexSubstrateRefusedError", { class: "availability", rule: "codex.substrate-refused" }],
   // The server refused to take more load (JSON-RPC -32001).
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
@@ -16885,6 +16902,9 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   // name, as the Codex rows are keyed; the runtime spends no attempt on it —
   // it advances the chain or propagates as a pre-spawn refusal.
   ["ClaudeDispatchError", { class: "availability", rule: "claude.dispatch-refused" }],
+  // The daemon took the dispatch but the session never registered within
+  // the bound: the substrate lost the worker before it could answer.
+  ["claude-registration-timeout", { class: "availability", rule: "claude.no-registration" }],
   // The session registered but never produced a transcript: a dead worker.
   ["claude-first-life-timeout", { class: "availability", rule: "claude.no-first-life" }],
   ["claude-poll-timeout", { class: "unclassified", rule: "claude.deadline" }],
@@ -17005,7 +17025,7 @@ var ClaudeCliControlPlane = class {
       const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
       if (!dispatch.ok && await this.#findByName(options.name) === null) {
         throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ${dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message"}`
+          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
         );
       }
       const deadline = Date.now() + this.#dispatchTimeoutMs;
@@ -17016,7 +17036,7 @@ var ClaudeCliControlPlane = class {
           break;
         }
         if (Date.now() >= deadline) {
-          throw new ClaudeDispatchError(
+          throw new ClaudeRegistrationTimeoutError(
             `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
           );
         }
@@ -17030,7 +17050,7 @@ var ClaudeCliControlPlane = class {
       }
     }
     if (registered === null) {
-      throw new ClaudeDispatchError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
+      throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
     return registered;
   }
@@ -18034,8 +18054,9 @@ var ClaudeEngineInvocation = class {
       case "invalid-json":
         return "Your last final message was not valid JSON for the required schema. Reply with a JSON value that conforms to the schema. You may surround the value with prose or markdown fences.";
       case "empty-output":
-      default:
         return "Your last turn produced no final answer. Please complete the task and output your final answer now.";
+      default:
+        return `Your last turn did not complete (${previousFailure.kind}: ${previousFailure.message}). Please complete the task and output your final answer now.`;
     }
   }
   #blockedNudge(waitingFor) {
@@ -18097,6 +18118,9 @@ function highWaterUsage(previous, total) {
 function claudeAttemptFailure(error) {
   if (error instanceof ClaudeFirstLifeTimeoutError) {
     return { kind: "claude-first-life-timeout", message: error.message };
+  }
+  if (error instanceof ClaudeRegistrationTimeoutError) {
+    return { kind: "claude-registration-timeout", message: error.message };
   }
   if (error instanceof ClaudeBlockedError) {
     return { kind: "claude-blocked", message: error.message };
@@ -20571,12 +20595,7 @@ var CodexWorkerSession = class {
     }
     this.#opening ??= (async () => {
       try {
-        const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, this.#options.cwd);
-        const threadId = await this.#transport.openThread({
-          ...this.#options.cwd !== void 0 ? { cwd: this.#options.cwd } : {},
-          ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-          ...threadConfig !== void 0 ? { threadConfig } : {}
-        });
+        const threadId = await openCodexThread(this.#transport, this.#options, this.#options.cwd);
         this.#threadId = threadId;
         return threadId;
       } finally {
@@ -20603,12 +20622,7 @@ var CodexEngineInvocation = class {
     return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
   }
   async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
-    const threadConfig = await codexThreadConfig(this.#options.strip, this.#transport, cwd);
-    const threadId = await this.#transport.openThread({
-      ...cwd !== void 0 ? { cwd } : {},
-      ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...threadConfig !== void 0 ? { threadConfig } : {}
-    });
+    const threadId = await openCodexThread(this.#transport, this.#options, cwd);
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
@@ -20822,6 +20836,23 @@ async function createDefaultEngineRegistry(options) {
       onEvent: options.onOpenCodeEvent
     })
   ]);
+}
+async function openCodexThread(transport, options, cwd) {
+  try {
+    const threadConfig = await codexThreadConfig(options.strip, transport, cwd);
+    return await transport.openThread({
+      ...cwd !== void 0 ? { cwd } : {},
+      ...options.model !== void 0 ? { model: options.model } : {},
+      ...threadConfig !== void 0 ? { threadConfig } : {}
+    });
+  } catch (error) {
+    if (error instanceof AppServerStartupTimeoutError || error instanceof AppServerExitedError) {
+      const refused = new CodexSubstrateRefusedError(cwd, error, presentOperationalError(error) ?? error.message);
+      const exit = workerExitStatusOf(error);
+      throw exit === null ? refused : attachWorkerExitStatus(refused, exit);
+    }
+    throw error;
+  }
 }
 function promptWithFailureFeedback(prompt, failure) {
   if (failure === void 0) {
@@ -21521,19 +21552,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     );
   }
   /**
-   * The chain loop: the call's own target, then each declared
-   * fallback entry, each admitted on its own engine. A same-engine step
-   * keeps the slot it holds — the target loop runs inside one admitted
-   * task — while a cross-engine step ends that task, releasing the refused
-   * engine's cap and ceiling slot, and re-admits the leg afresh on the next
-   * engine against its own cap, the ceiling, and its budget. One agent
-   * record spans the whole
-   * chain: every attempt names its target, and the record names the entry
-   * that answered. The last target is never refused — with no entry
-   * remaining an availability failure is the call's own failure, exactly as
-   * with no chain — so the loop always ends in a settlement or a throw.
-   * `runTarget` is one target's whole dispatch — placement, invocation,
-   * bounded attempts — resolving `refused` to hand the chain on.
+   * The chain loop: the call's own target, then each declared fallback
+   * entry, each admitted on its own engine. A same-engine step keeps the
+   * slot it holds — the target loop runs inside one admitted task — while a
+   * cross-engine step ends that task, releasing the refused engine's cap
+   * and ceiling slot, and re-admits the leg afresh on the next engine
+   * against its own cap, the ceiling, and its budget. One agent record
+   * spans the whole chain: every attempt names its target, and the record
+   * names the entry that answered. The last target is never refused — with
+   * no entry remaining an availability failure is the call's own failure,
+   * exactly as with no chain — so the loop always ends in a settlement or a
+   * throw. `runTarget` is one target's whole dispatch — placement,
+   * invocation, bounded attempts — resolving `refused` to hand the chain
+   * on.
    */
   async #runChained(engine, targets, identity, maxAttempts, agentId, agentRecord, initialQueuedAt, runTarget) {
     let queuedAt = initialQueuedAt;
@@ -21853,7 +21884,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * their cause from here, so a record cannot disagree with its own attempts.
    */
   #runSettlementCause(error, dispatch = "in-flight") {
-    if (error instanceof EngineShutdownError || error instanceof AppServerExitedError && this.#closed) {
+    const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
+    if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
       return {
         kind: `run-${this.#shutdownAgentStatus}`,
         // A queued leg's turn never reached an engine; saying it was in

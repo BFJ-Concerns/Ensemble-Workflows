@@ -80,6 +80,7 @@ export {
   HoldRejectedError,
   HoldTimeoutError,
   MultiTurnUnsupportedError,
+  CodexSubstrateRefusedError,
   PreSpawnAuthorError,
   SubstrateRefusedError,
   SessionBusyError,

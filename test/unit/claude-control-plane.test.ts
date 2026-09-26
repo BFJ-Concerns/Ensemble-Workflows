@@ -12,7 +12,7 @@ import {
   SANDBOXED_WORKSPACE_VARIABLE,
   WORKER_MARKER_VARIABLE
 } from "../../src/claude-control-plane.js";
-import { ClaudeDispatchError } from "../../src/errors.js";
+import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
@@ -533,26 +533,31 @@ test("every launched claude child sees the workspace declared sandboxed, above a
   try {
     const sessionId = "00000000-0000-4000-8000-000000000021";
     const stubPath = path.join(dir, "claude-stub.mjs");
+    // Every invocation — dispatch, roster query, stop, rm — appends what it
+    // saw, so the assertion covers each child the control plane launches
+    // and not only the dispatch.
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { readFile, writeFile } from "node:fs/promises";
+        import { appendFile, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
+        const probe = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+        await appendFile(${JSON.stringify(dir)} + "/children-" + probe + ".jsonl", JSON.stringify({
+          child: args[0],
+          sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null
+        }) + "\\n");
         if (args[0] === "--bg") {
-          const name = args[args.indexOf("--name") + 1];
           const settings = await readFile(args[args.indexOf("--settings") + 1], "utf8");
-          await writeFile(${JSON.stringify(dir)} + "/observed-" + name + ".json", JSON.stringify({
-            sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null,
+          await writeFile(${JSON.stringify(dir)} + "/observed-" + probe + ".json", JSON.stringify({
             settings: JSON.parse(settings)
           }));
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
-          const name = process.env.ENSEMBLE_TEST_ROSTER_NAME;
           process.stdout.write(JSON.stringify([{
             id: "sandboxed-1",
             sessionId: ${JSON.stringify(sessionId)},
-            name,
+            name: probe,
             kind: "background",
             cwd: ${JSON.stringify(dir)},
             status: "busy",
@@ -567,11 +572,16 @@ test("every launched claude child sees the workspace declared sandboxed, above a
     const observe = async (name: string, workerEnv: Record<string, string>) => {
       process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
       const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000, workerEnv });
-      await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
-      return JSON.parse(await readFile(path.join(dir, `observed-${name}.json`), "utf8")) as {
-        sandboxed: string | null;
+      const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+      await controlPlane.stop(handle);
+      const children = (await readFile(path.join(dir, `children-${name}.jsonl`), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { child: string; sandboxed: string | null });
+      const settings = JSON.parse(await readFile(path.join(dir, `observed-${name}.json`), "utf8")) as {
         settings: { env: Record<string, string> };
       };
+      return { children, settings: settings.settings };
     };
     // The parent deliberately does not carry the variable: the declaration
     // must be the harness's, not an inheritance the test happened to have.
@@ -580,7 +590,15 @@ test("every launched claude child sees the workspace declared sandboxed, above a
     delete process.env[SANDBOXED_WORKSPACE_VARIABLE];
     try {
       const plain = await observe("sandboxed-plain", { ANTHROPIC_BASE_URL: "https://declared.example" });
-      assert.equal(plain.sandboxed, "1");
+      // Dispatch, the roster queries around it, stop, and rm all saw the
+      // declaration — and nothing the control plane launched went without it.
+      const seen = new Set(plain.children.map((child) => child.child));
+      for (const child of ["--bg", "agents", "stop", "rm"]) {
+        assert.ok(seen.has(child), `the control plane launched no '${child}' child`);
+      }
+      for (const child of plain.children) {
+        assert.equal(child.sandboxed, "1", `the '${child.child}' child did not see the declaration`);
+      }
       assert.deepEqual(plain.settings.env, {
         ANTHROPIC_BASE_URL: "https://declared.example",
         [WORKER_MARKER_VARIABLE]: "sandboxed-plain"
@@ -589,7 +607,7 @@ test("every launched claude child sees the workspace declared sandboxed, above a
       // A machine declaration of the same name does not switch the lift off:
       // bookkeeping lands last, as the ownership tag does.
       const overridden = await observe("sandboxed-overridden", { [SANDBOXED_WORKSPACE_VARIABLE]: "0" });
-      assert.equal(overridden.sandboxed, "1");
+      assert.ok(overridden.children.every((child) => child.sandboxed === "1"));
     } finally {
       restoreEnv(SANDBOXED_WORKSPACE_VARIABLE, savedSandboxed);
       restoreEnv("ENSEMBLE_TEST_ROSTER_NAME", savedRosterName);
@@ -665,7 +683,8 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
       `#!/usr/bin/env node
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
-          process.stderr.write("Workspace not trusted. Run \`claude\` in " + ${JSON.stringify(dir)} + " once and accept the trust prompt, then retry.");
+          // Two lines and a colour reset, as a CLI's stderr may well carry.
+          process.stderr.write("Workspace not trusted.\\nRun \`claude\` in " + ${JSON.stringify(dir)} + " once and accept the trust prompt, then retry.\\u001b[0m\\n");
           process.exit(1);
         }
         if (args[0] === "agents" && args[1] === "--json") {
@@ -685,7 +704,44 @@ test("a dispatch Claude Code refuses is a ClaudeDispatchError naming the directo
         // gets Claude Code's words whole — the remedy is in the environment.
         assert.match(error.message, new RegExp(`refused to dispatch worker 'refused-probe' in ${dir.replaceAll(".", "\\.")}`));
         assert.match(error.message, new RegExp(`declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}`));
+        // Engine-controlled text on a one-line operator surface: flattened,
+        // control-stripped, bounded — so the run's failure is one clean line.
         assert.match(error.message, /Workspace not trusted\. Run `claude` in .* once and accept the trust prompt, then retry\.$/);
+        assert.doesNotMatch(error.message, /[\n\u001b]/);
+        return true;
+      }
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a dispatch the daemon accepted but never registered is a registration timeout, not a refusal", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-unregistered-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write("[]");
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 50 });
+    await assert.rejects(
+      () => controlPlane.dispatch({ prompt: "hello", name: "unregistered-probe", cwd: dir }),
+      (error: unknown) => {
+        // Claude Code did not decline — `claude --bg` returned — so this is
+        // the engine's operational failure (spent and retried by the loop),
+        // never the pre-spawn refusal.
+        assert.ok(error instanceof ClaudeRegistrationTimeoutError);
+        assert.ok(!(error instanceof ClaudeDispatchError));
+        assert.match(error.message, new RegExp(`'unregistered-probe' in ${dir.replaceAll(".", "\\\\.")} did not register within 50ms`));
         return true;
       }
     );

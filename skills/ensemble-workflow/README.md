@@ -29,7 +29,7 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
 Stdout is the result as JSON — here, a JSON-encoded string:
 
 ```
-"Hello, I'm ready to help."
+"Hello!"
 ```
 
 Stderr carries the completion-sentinel path and, when recording is enabled,

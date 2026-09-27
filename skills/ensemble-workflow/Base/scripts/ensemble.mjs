@@ -14075,7 +14075,7 @@ function resolveStatus(config, env, cwd) {
   }
   if (directory.layer !== "default") {
     throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${directory.value} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
+      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
   return { value: null, layer: directory.layer };
@@ -14089,7 +14089,9 @@ function resolveEnabled(envValue, envKey, fileValue) {
     if (ENABLED_VALUES.has(normalised)) {
       return { value: true, layer: "env" };
     }
-    throw new AmbientConfigError(`Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0`);
+    throw new AmbientConfigError(
+      `Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0; got ${JSON.stringify(envValue)}`
+    );
   }
   if (fileValue !== void 0) {
     return { value: fileValue, layer: "config-file" };
@@ -14099,7 +14101,9 @@ function resolveEnabled(envValue, envKey, fileValue) {
 function resolveDirectory(envValue, envKey, fileValue, fallback) {
   if (envValue !== void 0) {
     if (envValue.trim().length === 0) {
-      throw new AmbientConfigError(`Invalid value for ${envKey}: expected a non-empty directory path`);
+      throw new AmbientConfigError(
+        `Invalid value for ${envKey}: expected a non-empty directory path; got ${JSON.stringify(envValue)}`
+      );
     }
     return { value: envValue, layer: "env" };
   }
@@ -14109,11 +14113,10 @@ function resolveDirectory(envValue, envKey, fileValue, fallback) {
   return { value: fallback, layer: "default" };
 }
 function parseEnvironmentInteger(value, key) {
-  if (!/^[0-9]+$/.test(value.trim())) {
-    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1`);
-  }
   const parsed = Number(value.trim());
-  assertPositiveInteger(parsed, key, "environment");
+  if (!/^[0-9]+$/.test(value.trim()) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1; got ${JSON.stringify(value)}`);
+  }
   return parsed;
 }
 function assertPositiveInteger(value, key, source) {
@@ -14208,6 +14211,26 @@ function partialWorkerTextOf(error) {
   }
   return null;
 }
+function attachPartialTranscript(error, transcript) {
+  const carrier = error;
+  if (carrier.partialTranscript === void 0) {
+    carrier.partialTranscript = transcript;
+  }
+  return error;
+}
+function partialTranscriptOf(error) {
+  return error instanceof Error ? error.partialTranscript ?? null : null;
+}
+function attachFirstDeltaMs(error, firstDeltaMs) {
+  const carrier = error;
+  if (carrier.firstDeltaMs === void 0) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+function firstDeltaMsOf(error) {
+  return error instanceof Error ? error.firstDeltaMs ?? null : null;
+}
 function attachFailedTurnResult(error, result) {
   const carrier = error;
   if (carrier.failedTurnResult === void 0) {
@@ -14233,6 +14256,39 @@ function appServerDiagnosticOf(error) {
     return error.appServerDiagnostic ?? null;
   }
   return null;
+}
+var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+function payloadBesideMessage(diagnostic) {
+  let parsed;
+  try {
+    parsed = JSON.parse(diagnostic.payload);
+  } catch {
+    return diagnostic.payload;
+  }
+  const message = diagnostic.message.trim();
+  const restates = (value) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && (trimmed === message || trimmed.length >= 32 && message.endsWith(trimmed));
+  };
+  let replaced = false;
+  const walk = (value, depth) => {
+    if (typeof value === "string" && restates(value)) {
+      replaced = true;
+      return "(the diagnostic above)";
+    }
+    if (depth > 16 || value === null || typeof value !== "object") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => walk(item, depth + 1));
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item, depth + 1)]));
+  };
+  const rendered = walk(parsed, 0);
+  if (!replaced) {
+    return diagnostic.payload;
+  }
+  return rendered === "(the diagnostic above)" ? "" : JSON.stringify(rendered);
 }
 function attachWorkerExitStatus(error, exit) {
   const carrier = error;
@@ -14298,9 +14354,10 @@ var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   code;
   data;
   constructor(error, diagnostic) {
-    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
+    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}`;
+    const payload = diagnostic === void 0 ? "" : payloadBesideMessage(diagnostic);
     super(
-      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " + CODEX_SCHEMA_REJECTION_REMEDY + engineDiagnostic + (payload === "" ? "" : `; data: ${payload}`),
       { cause: error }
     );
     this.code = error.code;
@@ -14308,8 +14365,16 @@ var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   }
 };
 var BudgetExceededError = class extends EnsembleError {
+  engine;
+  total;
+  spent;
   constructor(engine, total, spent) {
-    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
+    super(
+      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
+    );
+    this.engine = engine;
+    this.total = total;
+    this.spent = spent;
   }
 };
 var MissingEngineError = class extends AgentOptionRejectedError {
@@ -14425,6 +14490,11 @@ var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
     );
   }
 };
+var InvalidAgentOptionsError = class extends AgentOptionRejectedError {
+  constructor(errors) {
+    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+  }
+};
 var UnreadableAgentOptionError = class extends AgentOptionRejectedError {
   constructor(option, expected, cause) {
     super(
@@ -14439,6 +14509,11 @@ var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
       `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
       options
     );
+  }
+};
+var CyclicAgentSchemaError = class extends InvalidAgentSchemaError {
+  constructor(location, firstSeenAt, kind = "object") {
+    super(kind === "object" ? `object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref` : `JSON Schema $ref cycle at ${location} (back to ${firstSeenAt}); make a reference lead through a concrete schema constraint`);
   }
 };
 function renderOffendingSchema(offending) {
@@ -14753,8 +14828,9 @@ var RunRecordWriter = class _RunRecordWriter {
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
     await mkdir(archiveDir, { recursive: true });
-    const harnessRoot = await findHarnessRoot() ?? options.cwd;
-    const packageInfo = await readPackageInfo(harnessRoot);
+    const harnessRoot = await findHarnessRoot();
+    const packageInfo = await readPackageInfo(harnessRoot ?? path3.dirname(fileURLToPath2(import.meta.url)));
+    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
     const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
     const canonicalArgs = canonicalJson(options.args);
     const writer = new _RunRecordWriter(archiveDir, options.cwd, {
@@ -14809,7 +14885,8 @@ var RunRecordWriter = class _RunRecordWriter {
       harness: {
         package_name: packageInfo.name,
         package_version: packageInfo.version,
-        commit: await git(["rev-parse", "HEAD"], harnessRoot)
+        commit: harnessCommit,
+        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
       },
       result: {
         archive_path: null,
@@ -14834,6 +14911,7 @@ var RunRecordWriter = class _RunRecordWriter {
       ],
       hold_events: [],
       tallies: {},
+      tallies_unavailable: "none-recorded",
       cost_rollup: {},
       files: [],
       integrity: {
@@ -14960,6 +15038,7 @@ var RunRecordWriter = class _RunRecordWriter {
         return;
       }
       Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      this.manifest.tallies_unavailable = null;
       await this.#writeManifest();
     });
   }
@@ -14991,6 +15070,7 @@ var RunRecordWriter = class _RunRecordWriter {
           path: relativePath,
           format: transcript.format,
           source: transcript.source,
+          partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
         });
@@ -15182,6 +15262,11 @@ function transcriptAbsenceReason(record) {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
+  if (record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
+  }
   if (record.status === "interrupted") {
     return "worker-interrupted";
   }
@@ -15209,16 +15294,24 @@ function agentUsage(record) {
 function buildCostRollup(records) {
   const rollup = {};
   const accumulators = /* @__PURE__ */ new Map();
+  const noteAbsentUsage = (engine, model) => {
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
+  };
   for (const record of records) {
+    if (record.attempts.length === 0) {
+      noteAbsentUsage(record.engine, "unresolved");
+    }
     const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
     for (const attempt of record.attempts) {
       const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      if (summary === null) {
-        continue;
-      }
       const borrowed = engine === lastReporter ? record.resolvedModel : null;
       const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
+      if (summary === null) {
+        noteAbsentUsage(engine, model);
+        continue;
+      }
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
       const key = `${engine}\0${model}`;
@@ -15228,7 +15321,7 @@ function buildCostRollup(records) {
         addProviderCost(accumulator, event);
       }
       rollup[engine][model] = {
-        tokens: existing === void 0 ? summary : addUsageSummary(existing.tokens, summary),
+        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
         cost: publishedCost(accumulator)
       };
     }
@@ -15711,9 +15804,6 @@ function snapshotAgentCwd(options) {
   } catch (error) {
     throw new UnreadableAgentOptionError("cwd", "a string path", error);
   }
-  if (cwd !== void 0 && typeof cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
-  }
   return new Proxy(options, {
     get(target, property, receiver) {
       return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
@@ -15721,30 +15811,55 @@ function snapshotAgentCwd(options) {
   });
 }
 function assertValidAgentOptions(options) {
+  const errors = [];
+  const collect = (check) => {
+    try {
+      check();
+    } catch (error) {
+      if (!(error instanceof AgentOptionRejectedError)) {
+        throw error;
+      }
+      errors.push(error);
+    }
+  };
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
-      throw new RemovedAgentOptionError(key);
-    }
-    if (!AGENT_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+      errors.push(new RemovedAgentOptionError(key));
+    } else if (!AGENT_OPTION_KEY_SET.has(key)) {
+      errors.push(new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS));
     }
   }
   const values = options;
-  if (values.isolation !== void 0 && values.isolation !== "worktree") {
-    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-  }
+  collect(() => {
+    if (values.cwd !== void 0 && typeof values.cwd !== "string") {
+      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+    }
+  });
+  collect(() => {
+    if (values.isolation !== void 0 && values.isolation !== "worktree") {
+      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+    }
+  });
   if (values.engine !== "opencode") {
-    assertCanonicalEffortSupported(values.effort);
+    collect(() => assertCanonicalEffortSupported(values.effort));
   }
-  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
-  assertPositiveIntegerOption(values, "maxAttempts");
-  if (values.identity !== void 0 && typeof values.identity !== "boolean") {
-    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-  }
+  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
+  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
+  collect(() => {
+    if (values.identity !== void 0 && typeof values.identity !== "boolean") {
+      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+    }
+  });
   if (values.strip !== void 0) {
-    assertValidStripOption(values.strip);
+    collect(() => assertValidStripOption(values.strip));
   }
-  assertValidFallbackChain(values.fallback);
+  collect(() => assertValidFallbackChain(values.fallback));
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 0) {
+    throw new InvalidAgentOptionsError(errors);
+  }
 }
 var WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
@@ -15802,6 +15917,9 @@ function assertValidFallbackChain(chain) {
   }
   if (!Array.isArray(chain)) {
     throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+  }
+  if (chain.length === 0) {
+    throw new FallbackTargetRejectedError("the chain must not be empty");
   }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
@@ -16395,9 +16513,8 @@ function diagnose(error, context) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
+        const kind = INTERNAL_CLASS_NAME.test(attempt.failure.kind) ? "" : ` (${attempt.failure.kind})`;
+        lines.push(`attempt ${attempt.attempt}${kind}: ${bounded(attempt.failure.message)}${workerDiagnosis}`);
       }
     }
     const record = context.lastAgentRecord;
@@ -16418,14 +16535,21 @@ function diagnose(error, context) {
   if (error instanceof CodexSchemaSubsetUnsupportedError) {
     const lines = [
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
-      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+      CODEX_SCHEMA_REJECTION_REMEDY
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      const rest = payloadBesideMessage(diagnostic);
+      const payload = rest.trim().length === 0 ? "" : `; data: ${bounded(rest)}`;
       lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
     }
     return lines;
+  }
+  if (error instanceof BudgetExceededError) {
+    return [
+      error.message,
+      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+    ];
   }
   if (error instanceof EngineShutdownError) {
     return [`${error.message} \u2014 this worker was interrupted by the run ending, not by its own failure`];
@@ -16464,6 +16588,7 @@ function diagnose(error, context) {
   }
   return null;
 }
+var INTERNAL_CLASS_NAME = /^[A-Z][A-Za-z0-9]*Error$/;
 function recordSuffix(context) {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
 }
@@ -16880,8 +17005,8 @@ var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
   ["AppServerRetryPromiseBrokenError", { class: "availability", rule: "codex.retry-promise-broken" }],
-  // Codex refused the schema before generation: the shape, not the engine.
-  ["CodexSchemaSubsetUnsupportedError", { class: "output", rule: "codex.schema-rejected" }],
+  // Codex refused the authored schema before generation: no worker answer exists.
+  ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]
@@ -18094,7 +18219,8 @@ function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
           format: "jsonl",
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
-          content: evidence.transcript.text
+          content: evidence.transcript.text,
+          partial: true
         }
       ]
     }
@@ -19201,6 +19327,20 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    */
   #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript?.events.some((event) => event.direction === "server")) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: true
+      });
+    }
     this.#transcripts.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
@@ -20199,11 +20339,18 @@ function validateJsonSchema(value, schema) {
   return { ok, value, errors: validate.errors };
 }
 function assertCompilableSchema(schema) {
+  assertAcyclicSchemaObject(schema);
   try {
     compileSchema(schema);
   } catch (error) {
     if (error instanceof InvalidAgentSchemaError) {
       throw error;
+    }
+    if (error instanceof RangeError) {
+      const cycle = findLocalReferenceCycle(schema);
+      if (cycle !== null) {
+        throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
+      }
     }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
       cause: error,
@@ -20211,8 +20358,65 @@ function assertCompilableSchema(schema) {
     });
   }
 }
+function findLocalReferenceCycle(schema) {
+  const seenObjects = /* @__PURE__ */ new Set();
+  const visit = (value, path14) => {
+    if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
+    seenObjects.add(value);
+    const object = value;
+    if (typeof object.$ref === "string") {
+      const seenRefs = /* @__PURE__ */ new Set([path14]);
+      let current2 = object;
+      let currentPath = path14;
+      while (typeof current2.$ref === "string") {
+        const targetPath = current2.$ref;
+        const target = localPointerTarget(schema, targetPath);
+        if (target === null) break;
+        if (seenRefs.has(targetPath)) return { at: `${currentPath}/$ref`, back: targetPath };
+        seenRefs.add(targetPath);
+        current2 = target;
+        currentPath = targetPath;
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      const cycle = visit(child, `${path14}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      if (cycle !== null) return cycle;
+    }
+    return null;
+  };
+  return visit(schema, "#");
+}
+function localPointerTarget(schema, pointer) {
+  if (pointer === "#") return asJsonObject2(schema);
+  if (!pointer.startsWith("#/")) return null;
+  let current2 = schema;
+  for (const encoded of pointer.slice(2).split("/")) {
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current2 !== "object" || current2 === null || !Object.hasOwn(current2, key)) return null;
+    current2 = current2[key];
+  }
+  return asJsonObject2(current2);
+}
 function normaliseForCodexOutputSchema(schema) {
+  assertAcyclicSchemaObject(schema);
   return normaliseSchemaNode(schema);
+}
+function assertAcyclicSchemaObject(schema) {
+  const active = /* @__PURE__ */ new Map();
+  const visited = /* @__PURE__ */ new Set();
+  const walk = (value, path14) => {
+    if (typeof value !== "object" || value === null) return;
+    const firstSeenAt = active.get(value);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path14, firstSeenAt);
+    if (visited.has(value)) return;
+    active.set(value, path14);
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, `${path14}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+    }
+    active.delete(value);
+    visited.add(value);
+  };
+  walk(schema, "#");
 }
 function compileSchema(schema) {
   return compilerFor(schema).compile(schema);
@@ -21464,9 +21668,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.placement.cwd
       )
     );
-    const invocation = state.engineSession.beginTurn(prompt, {
+    const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...turn.schema !== void 0 ? { schema: turn.schema } : {}
     });
+    const invocation = {
+      runAttempt: async (context) => {
+        const result = await turnInvocation.runAttempt(context);
+        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
+          return { ...result, resolvedModel: state.resolvedModel };
+        }
+        return result;
+      }
+    };
     const sharedOptions = {
       ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
       ...options.model !== void 0 ? { model: options.model } : {}
@@ -21490,7 +21703,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       state.engineSession = null;
       await refused.close().catch(() => void 0);
     } else if (outcome.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return outcome;
   }
@@ -22015,7 +22232,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw completion.error;
     }
     if (completion.execution.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return completion.execution;
   }
@@ -22228,7 +22449,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         attempts.target,
         "failed",
         result.attemptFailure,
-        result.text,
+        // Returned operational failures use empty text when the worker
+        // produced nothing; an answered empty string takes the output path.
+        result.text === "" ? null : result.text,
         null,
         startedAt,
         result,
@@ -22260,6 +22483,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
+    const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult = failedResult ?? (partialTranscript !== null || firstDeltaMs !== null ? {
+      ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
+      ...firstDeltaMs !== null ? { firstDeltaMs } : {}
+    } : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -22269,7 +22498,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult,
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,

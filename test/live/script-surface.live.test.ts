@@ -513,22 +513,13 @@ for (const scenario of placementScenarios) {
           description: "Worker observation of its per-call starting directory"
         };
         return await agent(
-          "Use the shell to run pwd and then cat placement-receipt.txt. Return the observed directory and file contents.",
+          "Copy the file placement-receipt.txt in your current working directory to a new file named placed.txt in the same directory, using relative paths only. Then reply with the single word done.",
           {
             engine: ${JSON.stringify(scenario.engine)},
             ${"model" in scenario ? `model: ${JSON.stringify(scenario.model)},` : ""}
             cwd: ${JSON.stringify(targetCwd)},
             label: ${JSON.stringify(`per-call-cwd-${scenario.engine}`)},
-            maxAttempts: 1,
-            schema: {
-              type: "object",
-              required: ["cwd", "receipt"],
-              additionalProperties: false,
-              properties: {
-                cwd: { type: "string" },
-                receipt: { type: "string" }
-              }
-            }
+            maxAttempts: 1
           }
         );
       `
@@ -538,21 +529,17 @@ for (const scenario of placementScenarios) {
       env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
     });
 
+    // Placement is asserted from what the product determines — the archived
+    // resolved_cwd — and from a side effect only a worker started in the
+    // target directory could leave there: a relative-path copy of a receipt it
+    // could learn nowhere else. The worker's reply is not asserted; how it
+    // words "done" is its own choice, and a live test asserts what the
+    // product determines, never the model's compliance.
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), {
-      cwd: targetCwd,
-      receipt
-    });
     const { agent } = await recordedAgent(recordStore, `per-call-cwd-${scenario.engine}`);
     assert.equal(agent.resolved_cwd, targetCwd);
     assert.equal(agent.isolation, null);
-    assert.deepEqual(agent.validated_output, { cwd: targetCwd, receipt });
-    if (scenario.engine === "codex") {
-      const command = await recordedCommand(recordStore, `per-call-cwd-${scenario.engine}`, "placement-receipt.txt");
-      assert.equal(command.exitCode, 0);
-      assert.match(command.aggregatedOutput ?? "", new RegExp(escapeRegExp(targetCwd)));
-      assert.match(command.aggregatedOutput ?? "", new RegExp(receipt));
-    }
+    assert.equal((await readFile(path.join(targetCwd, "placed.txt"), "utf8")).trimEnd(), receipt);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

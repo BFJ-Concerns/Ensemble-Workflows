@@ -14075,7 +14075,7 @@ function resolveStatus(config, env, cwd) {
   }
   if (directory.layer !== "default") {
     throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${directory.value} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
+      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
   return { value: null, layer: directory.layer };
@@ -14089,7 +14089,9 @@ function resolveEnabled(envValue, envKey, fileValue) {
     if (ENABLED_VALUES.has(normalised)) {
       return { value: true, layer: "env" };
     }
-    throw new AmbientConfigError(`Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0`);
+    throw new AmbientConfigError(
+      `Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0; got ${JSON.stringify(envValue)}`
+    );
   }
   if (fileValue !== void 0) {
     return { value: fileValue, layer: "config-file" };
@@ -14099,7 +14101,9 @@ function resolveEnabled(envValue, envKey, fileValue) {
 function resolveDirectory(envValue, envKey, fileValue, fallback) {
   if (envValue !== void 0) {
     if (envValue.trim().length === 0) {
-      throw new AmbientConfigError(`Invalid value for ${envKey}: expected a non-empty directory path`);
+      throw new AmbientConfigError(
+        `Invalid value for ${envKey}: expected a non-empty directory path; got ${JSON.stringify(envValue)}`
+      );
     }
     return { value: envValue, layer: "env" };
   }
@@ -14109,11 +14113,10 @@ function resolveDirectory(envValue, envKey, fileValue, fallback) {
   return { value: fallback, layer: "default" };
 }
 function parseEnvironmentInteger(value, key) {
-  if (!/^[0-9]+$/.test(value.trim())) {
-    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1`);
-  }
   const parsed = Number(value.trim());
-  assertPositiveInteger(parsed, key, "environment");
+  if (!/^[0-9]+$/.test(value.trim()) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1; got ${JSON.stringify(value)}`);
+  }
   return parsed;
 }
 function assertPositiveInteger(value, key, source) {
@@ -14234,6 +14237,39 @@ function appServerDiagnosticOf(error) {
   }
   return null;
 }
+var CODEX_SCHEMA_REJECTION_REMEDY = "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+function payloadBesideMessage(diagnostic) {
+  let parsed;
+  try {
+    parsed = JSON.parse(diagnostic.payload);
+  } catch {
+    return diagnostic.payload;
+  }
+  const message = diagnostic.message.trim();
+  const restates = (value) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && (trimmed === message || trimmed.length >= 32 && message.endsWith(trimmed));
+  };
+  let replaced = false;
+  const walk = (value, depth) => {
+    if (typeof value === "string" && restates(value)) {
+      replaced = true;
+      return "(the diagnostic above)";
+    }
+    if (depth > 16 || value === null || typeof value !== "object") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => walk(item, depth + 1));
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item, depth + 1)]));
+  };
+  const rendered = walk(parsed, 0);
+  if (!replaced) {
+    return diagnostic.payload;
+  }
+  return rendered === "(the diagnostic above)" ? "" : JSON.stringify(rendered);
+}
 function attachWorkerExitStatus(error, exit) {
   const carrier = error;
   if ((exit.exitCode !== null || exit.signal !== null) && carrier.workerExitStatus === void 0) {
@@ -14298,9 +14334,10 @@ var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   code;
   data;
   constructor(error, diagnostic) {
-    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
+    const engineDiagnostic = diagnostic === void 0 ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}`;
+    const payload = diagnostic === void 0 ? "" : payloadBesideMessage(diagnostic);
     super(
-      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." + engineDiagnostic,
+      "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " + CODEX_SCHEMA_REJECTION_REMEDY + engineDiagnostic + (payload === "" ? "" : `; data: ${payload}`),
       { cause: error }
     );
     this.code = error.code;
@@ -14308,8 +14345,16 @@ var CodexSchemaSubsetUnsupportedError = class extends EnsembleError {
   }
 };
 var BudgetExceededError = class extends EnsembleError {
+  engine;
+  total;
+  spent;
   constructor(engine, total, spent) {
-    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
+    super(
+      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
+    );
+    this.engine = engine;
+    this.total = total;
+    this.spent = spent;
   }
 };
 var MissingEngineError = class extends AgentOptionRejectedError {
@@ -16442,9 +16487,8 @@ function diagnose(error, context) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
+        const kind = INTERNAL_CLASS_NAME.test(attempt.failure.kind) ? "" : ` (${attempt.failure.kind})`;
+        lines.push(`attempt ${attempt.attempt}${kind}: ${bounded(attempt.failure.message)}${workerDiagnosis}`);
       }
     }
     const record = context.lastAgentRecord;
@@ -16465,14 +16509,21 @@ function diagnose(error, context) {
   if (error instanceof CodexSchemaSubsetUnsupportedError) {
     const lines = [
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
-      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+      CODEX_SCHEMA_REJECTION_REMEDY
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      const rest = payloadBesideMessage(diagnostic);
+      const payload = rest.trim().length === 0 ? "" : `; data: ${bounded(rest)}`;
       lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
     }
     return lines;
+  }
+  if (error instanceof BudgetExceededError) {
+    return [
+      error.message,
+      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+    ];
   }
   if (error instanceof EngineShutdownError) {
     return [`${error.message} \u2014 this worker was interrupted by the run ending, not by its own failure`];
@@ -16511,6 +16562,7 @@ function diagnose(error, context) {
   }
   return null;
 }
+var INTERNAL_CLASS_NAME = /^[A-Z][A-Za-z0-9]*Error$/;
 function recordSuffix(context) {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
 }

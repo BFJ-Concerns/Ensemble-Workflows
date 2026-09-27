@@ -229,6 +229,8 @@ Environment variables are `ENSEMBLE_AGENT_CEILING`,
 `ENSEMBLE_CONCURRENCY_CODEX`, `ENSEMBLE_CONCURRENCY_CLAUDE`,
 `ENSEMBLE_CONCURRENCY_OPENCODE`, `ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, and `ENSEMBLE_STATUS_DIR`.
+A malformed value is refused before the run starts, naming the variable, the
+accepted form, and the value it got.
 `ENSEMBLE_CALLER_IDENTITY` is separate from those runtime settings: when
 present, it records the invoking session's opaque identity in the manifest;
 an explicit `--caller-identity` wins. With neither, `caller_identity` is
@@ -870,7 +872,9 @@ rejection itself is unchanged, invoking no engine.
   execution status is failed; `ensemble agent` uses that status to emit the
   failure envelope and exit 1. A malformed schema throws before the first
   attempt. Codex may additionally reject a schema outside its `outputSchema`
-  subset, with an error saying so.
+  subset, with an error saying so and naming `claude` and `opencode` as the
+  engines that validate the full JSON Schema client-side; the server's
+  diagnostic appears in the error once.
 
   On Claude and opencode the schema rides the prompt, and the worker is asked
   for a conforming JSON value while being allowed to surround it with prose or
@@ -912,7 +916,7 @@ rejection itself is unchanged, invoking no engine.
   `usageLimitExceeded`, `rateLimitExceeded`, `serverOverloaded`, a
   connection the provider refused, a dead or unstartable app-server;
   Claude's synthetic API-refusal reply carrying a 429, 503, or 529, a
-  `claude --bg` Claude Code refused — a refusal is
+  `claude --bg` Claude Code refused — the bullet below: a refusal is
   never a spent attempt — a dispatch the daemon never registered, a session
   that never showed life),
   `output` (empty, unparseable, off-schema), or `unclassified` (a deadline,
@@ -964,8 +968,8 @@ rejection itself is unchanged, invoking no engine.
   hanging or throwing, with the worker's partial text, exit evidence, and the
   engine's own diagnostic retained in the failed attempt record. A Codex turn
   deadline, first-output deadline, or a thread the app-server declared failed
-  is the same operational failure under the one retry rule: it consumes an
-  attempt and the call retries within its bound
+  is the same operational failure under the one retry rule (settled
+  2026-09-14): it consumes an attempt and the call retries within its bound
   with the failure carried into the next attempt's prompt, resolving `null`
   at exhaustion with every attempt on the record — a call whose deadline
   should end it sets `maxAttempts: 1`. The rule's one exemption is Codex's
@@ -1004,7 +1008,8 @@ rejection itself is unchanged, invoking no engine.
 - **Budget**: each `agent()` call checks the engine's ceiling once, at
   dispatch — synchronously at the `agent()` call site, before the worker
   enters the concurrency queue. Once spend reaches the ceiling, a
-  call that has not yet dispatched throws a budget-exhausted error. A call that
+  call that has not yet dispatched throws a budget-exhausted error (a ceiling
+  of 0 admits no call and says so, naming the ceiling to raise). A call that
   starts under the ceiling runs its full retry bound even if spend crosses
   the ceiling mid-call, so a worker's own failure is never rewritten as
   budget exhaustion by concurrent spend; turns already started can

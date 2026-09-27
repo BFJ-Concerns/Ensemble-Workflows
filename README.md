@@ -493,7 +493,13 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `result`: archived `result.json` path and exit code once final.
 - `error`: the `{ kind, message }` of whatever ended the run — a script fault,
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
-  run ended cleanly. Present on both the manifest and `result.json`.
+  run ended cleanly. Present on both the manifest and `result.json`. A budget
+  refusal at a ceiling of 0 reads `Token budget for <engine> is 0, which admits
+  no agent: this agent was not started`; a spent ceiling reads `Token budget
+  exhausted for <engine>: spent N of M tokens`. A Codex schema rejection
+  recorded on an agent attempt's `failure.message` names `claude` and
+  `opencode` as the engines to move to and carries the app-server diagnostic
+  once — the payload's echo of the message reads `"(the diagnostic above)"`.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *own target engine* and *served* model — an agent
   whose fallback chain advanced across engines books each attempt under the

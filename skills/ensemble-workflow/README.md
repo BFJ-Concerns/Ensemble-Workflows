@@ -118,7 +118,10 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope 
   a branch containing changed work is retained for recovery.
 - `workflows` lists saved workflows from `.claude/ensemble/workflows/`
   (project) and `$XDG_DATA_HOME/ensemble/workflows/` (user); unparseable
-  entries are noted on stderr and skipped.
+  entries are noted on stderr and skipped. Its listing is prose on stdout.
+- `holds` lists open decision holds as prose on stdout; `holds --json` prints
+  the full records as JSON on stdout. Help and version print text on stdout.
+  Diagnostics go to stderr.
 
 Exit 0 prints the script's return value, or the direct agent's return value, as
 JSON on stdout — always JSON, every return type. A schema agent's structured
@@ -160,9 +163,10 @@ lets `--timeout` announce a deadline it does not enforce.
 Exit 2 is a rejected invocation: a usage error in the flags, a workflow
 script path that cannot be read, or a direct agent's `--cwd` that is not an
 existing directory. A rejection is decided before a run begins, so it leaves
-nothing behind — one clean line on stderr, nothing on stdout, no sentinel
-announced or written, no archive. Every ending after that point is a run
-ending, with the envelope, archive, and sentinel above.
+nothing behind — a named one-line diagnostic on stderr, or usage on stderr
+for an invocation that named no work or surplus arguments to `workflows`;
+nothing on stdout, no sentinel announced or written, no archive. Every ending
+after that point is a run ending, with the envelope, archive, and sentinel above.
 
 ## Ambient settings
 

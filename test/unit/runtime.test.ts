@@ -3781,7 +3781,7 @@ test("an answer from a chain entry records each refused attempt as advanced and 
   // the notice names the declared target and its own refusal, how many
   // targets refused, and the entry that answered — all read off the record.
   const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), codexRefusal("serverOverloaded")]);
-  const claude = new ChainEngine("claude", [answers("from claude")]);
+  const claude = new ChainEngine("claude", [answers("from claude", "opus")]);
   const { runtime, records } = chainRuntime([codex, claude], 1);
   const notices = chainNotices(runtime);
 
@@ -3943,6 +3943,33 @@ test("a refusal thrown on the chain's last target announces the exhaustion befor
     [["claude/agentFailed", 2, 2, { kind: "ClaudeDispatchError", message: REFUSAL_TEXT }]]
   );
   await runtime.close();
+});
+
+test("run settlement leaves an in-flight chained attempt without a chain decision", async () => {
+  let markStarted: (() => void) | undefined;
+  let rejectAttempt: ((error: Error) => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const codex = new ChainEngine("codex", [() => new Promise<EngineAttemptResult>((_, reject) => {
+    rejectAttempt = reject;
+    markStarted?.();
+  })]);
+  codex.close = async () => { rejectAttempt?.(new AppServerExitedError("codex app-server closed")); };
+  const claude = new ChainEngine("claude", [answers("fallback should not run")]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+
+  const agent = runtime.agent("run past the end", {
+    engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "sonnet" }]
+  });
+  await started;
+  await runtime.close("interrupted");
+  await assert.rejects(agent, AppServerExitedError);
+
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "interrupted");
+  assert.equal(settled.attempts.length, 1);
+  assert.deepEqual(settled.attempts[0]?.classification, { class: "unclassified", rule: "run-settlement" });
+  assert.equal(settled.attempts[0]?.chainDecision, null);
+  assert.equal(claude.dispatches.length, 0);
 });
 
 test("with no chain declared, no attempt carries a chain decision and no chain notice is announced", async () => {

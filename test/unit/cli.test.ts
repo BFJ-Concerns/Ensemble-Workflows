@@ -3181,7 +3181,7 @@ test("an answer from a fallback entry is announced naming the refused declared t
         // Worker-controlled text: flattened to one line on the notice.
         claudeApiRefusal(429, "API Error: Request rejected (429)\n\tslow down"),
         claudeApiRefusal(529, "API Error: Request rejected (529)"),
-        async () => turn("from opus")
+        async () => ({ ...turn("from opus"), resolvedModel: "opus" })
       ])
     ],
     1

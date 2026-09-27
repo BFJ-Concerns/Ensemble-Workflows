@@ -21,24 +21,25 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
   --engine codex --model gpt-6-luna 'Say hello in one sentence.'
 ```
 
-Stdout is the result as JSON — here, a JSON-encoded string:
-
-```
-"Hello, how can I help?"
-```
-
-Stderr carries the completion-sentinel path and, when recording is enabled,
-the archive announcement:
-
-```
-[sentinel] will write /home/user/.local/share/ensemble/runs/cwd/01234567…/completion-sentinel.json when the run ends
-[run-record-archive] {"run_id":"cwd:4f5cde0f…:e8621519-…","archive_path":"/home/user/.local/share/ensemble/runs/cwd/01234567…/00000000-…"}
-```
-
 > [!WARNING]
 > Every worker is unrestricted by default — it can read and write wherever
 > the user running the harness can and can reach the network. `strip` is the
 > opt-in exception (see the options table below).
+
+Stdout is the result as JSON — here, a JSON-encoded string:
+
+```
+"Hello, I'm ready to help."
+```
+
+Stderr carries the completion-sentinel path and, when recording is enabled,
+the archive announcement (the second line is elided — it is a single JSON
+object with `run_id` and `archive_path`):
+
+```
+[sentinel] will write /home/user/.local/share/ensemble/runs/cwd/0123456789abcdef01234567/00000000-0000-4000-8000-000000000000/completion-sentinel.json when the run ends
+…
+```
 
 A workflow script dispatches multiple workers with coordination. The script
 must begin with the `export const meta` statement — anything before it, a

@@ -292,7 +292,13 @@ Example:
       "startedAtMs": 1766491209000,
       "firstEvidenceAtMs": 1766491211200
     }
-  ]
+  ],
+  "holds": [],
+  "owner": {
+    "host": "build-host",
+    "pid": 43122,
+    "start_ticks": "98765432100"
+  }
 }
 ```
 

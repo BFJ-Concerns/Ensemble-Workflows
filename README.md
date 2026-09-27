@@ -55,9 +55,11 @@ any worker spawns.
   Claude in any position — that the harness re-dispatches the call on when a
   target fails for **availability** (allowance exhausted, provider overload
   past its own retry, a dead or unstartable substrate); output failures retry
-  in place and never advance it, an opencode entry throws before any worker
-  spawns, and every step is the harness's own recorded dispatch — the engine
-  never swaps models behind the record's back.
+  in place and never advance it. A Codex rejection of the authored schema
+  before generation is `unclassified`: it returns `null` after one thread
+  start without retrying or advancing the chain. An empty chain or opencode
+  entry throws before any worker spawns, and every step is the harness's own
+  recorded dispatch — the engine never swaps models behind the record's back.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallback` that every `agent()` call
   inherits and call-site options override; the chain is engine-agnostic, so
@@ -565,7 +567,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   answered: allowance exhausted, provider overload past its own retry, a
   dead or unstartable substrate — the one class that advances a fallback
   chain and consumes no attempt), `"output"` (the worker answered badly:
-  empty, unparseable, off-schema — retried in place), or `"unclassified"`;
+  empty, unparseable, off-schema — retried in place), or `"unclassified"`
+  (including a Codex rejection of the authored schema before generation);
   `rule` names the classifier rule that matched (`codex.usage-limit`,
   `claude.rate-limit`, `codex.substrate-dead`, `run-settlement`, …) and is
   `null` only when no rule recognised the diagnostic — the archive's tell

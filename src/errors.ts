@@ -613,10 +613,12 @@ export class InvalidAgentSchemaError extends AgentOptionRejectedError {
   }
 }
 
-/** An object-reference cycle cannot be compiled or sent as a schema, so reject it before a worker spawns. */
+/** A schema cycle the selected local path cannot compile is rejected before a worker spawns. */
 export class CyclicAgentSchemaError extends InvalidAgentSchemaError {
-  constructor(location: string, firstSeenAt: string) {
-    super(`object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref`);
+  constructor(location: string, firstSeenAt: string, kind: "object" | "reference" = "object") {
+    super(kind === "object"
+      ? `object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref`
+      : `JSON Schema $ref cycle at ${location} (back to ${firstSeenAt}); make a reference lead through a concrete schema constraint`);
   }
 }
 

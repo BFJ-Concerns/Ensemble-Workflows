@@ -14447,8 +14447,8 @@ var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
   }
 };
 var CyclicAgentSchemaError = class extends InvalidAgentSchemaError {
-  constructor(location, firstSeenAt) {
-    super(`object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref`);
+  constructor(location, firstSeenAt, kind = "object") {
+    super(kind === "object" ? `object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref` : `JSON Schema $ref cycle at ${location} (back to ${firstSeenAt}); make a reference lead through a concrete schema constraint`);
   }
 };
 function renderOffendingSchema(offending) {
@@ -20238,11 +20238,56 @@ function assertCompilableSchema(schema) {
     if (error instanceof InvalidAgentSchemaError) {
       throw error;
     }
+    if (error instanceof RangeError) {
+      const cycle = findLocalReferenceCycle(schema);
+      if (cycle !== null) {
+        throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
+      }
+    }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
       cause: error,
       offending: schema
     });
   }
+}
+function findLocalReferenceCycle(schema) {
+  const seenObjects = /* @__PURE__ */ new Set();
+  const visit = (value, path14) => {
+    if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
+    seenObjects.add(value);
+    const object = value;
+    if (typeof object.$ref === "string") {
+      const seenRefs = /* @__PURE__ */ new Set([path14]);
+      let current2 = object;
+      let currentPath = path14;
+      while (typeof current2.$ref === "string") {
+        const targetPath = current2.$ref;
+        const target = localPointerTarget(schema, targetPath);
+        if (target === null) break;
+        if (seenRefs.has(targetPath)) return { at: `${currentPath}/$ref`, back: targetPath };
+        seenRefs.add(targetPath);
+        current2 = target;
+        currentPath = targetPath;
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      const cycle = visit(child, `${path14}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      if (cycle !== null) return cycle;
+    }
+    return null;
+  };
+  return visit(schema, "#");
+}
+function localPointerTarget(schema, pointer) {
+  if (pointer === "#") return asJsonObject2(schema);
+  if (!pointer.startsWith("#/")) return null;
+  let current2 = schema;
+  for (const encoded of pointer.slice(2).split("/")) {
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current2 !== "object" || current2 === null || !Object.hasOwn(current2, key)) return null;
+    current2 = current2[key];
+  }
+  return asJsonObject2(current2);
 }
 function normaliseForCodexOutputSchema(schema) {
   assertAcyclicSchemaObject(schema);

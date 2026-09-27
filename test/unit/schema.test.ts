@@ -45,6 +45,20 @@ test("recursive JSON Schema references remain compilable and normalisable", () =
   assert.equal(validateJsonSchema({ root: { next: {} } }, defs).ok, true);
 });
 
+test("a ref-only cycle that overflows compilation names the repeated reference", () => {
+  const schema = {
+    type: "object",
+    properties: { child: { $ref: "#/$defs/a" } },
+    $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }
+  };
+  assert.throws(() => assertCompilableSchema(schema), (error: unknown) => {
+    assert.ok(error instanceof CyclicAgentSchemaError);
+    assert.match(error.message, /\$ref cycle at #\/\$defs\/b\/\$ref \(back to #\/\$defs\/a\)/);
+    assert.doesNotMatch(error.message, /Maximum call stack|\[object Object\]/);
+    return true;
+  });
+});
+
 test("the standard draft 2020-12 declaration is accepted and enforced under its own dialect", () => {
   // The discriminating shape: under 2020-12, `items: false` constrains only
   // positions beyond `prefixItems`, so ["a", 1] validates; a draft-07

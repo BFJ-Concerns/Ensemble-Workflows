@@ -41,7 +41,9 @@ test("pre-spawn validation errors pass through combinators and real agent() call
     fixture('return await parallel([() => agent("go", { engine: "codex", mystery: true, identity: "yes", effort: "extreme" })]);'),
     (error: unknown) => {
       assert.ok(error instanceof InvalidAgentOptionsError);
-      for (const name of ["mystery", "identity", "effort"]) assert.match(error.message, new RegExp(name));
+      assert.match(error.message, /Unrecognised agent\(\) option "mystery"/);
+      assert.match(error.message, /Invalid agent\(\) option "identity" value "yes"/);
+      assert.match(error.message, /Invalid agent\(\) option "effort" value "extreme"/);
       return true;
     }
   );
@@ -50,6 +52,14 @@ test("pre-spawn validation errors pass through combinators and real agent() call
     (error: unknown) => {
       assert.ok(error instanceof CyclicAgentSchemaError);
       assert.match(error.message, /cycle at #\/self \(back to #\)/);
+      return true;
+    }
+  );
+  await assert.rejects(
+    fixture('const schema = { type: "object", properties: { child: { $ref: "#/$defs/a" } }, $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } } }; return await parallel([() => agent("go", { engine: "codex", schema })]);'),
+    (error: unknown) => {
+      assert.ok(error instanceof CyclicAgentSchemaError);
+      assert.match(error.message, /\$ref cycle at #\/\$defs\/b\/\$ref/);
       return true;
     }
   );

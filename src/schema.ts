@@ -137,11 +137,61 @@ export function assertCompilableSchema(schema: JsonSchema): void {
       // re-wrapping would bury the remedy under a second layer of message.
       throw error;
     }
+    // Ajv can recurse indefinitely through a chain of local $refs that
+    // never reaches a concrete schema. Identify the chain structurally;
+    // ordinary recursive schemas compile and never enter this branch.
+    if (error instanceof RangeError) {
+      const cycle = findLocalReferenceCycle(schema);
+      if (cycle !== null) {
+        throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
+      }
+    }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
       cause: error,
       offending: schema
     });
   }
+}
+
+function findLocalReferenceCycle(schema: unknown): { at: string; back: string } | null {
+  const seenObjects = new Set<object>();
+  const visit = (value: unknown, path: string): { at: string; back: string } | null => {
+    if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
+    seenObjects.add(value);
+    const object = value as Record<string, unknown>;
+    if (typeof object.$ref === "string") {
+      const seenRefs = new Set<string>([path]);
+      let current = object;
+      let currentPath = path;
+      while (typeof current.$ref === "string") {
+        const targetPath = current.$ref;
+        const target = localPointerTarget(schema, targetPath);
+        if (target === null) break;
+        if (seenRefs.has(targetPath)) return { at: `${currentPath}/$ref`, back: targetPath };
+        seenRefs.add(targetPath);
+        current = target;
+        currentPath = targetPath;
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      const cycle = visit(child, `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      if (cycle !== null) return cycle;
+    }
+    return null;
+  };
+  return visit(schema, "#");
+}
+
+function localPointerTarget(schema: unknown, pointer: string): Record<string, unknown> | null {
+  if (pointer === "#") return asJsonObject(schema);
+  if (!pointer.startsWith("#/")) return null;
+  let current: unknown = schema;
+  for (const encoded of pointer.slice(2).split("/")) {
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current !== "object" || current === null || !Object.hasOwn(current, key)) return null;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return asJsonObject(current);
 }
 
 export function normaliseForCodexOutputSchema(schema: JsonSchema): JsonSchema {

@@ -617,9 +617,10 @@ Schemas are JSON Schema **draft-07** (the default when `$schema` is
 omitted) or **draft 2020-12** (declare
 `"$schema": "https://json-schema.org/draft/2020-12/schema"`). Any other
 declared dialect is rejected before a worker spawns, naming the supported
-dialects. Recursive `$ref` schemas compile normally. A JavaScript schema
-object that contains an object-reference cycle is refused before dispatch,
-with the cycle's location and a remedy. If several `agent()` options are
+dialects. A recursive `$ref` schema that compiles remains accepted; a ref-only
+cycle that the compiler cannot process is refused with its location. A JavaScript
+schema object with an object-reference cycle is also refused before dispatch,
+with its location and a remedy. If several `agent()` options are
 invalid, their names and reasons appear in one rejection.
 
 ## Programmatic runtime options

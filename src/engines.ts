@@ -387,7 +387,6 @@ class CodexWorkerSession implements EngineWorkerSession {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(schema !== undefined ? { schema: normaliseForCodexOutputSchema(schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
       ...(context.onLiveEvidence !== undefined ? { onFirstOutput: context.onLiveEvidence } : {})
     });
   }
@@ -456,7 +455,6 @@ class CodexEngineInvocation implements EngineInvocation {
       ...(this.#options.timeoutMs !== undefined ? { timeoutMs: this.#options.timeoutMs } : {}),
       ...(this.#options.schema !== undefined ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {}),
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
-      ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
       ...(onLiveEvidence !== undefined ? { onFirstOutput: onLiveEvidence } : {})
     });
   }
@@ -532,8 +530,9 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     }
     // The canonical level clamps to the CLI's nearest native level here,
     // pre-spawn: the CLI silently runs an unknown value at its default, so
-    // only the converted native value may reach it, and that value is what
-    // the dispatch (and the run record's resolved_effort) carries.
+    // only the converted native value may reach it. The run record's
+    // `resolved_effort` is not this value: it is the level the CLI's own
+    // transcript reports serving (claude-transcript's `effortSince`).
     const effort = claudeNativeEffort(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
@@ -772,10 +771,15 @@ export async function createDefaultEngineRegistry(
  * `CodexSubstrateRefusedError` (pre-spawn) with the app-server's exit
  * evidence carried across. A `thread/start` the running server rejected is
  * the server answering and passes through as the attempt's own failure.
+ *
+ * The requested model and effort both ride the thread: `thread/start`'s
+ * answer reports the model and reasoning effort the thread runs at, and
+ * that answer is what the record's `resolved_model` / `resolved_effort`
+ * carry (`ThreadStartOptions.effort`). Neither is re-sent on the turn.
  */
 async function openCodexThread(
   transport: RuntimeTransport,
-  options: Pick<EngineTurnOptions, "strip" | "model">,
+  options: Pick<EngineTurnOptions, "strip" | "model" | "effort">,
   cwd: string | undefined
 ): Promise<string> {
   try {
@@ -783,6 +787,7 @@ async function openCodexThread(
     return await transport.openThread({
       ...(cwd !== undefined ? { cwd } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(threadConfig !== undefined ? { threadConfig } : {})
     });
   } catch (error) {

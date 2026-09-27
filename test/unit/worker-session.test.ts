@@ -145,10 +145,12 @@ test("a codex session holds one thread across turns, and each turn rides it", as
     transport.turns.map((turn) => turn.prompt),
     ["first prompt", "second prompt"]
   );
-  // Model and effort fixed at creation ride every turn.
+  // Model and effort are fixed at creation: the effort rides the one
+  // thread/start (whose answer confirms the served level), the model pin
+  // rides every turn as well.
+  assert.equal(transport.openedThreads[0]?.effort, "low");
   for (const turn of transport.turns) {
     assert.equal(turn.options.model, "gpt-5.6-terra");
-    assert.equal(turn.options.effort, "low");
   }
   await runtime.close();
 });

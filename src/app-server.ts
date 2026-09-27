@@ -290,13 +290,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async openThread(options: ThreadStartOptions): Promise<string> {
+    const config = threadStartConfig(options);
     const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: true,
       ...(options.model !== undefined ? { model: options.model } : {}),
-      ...(options.threadConfig !== undefined ? { config: options.threadConfig } : {})
+      ...(config !== undefined ? { config } : {})
     };
     const result = await this.#request("thread/start", requestParams);
 
@@ -309,8 +310,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     if (threadId !== null) {
       const resolvedModel = resultObject?.model;
       // The v2 ThreadStartResponse reports the effective model and nullable
-      // reasoning effort. Retain them until this ephemeral thread's turn finishes
-      // so an unpinned call can disclose what it actually used.
+      // reasoning effort — the server's own account of what the thread runs
+      // at, pinned or not. Retained until the turn finishes so the result
+      // reports what was served; nothing later overwrites either from the
+      // request (a pin the server did not confirm is not served evidence).
       const resolvedEffort = resultObject?.reasoningEffort;
       this.#transcripts.set(threadId, {
         resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
@@ -446,13 +449,6 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (options.model !== undefined) {
         params.model = options.model;
-      }
-      if (options.effort !== undefined) {
-        params.effort = options.effort;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== undefined) {
-          transcript.resolvedEffort = options.effort;
-        }
       }
 
       this.#appendTranscript(threadId, {
@@ -1420,6 +1416,22 @@ function parseRpcMessage(line: string): RpcMessage | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The `thread/start` config overlay: the dispatch's capability-stripping
+ * overlay plus the requested effort as `model_reasoning_effort`. Built only
+ * when a dispatch asks for either, so a plain worker's thread/start stays
+ * byte-identical to the machine's own defaults.
+ */
+function threadStartConfig(options: ThreadStartOptions): Record<string, unknown> | undefined {
+  if (options.threadConfig === undefined && options.effort === undefined) {
+    return undefined;
+  }
+  return {
+    ...options.threadConfig,
+    ...(options.effort !== undefined ? { model_reasoning_effort: options.effort } : {})
+  };
 }
 
 function asJsonObject(value: unknown): JsonObject | null {

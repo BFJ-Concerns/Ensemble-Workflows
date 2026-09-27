@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  effortSince,
   finalAssistantText,
   parseTranscriptText,
   readTranscript,
@@ -19,10 +20,12 @@ import { ClaudeTranscriptError } from "../../src/errors.js";
 // `stop` defaults to a terminal turn (end_turn); pass "tool_use" for mid-turn.
 function assistant(
   blocks: unknown[],
-  options: { usage?: Record<string, number>; stop?: string; model?: string } = {}
+  options: { usage?: Record<string, number>; stop?: string; model?: string; effort?: string } = {}
 ): string {
   return JSON.stringify({
     type: "assistant",
+    // Claude Code writes the served effort beside the message, not inside it.
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
     message: {
       role: "assistant",
       ...(options.model !== undefined ? { model: options.model } : {}),
@@ -113,6 +116,22 @@ test("resolvedModelSince returns the latest served model in range", () => {
   assert.equal(resolvedModelSince(entries), "claude-served");
   assert.equal(resolvedModelSince(entries, 1), "claude-served");
   assert.equal(resolvedModelSince(entries, 2), null);
+});
+
+test("effortSince returns the latest served effort in range, or null when no entry reports one", () => {
+  const entries = parseTranscriptText(
+    [
+      assistant([textBlock("old")], { effort: "low" }),
+      assistant([textBlock("current")], { effort: "high" }),
+      // An older Claude Code build's entry: no effort field at all.
+      assistant([textBlock("unreported")])
+    ].join("\n")
+  );
+
+  assert.equal(effortSince(entries), "high");
+  assert.equal(effortSince(entries, 1), "high");
+  assert.equal(effortSince(entries, 2), null);
+  assert.equal(effortSince([]), null);
 });
 
 test("usageSince sums output tokens and snapshots the final input side", () => {

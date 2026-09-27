@@ -252,7 +252,10 @@ const handleLine = (line) => {
         cwd: process.cwd(),
         model: resolution.model ?? servedModel,
         modelProvider: "openai",
-        reasoningEffort: resolution.effort ?? "medium",
+        // As the live server answers (codex-cli 0.157.1): a thread-start
+        // `config.model_reasoning_effort` overlay is confirmed back as the
+        // thread's effort; otherwise the configured default.
+        reasoningEffort: message.params.config?.model_reasoning_effort ?? resolution.effort ?? "medium",
         sandbox: { type: "dangerFullAccess" }
       }
     };

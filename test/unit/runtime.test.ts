@@ -568,14 +568,16 @@ test("an effort outside the canonical vocabulary is rejected before any worker s
   assert.equal(transport.turns.length, 0);
 });
 
-test("a canonical effort passes through to the Codex turn natively", async () => {
+test("a canonical effort passes through to the Codex thread natively", async () => {
   // Codex speaks the canonical vocabulary natively, so conversion is the
-  // identity and the turn params carry the requested level unchanged.
+  // identity. The level rides thread/start (whose answer confirms the
+  // served effort), never the turn, whose override the server does not echo.
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
 
   assert.equal(await runtime.agent("go", { engine: "codex", effort: "xhigh" }), "ok");
-  assert.equal(transport.turns[0]?.options?.effort, "xhigh");
+  assert.equal(transport.openedThreads[0]?.effort, "xhigh");
+  assert.equal("effort" in (transport.turns[0]?.options ?? {}), false);
 });
 
 test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {

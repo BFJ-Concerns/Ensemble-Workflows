@@ -19,6 +19,7 @@ import {
 } from "./errors.js";
 import {
   apiErrorSince,
+  effortSince,
   endsInSyntheticReply,
   finalAssistantText,
   readTranscriptFile,
@@ -55,7 +56,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but the witness cannot isolate it from
+ * messaging. `Agent` was also absent, but that witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -140,26 +141,29 @@ export function claudeCacheTtlToMs(value: string): number | null {
 
 /**
  * The clamp from the canonical effort vocabulary to the Claude CLI's
- * native levels (effort is one canonical vocabulary,
- * converted per engine, clamping to the nearest level the engine offers).
- * The native domain — `low | medium | high` — is a dated measured
- * judgement against Claude Code 2.1.x, which silently accepts an unknown
- * `--effort` value and runs at its default (witnessed 2026-08-30:
- * `--effort definitely-invalid` reached a healthy worker at exit 0), so
- * conversion is the only loud boundary: nothing non-native may reach the
- * CLI, and the converted value is what the dispatch carries — and what
- * the run record reports as `resolved_effort`, so a clamped dispatch is
- * observable, never silent. If a CLI release grows a native level (say
- * `xhigh`), re-point that canonical level at itself here; the failure
- * mode of a stale table is a coarser level served visibly in the record,
- * never a silent drop.
+ * native levels (effort is one canonical vocabulary, converted per engine,
+ * clamping to the nearest level the engine offers). The native domain —
+ * `low | medium | high | xhigh | max` — is a dated measured judgement
+ * against Claude Code 2.1.283 (its `--effort` help and the `effort` values
+ * its transcripts report serving, 2026-09-27); `max` is native but outside
+ * the canonical set, so nothing maps to it, and `minimal` is the one
+ * canonical level the CLI lacks. The CLI silently
+ * accepts an unknown `--effort` value and runs at its default (observed
+ * 2026-08-30: `--effort definitely-invalid` reached a healthy worker at
+ * exit 0), so conversion is the only loud boundary: nothing non-native may
+ * reach the CLI. What the run record reports as `resolved_effort` is not
+ * this table's output but the level the CLI's transcript says it served
+ * (`effortSince`), so a clamp — or a stale row here, served at a coarser
+ * level — is visible in the record as what ran, never a silent drop. If a
+ * CLI release grows a native level, re-point that canonical level at
+ * itself here.
  */
 export const CLAUDE_NATIVE_EFFORT: Readonly<Record<CanonicalEffort, string>> = {
   minimal: "low",
   low: "low",
   medium: "medium",
   high: "high",
-  xhigh: "high"
+  xhigh: "xhigh"
 };
 
 /**
@@ -359,14 +363,10 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (error instanceof ClaudeWorkerError) {
         // Preserve the operational cause and current-turn text on the failed
         // result while retaining the shared loop's bounded retry governance.
-        // A served model the transcript already named is evidence too, and so
-        // is the usage it recorded: a result-less failure must not un-learn
-        // spend the run has already paid for (failures carry their evidence).
-        // resolved_effort is dispatch evidence too, so it is judged before
-        // teardown clears the handle: only a turn whose worker session
-        // actually existed may claim the clamped native level was in
-        // force — a failed dispatch served nothing.
-        const workerDispatched = this.#handle !== null;
+        // A served model or effort the transcript already named is evidence
+        // too, and so is the usage it recorded: a result-less failure must
+        // not un-learn spend the run has already paid for (failures carry
+        // their evidence).
         if (!this.#multiTurn) {
           // One-shot only: a held session survives its turn's operational
           // failure — tearing it down would leave the retry with no handle
@@ -374,12 +374,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
           // failure. Session teardown belongs to close().
           await this.#teardown();
         }
-        return failedTurnResult(
-          error,
-          evidence,
-          this.#failureUsageEvent(evidence),
-          workerDispatched ? this.#options.effort : undefined
-        );
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
       throw error;
     }
@@ -658,16 +653,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       );
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
+    // Served effort as the CLI's own transcript reports it, beside the
+    // served model — evidence, never the dispatched flag, so a clamped or
+    // silently defaulted dispatch is visible in the record as what ran.
+    const resolvedEffort = effortSince(entries, fromIndex);
     const usage = usageSince(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
-      // The CLI reports no served effort, so the resolved value is the
-      // native level this dispatch actually carried after the canonical
-      // clamp — so the record shows the level this dispatch carried.
-      ...(this.#options.effort !== undefined ? { resolvedEffort: this.#options.effort } : {}),
+      ...(resolvedEffort !== null ? { resolvedEffort } : {}),
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -724,6 +720,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex)
     };
@@ -910,25 +907,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
 /**
  * A failed turn carries the evidence the engine already held when it died:
- * the served model, the spend the transcript proves, and the transcript
- * itself. All of it rides fields `TurnResult` already has — a failure that
- * published nothing would make the durable record contradict the live run,
- * which is the one place a budget or audit consumer reads.
+ * the served model and effort, the spend the transcript proves, and the
+ * transcript itself. All of it rides fields `TurnResult` already has — a
+ * failure that published nothing would make the durable record contradict
+ * the live run, which is the one place a budget or audit consumer reads.
  */
 function failedTurnResult(
   error: ClaudeWorkerError,
   evidence: FailureEvidence | null,
-  usageEvent: TokenUsageEvent | null,
-  dispatchedEffort?: string
+  usageEvent: TokenUsageEvent | null
 ): EngineAttemptResult {
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;
+  const resolvedEffort = evidence?.resolvedEffort ?? null;
   return {
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
-    // Static per dispatch, so a failed attempt's record still says which
-    // native level the clamp resolved the turn to.
-    ...(dispatchedEffort !== undefined ? { resolvedEffort: dispatchedEffort } : {}),
+    ...(resolvedEffort !== null ? { resolvedEffort } : {}),
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -961,6 +956,7 @@ interface FailureEvidence {
   handle: ClaudeSessionHandle;
   transcript: TranscriptFile;
   resolvedModel: string | null;
+  resolvedEffort: string | null;
   usage: TokenUsageBreakdown;
   /** The API refusal the synthetic reply annotated, when it did; evidence for classifying the failure. */
   apiError: TranscriptApiError | null;

@@ -17615,6 +17615,18 @@ function resolvedModelSince(entries, fromIndex = 0) {
   }
   return null;
 }
+function effortSince(entries, fromIndex = 0) {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === void 0 || entry.type !== "assistant") {
+      continue;
+    }
+    if (typeof entry.effort === "string" && entry.effort.length > 0) {
+      return entry.effort;
+    }
+  }
+  return null;
+}
 function turnComplete(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
     const entry = entries[index];
@@ -17724,7 +17736,7 @@ var CLAUDE_NATIVE_EFFORT = {
   low: "low",
   medium: "medium",
   high: "high",
-  xhigh: "high"
+  xhigh: "xhigh"
 };
 function claudeNativeEffort(effort) {
   if (effort === void 0) {
@@ -17848,16 +17860,10 @@ var ClaudeEngineInvocation = class {
         attachFailedTurnResult(error, failedTurnResult(error, evidence, this.#failureUsageEvent(evidence)));
       }
       if (error instanceof ClaudeWorkerError) {
-        const workerDispatched = this.#handle !== null;
         if (!this.#multiTurn) {
           await this.#teardown();
         }
-        return failedTurnResult(
-          error,
-          evidence,
-          this.#failureUsageEvent(evidence),
-          workerDispatched ? this.#options.effort : void 0
-        );
+        return failedTurnResult(error, evidence, this.#failureUsageEvent(evidence));
       }
       throw error;
     }
@@ -18072,16 +18078,14 @@ var ClaudeEngineInvocation = class {
       );
     }
     const resolvedModel = resolvedModelSince(entries, fromIndex);
+    const resolvedEffort = effortSince(entries, fromIndex);
     const usage2 = usageSince(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
       text,
       ...resolvedModel !== null ? { resolvedModel } : {},
-      // The CLI reports no served effort, so the resolved value is the
-      // native level this dispatch actually carried after the canonical
-      // clamp — so the record shows the level this dispatch carried.
-      ...this.#options.effort !== void 0 ? { resolvedEffort: this.#options.effort } : {},
+      ...resolvedEffort !== null ? { resolvedEffort } : {},
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -18135,6 +18139,7 @@ var ClaudeEngineInvocation = class {
       handle,
       transcript,
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
+      resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex)
     };
@@ -18277,15 +18282,14 @@ var ClaudeEngineInvocation = class {
     return `${this.#namePrefix}-${dispatchCounter}-${randomUUID3().slice(0, 8)}`;
   }
 };
-function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
+function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;
+  const resolvedEffort = evidence?.resolvedEffort ?? null;
   return {
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
-    // Static per dispatch, so a failed attempt's record still says which
-    // native level the clamp resolved the turn to.
-    ...dispatchedEffort !== void 0 ? { resolvedEffort: dispatchedEffort } : {},
+    ...resolvedEffort !== null ? { resolvedEffort } : {},
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -18750,13 +18754,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return transport;
   }
   async openThread(options) {
+    const config = threadStartConfig(options);
     const requestParams = {
       cwd: options.cwd ?? this.cwd,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       ephemeral: true,
       ...options.model !== void 0 ? { model: options.model } : {},
-      ...options.threadConfig !== void 0 ? { config: options.threadConfig } : {}
+      ...config !== void 0 ? { config } : {}
     };
     const result = await this.#request("thread/start", requestParams);
     const resultObject = asJsonObject(result);
@@ -18880,13 +18885,6 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (options.model !== void 0) {
         params.model = options.model;
-      }
-      if (options.effort !== void 0) {
-        params.effort = options.effort;
-        const transcript = this.#transcripts.get(threadId);
-        if (transcript !== void 0) {
-          transcript.resolvedEffort = options.effort;
-        }
       }
       this.#appendTranscript(threadId, {
         direction: "client",
@@ -19652,6 +19650,15 @@ function parseRpcMessage(line) {
   } catch {
     return null;
   }
+}
+function threadStartConfig(options) {
+  if (options.threadConfig === void 0 && options.effort === void 0) {
+    return void 0;
+  }
+  return {
+    ...options.threadConfig,
+    ...options.effort !== void 0 ? { model_reasoning_effort: options.effort } : {}
+  };
 }
 function asJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -20867,7 +20874,6 @@ var CodexWorkerSession = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
       ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
     });
   }
@@ -20915,7 +20921,6 @@ var CodexEngineInvocation = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
       ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
     });
   }
@@ -21131,6 +21136,7 @@ async function openCodexThread(transport, options, cwd) {
     return await transport.openThread({
       ...cwd !== void 0 ? { cwd } : {},
       ...options.model !== void 0 ? { model: options.model } : {},
+      ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...threadConfig !== void 0 ? { threadConfig } : {}
     });
   } catch (error) {

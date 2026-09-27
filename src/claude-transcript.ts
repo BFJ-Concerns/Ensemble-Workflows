@@ -20,6 +20,12 @@ export interface TranscriptEntry {
   type?: string;
   message?: TranscriptMessage;
   /**
+   * The effort level Claude Code served this entry at — a top-level field
+   * on every assistant entry since Claude Code 2.1.283 (measured
+   * 2026-09-27; absent on older builds). Read by `effortSince`.
+   */
+  effort?: unknown;
+  /**
    * Claude Code's own annotation on a synthetic reply written in place of
    * a model answer because the API refused the request (observed
    * 2026-08-30 on Claude Code 2.1.251): the HTTP status and the API's
@@ -168,6 +174,26 @@ export function resolvedModelSince(entries: TranscriptEntry[], fromIndex = 0): s
     const model = entry.message?.model;
     if (typeof model === "string" && model.length > 0 && model !== SYNTHETIC_MODEL_PLACEHOLDER) {
       return model;
+    }
+  }
+  return null;
+}
+
+/**
+ * The effort level Claude Code reports serving for the last assistant
+ * message in this turn. Served evidence, never the dispatched flag: a
+ * clamped or ignored `--effort` shows here as the level the CLI actually
+ * ran at, and a turn whose entries carry no `effort` field reads as "no
+ * effort reported" (`null`), the same honesty rule as `resolvedModelSince`.
+ */
+export function effortSince(entries: TranscriptEntry[], fromIndex = 0): string | null {
+  for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
+    const entry = entries[index];
+    if (entry === undefined || entry.type !== "assistant") {
+      continue;
+    }
+    if (typeof entry.effort === "string" && entry.effort.length > 0) {
+      return entry.effort;
     }
   }
   return null;

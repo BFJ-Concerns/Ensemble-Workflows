@@ -1219,9 +1219,14 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
     assert.equal(new Set(results.map((result) => result.transcripts?.[0]?.content)).size, 3);
     assert.doesNotMatch(results[1]?.transcripts?.[0]?.content ?? "", /first turn/);
 
-    const effortFollowUp = await transport.runTurn(threadId, "effort follow-up", { effort: "high" });
-    assert.equal(effortFollowUp.resolvedEffort, "high");
-    assert.equal(effortFollowUp.resolvedModel, undefined);
+    // A pinned effort rides thread/start as a config overlay, and the served
+    // value is the server's confirmation in that answer — the discriminating
+    // case is a thread whose default (medium) differs from the pin.
+    const pinnedThread = await transport.openThread({ effort: "high" });
+    const pinned = await transport.runTurn(pinnedThread, "pinned effort", {});
+    assert.equal(pinned.resolvedEffort, "high");
+    assert.match(pinned.transcripts?.[0]?.content ?? "", /"model_reasoning_effort":"high"/);
+    assert.match(pinned.transcripts?.[0]?.content ?? "", /"reasoningEffort":"high"/);
   } finally {
     await transport.close();
   }
@@ -1583,7 +1588,9 @@ reader.on("line", (line) => {
       result: {
         thread: { id: "thread-" + threadCounter },
         ...(servedModel === null ? {} : { model: servedModel }),
-        reasoningEffort: "medium"
+        // Like the live server: a thread-start config overlay's
+        // model_reasoning_effort is confirmed back; otherwise the default.
+        reasoningEffort: (message.params.config && message.params.config.model_reasoning_effort) || "medium"
       }
     });
     return;

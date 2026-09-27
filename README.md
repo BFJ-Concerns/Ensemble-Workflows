@@ -563,10 +563,12 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `header_identity`: `"original_request"` identifies what the top-level
   `engine`, `model`, and `effort` fields describe.
 - `engine`, `model`, `effort` (what was asked for — the canonical level),
-  and `resolved_model` / `resolved_effort` — what was actually served: the
-  engine's own report where it makes one (Codex), or the native value the
-  harness's canonical-effort clamp dispatched (Claude); `null` when neither
-  exists. Attempts carry `resolved_effort` too, since a retry may be served
+  and `resolved_model` / `resolved_effort` — what was actually served, as
+  the engine itself reported it: Codex's `thread/start` answer (the pin is
+  sent as thread config, so the answer confirms it), or the `model` and
+  `effort` fields Claude Code writes on each assistant transcript entry;
+  `null` when the engine reported none — never an echo of the request.
+  Attempts carry `resolved_effort` too, since a retry may be served
   differently from the attempt before it.
 - `fallback`: the declared fallback chain — the `[{ engine, model, effort? }]`
   list as the call or its engine defaults declared it — or `null`.

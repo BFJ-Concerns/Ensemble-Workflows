@@ -45,7 +45,13 @@ import type {
 interface ScriptedTurn {
   busyPolls?: number;
   outcome?: "complete" | "blocked";
-  assistant?: { text?: string; stop?: string | null; output?: number; input?: number; cached?: number; model?: string };
+  /**
+   * `effort` scripts what the fake CLI reports serving: unset mirrors the
+   * real CLI (the dispatched `--effort`, or its `medium` default); a string
+   * overrides it (a flag the CLI ran at another level); `null` omits the
+   * field, as a Claude Code build older than 2.1.283 would.
+   */
+  assistant?: { text?: string; stop?: string | null; output?: number; input?: number; cached?: number; model?: string; effort?: string | null };
 }
 
 class FakeControlPlane implements ClaudeControlPlane {
@@ -70,6 +76,7 @@ class FakeControlPlane implements ClaudeControlPlane {
   #sessionSeq = 0;
   #handle: ClaudeSessionHandle | null = null;
   #path: string | null = null;
+  #dispatchedEffort: string | undefined;
   #present = false;
   #busyRemaining = 0;
   #outcome: "complete" | "blocked" = "complete";
@@ -99,6 +106,7 @@ class FakeControlPlane implements ClaudeControlPlane {
       throw new ClaudeRegistrationTimeoutError(this.#registrationTimeout);
     }
     this.#sessionSeq += 1;
+    this.#dispatchedEffort = options.effort;
     const sessionId = `fake-session-${this.#sessionSeq}`;
     this.#path = path.join(this.#dir, `${sessionId}.jsonl`);
     this.#handle = { id: `fake-${this.#sessionSeq}`, sessionId, name: options.name, cwd: options.cwd };
@@ -160,7 +168,7 @@ class FakeControlPlane implements ClaudeControlPlane {
     const turn = this.#turns.shift();
     this.#busyRemaining = turn?.busyPolls ?? 0;
     this.#outcome = turn?.outcome ?? "complete";
-    const line = turn?.assistant !== undefined ? `${assistantLine(turn.assistant)}\n` : "";
+    const line = turn?.assistant !== undefined ? `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n` : "";
     if (this.#path === null) {
       return;
     }
@@ -188,7 +196,13 @@ interface FakeControlPlaneOptions {
   dispatchGate?: DispatchGate;
 }
 
-function assistantLine(assistant: ScriptedTurn["assistant"] & object & { creation?: number }): string {
+function assistantLine(
+  assistant: ScriptedTurn["assistant"] & object & { creation?: number },
+  dispatchedEffort?: string
+): string {
+  // The served effort as Claude Code 2.1.283 writes it: a top-level field on
+  // the assistant entry, reporting the level the CLI ran at.
+  const effort = assistant.effort === undefined ? dispatchedEffort ?? "medium" : assistant.effort;
   const content =
     assistant.text !== undefined
       ? [{ type: "text", text: assistant.text }]
@@ -208,6 +222,7 @@ function assistantLine(assistant: ScriptedTurn["assistant"] & object & { creatio
     : undefined;
   return JSON.stringify({
     type: "assistant",
+    ...(effort !== null ? { effort } : {}),
     message: {
       role: "assistant",
       ...(assistant.model !== undefined ? { model: assistant.model } : {}),
@@ -328,24 +343,41 @@ test("Claude rejects an out-of-domain effort before any worker spawns", async ()
   });
 });
 
-test("a canonical level outside Claude's native domain clamps to the nearest native level", async () => {
+test("a canonical level outside Claude's native domain clamps to the nearest native level, and the served level is read from the transcript", async () => {
   await withControlPlane(
-    [{ assistant: { text: "ran clamped" } }, { assistant: { text: "ran clamped low" } }],
+    [
+      { assistant: { text: "ran clamped low" } },
+      { assistant: { text: "ran at xhigh" } },
+      { assistant: { text: "ran at the default", effort: "medium" } },
+      { assistant: { text: "older build", effort: null } }
+    ],
     async (controlPlane) => {
       const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
 
-      // xhigh → high: the CLI's native ceiling. The worker is dispatched
-      // with the native value, and the turn result reports it as the
-      // resolved effort — a clamped dispatch is observable, never silent.
-      const invocation = adapter.createInvocation("work", { effort: "xhigh" });
-      const result = await invocation.runAttempt({ attempt: 1 });
-      assert.equal(controlPlane.dispatched[0]?.effort, "high");
-      assert.equal(result.resolvedEffort, "high");
-
-      // minimal → low: the native floor.
+      // minimal → low: the one canonical level the CLI lacks. The worker is
+      // dispatched with the native value, and the result reports the level
+      // the CLI's transcript says it served — here the same value, so a
+      // clamped dispatch is observable in the record as what ran.
       const floor = adapter.createInvocation("work", { effort: "minimal" });
-      await floor.runAttempt({ attempt: 1 });
-      assert.equal(controlPlane.dispatched[1]?.effort, "low");
+      const floorResult = await floor.runAttempt({ attempt: 1 });
+      assert.equal(controlPlane.dispatched[0]?.effort, "low");
+      assert.equal(floorResult.resolvedEffort, "low");
+
+      // xhigh is native (Claude Code 2.1.283): dispatched unchanged.
+      const ceiling = adapter.createInvocation("work", { effort: "xhigh" });
+      assert.equal((await ceiling.runAttempt({ attempt: 1 })).resolvedEffort, "xhigh");
+      assert.equal(controlPlane.dispatched[1]?.effort, "xhigh");
+
+      // The discriminating case: the transcript reports a level other than
+      // the one dispatched (a flag the CLI ran at its default). The record
+      // must carry what was served, never an echo of the request.
+      const ignored = adapter.createInvocation("work", { effort: "high" });
+      assert.equal((await ignored.runAttempt({ attempt: 1 })).resolvedEffort, "medium");
+
+      // A transcript with no effort field reports nothing: unknown, not a
+      // copy of the dispatched flag.
+      const unreported = adapter.createInvocation("work", { effort: "high" });
+      assert.equal((await unreported.runAttempt({ attempt: 1 })).resolvedEffort, undefined);
       await adapter.close();
     }
   );
@@ -464,6 +496,7 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
           attempts: Array<{
             raw_output: string | null;
             resolved_model: string | null;
+            resolved_effort: string | null;
             token_usage_events: Array<{ total: object }>;
           }>;
         };
@@ -471,6 +504,9 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
         assert.equal(archived.status, "interrupted");
         assert.equal(attempt?.raw_output, "partial from Claude");
         assert.equal(attempt?.resolved_model, "claude-served");
+        // The served effort is failure evidence like the served model: the
+        // transcript reported it before the interruption, so the record keeps it.
+        assert.equal(attempt?.resolved_effort, "medium");
         assert.equal(archived.transcripts.length, 1);
         assert.equal(archived.transcripts[0]?.partial, true);
         assert.match(

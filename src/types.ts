@@ -309,7 +309,6 @@ export interface TurnResult {
 export interface TurnStartOptions {
   schema?: JsonSchema;
   model?: string;
-  effort?: string;
   // Omitted → no per-turn deadline (unbounded). There is no default; a backstop
   // is the orchestrator's choice (see the skill's backstop section).
   timeoutMs?: number;
@@ -325,6 +324,16 @@ export interface ThreadStartOptions {
   cwd?: string;
   /** Requested model for the ephemeral thread whose response reports its resolved identity. */
   model?: string;
+  /**
+   * Requested reasoning effort for the thread, sent in `thread/start`'s
+   * `config` overlay as `model_reasoning_effort`. The response's
+   * `reasoningEffort` is then the server's own account of the level the
+   * thread runs at — the one place the protocol confirms served effort,
+   * which is why the pin rides the thread rather than the turn
+   * (`turn/start`'s `effort` override is never echoed back; measured
+   * 2026-09-27 against codex-cli 0.157.1).
+   */
+  effort?: string;
   /**
    * Per-thread configuration overlay, sent as `thread/start`'s `config`
    * field. The app server applies it over the machine's own `config.toml`

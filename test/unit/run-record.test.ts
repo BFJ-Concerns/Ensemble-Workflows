@@ -198,6 +198,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.equal(manifest.caller_identity, "session:run-record-test");
   assert.equal(agent.schema_version, 4);
   assert.equal(agent.kind, "agent_record");
+  assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: null, layer: "default" },
     engines: {
@@ -1051,6 +1052,7 @@ function agentRecord(
   return {
     id,
     engine,
+    headerIdentity: "original_request",
     prompt: "fixture prompt",
     options: { timeoutMs: null, maxAttempts: 3 },
     session: null,

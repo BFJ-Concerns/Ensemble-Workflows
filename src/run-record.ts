@@ -171,6 +171,8 @@ export interface DecodeFailureDiagnostic {
 export interface RuntimeAgentRecord {
   id: number;
   engine: EngineName;
+  /** The top-level engine, model, and effort describe the original request. */
+  headerIdentity: "original_request";
   /** The dispatched prompt, recorded before the engine is called. */
   prompt: string;
   /** Options as the runtime resolved them at dispatch (defaults applied). */
@@ -218,6 +220,7 @@ export interface RuntimeAgentRecord {
    */
   terminationCause: TerminalErrorRecord | null;
   creationOrder: number;
+  /** The engine group of the latest admitted target; initially the requested engine. */
   concurrencyGroup: string;
   schema: JsonSchema | null;
   /**
@@ -879,6 +882,7 @@ export class RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      header_identity: record.headerIdentity,
       prompt: record.prompt,
       options: {
         timeout_ms: record.options.timeoutMs,

@@ -402,7 +402,8 @@ semantics).
 Top-level fields: `id`, `creation_order`, `concurrency_group`, `engine`,
 `model`, `effort`, `fallback` (the declared chain or `null`), `answered_by`
 (`{ entry, engine, model }` naming the target that answered — `entry` is
-`-1` for the call's own — or `null` on a failed agent), `resolved_model`
+`-1` for the call's own, and `model` is the observed served model or `null`
+when unknown — or `null` on a failed agent), `resolved_model`
 (`null` when unknown),
 `label`, `phase`, `status` (`"in-progress"`, `"complete"`, `"failed"`,
 `"timed-out"`, `"interrupted"`, `"abandoned"`), `prompt`, `schema` (requested
@@ -416,7 +417,8 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `attempts` is an array; each entry carries: `attempt` (1-based index over
 every dispatch the call made), `status`, `target` (`{ engine, model }` the
 attempt was dispatched to), `started_at`, `ended_at`, `duration_ms`,
-`first_delta_ms`, `raw_output`, `validated_output`, `resolved_model`,
+`first_delta_ms`, `raw_output`, `validated_output`, `resolved_model`
+(the observed held-worker model is carried across later turns),
 `failure` (`{ kind, message }` or `null`), `classification` (`{ class, rule }`
 on a failed attempt — `class` one of `availability`, `output`,
 `unclassified`; `rule` the classifier rule that matched, or `null` when no

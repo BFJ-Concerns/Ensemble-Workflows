@@ -387,7 +387,7 @@ function resolveStatus(
     // none. Only the *default* location (`<cwd>/.claude`) opts out by
     // absence: its existence is the publication opt-in.
     throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${directory.value} ` +
+      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
         `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
@@ -407,7 +407,9 @@ function resolveEnabled(
     if (ENABLED_VALUES.has(normalised)) {
       return { value: true, layer: "env" };
     }
-    throw new AmbientConfigError(`Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0`);
+    throw new AmbientConfigError(
+      `Invalid value for ${envKey}: expected on/off, true/false, yes/no, or 1/0; got ${JSON.stringify(envValue)}`
+    );
   }
   if (fileValue !== undefined) {
     return { value: fileValue, layer: "config-file" };
@@ -423,7 +425,9 @@ function resolveDirectory(
 ): Resolved<string> {
   if (envValue !== undefined) {
     if (envValue.trim().length === 0) {
-      throw new AmbientConfigError(`Invalid value for ${envKey}: expected a non-empty directory path`);
+      throw new AmbientConfigError(
+        `Invalid value for ${envKey}: expected a non-empty directory path; got ${JSON.stringify(envValue)}`
+      );
     }
     return { value: envValue, layer: "env" };
   }
@@ -434,11 +438,10 @@ function resolveDirectory(
 }
 
 function parseEnvironmentInteger(value: string, key: string): number {
-  if (!/^[0-9]+$/.test(value.trim())) {
-    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1`);
-  }
   const parsed = Number(value.trim());
-  assertPositiveInteger(parsed, key, "environment");
+  if (!/^[0-9]+$/.test(value.trim()) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1; got ${JSON.stringify(value)}`);
+  }
   return parsed;
 }
 

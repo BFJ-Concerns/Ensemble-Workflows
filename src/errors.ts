@@ -1,4 +1,5 @@
 import type { EngineAttemptResult } from "./engines.js";
+import type { EngineTranscriptArtifact } from "./types.js";
 
 export class EnsembleError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -152,6 +153,40 @@ export function partialWorkerTextOf(error: unknown): string | null {
   return null;
 }
 
+/** The transcript observed by a turn that ended before completion. */
+interface PartialTranscriptCarrier {
+  partialTranscript?: EngineTranscriptArtifact;
+}
+
+export function attachPartialTranscript<T extends Error>(error: T, transcript: EngineTranscriptArtifact): T {
+  const carrier = error as T & PartialTranscriptCarrier;
+  if (carrier.partialTranscript === undefined) {
+    carrier.partialTranscript = transcript;
+  }
+  return error;
+}
+
+export function partialTranscriptOf(error: unknown): EngineTranscriptArtifact | null {
+  return error instanceof Error ? (error as PartialTranscriptCarrier).partialTranscript ?? null : null;
+}
+
+/** First answer delta timing observed before a failed turn was discarded. */
+interface FirstDeltaMsCarrier {
+  firstDeltaMs?: number;
+}
+
+export function attachFirstDeltaMs<T extends Error>(error: T, firstDeltaMs: number): T {
+  const carrier = error as T & FirstDeltaMsCarrier;
+  if (carrier.firstDeltaMs === undefined) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+
+export function firstDeltaMsOf(error: unknown): number | null {
+  return error instanceof Error ? (error as FirstDeltaMsCarrier).firstDeltaMs ?? null : null;
+}
+
 /**
  * A thrown terminal interruption keeps the turn result the engine had already
  * assembled. The shared retry loop still receives the same rejection; the
@@ -205,6 +240,55 @@ export function appServerDiagnosticOf(error: unknown): AppServerDiagnostic | nul
     return (error as AppServerDiagnosticCarrier).appServerDiagnostic ?? null;
   }
   return null;
+}
+
+/**
+ * The remedy for a Codex pre-generation schema rejection. The alternative
+ * names the engines an author can move the call to — Codex is the one that
+ * refused.
+ */
+export const CODEX_SCHEMA_REJECTION_REMEDY =
+  "Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode', which validate the full JSON Schema client-side.";
+
+/**
+ * The diagnostic's payload with every string that restates the diagnostic's
+ * message replaced by a pointer back to it. The app-server routinely echoes
+ * its message inside `data`, and rendering both puts the same diagnostic in
+ * front of the reader twice — once readable, once as an escaped JSON string.
+ * The payload's other fields stay; a payload that only restated the message
+ * renders as "". An unparseable payload is returned unchanged.
+ */
+export function payloadBesideMessage(diagnostic: AppServerDiagnostic): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(diagnostic.payload);
+  } catch {
+    return diagnostic.payload;
+  }
+  const message = diagnostic.message.trim();
+  const restates = (value: string) => {
+    const trimmed = value.trim();
+    return trimmed.length > 0 && (trimmed === message || (trimmed.length >= 32 && message.endsWith(trimmed)));
+  };
+  let replaced = false;
+  const walk = (value: unknown, depth: number): unknown => {
+    if (typeof value === "string" && restates(value)) {
+      replaced = true;
+      return "(the diagnostic above)";
+    }
+    if (depth > 16 || value === null || typeof value !== "object") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => walk(item, depth + 1));
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item, depth + 1)]));
+  };
+  const rendered = walk(parsed, 0);
+  if (!replaced) {
+    return diagnostic.payload;
+  }
+  return rendered === "(the diagnostic above)" ? "" : JSON.stringify(rendered);
 }
 
 /**
@@ -328,13 +412,13 @@ export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
     diagnostic?: AppServerDiagnostic
   ) {
     const engineDiagnostic =
-      diagnostic === undefined
-        ? ""
-        : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}; data: ${diagnostic.payload}`;
+      diagnostic === undefined ? "" : ` App-server diagnostic (${String(diagnostic.code)}): ${diagnostic.message}`;
+    const payload = diagnostic === undefined ? "" : payloadBesideMessage(diagnostic);
     super(
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed. " +
-        "Use a schema supported by Codex outputSchema, or run the workflow on an engine that validates the full JSON Schema client-side." +
-        engineDiagnostic,
+        CODEX_SCHEMA_REJECTION_REMEDY +
+        engineDiagnostic +
+        (payload === "" ? "" : `; data: ${payload}`),
       { cause: error }
     );
     this.code = error.code;
@@ -342,9 +426,25 @@ export class CodexSchemaSubsetUnsupportedError extends EnsembleError {
   }
 }
 
+/**
+ * A token budget refused to start an agent. A ceiling of 0 never ran out —
+ * it admitted nothing from the start — so it says that rather than
+ * describing a spend that never happened.
+ */
 export class BudgetExceededError extends EnsembleError {
+  readonly engine: string;
+  readonly total: number;
+  readonly spent: number;
+
   constructor(engine: string, total: number, spent: number) {
-    super(`Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`);
+    super(
+      total === 0
+        ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started`
+        : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
+    );
+    this.engine = engine;
+    this.total = total;
+    this.spent = spent;
   }
 }
 
@@ -572,6 +672,13 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
   }
 }
 
+/** One pre-spawn rejection for all option faults found on a single agent() call. */
+export class InvalidAgentOptionsError extends AgentOptionRejectedError {
+  constructor(errors: readonly AgentOptionRejectedError[]) {
+    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+  }
+}
+
 /**
  * Thrown when reading an option's value throws — a getter or a Proxy trap
  * that refuses the read itself, so there is no value to describe. Named as a
@@ -603,6 +710,15 @@ export class InvalidAgentSchemaError extends AgentOptionRejectedError {
       `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
       options
     );
+  }
+}
+
+/** A schema cycle the selected local path cannot compile is rejected before a worker spawns. */
+export class CyclicAgentSchemaError extends InvalidAgentSchemaError {
+  constructor(location: string, firstSeenAt: string, kind: "object" | "reference" = "object") {
+    super(kind === "object"
+      ? `object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref`
+      : `JSON Schema $ref cycle at ${location} (back to ${firstSeenAt}); make a reference lead through a concrete schema constraint`);
   }
 }
 

@@ -31,7 +31,9 @@ import {
   attachAgentIdentity,
   describeError,
   failedTurnResultOf,
+  firstDeltaMsOf,
   partialWorkerTextOf,
+  partialTranscriptOf,
   SubstrateRefusedError,
   TurnTimeoutError,
   UnknownEngineError,
@@ -2142,7 +2144,9 @@ export class EnsembleRuntime {
         attempts.target,
         "failed",
         result.attemptFailure,
-        result.text,
+        // Returned operational failures use empty text when the worker
+        // produced nothing; an answered empty string takes the output path.
+        result.text === "" ? null : result.text,
         null,
         startedAt,
         result,
@@ -2195,6 +2199,16 @@ export class EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
+    const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult =
+      failedResult ??
+      (partialTranscript !== null || firstDeltaMs !== null
+        ? {
+            ...(partialTranscript !== null ? { transcripts: [partialTranscript] } : {}),
+            ...(firstDeltaMs !== null ? { firstDeltaMs } : {})
+          }
+        : null);
     // The loop's own next step, read from the same facts it acts on: a
     // boundary throw leaves, a rejected schema settles, anything else
     // retries while the bound lasts. A run ending decides nothing.
@@ -2213,7 +2227,7 @@ export class EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult,
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,
@@ -2457,7 +2471,7 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<
+  result: Partial<Pick<
     TurnResult,
     | "durationMs"
     | "firstDeltaMs"
@@ -2466,7 +2480,7 @@ function attemptRecord(
     | "diagnostics"
     | "resolvedModel"
     | "resolvedEffort"
-  > | null,
+  >> | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
   observedFailure: { kind: string; message: string } | null = null,

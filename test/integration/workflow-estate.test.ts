@@ -1002,7 +1002,7 @@ test("Codex schema-subset rejection is distinct from ordinary schema validation 
   const unsupportedDiagnostic = withoutSentinelAnnouncement(unsupported.stderr);
   assert.match(unsupportedDiagnostic, /\[codex\] agent 1 failed after 1 attempt — Codex rejected outputSchema before generation/);
   assert.match(unsupportedDiagnostic, /Codex rejected outputSchema before generation/);
-  assert.match(unsupportedDiagnostic, /Use a schema supported by Codex outputSchema/);
+  assert.match(unsupportedDiagnostic, /Use a schema within Codex's outputSchema subset, or run this agent on engine 'claude' or 'opencode'/);
   assert.doesNotMatch(unsupportedDiagnostic, /verdict/);
 
   const ordinaryValidation = await runScriptWithCliEngines(

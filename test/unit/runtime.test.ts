@@ -3166,6 +3166,50 @@ function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
   return { runtime, records };
 }
 
+test("attempt records distinguish absent output from an empty worker answer across engines", async () => {
+  const cases: Array<{
+    engine: EngineName;
+    step: () => Promise<EngineAttemptResult>;
+    expected: string | null;
+  }> = [
+    {
+      engine: "claude",
+      step: async () => ({
+        ...turn(""),
+        attemptFailure: { kind: "claude-worker-diagnostic", message: "worker failed before answering" }
+      }),
+      expected: null
+    },
+    {
+      engine: "opencode",
+      step: async () => ({
+        ...turn(""),
+        attemptFailure: { kind: "opencode-run-error", message: "process exited before answering" }
+      }),
+      expected: null
+    },
+    { engine: "codex", step: codexRefusal("usageLimitExceeded"), expected: null },
+    { engine: "codex", step: answers(""), expected: "" }
+  ];
+
+  const observed: Array<{ engine: EngineName; attempt: string | null; agent: string | null }> = [];
+  for (const entry of cases) {
+    const { runtime, records } = chainRuntime([new ChainEngine(entry.engine, [entry.step])], 1);
+    await runtime.agent("record this failure", { engine: entry.engine });
+    const settled = records.at(-1);
+    assert.equal(settled?.status, "failed");
+    assert.equal(settled?.attempts.length, 1);
+    observed.push({
+      engine: entry.engine,
+      attempt: settled?.attempts[0]?.rawOutput ?? null,
+      agent: settled?.rawOutput ?? null
+    });
+    await runtime.close();
+  }
+
+  assert.deepEqual(observed, cases.map(({ engine, expected }) => ({ engine, attempt: expected, agent: expected })));
+});
+
 test("an availability refusal advances the chain to the next target on the same engine, costing no attempt", async () => {
   const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("from the fallback", "gpt-served-fallback")]);
   const { runtime, records } = chainRuntime([codex], 1);

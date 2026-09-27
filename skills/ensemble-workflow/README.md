@@ -368,9 +368,10 @@ semantics).
 
 ### Agent record (`agents/<id>/agent.json`)
 
-Top-level fields: `id`, `creation_order`, `concurrency_group`, `engine`,
-`model`, `effort` (the original request, including its engine's concurrency
-group), `header_identity: "original_request"` (labels those four fields),
+Top-level fields: `id`, `creation_order`, `concurrency_group` (the latest
+admitted target's engine group; the answering engine's group when complete),
+`engine`, `model`, `effort` (the original request),
+`header_identity: "original_request"` (labels those three fields),
 `fallback` (the declared chain or `null`), `answered_by`
 (`{ entry, engine, model }` naming the target that answered — `entry` is
 `-1` for the call's own — or `null` on a failed agent), `resolved_model`

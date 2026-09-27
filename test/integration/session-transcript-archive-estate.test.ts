@@ -111,5 +111,5 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
         diagnostics: {}
       }
     ]
-  } as RuntimeAgentRecord;
+  };
 }

@@ -3574,8 +3574,9 @@ test("a cross-engine answer keeps the requested header visibly distinct from the
   });
 
   const settled = records.at(-1)!;
-  assert.equal((settled as unknown as Record<string, unknown>).headerIdentity, "original_request");
-  assert.deepEqual([settled.engine, settled.model, settled.concurrencyGroup], ["claude", "synthetic-unavailable", "claude"]);
+  assert.equal(settled.concurrencyGroup, "codex");
+  assert.equal(settled.headerIdentity, "original_request");
+  assert.deepEqual([settled.engine, settled.model], ["claude", "synthetic-unavailable"]);
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-6-luna" });
   assert.deepEqual(settled.attempts.map((attempt) => attempt.target.engine), ["claude", "codex"]);
   await runtime.close();
@@ -3588,7 +3589,7 @@ test("a single-target call retains its requested header and labels it as such", 
   await runtime.agent("single target", { engine: "codex", model: "gpt-6-luna" });
 
   const settled = records.at(-1)!;
-  assert.equal((settled as unknown as Record<string, unknown>).headerIdentity, "original_request");
+  assert.equal(settled.headerIdentity, "original_request");
   assert.deepEqual([settled.engine, settled.model, settled.concurrencyGroup], ["codex", "gpt-6-luna", "codex"]);
   assert.deepEqual(settled.answeredBy, { entry: -1, engine: "codex", model: "gpt-6-luna" });
   await runtime.close();

@@ -21590,6 +21590,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (target.engine !== admittedEngine.name) {
               return new ChainAdvance(target.engine);
             }
+            agentRecord.concurrencyGroup = admittedEngine.name;
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;

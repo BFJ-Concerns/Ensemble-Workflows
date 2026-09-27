@@ -1198,6 +1198,9 @@ export class EnsembleRuntime {
             if (target.engine !== admittedEngine.name) {
               return new ChainAdvance(target.engine);
             }
+            // The admitted leg runs under this engine's cap. Keep the
+            // record's group with the last target that actually entered it.
+            agentRecord.concurrencyGroup = admittedEngine.name;
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;

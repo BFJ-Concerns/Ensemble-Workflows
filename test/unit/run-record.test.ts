@@ -1015,7 +1015,7 @@ function agentRecord(
         ]
       }
     ]
-  } as RuntimeAgentRecord;
+  };
 }
 
 function agentRecordWithUsage(id: number, engine: EngineName, tokenUsage: TokenUsageBreakdown) {

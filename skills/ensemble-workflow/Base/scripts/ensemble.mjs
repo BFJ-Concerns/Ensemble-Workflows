@@ -15002,6 +15002,7 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      header_identity: record.headerIdentity,
       prompt: record.prompt,
       options: {
         timeout_ms: record.options.timeoutMs,
@@ -22382,6 +22383,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return {
       id,
       engine,
+      headerIdentity: "original_request",
       prompt,
       options: {
         timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,

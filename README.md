@@ -499,7 +499,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 
 - `schema_version`: `4`.
 - `kind`: `"agent_record"`.
-- `id`, `creation_order`, `concurrency_group`.
+- `id`, `creation_order`, `concurrency_group` (the original request's engine
+  group, including when a fallback answers under another engine).
+- `header_identity`: `"original_request"` identifies what the top-level
+  `engine`, `model`, `effort`, and `concurrency_group` fields describe.
 - `engine`, `model`, `effort` (what was asked for — the canonical level),
   and `resolved_model` / `resolved_effort` — what was actually served: the
   engine's own report where it makes one (Codex), or the native value the

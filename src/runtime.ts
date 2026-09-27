@@ -2230,6 +2230,7 @@ export class EnsembleRuntime {
     return {
       id,
       engine,
+      headerIdentity: "original_request",
       prompt,
       options: {
         timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,

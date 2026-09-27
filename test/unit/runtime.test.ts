@@ -3562,6 +3562,38 @@ test("a refused Claude dispatch advances the chain where an entry remains, costi
   await runtime.close();
 });
 
+test("a cross-engine answer keeps the requested header visibly distinct from the answering target", async () => {
+  const claude = new ChainEngine("claude", [claudeDispatchRefused()]);
+  const codex = new ChainEngine("codex", [answers("from codex")]);
+  const { runtime, records } = chainRuntime([claude, codex], 1);
+
+  await runtime.agent("blind stage", {
+    engine: "claude",
+    model: "synthetic-unavailable",
+    fallback: [{ engine: "codex", model: "gpt-6-luna" }]
+  });
+
+  const settled = records.at(-1)!;
+  assert.equal((settled as unknown as Record<string, unknown>).headerIdentity, "original_request");
+  assert.deepEqual([settled.engine, settled.model, settled.concurrencyGroup], ["claude", "synthetic-unavailable", "claude"]);
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-6-luna" });
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.target.engine), ["claude", "codex"]);
+  await runtime.close();
+});
+
+test("a single-target call retains its requested header and labels it as such", async () => {
+  const codex = new ChainEngine("codex", [answers("from codex")]);
+  const { runtime, records } = chainRuntime([codex], 1);
+
+  await runtime.agent("single target", { engine: "codex", model: "gpt-6-luna" });
+
+  const settled = records.at(-1)!;
+  assert.equal((settled as unknown as Record<string, unknown>).headerIdentity, "original_request");
+  assert.deepEqual([settled.engine, settled.model, settled.concurrencyGroup], ["codex", "gpt-6-luna", "codex"]);
+  assert.deepEqual(settled.answeredBy, { entry: -1, engine: "codex", model: "gpt-6-luna" });
+  await runtime.close();
+});
+
 test("a refused Claude dispatch propagates through parallel(), failing the run rather than nulling the slot", async () => {
   // The failure cross-engine verification exists to prevent: a fan-out
   // whose Claude legs were all refused must not read as a two-family result

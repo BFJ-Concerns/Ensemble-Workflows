@@ -52,6 +52,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
   return {
     id: 1,
     engine: "codex",
+    headerIdentity: "original_request",
     prompt: "follow-up prompt",
     options: { timeoutMs: null, maxAttempts: 1 },
     model: null,
@@ -110,5 +111,5 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
         diagnostics: {}
       }
     ]
-  };
+  } as RuntimeAgentRecord;
 }

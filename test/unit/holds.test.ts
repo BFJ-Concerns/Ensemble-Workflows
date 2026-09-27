@@ -553,6 +553,12 @@ test("a raise carries the run's identity card, and the archive's answered event 
     runtime.setRunRecorder(writer);
     runtime.progress.setWorkflow("release-gate");
     runtime.progress.setPhase("review");
+    // Real progress in the raising runtime, each total distinct, so the card
+    // is proven to read the run's own counts rather than any constant.
+    const ids = Array.from({ length: 10 }, () => runtime.progress.queueAgent({ engine: "codex", label: null, phase: null }));
+    ids.slice(0, 9).forEach((id) => runtime.progress.startAgent(id));
+    ids.slice(0, 4).forEach((id) => runtime.progress.settleAgent(id, "done"));
+    ids.slice(4, 6).forEach((id) => runtime.progress.settleAgent(id, "failed"));
     try {
       const first = runtime.raiseHold({ content: "merge?", verdicts: ["yes", "no"] });
       const record = await publishedHold(dir);
@@ -561,7 +567,7 @@ test("a raise carries the run's identity card, and the archive's answered event 
         workflow: "release-gate",
         phase: "review",
         archive_path: writer.archiveDir,
-        totals: { active: 0, queued: 0, done: 0, failed: 0 }
+        totals: { active: 3, queued: 1, done: 4, failed: 2 }
       });
       assert.equal(record.poll_interval_ms, 5);
       const outcome = await answerHold({ dir, holdId: record.hold_id, verdict: "yes", note: "ship it", answeredBy: "lead-7" });

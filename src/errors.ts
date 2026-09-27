@@ -572,6 +572,13 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
   }
 }
 
+/** One pre-spawn rejection for all option faults found on a single agent() call. */
+export class InvalidAgentOptionsError extends AgentOptionRejectedError {
+  constructor(errors: readonly AgentOptionRejectedError[]) {
+    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+  }
+}
+
 /**
  * Thrown when reading an option's value throws — a getter or a Proxy trap
  * that refuses the read itself, so there is no value to describe. Named as a
@@ -603,6 +610,13 @@ export class InvalidAgentSchemaError extends AgentOptionRejectedError {
       `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
       options
     );
+  }
+}
+
+/** An object-reference cycle cannot be compiled or sent as a schema, so reject it before a worker spawns. */
+export class CyclicAgentSchemaError extends InvalidAgentSchemaError {
+  constructor(location: string, firstSeenAt: string) {
+    super(`object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref`);
   }
 }
 

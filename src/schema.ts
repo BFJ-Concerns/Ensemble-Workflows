@@ -2,7 +2,7 @@ import { Ajv } from "ajv/dist/ajv.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 
-import { InvalidAgentSchemaError } from "./errors.js";
+import { CyclicAgentSchemaError, InvalidAgentSchemaError } from "./errors.js";
 
 import type { JsonSchema } from "./types.js";
 
@@ -128,6 +128,7 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema): Validati
 
 /** Compile-check a schema up front so a malformed one fails before a worker spawns, not after a paid turn. */
 export function assertCompilableSchema(schema: JsonSchema): void {
+  assertAcyclicSchemaObject(schema);
   try {
     compileSchema(schema);
   } catch (error) {
@@ -144,7 +145,26 @@ export function assertCompilableSchema(schema: JsonSchema): void {
 }
 
 export function normaliseForCodexOutputSchema(schema: JsonSchema): JsonSchema {
+  assertAcyclicSchemaObject(schema);
   return normaliseSchemaNode(schema) as JsonSchema;
+}
+
+function assertAcyclicSchemaObject(schema: unknown): void {
+  const active = new Map<object, string>();
+  const visited = new Set<object>();
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value !== "object" || value === null) return;
+    const firstSeenAt = active.get(value);
+    if (firstSeenAt !== undefined) throw new CyclicAgentSchemaError(path, firstSeenAt);
+    if (visited.has(value)) return;
+    active.set(value, path);
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+    }
+    active.delete(value);
+    visited.add(value);
+  };
+  walk(schema, "#");
 }
 
 function compileSchema(schema: JsonSchema): ValidateFunction {

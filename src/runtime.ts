@@ -86,7 +86,13 @@ import type {
 import type { AgentPlacement } from "./agent-placement.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { FailureClassification } from "./failure-classification.js";
-import type { RunRecordWriter, RuntimeAgentAttemptRecord, RuntimeAgentRecord, TerminalErrorRecord } from "./run-record.js";
+import type {
+  ChainDecision,
+  RunRecordWriter,
+  RuntimeAgentAttemptRecord,
+  RuntimeAgentRecord,
+  TerminalErrorRecord
+} from "./run-record.js";
 import type { IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
 
 function assertValidAgentPrompt(prompt: unknown): asserts prompt is string {
@@ -1314,6 +1320,7 @@ export class EnsembleRuntime {
       if (outcome === "failed") {
         return this.#failedValue(engineName, identity, agentId, agentRecord, execution.cause);
       }
+      this.#announceChainAnswer(engineName, identity, agentId, agentRecord);
       return execution.value;
     } catch (error) {
       const executionEndedAt = Date.now();
@@ -1338,6 +1345,12 @@ export class EnsembleRuntime {
       // account, which the record now states in full — so the call
       // resolves it as a value.
       if (this.#crossesSpawnBoundary(error) || agentRecord.attempts.length === 0) {
+        // A chain whose last target refused before any worker existed
+        // leaves as that refusal, thrown and whole; the notice still
+        // tells the operator the chain behind it was spent.
+        if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
+          this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
         throw error;
       }
       return this.#failedValue(engineName, identity, agentId, agentRecord, error);
@@ -1393,6 +1406,24 @@ export class EnsembleRuntime {
     agentRecord: RuntimeAgentRecord,
     thrown?: unknown
   ): null {
+    this.#announceFailure(engine, identity, agentId, agentRecord, thrown);
+    return null;
+  }
+
+  /**
+   * The failure notice. Under a declared chain it also carries how many
+   * targets the call reached — the call's own target and one more per
+   * advance, read from the attempts' own decisions — so an exhausted chain
+   * reads as the last target's failure beside the count, never as a new
+   * failure of its own. Null where no chain was declared.
+   */
+  #announceFailure(
+    engine: EngineName,
+    identity: { label: string | null; phase: string | null },
+    agentId: number,
+    agentRecord: RuntimeAgentRecord,
+    thrown?: unknown
+  ): void {
     const failure = settledFailureAccount(agentRecord);
     const diagnosis = thrown === undefined ? null : presentOperationalError(thrown);
     this.#emitEvent({
@@ -1403,12 +1434,70 @@ export class EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
+        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
       receivedAt: Date.now()
     });
-    return null;
+  }
+
+  /**
+   * A successful failover, announced: an answer from a chain entry
+   * names the declared target that was refused, its refusal, and the entry
+   * that answered — each read from the record, which holds them all.
+   */
+  #announceChainAnswer(
+    engine: EngineName,
+    identity: { label: string | null; phase: string | null },
+    agentId: number,
+    agentRecord: RuntimeAgentRecord
+  ): void {
+    const answeredBy = agentRecord.answeredBy;
+    const [declared] = advancesOf(agentRecord);
+    if (answeredBy === null || answeredBy.entry === -1 || declared === undefined) {
+      return;
+    }
+    this.#emitEvent({
+      method: `${engine}/chainAdvanced`,
+      params: {
+        agentId,
+        label: identity.label,
+        phase: identity.phase,
+        refused: declared.target,
+        refusal: declared.failure,
+        targetsRefused: advancesOf(agentRecord).length,
+        answeredBy
+      },
+      receivedAt: Date.now()
+    });
+  }
+
+  /**
+   * A failed attempt joins the record; the first one whose failure left a
+   * declared chain unconsulted is announced, so a declaration that
+   * did nothing for this failure says so rather than sitting inert. Later
+   * attempts under the same decision are on the record, not repeated.
+   */
+  #pushFailedAttempt(record: RuntimeAgentRecord, attempt: RuntimeAgentAttemptRecord): void {
+    const alreadyAnnounced = record.attempts.some((earlier) => earlier.chainDecision === "chain-not-consulted");
+    record.attempts.push(attempt);
+    if (attempt.chainDecision !== "chain-not-consulted" || alreadyAnnounced) {
+      return;
+    }
+    this.#emitEvent({
+      method: `${attempt.target.engine}/chainNotConsulted`,
+      params: {
+        agentId: record.id,
+        label: record.label,
+        phase: record.phase,
+        attempt: attempt.attempt,
+        target: attempt.target,
+        failure: attempt.failure,
+        chainEntries: record.fallback?.length ?? 0
+      },
+      receivedAt: Date.now()
+    });
   }
 
   /**
@@ -1789,7 +1878,7 @@ export class EnsembleRuntime {
     let previousFailure: PreviousAttemptFailure | undefined;
     let lastThrown: unknown;
 
-    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+    while (boundRemains(attempts.ledger)) {
       const attempt = ++attempts.ledger.dispatched;
       lastThrown = undefined;
       this.progress.noteAttempt(agentId, attempt);
@@ -1872,7 +1961,7 @@ export class EnsembleRuntime {
     let previousFailure: PreviousAttemptFailure | undefined;
     let lastThrown: unknown;
 
-    while (attempts.ledger.answered < attempts.ledger.maxAttempts) {
+    while (boundRemains(attempts.ledger)) {
       const attempt = ++attempts.ledger.dispatched;
       lastThrown = undefined;
       this.progress.noteAttempt(agentId, attempt);
@@ -1979,7 +2068,9 @@ export class EnsembleRuntime {
     attempts: TargetAttempts
   ): void {
     attempts.ledger.answered += 1;
-    record.attempts.push(
+    const classification = this.#classify(attempts.target.engine, failure, null, result.diagnostics);
+    this.#pushFailedAttempt(
+      record,
       attemptRecord(
         attempt,
         attempts.target,
@@ -1992,7 +2083,8 @@ export class EnsembleRuntime {
         null,
         null,
         null,
-        this.#classify(attempts.target.engine, failure, null, result.diagnostics)
+        classification,
+        chainDecisionAfter(attempts, classification, boundRemains(attempts.ledger))
       )
     );
   }
@@ -2018,7 +2110,8 @@ export class EnsembleRuntime {
     if (!refused) {
       attempts.ledger.answered += 1;
     }
-    record.attempts.push(
+    this.#pushFailedAttempt(
+      record,
       attemptRecord(
         attempt,
         attempts.target,
@@ -2031,7 +2124,8 @@ export class EnsembleRuntime {
         result.workerExit ?? null,
         null,
         null,
-        classification
+        classification,
+        chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
       )
     );
     return { failure: result.attemptFailure, refused };
@@ -2076,7 +2170,16 @@ export class EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
-    record.attempts.push(
+    // The loop's own next step, read from the same facts it acts on: a
+    // boundary throw leaves, a rejected schema settles, anything else
+    // retries while the bound lasts. A run ending decides nothing.
+    const retries =
+      !refused &&
+      !this.#crossesSpawnBoundary(error) &&
+      !(error instanceof CodexSchemaSubsetUnsupportedError) &&
+      boundRemains(attempts.ledger);
+    this.#pushFailedAttempt(
+      record,
       attemptRecord(
         attempt,
         attempts.target,
@@ -2089,7 +2192,8 @@ export class EnsembleRuntime {
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,
-        classification
+        classification,
+        settlement === null ? chainDecisionAfter(attempts, classification, retries) : null
       )
     );
     return { refused, failure: observed };
@@ -2291,6 +2395,35 @@ function requireTransport(transport: RuntimeTransport | undefined): RuntimeTrans
   return transport;
 }
 
+/** Whether the shared bound leaves the loop another attempt (one bound across the whole chain). */
+function boundRemains(ledger: AttemptLedger): boolean {
+  return ledger.answered < ledger.maxAttempts;
+}
+
+/**
+ * The harness's decision after a failed attempt, stated from the
+ * facts the attempt loop acts on: the attempt's class, whether a later
+ * chain entry remains, and whether the loop runs another attempt on this
+ * target. Null for a call that declared no chain — its own target with
+ * nothing after it — which has no chain decision to state.
+ */
+function chainDecisionAfter(
+  attempts: TargetAttempts,
+  classification: FailureClassification,
+  retries: boolean
+): ChainDecision | null {
+  if (attempts.target.entry === -1 && !attempts.chainRemains) {
+    return null;
+  }
+  if (attempts.chainRemains && classification.class === "availability") {
+    return "advanced";
+  }
+  if (attempts.chainRemains && classification.class === "unclassified" && classification.rule === null) {
+    return "chain-not-consulted";
+  }
+  return retries ? "retried-in-place" : "exhausted";
+}
+
 function attemptRecord(
   attempt: number,
   target: ChainTarget,
@@ -2312,7 +2445,8 @@ function attemptRecord(
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
   observedFailure: { kind: string; message: string } | null = null,
-  classification: FailureClassification | null = null
+  classification: FailureClassification | null = null,
+  chainDecision: ChainDecision | null = null
 ): RuntimeAgentAttemptRecord {
   const endedAt = new Date();
   return {
@@ -2321,6 +2455,7 @@ function attemptRecord(
     target: { engine: target.engine, model: target.model ?? null },
     failure,
     classification,
+    chainDecision,
     observedFailure,
     workerExit,
     appServerDiagnostic,
@@ -2450,6 +2585,11 @@ function rejectionShape(error: unknown): string {
  * already there: the last attempt's own failure, else the runtime's
  * termination cause, else the bare fact — never synthesised from status.
  */
+/** The attempts on which the chain advanced, in order — the first is always the declared target's refusal. */
+function advancesOf(record: RuntimeAgentRecord): RuntimeAgentAttemptRecord[] {
+  return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
+}
+
 function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; message: string } {
   const attempted = attemptedFailureAccount(record);
   if (attempted !== null) {

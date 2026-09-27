@@ -438,7 +438,46 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // one reads as the record's own kind and message, bounded here.
         const diagnosis = typeof event.params.diagnosis === "string" ? event.params.diagnosis : null;
         const count = `${attempts} attempt${attempts === 1 ? "" : "s"}`;
-        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${count} — ${diagnosis ?? `${kind}: ${message}`}\n`);
+        // A chain that reached past the call's own target reads as the
+        // last target's own failure beside how many targets were tried.
+        const targetsTried = typeof event.params.targetsTried === "number" ? event.params.targetsTried : null;
+        const account = diagnosis ?? `${kind}: ${message}`;
+        const outcome =
+          targetsTried !== null && targetsTried > 1
+            ? `${count} across ${targetsTried} chain targets — the last target's failure: ${account}`
+            : `${count} — ${account}`;
+        stderr.write(`[${engine}] agent ${agentId}${label} failed after ${outcome}\n`);
+        return;
+      }
+      if (event.method.endsWith("/chainAdvanced")) {
+        const engine = event.method.slice(0, -"/chainAdvanced".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const answeredBy = event.params.answeredBy as { entry?: unknown; engine?: unknown; model?: unknown } | undefined;
+        const entry = typeof answeredBy?.entry === "number" ? answeredBy.entry : "?";
+        const refusal = event.params.refusal as { kind?: unknown; message?: unknown } | null | undefined;
+        const kind = typeof refusal?.kind === "string" ? refusal.kind : "unknown";
+        const message = typeof refusal?.message === "string" ? boundedEvidence(refusal.message) : "";
+        const targetsRefused = typeof event.params.targetsRefused === "number" ? event.params.targetsRefused : 1;
+        const further =
+          targetsRefused > 1 ? `; ${targetsRefused - 1} further chain entr${targetsRefused === 2 ? "y was" : "ies were"} refused too` : "";
+        stderr.write(
+          `[${engine}] agent ${agentId}${label} answered by fallback entry ${entry} (${targetName(answeredBy)}) — the declared target ${targetName(event.params.refused)} was refused: ${kind}: ${message}${further}\n`
+        );
+        return;
+      }
+      if (event.method.endsWith("/chainNotConsulted")) {
+        const engine = event.method.slice(0, -"/chainNotConsulted".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const attempt = typeof event.params.attempt === "number" ? event.params.attempt : "?";
+        const failure = event.params.failure as { kind?: unknown; message?: unknown } | null | undefined;
+        const kind = typeof failure?.kind === "string" ? failure.kind : "unknown";
+        const message = typeof failure?.message === "string" ? boundedEvidence(failure.message) : "";
+        const entries = typeof event.params.chainEntries === "number" ? event.params.chainEntries : 0;
+        stderr.write(
+          `[${engine}] agent ${agentId}${label} fallback chain not consulted — attempt ${attempt} on ${targetName(event.params.target)} failed unclassified (${kind}: ${message}); the declared chain (${entries} entr${entries === 1 ? "y" : "ies"}) advances on availability failures only\n`
+        );
         return;
       }
       if (event.method === "worktree/finalisationFailed") {
@@ -685,6 +724,13 @@ function completedDirectAgentWithNull(runtime: EnsembleRuntime): boolean {
   const completed =
     (runtime as { completedOutputs?: () => readonly CompletedAgentOutput[] }).completedOutputs?.() ?? [];
   return completed.some((agent) => agent.output === null);
+}
+
+/** A chain target as a notice names it: `engine/model`, or the engine alone when the target left its model unpinned. */
+function targetName(target: unknown): string {
+  const { engine, model } = (target ?? {}) as { engine?: unknown; model?: unknown };
+  const name = typeof engine === "string" ? engine : "unknown";
+  return typeof model === "string" ? `${name}/${model}` : name;
 }
 
 function workflowName(meta: unknown): string | null {

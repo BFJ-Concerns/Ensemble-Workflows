@@ -372,6 +372,8 @@ test("a text call's exhausted attempts resolve null with the account on the reco
             phase: null,
             status: "failed",
             attempts: 2,
+            // No chain declared, so no count of chain targets to carry.
+            targetsTried: null,
             failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" },
             // An answered failure has no thrown error for the diagnosis
             // seam to present; the notice reads the record's own account.
@@ -3660,5 +3662,208 @@ test("a Codex substrate refusal advances the chain to a Claude target, costing n
     ]
   );
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "claude", model: "opus" });
+  await runtime.close();
+});
+
+// ---------------------------------------------------------------------------
+// The chain made visible: each failed attempt's recorded decision, and the
+// notices that carry the record's account of the chain to the terminal.
+// ---------------------------------------------------------------------------
+
+/** The chain's notices and the failure notice, in the order the runtime announced them. */
+function chainNotices(runtime: EnsembleRuntime): Array<{ method: string; params: Record<string, unknown> }> {
+  const notices: Array<{ method: string; params: Record<string, unknown> }> = [];
+  runtime.onEvent((event) => {
+    if (/\/(chainAdvanced|chainNotConsulted|agentFailed)$/.test(event.method)) {
+      notices.push({ method: event.method, params: event.params });
+    }
+  });
+  return notices;
+}
+
+test("an answer from a chain entry records each refused attempt as advanced and announces the refused declared target", async () => {
+  // Two refusals, then an answer from the second entry on another engine:
+  // the notice names the declared target and its own refusal, how many
+  // targets refused, and the entry that answered — all read off the record.
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), codexRefusal("serverOverloaded")]);
+  const claude = new ChainEngine("claude", [answers("from claude")]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+  const notices = chainNotices(runtime);
+
+  const output = await runtime.agent("work", {
+    engine: "codex",
+    model: "gpt-6-sol",
+    label: "reviewer",
+    fallback: [
+      { engine: "codex", model: "gpt-6-luna" },
+      { engine: "claude", model: "opus" }
+    ]
+  });
+
+  assert.equal(output, "from claude");
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.target.model, attempt.chainDecision]),
+    [
+      ["gpt-6-sol", "advanced"],
+      ["gpt-6-luna", "advanced"],
+      // A complete attempt leaves nothing to decide.
+      ["opus", null]
+    ]
+  );
+  // Tagged with the engine that answered, as every notice carries the tag of
+  // the target the call ended on.
+  assert.deepEqual(notices, [
+    {
+      method: "claude/chainAdvanced",
+      params: {
+        agentId: 1,
+        label: "reviewer",
+        phase: null,
+        refused: { engine: "codex", model: "gpt-6-sol" },
+        refusal: settled.attempts[0]!.failure,
+        targetsRefused: 2,
+        answeredBy: { entry: 1, engine: "claude", model: "opus" }
+      }
+    }
+  ]);
+  assert.equal(settled.attempts[0]?.failure?.kind, "AppServerRequestError");
+  await runtime.close();
+});
+
+test("an output failure under a chain records retried-in-place then exhausted, and the failure notice counts one target", async () => {
+  const codex = new ChainEngine("codex", [answers(""), answers("")]);
+  const claude = new ChainEngine("claude", []);
+  const { runtime, records } = chainRuntime([codex, claude], 2);
+  const notices = chainNotices(runtime);
+
+  assert.equal(
+    await runtime.agent("work", { engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
+    null
+  );
+  assert.equal(claude.dispatches.length, 0);
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.classification?.class, attempt.chainDecision]),
+    [
+      ["output", "retried-in-place"],
+      ["output", "exhausted"]
+    ]
+  );
+  // No advance, no unconsulted chain: the failure notice alone, naming the
+  // one target the call ever reached.
+  assert.deepEqual(
+    notices.map((notice) => [notice.method, notice.params.attempts, notice.params.targetsTried]),
+    [["codex/agentFailed", 2, 1]]
+  );
+  await runtime.close();
+});
+
+test("an unrecognised failure with a chain entry remaining records chain-not-consulted and announces it once", async () => {
+  const threadFailed = (): (() => Promise<EngineAttemptResult>) => async () => {
+    throw new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread failed" });
+  };
+  const codex = new ChainEngine("codex", [threadFailed(), threadFailed(), answers("in place")]);
+  const claude = new ChainEngine("claude", []);
+  const { runtime, records } = chainRuntime([codex, claude], 3);
+  const notices = chainNotices(runtime);
+
+  assert.equal(
+    await runtime.agent("work", { engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
+    "in place"
+  );
+  // The chain advances on availability alone: the declared entry was never
+  // asked, and the record says so on each attempt it applied to.
+  assert.equal(claude.dispatches.length, 0);
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.classification, attempt.chainDecision]),
+    [
+      [{ class: "unclassified", rule: null }, "chain-not-consulted"],
+      [{ class: "unclassified", rule: null }, "chain-not-consulted"],
+      [null, null]
+    ]
+  );
+  assert.deepEqual(notices, [
+    {
+      method: "codex/chainNotConsulted",
+      params: {
+        agentId: 1,
+        label: null,
+        phase: null,
+        attempt: 1,
+        target: { engine: "codex", model: "gpt-6-sol" },
+        failure: settled.attempts[0]!.failure,
+        chainEntries: 1
+      }
+    }
+  ]);
+  assert.equal(settled.attempts[0]?.failure?.kind, "AppServerSystemError");
+  await runtime.close();
+});
+
+test("every target refused records advanced then exhausted, and the failure notice counts the targets tried", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [claudeRefusal(429, "rate_limit")]);
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+  const notices = chainNotices(runtime);
+
+  assert.equal(
+    await runtime.agent("work", { engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "opus" }] }),
+    null
+  );
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => attempt.chainDecision),
+    ["advanced", "exhausted"]
+  );
+  // The last target's own failure, under that target's engine tag, with
+  // the count of targets the chain tried.
+  assert.deepEqual(
+    notices.map((notice) => [notice.method, notice.params.attempts, notice.params.targetsTried, notice.params.failure]),
+    [["claude/agentFailed", 2, 2, settled.attempts[1]!.failure]]
+  );
+  await runtime.close();
+});
+
+test("a refusal thrown on the chain's last target announces the exhaustion before the throw reaches the script", async () => {
+  const claude = new ChainEngine("claude", [claudeDispatchRefused(), claudeDispatchRefused()]);
+  const { runtime, records } = chainRuntime([claude], 3);
+  const notices = chainNotices(runtime);
+
+  await assert.rejects(
+    () => runtime.agent("blind stage", { engine: "claude", model: "haiku", fallback: [{ engine: "claude", model: "sonnet" }] }),
+    ClaudeDispatchError
+  );
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.target.model, attempt.chainDecision]),
+    [
+      ["haiku", "advanced"],
+      ["sonnet", "exhausted"]
+    ]
+  );
+  assert.deepEqual(
+    notices.map((notice) => [notice.method, notice.params.attempts, notice.params.targetsTried, notice.params.failure]),
+    [["claude/agentFailed", 2, 2, { kind: "ClaudeDispatchError", message: REFUSAL_TEXT }]]
+  );
+  await runtime.close();
+});
+
+test("with no chain declared, no attempt carries a chain decision and no chain notice is announced", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("")]);
+  const { runtime, records } = chainRuntime([codex], 2);
+  const notices = chainNotices(runtime);
+
+  assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => attempt.chainDecision),
+    [null, null]
+  );
+  assert.deepEqual(
+    notices.map((notice) => [notice.method, notice.params.targetsTried]),
+    [["codex/agentFailed", null]]
+  );
   await runtime.close();
 });

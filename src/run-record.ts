@@ -100,6 +100,19 @@ export interface EffectiveRunSettingsRecord {
   runTimeoutMs: Resolved<number | null>;
 }
 
+/**
+ * The harness's decision after a failed attempt under a declared chain:
+ *
+ * - `advanced` — an availability failure while a later entry remained; the
+ *   call moved to that entry and the attempt spent none of the bound.
+ * - `retried-in-place` — the call stays on this target for another attempt.
+ * - `exhausted` — nothing remains to try: the call settles on this failure.
+ * - `chain-not-consulted` — the classifier recognised nothing (`rule:
+ *   null`) while a later entry remained, so the chain, which advances on
+ *   availability alone, was not asked; any further attempt stays in place.
+ */
+export type ChainDecision = "advanced" | "retried-in-place" | "exhausted" | "chain-not-consulted";
+
 export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
@@ -119,6 +132,14 @@ export interface RuntimeAgentAttemptRecord {
    * `failure`, `appServerDiagnostic`, and `diagnostics` beside it.
    */
   classification: FailureClassification | null;
+  /**
+   * What the harness decided after this failed attempt, under a declared
+   * fallback chain — stated, so a reader never re-derives it from the
+   * classification and the chain rules. Null on a complete attempt, on
+   * every attempt of a call that declared no chain, and on an attempt the
+   * run's own ending cut short (the run ended; nothing was decided).
+   */
+  chainDecision: ChainDecision | null;
   /**
    * The transport symptom this attempt observed, when what `failure` names
    * is the run's own settlement rather than an engine fault. A shutdown or
@@ -923,6 +944,7 @@ export class RunRecordWriter {
         target: attempt.target,
         failure: attempt.failure,
         classification: attempt.classification,
+        chain_decision: attempt.chainDecision,
         observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null

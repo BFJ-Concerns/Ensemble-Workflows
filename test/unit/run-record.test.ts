@@ -189,10 +189,12 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
     args: string[];
   };
   const agentKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-agent-keys.json", "utf8"));
+  const attemptKeys = JSON.parse(await readFile("test/fixtures/run-record/v4-attempt-keys.json", "utf8"));
 
   assert.deepEqual(Object.keys(manifest).sort(), manifestKeys.manifest);
   assert.deepEqual(Object.keys(manifest.args as Record<string, unknown>).sort(), manifestKeys.args);
   assert.deepEqual(Object.keys(agent).sort(), agentKeys);
+  assert.deepEqual(Object.keys((agent.attempts as Array<Record<string, unknown>>)[0]!).sort(), attemptKeys);
   assert.equal(manifest.schema_version, 4);
   assert.equal(manifest.kind, "run_manifest");
   assert.equal(manifest.caller_identity, "session:run-record-test");
@@ -991,6 +993,7 @@ function agentRecord(
         target: { engine, model: null },
         failure: null,
         classification: null,
+        chainDecision: null,
         observedFailure: null,
         workerExit: null,
         appServerDiagnostic: null,
@@ -1997,6 +2000,69 @@ test("a chained agent's usage is keyed under each attempt's own engine and serve
       [{ engine: "claude", model: "opus" }, null]
     ]
   );
+  await rm(store, { recursive: true, force: true });
+  await rm(cwd, { recursive: true, force: true });
+});
+
+test("each attempt's chain decision is archived as chain_decision, null where the harness decided nothing", async () => {
+  const cwd = await gitRepo("ensemble-record-chain-decision-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-chain-decision",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const record = agentRecord(1, "codex", "gpt-6-sol", 3);
+  const [first] = record.attempts;
+  Object.assign(first!, {
+    status: "failed",
+    failure: { kind: "AppServerSystemError", message: "turn notification failed (threadFailed): the thread failed" },
+    classification: { class: "unclassified", rule: null },
+    chainDecision: "chain-not-consulted"
+  });
+  const onClaude = { engine: "claude" as EngineName, model: "opus" };
+  const outputFailure = { class: "output" as const, rule: "output" };
+  record.attempts.push(
+    {
+      ...structuredClone(first!),
+      attempt: 2,
+      classification: { class: "availability", rule: "codex.usage-limit" },
+      chainDecision: "advanced"
+    },
+    { ...structuredClone(first!), attempt: 3, target: onClaude, classification: outputFailure, chainDecision: "retried-in-place" },
+    { ...structuredClone(first!), attempt: 4, target: onClaude, classification: outputFailure, chainDecision: "exhausted" }
+  );
+  record.fallback = [{ engine: "claude", model: "opus" }];
+  record.status = "failed";
+  await writer.recordAgent(record);
+  // The other side: a call with no chain carries null on its attempt.
+  await writer.recordAgent(agentRecord(2, "codex", null, 1));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+
+  const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+    attempts: Array<{ attempt: number; chain_decision: unknown }>;
+  };
+  // Every one of the four decisions reaches disk under the documented key,
+  // spelled as the record's type spells it.
+  assert.deepEqual(
+    agent.attempts.map((attempt) => [attempt.attempt, attempt.chain_decision]),
+    [
+      [1, "chain-not-consulted"],
+      [2, "advanced"],
+      [3, "retried-in-place"],
+      [4, "exhausted"]
+    ]
+  );
+
+  const plain = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8")) as {
+    attempts: Array<Record<string, unknown>>;
+  };
+  assert.ok(Object.hasOwn(plain.attempts[0]!, "chain_decision"));
+  assert.equal(plain.attempts[0]!.chain_decision, null);
   await rm(store, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });

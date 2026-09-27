@@ -1,0 +1,21 @@
+[
+  "app_server_diagnostic",
+  "attempt",
+  "chain_decision",
+  "classification",
+  "diagnostics",
+  "duration_ms",
+  "ended_at",
+  "failure",
+  "first_delta_ms",
+  "observed_failure",
+  "raw_output",
+  "resolved_effort",
+  "resolved_model",
+  "started_at",
+  "status",
+  "target",
+  "token_usage_events",
+  "validated_output",
+  "worker_exit"
+]

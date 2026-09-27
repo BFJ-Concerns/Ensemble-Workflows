@@ -86,6 +86,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
         target: { engine: "codex", model: null },
         failure: null,
         classification: null,
+        chainDecision: null,
         observedFailure: null,
         workerExit: null,
         appServerDiagnostic: null,

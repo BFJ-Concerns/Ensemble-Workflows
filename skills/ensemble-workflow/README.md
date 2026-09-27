@@ -390,7 +390,11 @@ attempt was dispatched to), `started_at`, `ended_at`, `duration_ms`,
 on a failed attempt — `class` one of `availability`, `output`,
 `unclassified`; `rule` the classifier rule that matched, or `null` when no
 rule recognised the diagnostic — `null` on a complete attempt),
-`diagnostics`, `app_server_diagnostic`, `token_usage_events` (engine-native
+`chain_decision` (on a failed attempt of a call with a `fallback` chain, the
+harness's decision after it: `advanced`, `retried-in-place`, `exhausted`, or
+`chain-not-consulted` — see the fallback-chain bullet under Failure
+semantics; `null` on a complete attempt, without a chain, or when the run's
+own ending cut the attempt short), `diagnostics`, `app_server_diagnostic`, `token_usage_events` (engine-native
 per-attempt events), `worker_exit`. The `cost_rollup` books each attempt
 under its own `target.engine` and served model, so a chained agent's spend
 lands where it was spent.
@@ -646,7 +650,7 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary test observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the
@@ -843,7 +847,10 @@ rejection itself is unchanged, invoking no engine.
   last stderr, kept whole as evidence and stripped of terminal control —
   detail lines indented beneath the first) and otherwise the record's own
   `<kind>: <message>`, bounded to one line — so an operator watching the
-  terminal still sees each worker that failed and why. An author who wants a failed call to stop the script checks for
+  terminal still sees each worker that failed and why. A call whose chain
+  reached past its own target reads
+  `failed after N attempts across M chain targets — the last target's failure: <cause>`,
+  `<cause>` being the last target's own failure. An author who wants a failed call to stop the script checks for
   `null` (or reads `failure` under `identity: true`), exactly as on a schema
   call. The boundary is spawn: a rejection raised before a worker exists — a
   bad option, a placement that never opened, an engine refusing the dispatch
@@ -873,7 +880,22 @@ rejection itself is unchanged, invoking no engine.
   chain) it is the call's own failure exactly as before, and an in-band
   overload the provider promises to retry stays the bounded in-place retry
   it always was — so a chain whose every target refuses fails with the last
-  target's own failure, every attempt classified in the record. A malformed
+  target's own failure, every attempt classified in the record. Each failed
+  attempt of a chained call records the harness's `chain_decision` after it:
+  `advanced` (moved to the next entry), `retried-in-place`, `exhausted`
+  (the call settles on this failure), or `chain-not-consulted` (the failure
+  matched no rule — `rule: null` — while an entry remained, so the chain,
+  which advances on availability alone, was not asked). The launcher
+  announces the chain on stderr: an answer from an entry as
+  `[<engine>] agent <id> (<label>) answered by fallback entry <n> (<engine>/<model>) — the declared target <engine>/<model> was refused: <kind>: <message>`
+  (with `; K further chain entries were refused too` when later entries
+  refused as well), and the first unconsulted failure as
+  `[<engine>] agent <id> (<label>) fallback chain not consulted — attempt <n> on <engine>/<model> failed unclassified (<kind>: <message>); the declared chain (<N> entries) advances on availability failures only`,
+  worker text bounded to one line. Each line is tagged with the engine it
+  reports on — the answering entry's, the last target's, or the unconsulted
+  attempt's own — and every fact on these lines is on the agent record. A
+  chain exhausted by a refusal that throws (a `ClaudeDispatchError` on the
+  last target) is announced by the `failed after` line before the throw. A malformed
   chain, an opencode entry, or an engine the run does not carry throws
   `FallbackTargetRejectedError` before any worker spawns.
 - **Claude dispatch and the trust gate.** The harness dispatches

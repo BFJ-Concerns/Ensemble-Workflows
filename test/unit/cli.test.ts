@@ -13,13 +13,13 @@ import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry } from "../../src/engines.js";
-import { EngineShutdownError } from "../../src/errors.js";
+import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
 
-import type { EngineAdapter, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -3058,6 +3058,156 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   assert.equal(directExit, 1);
   assert.doesNotMatch(directStderr.text(), /failed after 1 attempt —/);
   assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
+});
+
+/** An engine whose turns follow a script in dispatch order — a chain's targets on one engine share it. */
+class ScriptedTurnsEngine implements EngineAdapter {
+  readonly concurrency = 1;
+  readonly scheduler = new Scheduler(1);
+  #steps: Array<() => Promise<EngineAttemptResult>>;
+
+  constructor(
+    readonly name: EngineName,
+    steps: Array<() => Promise<EngineAttemptResult>>
+  ) {
+    this.#steps = [...steps];
+  }
+
+  schedule<T>(task: () => Promise<T>): Promise<T> {
+    return this.scheduler.schedule(task);
+  }
+
+  createInvocation(): EngineInvocation {
+    return {
+      runAttempt: async () => {
+        const step = this.#steps.shift();
+        assert.ok(step, `${this.name} engine ran out of scripted turns`);
+        return step();
+      }
+    };
+  }
+
+  async close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** A Claude API refusal as the engine returns it: a failed turn carrying the status the classifier reads as availability. */
+function claudeApiRefusal(status: number, message: string): () => Promise<EngineAttemptResult> {
+  return async () => ({
+    ...turn(""),
+    attemptFailure: { kind: "claude-worker-diagnostic", message },
+    diagnostics: { apiError: { status, code: null } }
+  });
+}
+
+async function runChainScript(
+  source: string,
+  engines: EngineAdapter[],
+  defaultMaxAttempts: number
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-chain-notice-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, source);
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    stdout,
+    stderr,
+    // Recording off and no store: the notices are the whole of stderr.
+    runRecordDir: null,
+    createRuntime: async () => new EnsembleRuntime({ engines: new EngineRegistry(engines), defaultMaxAttempts })
+  });
+  return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
+}
+
+test("an answer from a fallback entry is announced naming the refused declared target and its bounded refusal", async () => {
+  const result = await runChainScript(
+    `
+      export const meta = { name: "chain-advanced-notice" };
+      const answer = await agent("work", {
+        engine: "claude", model: "haiku", label: "scout",
+        fallback: [{ engine: "claude", model: "sonnet" }, { engine: "claude", model: "opus" }]
+      });
+      return { answer };
+    `,
+    [
+      new ScriptedTurnsEngine("claude", [
+        // Worker-controlled text: flattened to one line on the notice.
+        claudeApiRefusal(429, "API Error: Request rejected (429)\n\tslow down"),
+        claudeApiRefusal(529, "API Error: Request rejected (529)"),
+        async () => turn("from opus")
+      ])
+    ],
+    1
+  );
+
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, '{"answer":"from opus"}\n');
+  assert.equal(
+    result.stderr,
+    "[claude] agent 1 (scout) answered by fallback entry 1 (claude/opus) — the declared target claude/haiku was refused: " +
+      "claude-worker-diagnostic: API Error: Request rejected (429) slow down; 1 further chain entry was refused too\n"
+  );
+});
+
+test("a declared chain left unconsulted by an unrecognised failure says so once, naming the attempt and its failure", async () => {
+  const threadFailed = async (): Promise<EngineAttemptResult> => {
+    throw new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread\nfailed" });
+  };
+  const result = await runChainScript(
+    `
+      export const meta = { name: "chain-not-consulted-notice" };
+      const answer = await agent("work", {
+        engine: "codex", model: "gpt-6-sol", label: "scout",
+        fallback: [{ engine: "claude", model: "opus" }]
+      });
+      return { answer };
+    `,
+    [
+      new ScriptedTurnsEngine("codex", [threadFailed, threadFailed, async () => turn("in place")]),
+      new ScriptedTurnsEngine("claude", [])
+    ],
+    3
+  );
+
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, '{"answer":"in place"}\n');
+  assert.equal(
+    result.stderr,
+    "[codex] agent 1 (scout) fallback chain not consulted — attempt 1 on codex/gpt-6-sol failed unclassified " +
+      "(AppServerSystemError: turn notification failed (threadFailed): the thread failed); " +
+      "the declared chain (1 entry) advances on availability failures only\n"
+  );
+});
+
+test("an exhausted chain's failure notice names the last target's own failure and how many targets were tried", async () => {
+  const result = await runChainScript(
+    `
+      export const meta = { name: "chain-exhausted-notice" };
+      const answer = await agent("work", {
+        engine: "claude", model: "haiku", label: "scout",
+        fallback: [{ engine: "claude", model: "sonnet" }]
+      });
+      return { answer };
+    `,
+    [
+      new ScriptedTurnsEngine("claude", [
+        claudeApiRefusal(429, "API Error: Request rejected (429)"),
+        claudeApiRefusal(529, "API Error: Request rejected (529)")
+      ])
+    ],
+    1
+  );
+
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, '{"answer":null}\n');
+  assert.equal(
+    result.stderr,
+    "[claude] agent 1 (scout) failed after 2 attempts across 2 chain targets — " +
+      "the last target's failure: claude-worker-diagnostic: API Error: Request rejected (529)\n"
+  );
 });
 
 test("the sentinel carries worker outcomes, so `complete` cannot mean every worker failed", async () => {

@@ -57,7 +57,11 @@ any worker spawns.
   past its own retry, a dead or unstartable substrate); output failures retry
   in place and never advance it, an opencode entry throws before any worker
   spawns, and every step is the harness's own recorded dispatch — the engine
-  never swaps models behind the record's back.
+  never swaps models behind the record's back. The launcher says on stderr
+  when a chain entry answered for a refused target, when a declared chain
+  was not consulted because the failure went unrecognised, and how many
+  chain targets an exhausted call tried; each attempt records the decision
+  the harness took after it.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallback` that every `agent()` call
   inherits and call-site options override; the chain is engine-agnostic, so
@@ -398,7 +402,9 @@ Every JSON artefact carries:
 - `schema_version`: currently `4`. Version 4 replaces the agent record's
   `fallback_model` with the declared `fallback` chain and the `answered_by`
   target, gives every attempt its `target` and (when failed) its
-  `classification`, and adds the manifest's script-recorded `tallies`.
+  `classification`, and adds the manifest's script-recorded `tallies`;
+  every attempt's `chain_decision` arrived later as an additive version-4
+  field.
   Version 3 rewrote usage rollups in the declared summary vocabulary keyed
   per served model; `strip`, `owner`, and `transcript_capture` arrived
   later as additive version-3 fields. Version 2 added worktree provenance
@@ -554,8 +560,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   dispatched to; the call's own until the chain advances), `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
   `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
-  `null`), `classification`, `observed_failure`, `diagnostics`,
-  `app_server_diagnostic`, `token_usage_events`, `worker_exit`. Where the
+  `null`), `classification`, `chain_decision`, `observed_failure`,
+  `diagnostics`, `app_server_diagnostic`, `token_usage_events`,
+  `worker_exit`. Where the
   run's own settlement ended the turn, the attempt's `failure` names that
   settlement and `observed_failure` keeps the transport symptom the turn saw
   (a closed app-server, an aborted poll); `observed_failure` is `null` when
@@ -572,6 +579,17 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   that the table has gone stale as an engine reworded its errors. The raw
   diagnostic stays in `failure`, `app_server_diagnostic`, and `diagnostics`
   beside it, never folded into a class. `null` on a complete attempt.
+- `chain_decision` on a failed attempt of a call that declared a `fallback`
+  chain: the decision the harness took after it — `"advanced"` (an
+  availability failure with a later entry remaining: the call moved to that
+  entry, spending none of the bound), `"retried-in-place"` (another attempt
+  on the same target), `"exhausted"` (nothing left to try: the call settles
+  on this failure), or `"chain-not-consulted"` (the classifier recognised
+  nothing — `classification.rule` is `null` — while a later entry remained,
+  so the chain, which advances on availability alone, was not asked; any
+  further attempt stays in place). `null` on a complete attempt, on every
+  attempt of a call with no chain, and on an attempt the run's own ending
+  cut short.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
   `session_id`, `thread_id`; empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise

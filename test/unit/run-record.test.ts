@@ -1811,6 +1811,7 @@ test("an interrupted worker's archive names its termination cause and why no tra
   assert.equal(completedAgent.termination_cause, null);
   assert.equal(completedAgent.attempts[0]?.observed_failure, null);
   assert.ok(Array.isArray(completedAgent.transcripts));
+  assert.equal((completedAgent.transcripts[0] as { partial?: boolean } | undefined)?.partial, false);
   assert.equal(completedAgent.transcripts_unavailable, null);
 });
 

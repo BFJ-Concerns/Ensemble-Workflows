@@ -866,6 +866,7 @@ export class RunRecordWriter {
           path: relativePath,
           format: transcript.format,
           source: transcript.source,
+          partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
         });
@@ -1092,9 +1093,9 @@ export class RunRecordWriter {
 
 /**
  * Why an agent record carries no transcript, in the same vocabulary shape as
- * `usage.unavailable`: the worker never ran, the runtime ended it before a
- * transcript existed, the Codex session client did not retain a follow-up
- * capture, or its engine produced none for the attempts that ran.
+ * `usage.unavailable`: no attempt ran, every substrate refused before a
+ * worker existed, the runtime ended the turn before a transcript existed,
+ * the Codex session client lost capture, or an engine produced no transcript.
  */
 function transcriptAbsenceReason(
   record: RuntimeAgentRecord
@@ -1103,9 +1104,15 @@ function transcriptAbsenceReason(
   | "worker-interrupted"
   | "worker-timed-out"
   | "session-client-capture-gap"
-  | "engine-produced-no-transcript" {
+  | "engine-produced-no-transcript"
+  | "substrate-never-started" {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
+  }
+  if (record.attempts.every((attempt) =>
+    attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
   }
   if (record.status === "interrupted") {
     return "worker-interrupted";

@@ -446,9 +446,11 @@ under its own `target.engine` and served model, so a chained agent's spend
 lands where it was spent.
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
-`source`, and engine-specific ids (`session_id`, `thread_id`).
+`source`, `partial` (`true` if its turn ended before completion, otherwise
+`false`), and engine-specific ids (`session_id`, `thread_id`).
 `transcripts_unavailable` is `null` when that array has entries; otherwise it
-names why it is empty.
+names why it is empty. `substrate-never-started` means every recorded attempt
+was refused before its worker existed.
 
 ## Script shape
 
@@ -758,7 +760,7 @@ attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record with no retained transcript
 keeps `transcripts` as `[]` and carries the reason in
-`transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
+`transcripts_unavailable` — `no-attempt-ran`, `substrate-never-started`, `worker-interrupted`,
 `worker-timed-out`, `session-client-capture-gap` (the engine's capture path
 observed the turn's transcript lost — `transcript_capture` carries that
 observation as `retained`, `lost`, or `null` where nothing was observed, and

@@ -1,4 +1,5 @@
 import type { EngineAttemptResult } from "./engines.js";
+import type { EngineTranscriptArtifact } from "./types.js";
 
 export class EnsembleError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -150,6 +151,40 @@ export function partialWorkerTextOf(error: unknown): string | null {
     }
   }
   return null;
+}
+
+/** The transcript observed by a turn that ended before completion. */
+interface PartialTranscriptCarrier {
+  partialTranscript?: EngineTranscriptArtifact;
+}
+
+export function attachPartialTranscript<T extends Error>(error: T, transcript: EngineTranscriptArtifact): T {
+  const carrier = error as T & PartialTranscriptCarrier;
+  if (carrier.partialTranscript === undefined) {
+    carrier.partialTranscript = transcript;
+  }
+  return error;
+}
+
+export function partialTranscriptOf(error: unknown): EngineTranscriptArtifact | null {
+  return error instanceof Error ? (error as PartialTranscriptCarrier).partialTranscript ?? null : null;
+}
+
+/** First answer delta timing observed before a failed turn was discarded. */
+interface FirstDeltaMsCarrier {
+  firstDeltaMs?: number;
+}
+
+export function attachFirstDeltaMs<T extends Error>(error: T, firstDeltaMs: number): T {
+  const carrier = error as T & FirstDeltaMsCarrier;
+  if (carrier.firstDeltaMs === undefined) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+
+export function firstDeltaMsOf(error: unknown): number | null {
+  return error instanceof Error ? (error as FirstDeltaMsCarrier).firstDeltaMs ?? null : null;
 }
 
 /**

@@ -621,10 +621,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   diagnostic stays in `failure`, `app_server_diagnostic`, and `diagnostics`
   beside it, never folded into a class. `null` on a complete attempt.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
-  `session_id`, `thread_id`; empty when none were archived.
+  `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
+  completion, otherwise `false`); empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
-  `"worker-timed-out"`, `"session-client-capture-gap"`, or
+  `"worker-timed-out"`, `"substrate-never-started"`, `"session-client-capture-gap"`, or
   `"engine-produced-no-transcript"`. The reason names an observed capture
   loss only when `transcript_capture` is `"lost"`; it does not infer one from
   a held session's turn number.

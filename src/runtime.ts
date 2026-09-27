@@ -31,7 +31,9 @@ import {
   attachAgentIdentity,
   describeError,
   failedTurnResultOf,
+  firstDeltaMsOf,
   partialWorkerTextOf,
+  partialTranscriptOf,
   SubstrateRefusedError,
   TurnTimeoutError,
   UnknownEngineError,
@@ -2103,6 +2105,16 @@ export class EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
+    const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult =
+      failedResult ??
+      (partialTranscript !== null || firstDeltaMs !== null
+        ? {
+            ...(partialTranscript !== null ? { transcripts: [partialTranscript] } : {}),
+            ...(firstDeltaMs !== null ? { firstDeltaMs } : {})
+          }
+        : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -2112,7 +2124,7 @@ export class EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult,
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,
@@ -2326,7 +2338,7 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<
+  result: Partial<Pick<
     TurnResult,
     | "durationMs"
     | "firstDeltaMs"
@@ -2335,7 +2347,7 @@ function attemptRecord(
     | "diagnostics"
     | "resolvedModel"
     | "resolvedEffort"
-  > | null,
+  >> | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
   observedFailure: { kind: string; message: string } | null = null,

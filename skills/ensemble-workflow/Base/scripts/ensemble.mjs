@@ -14211,6 +14211,26 @@ function partialWorkerTextOf(error) {
   }
   return null;
 }
+function attachPartialTranscript(error, transcript) {
+  const carrier = error;
+  if (carrier.partialTranscript === void 0) {
+    carrier.partialTranscript = transcript;
+  }
+  return error;
+}
+function partialTranscriptOf(error) {
+  return error instanceof Error ? error.partialTranscript ?? null : null;
+}
+function attachFirstDeltaMs(error, firstDeltaMs) {
+  const carrier = error;
+  if (carrier.firstDeltaMs === void 0) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+function firstDeltaMsOf(error) {
+  return error instanceof Error ? error.firstDeltaMs ?? null : null;
+}
 function attachFailedTurnResult(error, result) {
   const carrier = error;
   if (carrier.failedTurnResult === void 0) {
@@ -15050,6 +15070,7 @@ var RunRecordWriter = class _RunRecordWriter {
           path: relativePath,
           format: transcript.format,
           source: transcript.source,
+          partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
         });
@@ -15240,6 +15261,11 @@ var RunRecordWriter = class _RunRecordWriter {
 function transcriptAbsenceReason(record) {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
+  }
+  if (record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
   }
   if (record.status === "interrupted") {
     return "worker-interrupted";
@@ -18193,7 +18219,8 @@ function failedTurnResult(error, evidence, usageEvent, dispatchedEffort) {
           format: "jsonl",
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
-          content: evidence.transcript.text
+          content: evidence.transcript.text,
+          partial: true
         }
       ]
     }
@@ -19300,6 +19327,20 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    */
   #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript?.events.some((event) => event.direction === "server")) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: true
+      });
+    }
     this.#transcripts.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
@@ -22442,6 +22483,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
+    const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult = failedResult ?? (partialTranscript !== null || firstDeltaMs !== null ? {
+      ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
+      ...firstDeltaMs !== null ? { firstDeltaMs } : {}
+    } : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -22451,7 +22498,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult,
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,

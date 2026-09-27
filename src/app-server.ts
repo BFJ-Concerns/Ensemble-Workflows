@@ -12,6 +12,8 @@ import {
   AppServerStartupTimeoutError,
   attachAppServerDiagnostic,
   attachPartialWorkerText,
+  attachPartialTranscript,
+  attachFirstDeltaMs,
   attachWorkerExitStatus,
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
@@ -1093,6 +1095,20 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // itemText first, mirroring #completeTurn: a worker whose text arrived
     // as a completed item rather than deltas has still said it.
     this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
+    const transcript = this.#transcripts.get(threadId);
+    if (transcript?.events.some((event) => event.direction === "server")) {
+      attachPartialTranscript(error, {
+        filename: "transcript.codex.jsonl",
+        format: "jsonl",
+        source: "codex-app-server-events",
+        threadId,
+        content: this.#transcriptText(threadId),
+        partial: true
+      });
+    }
     this.#transcripts.delete(threadId);
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);

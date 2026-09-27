@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,7 +7,7 @@ import test from "node:test";
 
 import { CodexAppServerTransport, LazyCodexAppServerTransport, appServerErrorFromPayload } from "../../src/app-server.js";
 import { createDefaultEngineRegistry } from "../../src/engines.js";
-import { createRuntime } from "../../src/runtime.js";
+import { createRuntime, EnsembleRuntime } from "../../src/runtime.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import {
@@ -719,6 +720,93 @@ test("the archive distinguishes a transport request deadline from a turn deadlin
     assert.equal(requestExpired.termination_cause?.kind, "request-timeout");
     assert.equal(turnExpired.termination_cause?.kind, "turn-timeout");
   } finally {
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("an unstarted Codex substrate leaves an honest transcript absence reason", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-unstarted-transcript-"));
+  const runtime = await createRuntime({ codexBin: path.join(store, "missing-codex") });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd: process.cwd(),
+    runUuid: "unstarted-transcript",
+    workflowPath: path.join(process.cwd(), "unstarted-transcript.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    await assert.rejects(() => runtime.agent("never started", { engine: "codex" }), CodexSubstrateRefusedError);
+    await writer.finish({ status: "failed", exitCode: 1, result: null });
+    const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      transcripts: unknown[];
+      transcripts_unavailable: string;
+      attempts: Array<{ failure: { kind: string } }>;
+    };
+    assert.equal(archived.attempts[0]?.failure.kind, "CodexSubstrateRefusedError");
+    assert.deepEqual(archived.transcripts, []);
+    assert.equal(archived.transcripts_unavailable, "substrate-never-started");
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
+});
+
+test("a run-ended Codex turn archives its streamed transcript as partial", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-codex-partial-transcript-"));
+  const codexBin = await fakeCodexFailingTurnServer("hang-after-delta");
+  let deltaArrived: () => void = () => undefined;
+  const deltaSeen = new Promise<void>((resolve) => { deltaArrived = resolve; });
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin),
+    onEvent: (event) => {
+      if (event.method === "item/agentMessage/delta") deltaArrived();
+    }
+  });
+  const runtime = new EnsembleRuntime({ transport, cwd: process.cwd(), defaultMaxAttempts: 1 });
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd: process.cwd(),
+    runUuid: "codex-partial-transcript",
+    workflowPath: path.join(process.cwd(), "codex-partial-transcript.js"),
+    workflowSource: "return true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    const agent = runtime.agent("stream then stop", { engine: "codex" });
+    agent.catch(() => undefined);
+    await deltaSeen;
+    await runtime.close("timed-out");
+    await assert.rejects(agent);
+    await writer.finish({ status: "timed-out", exitCode: 1, result: null });
+    const archived = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8")) as {
+      status: string;
+      transcripts: Array<{ path: string; partial: boolean }>;
+      transcripts_unavailable: string | null;
+      attempts: Array<{ status: string; first_delta_ms: number | null }>;
+    };
+    assert.equal(archived.status, "timed-out");
+    assert.equal(archived.attempts[0]?.status, "failed");
+    assert.notEqual(archived.attempts[0]?.first_delta_ms, null);
+    assert.equal(archived.transcripts.length, 1);
+    assert.equal(archived.transcripts[0]?.partial, true);
+    assert.equal(archived.transcripts_unavailable, null);
+    const transcriptPath = archived.transcripts[0]!.path;
+    const content = await readFile(path.join(writer.archiveDir, transcriptPath));
+    assert.match(content.toString("utf8"), /nine tenths of an answer/);
+    const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+      files: Array<{ path: string; size: number; sha256: string }>;
+    };
+    const entry = manifest.files.find((file) => file.path === transcriptPath);
+    assert.ok(entry);
+    assert.equal(entry.size, content.length);
+    assert.equal(entry.sha256, createHash("sha256").update(content).digest("hex"));
+  } finally {
+    await runtime.close("timed-out");
     await rm(store, { recursive: true, force: true });
   }
 });

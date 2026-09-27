@@ -166,7 +166,9 @@ test("every environment-variable refusal quotes the offending value", () => {
     ["ENSEMBLE_STATUS", "perhaps"],
     ["ENSEMBLE_RUN_RECORD", "maybe"],
     ["ENSEMBLE_STATUS_DIR", "  "],
-    ["ENSEMBLE_RUN_RECORD_DIR", ""]
+    ["ENSEMBLE_RUN_RECORD_DIR", ""],
+    ["ENSEMBLE_AGENT_CEILING", "9".repeat(400)],
+    ["ENSEMBLE_CONCURRENCY_OPENCODE", "9007199254740993"]
   ];
   for (const [key, value] of cases) {
     assert.throws(
@@ -296,3 +298,11 @@ async function rawConfigFixture(source: string): Promise<{
     cleanup: async () => rm(cwd, { recursive: true, force: true })
   };
 }
+
+test("a configured status directory that does not exist is refused quoting the path", () => {
+  const missing = "/definitely/absent/status dir";
+  assert.throws(
+    () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", ENSEMBLE_STATUS_DIR: missing }, cwd: "/tmp" }),
+    (error: Error) => error.message.includes(`not a directory: ${JSON.stringify(missing)} (from the ENSEMBLE_STATUS_DIR`)
+  );
+});

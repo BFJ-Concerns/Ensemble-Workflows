@@ -387,7 +387,7 @@ function resolveStatus(
     // none. Only the *default* location (`<cwd>/.claude`) opts out by
     // absence: its existence is the publication opt-in.
     throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${directory.value} ` +
+      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} ` +
         `(from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
@@ -439,7 +439,7 @@ function resolveDirectory(
 
 function parseEnvironmentInteger(value: string, key: string): number {
   const parsed = Number(value.trim());
-  if (!/^[0-9]+$/.test(value.trim()) || parsed < 1) {
+  if (!/^[0-9]+$/.test(value.trim()) || !Number.isSafeInteger(parsed) || parsed < 1) {
     throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1; got ${JSON.stringify(value)}`);
   }
   return parsed;

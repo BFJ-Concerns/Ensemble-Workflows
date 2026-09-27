@@ -14075,7 +14075,7 @@ function resolveStatus(config, env, cwd) {
   }
   if (directory.layer !== "default") {
     throw new AmbientConfigError(
-      `Configured status directory does not exist or is not a directory: ${directory.value} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
+      `Configured status directory does not exist or is not a directory: ${JSON.stringify(directory.value)} (from the ${directory.layer === "env" ? "ENSEMBLE_STATUS_DIR environment variable" : "machine config file"})`
     );
   }
   return { value: null, layer: directory.layer };
@@ -14114,7 +14114,7 @@ function resolveDirectory(envValue, envKey, fileValue, fallback) {
 }
 function parseEnvironmentInteger(value, key) {
   const parsed = Number(value.trim());
-  if (!/^[0-9]+$/.test(value.trim()) || parsed < 1) {
+  if (!/^[0-9]+$/.test(value.trim()) || !Number.isSafeInteger(parsed) || parsed < 1) {
     throw new AmbientConfigError(`Invalid value for ${key}: expected an integer of at least 1; got ${JSON.stringify(value)}`);
   }
   return parsed;
@@ -16440,9 +16440,8 @@ function diagnose(error, context) {
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
+        const kind = INTERNAL_CLASS_NAME.test(attempt.failure.kind) ? "" : ` (${attempt.failure.kind})`;
+        lines.push(`attempt ${attempt.attempt}${kind}: ${bounded(attempt.failure.message)}${workerDiagnosis}`);
       }
     }
     const record = context.lastAgentRecord;
@@ -16516,6 +16515,7 @@ function diagnose(error, context) {
   }
   return null;
 }
+var INTERNAL_CLASS_NAME = /^[A-Z][A-Za-z0-9]*Error$/;
 function recordSuffix(context) {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";
 }

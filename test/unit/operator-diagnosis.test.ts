@@ -372,3 +372,20 @@ test("a spent token budget keeps its spend figures and gains the same remedy", (
   const rendered = presentTerminalError(new BudgetExceededError("claude", 5, 7), noContext) ?? "";
   assert.match(rendered, /^Token budget exhausted for claude: spent 7 of 5 tokens\n {2}Raise the claude ceiling/);
 });
+
+test("an exhausted agent's attempt line keeps vocabulary kinds but never prints an internal error class name", () => {
+  const failed = new Error("Agent exhausted its attempts without producing a result");
+  failed.name = "SingleAgentFailedError";
+  const record = {
+    id: 1,
+    attempts: [
+      { attempt: 1, failure: { kind: "CodexSchemaSubsetUnsupportedError", message: "Codex rejected outputSchema before generation" }, rawOutput: null },
+      { attempt: 2, failure: { kind: "empty-output", message: "agent returned empty text on attempt 2" }, rawOutput: null }
+    ]
+  } as unknown as RuntimeAgentRecord;
+  const rendered = presentTerminalError(failed, { archiveDir: null, lastAgentRecord: record }) ?? "";
+  const lines = rendered.split("\n");
+  assert.equal(lines[1], "  attempt 1: Codex rejected outputSchema before generation");
+  assert.equal(lines[2], "  attempt 2 (empty-output): agent returned empty text on attempt 2");
+  assert.doesNotMatch(rendered, /[A-Z][A-Za-z]*Error\b/);
+});

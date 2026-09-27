@@ -75,9 +75,12 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
+        // A failure kind from the attempt vocabulary (`empty-output`) tells
+        // the operator what went wrong; one that is an internal error class
+        // name tells them nothing the message does not, so it stays in the
+        // archive.
+        const kind = INTERNAL_CLASS_NAME.test(attempt.failure.kind) ? "" : ` (${attempt.failure.kind})`;
+        lines.push(`attempt ${attempt.attempt}${kind}: ${bounded(attempt.failure.message)}${workerDiagnosis}`);
       }
     }
     const record = context.lastAgentRecord;
@@ -195,6 +198,9 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   return null;
 }
+
+/** An error class name (`CodexSchemaSubsetUnsupportedError`), as opposed to an attempt-vocabulary kind. */
+const INTERNAL_CLASS_NAME = /^[A-Z][A-Za-z0-9]*Error$/;
 
 function recordSuffix(context: TerminalPresentationContext): string {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";

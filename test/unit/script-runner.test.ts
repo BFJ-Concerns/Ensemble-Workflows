@@ -1532,6 +1532,39 @@ test("an unfinished body points to its own end rather than the wrapper's closing
   }
 });
 
+test("a five-line unfinished object names its last author line", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-object-end-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = "export const meta = { name: 'object-end' };\nconst seed = 1;\nconst value = {\n  answer: seed,\n  next: 2\n";
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.equal(error.message, `Syntax error in ${scriptPath}:5:10: Unexpected end of workflow body\n    next: 2\n           ^`);
+      return true;
+    }
+  );
+});
+
+test("an extra closing brace is identified at the author's token", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-extra-brace-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const source = "export const meta = { name: 'extra-brace' };\nreturn 1;\n}\n";
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.equal(
+        error.message,
+        `Syntax error in ${scriptPath}:3:1: Unexpected closing '}' in workflow body\n  }\n  ^`
+      );
+      return true;
+    }
+  );
+});
+
 test("a syntax error near the end of a long source line keeps the caret near its token", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-long-line-"));
   const scriptPath = path.join(directory, "workflow.js");

@@ -897,7 +897,8 @@ rejection itself is unchanged, invoking no engine.
   never a spent attempt — a dispatch the daemon never registered, a session
   that never showed life),
   `output` (empty, unparseable, off-schema), or `unclassified` (a deadline,
-  a client diagnostic about a bad model name, or a diagnostic no rule
+  a Codex rejection of the authored schema before generation, a client
+  diagnostic about a bad model name, or a diagnostic no rule
   recognised — recorded with `rule: null` so a stale table is visible in
   the archive rather than silently stranding chains). With a `fallback`
   chain declared, an availability failure with an entry remaining
@@ -906,9 +907,11 @@ rejection itself is unchanged, invoking no engine.
   chain) it is the call's own failure exactly as before, and an in-band
   overload the provider promises to retry stays the bounded in-place retry
   it always was — so a chain whose every target refuses fails with the last
-  target's own failure, every attempt classified in the record. A malformed
-  chain, an opencode entry, or an engine the run does not carry throws
-  `FallbackTargetRejectedError` before any worker spawns.
+  target's own failure, every attempt classified in the record. A Codex
+  schema rejection returns `null` after one thread start without retry or
+  chain advance. An empty or malformed chain, an opencode entry, or an
+  engine the run does not carry throws `FallbackTargetRejectedError` before
+  any worker spawns.
 - **Claude dispatch and the trust gate.** The harness dispatches
   every Claude worker with the workspace declared sandboxed —
   `CLAUDE_CODE_SANDBOXED` on the `claude` process it launches and on the

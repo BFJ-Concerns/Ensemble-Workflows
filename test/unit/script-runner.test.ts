@@ -1288,6 +1288,25 @@ test("a malformed fallback chain in defaults fails before the body runs", async 
   assert.deepEqual(logs, []);
   assert.equal(agentCalls, 0);
 
+  const emptyLogs: string[] = [];
+  await assert.rejects(
+    () =>
+      runWorkflowScript({
+        filename: "empty-fallback-default.js",
+        runtime: countingRuntime,
+        log: (message) => emptyLogs.push(message),
+        source: `
+          export const meta = { name: "empty-fallback-default" };
+          export const defaults = { codex: { fallback: [] } };
+          log("body ran");
+          return await agent("never", { engine: "codex" });
+        `
+      }),
+    (error: unknown) => error instanceof FallbackTargetRejectedError && /chain must not be empty/.test(error.message)
+  );
+  assert.deepEqual(emptyLogs, []);
+  assert.equal(agentCalls, 0);
+
   // The retired option is named at load with what replaced it.
   const retiredLogs: string[] = [];
   await assert.rejects(

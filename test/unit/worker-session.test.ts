@@ -7,6 +7,7 @@ import test from "node:test";
 import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
   SessionBusyError,
@@ -98,6 +99,17 @@ class ScriptedTransport implements RuntimeTransport {
 
   async close(): Promise<void> {}
 }
+
+test("an empty session fallback chain is rejected at creation before a worker spawns", async () => {
+  const transport = new ScriptedTransport([]);
+  const runtime = codexRuntime(transport);
+  assert.throws(
+    () => runtime.createWorkerSession({ engine: "codex", fallback: [] }),
+    (error: unknown) => error instanceof FallbackTargetRejectedError && /chain must not be empty/.test(error.message)
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
 
 function codexRuntime(
   transport: RuntimeTransport,

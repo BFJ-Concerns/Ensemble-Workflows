@@ -792,7 +792,11 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
   // The rejection arrives after the turn was dispatched, so it is the
   // worker's failure and the call resolves null — the distinguishing
   // class and the server's own diagnostic ride the attempt record.
-  assert.equal(await runtime.agent("return JSON", { engine: "codex", schema }), null);
+  assert.equal(await runtime.agent("return JSON", {
+    engine: "codex",
+    schema,
+    fallback: [{ engine: "codex", model: "gpt-6-sol" }]
+  }), null);
   const failure = records.at(-1)?.attempts.at(-1)?.failure;
   assert.equal(failure?.kind, "CodexSchemaSubsetUnsupportedError");
   assert.match(failure?.message ?? "", /outside Codex's accepted subset or malformed/);
@@ -801,6 +805,10 @@ test("Codex invalid_json_schema becomes a distinguishing schema-subset error", a
   assert.match(failure?.message ?? "", /invalid_json_schema/);
   assert.match(failure?.message ?? "", /required key missing from properties/);
   assert.equal(transport.openedThreads.length, 1);
+  const settled = records.at(-1);
+  assert.equal(settled?.attempts.length, 1);
+  assert.deepEqual(settled?.attempts[0]?.classification, { class: "unclassified", rule: "codex.schema-rejected" });
+  assert.equal(settled?.answeredBy, null);
 });
 
 test("Codex budget records Codex tokenUsage.last deltas and blocks later Codex calls", async () => {
@@ -3351,6 +3359,7 @@ test("a malformed or opencode chain entry is rejected before any worker spawns",
   ) => Promise<unknown>;
 
   for (const [chain, expected] of [
+    [[], /chain must not be empty/],
     [[{ engine: "opencode", model: "glm-5.2" }], /entry 0 names the opencode engine/],
     [[{ engine: "claude" }], /entry 0 must name its model/],
     [[{ engine: "claude", model: "opus", effort: "ultra" }], /entry 0 effort must be one of/],

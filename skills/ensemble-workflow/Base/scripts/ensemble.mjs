@@ -15803,6 +15803,9 @@ function assertValidFallbackChain(chain) {
   if (!Array.isArray(chain)) {
     throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
   }
+  if (chain.length === 0) {
+    throw new FallbackTargetRejectedError("the chain must not be empty");
+  }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
@@ -16880,8 +16883,8 @@ var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
   ["AppServerRetryPromiseBrokenError", { class: "availability", rule: "codex.retry-promise-broken" }],
-  // Codex refused the schema before generation: the shape, not the engine.
-  ["CodexSchemaSubsetUnsupportedError", { class: "output", rule: "codex.schema-rejected" }],
+  // Codex refused the authored schema before generation: no worker answer exists.
+  ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]

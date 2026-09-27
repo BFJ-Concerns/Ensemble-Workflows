@@ -13821,7 +13821,7 @@ import path13 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile8, stat as stat3 } from "node:fs/promises";
+import { readFile as readFile8, stat as stat4 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
 import path12 from "node:path";
 import { parseArgs } from "node:util";
@@ -15866,7 +15866,7 @@ function assertPositiveIntegerOption(options, option, maximum) {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, stat as stat2, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2, hostname as hostname2 } from "node:os";
 import path6 from "node:path";
 
@@ -16327,7 +16327,16 @@ async function answerHold(options) {
       }
     }
     if (current2 === null) {
-      return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+      try {
+        await stat2(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && error.code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm3(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
     }
     if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
       return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
@@ -16578,7 +16587,7 @@ function findErrorCode(error, code) {
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
-import { stat as stat2 } from "node:fs/promises";
+import { stat as stat3 } from "node:fs/promises";
 import path8 from "node:path";
 
 // src/worktree-isolation.ts
@@ -16694,7 +16703,7 @@ var AgentPlacementManager = class {
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
     try {
-      if (!(await stat2(requestedCwd)).isDirectory()) {
+      if (!(await stat3(requestedCwd)).isDirectory()) {
         throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
       }
     } catch (error) {
@@ -29925,7 +29934,7 @@ async function prepareRun(invocation, cwd) {
       const requestedCwd = path12.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat3(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -30478,7 +30487,7 @@ function announceRunRecord(writer, stderr) {
   } catch {
   }
 }
-var HOLDS_ANSWER_USAGE = "Usage: ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\nAnswers an open hold: writes the decision file the hold names (nonce copied from the hold),\nthen reports what the raiser did with it, as one JSON object on stdout.\nThe answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected \u2014 the hold keeps\nwaiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\ncadence \u2014 the answer file stays in place); 5 no open hold with that id; 2 usage; 1 I/O failure.\n";
+var HOLDS_ANSWER_USAGE = "Usage: ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\nAnswers an open hold: writes the decision file the hold names (nonce copied from the hold),\nthen reports what the raiser did with it, as one JSON object on stdout.\nThe answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected \u2014 the hold keeps\nwaiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\ncadence \u2014 the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\nsettled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 async function answerHoldCommand(args, env, stdout, stderr) {
   if (args[0] === "--help" || args[0] === "-h") {
     stdout.write(HOLDS_ANSWER_USAGE);
@@ -30534,6 +30543,10 @@ async function answerHoldCommand(args, env, stdout, stderr) {
       stderr.write(`hold ${holdId}: answer consumed \u2014 the run resumed with verdict ${JSON.stringify(verdict)}
 `);
       return 0;
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer \u2014 the stale decision file was removed
+`);
+      return 6;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { renameSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -639,6 +640,45 @@ test("answerHold reports a bounce with its reason, and never claims an unread an
       assert.equal(unread.outcome, "not-consumed");
       assert.deepEqual(JSON.parse(await readFile(idle.decision_path, "utf8")), { nonce: idle.nonce, verdict: "ok", answered_by: "me" });
       assert.equal((await answerHold({ dir, holdId: "no-such-hold", verdict: "ok", answeredBy: "me" })).outcome, "not-found");
+    } finally {
+      holds.close();
+    }
+  });
+});
+
+test("answerHold reports retired when the hold times out before reading the written answer", async () => {
+  await withHoldsDir(async (dir) => {
+    let parkedDecision: string | null = null;
+    let decisionPath: string | null = null;
+    const holds = new HoldManager({
+      dir, runId: "run-timeout", cwd: "/fake/cwd", scope: null,
+      pollIntervalMs: 500,
+      onEvent: (event) => {
+        if (event.method === "hold/timedOut" && parkedDecision !== null && decisionPath !== null) {
+          renameSync(parkedDecision, decisionPath);
+        }
+      }
+    });
+    const decision = holds.raise({ content: "deploy?", verdicts: ["go"], timeoutMs: 40 });
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      decisionPath = record.decision_path;
+      const answering = answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "me", waitMs: 1000, checkIntervalMs: 5 });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          await stat(record.decision_path);
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+      }
+      parkedDecision = `${record.decision_path}.parked`;
+      renameSync(record.decision_path, parkedDecision);
+      const outcome = await answering;
+      assert.deepEqual(outcome, { outcome: "retired", hold_id: record.hold_id, verdict: "go" });
+      await assert.rejects(decision, HoldTimeoutError);
+      await assert.rejects(stat(record.decision_path));
     } finally {
       holds.close();
     }

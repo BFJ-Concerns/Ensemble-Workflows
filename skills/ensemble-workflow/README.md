@@ -632,7 +632,9 @@ pipelines used to hand-roll per script.
   answer was consumed (the run resumed), 3 when it bounced (the rejection
   reason is included; the hold keeps waiting), 4 when the raiser has not
   read it yet (the answer file stays; never reported as accepted), and 5
-  when no open hold has that id.
+  when no open hold has that id. Exit 6 means the hold settled without
+  judging this answer; its stale decision file is removed. A vanished hold
+  alone does not establish that the answer was accepted.
 - **Enumerating:** two explicit listing contracts. `ensemble holds` shows
   the inherited scope's open holds (machine-wide when no scope is set);
   `ensemble holds --scope <scope>` names a scope explicitly; `ensemble

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 
@@ -462,9 +462,10 @@ export interface AnswerHoldOptions {
   procDir?: string;
 }
 
-/** What an answer write produced, judged by the settled-means-removed rule. */
+/** What an answer write produced, judged by the hold and decision files. */
 export type AnswerHoldOutcome =
   | { outcome: "consumed"; hold_id: string; verdict: string }
+  | { outcome: "retired"; hold_id: string; verdict: string }
   | { outcome: "bounced"; hold_id: string; verdict: string; rejection: HoldAnswerRejection }
   | { outcome: "not-consumed"; hold_id: string; verdict: string; decision_path: string; waited_ms: number }
   | { outcome: "not-found"; hold_id: string };
@@ -473,8 +474,9 @@ export type AnswerHoldOutcome =
  * Answer a hold the way a hand-writing decider would — the same plain-JSON
  * decision file at the record's `decision_path`, nonce copied from the hold
  * file, written then renamed into place — and then report what the write
- * produced. The hold file gone means the raiser consumed an accepted
- * answer; a freshly written `answer_rejection` means the answer bounced;
+ * produced. Both files gone means the raiser consumed an accepted answer;
+ * a vanished hold with the decision still present settled without judging
+ * this answer; a freshly written `answer_rejection` means it bounced;
  * neither within the raiser's poll cadence means not yet consumed (never
  * claimed as accepted). This is a convenience writer only: the raiser's
  * nonce and verdict checks remain the correctness boundary.
@@ -512,7 +514,16 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
       }
     }
     if (current === null) {
-      return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+      try {
+        await stat(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
     }
     if (current.answer_rejection !== undefined && JSON.stringify(current.answer_rejection) !== priorRejection) {
       return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current.answer_rejection };

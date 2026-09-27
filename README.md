@@ -94,7 +94,8 @@ any worker spawns.
   timeout, and retirement lands in the archive manifest's `hold_events`.
   `ensemble holds answer <hold-id> --verdict <v> [--note <n>]` writes that
   same decision file and reports whether the raiser consumed it, bounced it
-  (with the reason), or has not read it yet.
+  (with the reason), has not read it yet, or settled without judging it
+  (`retired`, exit 6; the stale decision file is removed).
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   dispatched worker's failure is already the leg's own `null` (it never
   reaches the combinator as a throw); a thunk that throws for any other

@@ -1463,7 +1463,8 @@ const HOLDS_ANSWER_USAGE =
   "The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\n" +
   "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected — the hold keeps\n" +
   "waiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\n" +
-  "cadence — the answer file stays in place); 5 no open hold with that id; 2 usage; 1 I/O failure.\n";
+  "cadence — the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\n" +
+  "settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 
 /**
  * `ensemble holds answer`: a convenience writer of the same hand-writable
@@ -1527,6 +1528,9 @@ async function answerHoldCommand(
     case "consumed":
       stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
       return 0;
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer — the stale decision file was removed\n`);
+      return 6;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`

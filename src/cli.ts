@@ -100,8 +100,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         "workflows and holds list prose on stdout; holds --json lists JSON.\n" +
         "Help and version print text on stdout; diagnostics go to stderr.\n" +
         "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
-        "workflows (list saved workflows), holds (list open decision holds), holds answer (answer one).\n" +
-        "Each subcommand answers its own --help.\n"
+        "workflows (list saved workflows), holds (list open decision holds),\n" +
+        "holds answer (answer one). Each subcommand answers its own --help.\n"
     );
     return 0;
   }
@@ -112,11 +112,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   if (argv[0] === "workflows") {
     if (argv[1] === "--help" || argv[1] === "-h") {
-      stdout.write(`Usage: ${program} workflows\nLists saved workflows from the project and user registries.\n`);
+      stdout.write(`${subcommandSynopsis(program, ["workflows"])}Lists saved workflows from the project and user registries.\n`);
       return 0;
     }
     if (argv.length > 1) {
-      stderr.write(`Usage: ${program} workflows\n`);
+      stderr.write(subcommandSynopsis(program, ["workflows"]));
       return 2;
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
@@ -155,9 +155,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   if (argv[0] === "holds") {
     const holdsUsage =
-      `Usage: ${program} holds [--json] [--scope <scope> | --all]\n` +
-      "Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;\n" +
-      "--scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.\n";
+      subcommandSynopsis(program, ["holds", "[--json]", "[--scope <scope> | --all]"]) +
+      "Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE), or machine-wide\n" +
+      "when none is set. --scope names a scope explicitly, --all forces the\n" +
+      "machine-wide view, --json emits the full records.\n";
     if (argv[1] === "--help" || argv[1] === "-h") {
       stdout.write(holdsUsage);
       return 0;
@@ -1530,14 +1531,16 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
 
 function holdsAnswerUsage(program: string): string {
   return (
-    `Usage: ${program} holds answer <hold-id> --verdict <verdict> [--note <note>]\n` +
-  "Answers an open hold: writes the decision file the hold names (nonce copied from the hold),\n" +
-  "then reports what the raiser did with it, as one JSON object on stdout.\n" +
-  "The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\n" +
-  "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected — the hold keeps\n" +
-  "waiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\n" +
-  "cadence — the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\n" +
-  "settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n"
+    subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) +
+    "Answers an open hold: writes the decision file the hold names (nonce copied\n" +
+    "from the hold), then reports what the raiser did with it, as one JSON object\n" +
+    "on stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\n" +
+    "otherwise host:pid.\n" +
+    "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\n" +
+    "the hold keeps waiting and the reason is reported); 4 not yet consumed (the\n" +
+    "raiser has not read it within its poll cadence; the answer file stays in\n" +
+    "place); 5 no open hold with that id; 6 retired (the hold settled without\n" +
+    "judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n"
   );
 }
 
@@ -1712,6 +1715,17 @@ function usage(program: string): string {
     ""
   );
   return lines.join("\n");
+}
+
+/**
+ * One subcommand's own synopsis, laid out like the top-level usage: the
+ * program as invoked, the form's tokens, wrapped at `USAGE_WIDTH` with the
+ * continuation under the first token. Every standalone `Usage:` line a
+ * subcommand prints comes through here.
+ */
+function subcommandSynopsis(program: string, tokens: readonly string[]): string {
+  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}\n`;
 }
 
 /**

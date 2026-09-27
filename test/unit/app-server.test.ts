@@ -1214,8 +1214,13 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
       results.push(result);
     }
 
-    assert.equal(results[0]?.resolvedModel, "gpt-test-default");
-    assert.equal(results[0]?.resolvedEffort, "medium");
+    // The thread's start-reported identity is what every turn on it is
+    // served under, so the pruned buffer of turn one does not cost turns two
+    // and three their served model and effort.
+    assert.deepEqual(
+      results.map((result) => [result.resolvedModel, result.resolvedEffort]),
+      [["gpt-test-default", "medium"], ["gpt-test-default", "medium"], ["gpt-test-default", "medium"]]
+    );
     assert.equal(new Set(results.map((result) => result.transcripts?.[0]?.content)).size, 3);
     assert.doesNotMatch(results[1]?.transcripts?.[0]?.content ?? "", /first turn/);
 

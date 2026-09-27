@@ -18711,6 +18711,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #pending = /* @__PURE__ */ new Map();
   #turns = /* @__PURE__ */ new Map();
   #transcripts = /* @__PURE__ */ new Map();
+  /**
+   * Each open thread's served identity as its `thread/start` answer reported
+   * it — the model and reasoning effort the thread runs at for its whole
+   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
+   * session's later turns re-register from here rather than from nothing:
+   * the engine confirmed the identity once, and every turn on the thread is
+   * served under it.
+   */
+  #threadIdentity = /* @__PURE__ */ new Map();
   /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
   #settledTurnIds = /* @__PURE__ */ new Set();
   #stderrTail = [];
@@ -18772,9 +18781,13 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     if (threadId !== null) {
       const resolvedModel = resultObject?.model;
       const resolvedEffort = resultObject?.reasoningEffort;
-      this.#transcripts.set(threadId, {
+      const identity = {
         resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
+      };
+      this.#threadIdentity.set(threadId, identity);
+      this.#transcripts.set(threadId, {
+        ...identity,
         events: [
           {
             direction: "client",
@@ -18866,8 +18879,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   async runTurn(threadId, prompt, options) {
     if (!this.#transcripts.has(threadId)) {
       this.#transcripts.set(threadId, {
-        resolvedModel: null,
-        resolvedEffort: null,
+        ...this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null },
         events: []
       });
     }
@@ -18920,6 +18932,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       pending.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#pending.clear();
+    this.#threadIdentity.clear();
     for (const [threadId, turn] of [...this.#turns]) {
       this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
     }
@@ -29811,7 +29824,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "--help" || argv[0] === "-h") {
     stdout.write(usage(program));
     stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds), holds answer (answer one).\nEach subcommand answers its own --help.\n"
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds),\nholds answer (answer one). Each subcommand answers its own --help.\n"
     );
     return 0;
   }
@@ -29822,14 +29835,12 @@ async function runEnsembleCli(argv, options = {}) {
   }
   if (argv[0] === "workflows") {
     if (argv[1] === "--help" || argv[1] === "-h") {
-      stdout.write(`Usage: ${program} workflows
-Lists saved workflows from the project and user registries.
+      stdout.write(`${subcommandSynopsis(program, ["workflows"])}Lists saved workflows from the project and user registries.
 `);
       return 0;
     }
     if (argv.length > 1) {
-      stderr.write(`Usage: ${program} workflows
-`);
+      stderr.write(subcommandSynopsis(program, ["workflows"]));
       return 2;
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
@@ -29862,10 +29873,7 @@ Lists saved workflows from the project and user registries.
     return answerHoldCommand(argv.slice(2), env, stdout, stderr, program);
   }
   if (argv[0] === "holds") {
-    const holdsUsage = `Usage: ${program} holds [--json] [--scope <scope> | --all]
-Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;
---scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.
-`;
+    const holdsUsage = subcommandSynopsis(program, ["holds", "[--json]", "[--scope <scope> | --all]"]) + "Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE), or machine-wide\nwhen none is set. --scope names a scope explicitly, --all forces the\nmachine-wide view, --json emits the full records.\n";
     if (argv[1] === "--help" || argv[1] === "-h") {
       stdout.write(holdsUsage);
       return 0;
@@ -30883,15 +30891,7 @@ function announceRunRecord(writer, stderr) {
   }
 }
 function holdsAnswerUsage(program) {
-  return `Usage: ${program} holds answer <hold-id> --verdict <verdict> [--note <note>]
-Answers an open hold: writes the decision file the hold names (nonce copied from the hold),
-then reports what the raiser did with it, as one JSON object on stdout.
-The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.
-Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected \u2014 the hold keeps
-waiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll
-cadence \u2014 the answer file stays in place); 5 no open hold with that id; 6 retired (the hold
-settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.
-`;
+  return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 6 retired (the hold settled without\njudging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
 }
 async function answerHoldCommand(args, env, stdout, stderr, program) {
   const answerUsage = holdsAnswerUsage(program);
@@ -31035,6 +31035,11 @@ function usage(program) {
     ""
   );
   return lines.join("\n");
+}
+function subcommandSynopsis(program, tokens) {
+  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}
+`;
 }
 function wrapTokens(lead, tokens, indent, separator) {
   const lines = [];

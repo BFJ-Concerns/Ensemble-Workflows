@@ -2084,6 +2084,18 @@ test("usage names the program as the caller invoked it and keeps every line with
       assert.doesNotMatch(text, /(^|\s)ensemble (agent|workflows|holds|\[run options\])/);
     }
 
+    // Every help answer and every subcommand's own usage holds the same
+    // width: the standalone `holds answer` synopsis is the one that crosses
+    // 80 columns under `node ensemble.mjs` unless it wraps like the rest.
+    for (const argv of [["--help"], ["agent", "--help"], ["workflows", "--help"], ["holds", "--help"], ["holds", "answer", "--help"]]) {
+      const help = new CaptureStream();
+      assert.equal(await runEnsembleCli(argv, { stdout: help, stderr: new CaptureStream(), programName }), 0, argv.join(" "));
+      for (const line of help.text().split("\n")) {
+        assert.ok(line.length <= 80, `${argv.join(" ")} (${programName}): ${line.length} columns: ${line}`);
+      }
+      assert.match(help.text(), new RegExp(`^Usage: ${escaped} `), argv.join(" "));
+    }
+
     // The subcommand usage lines and the agent diagnostics name the same program.
     const workflowsErr = new CaptureStream();
     assert.equal(await runEnsembleCli(["workflows", "extra"], { stdout: new CaptureStream(), stderr: workflowsErr, programName }), 2);

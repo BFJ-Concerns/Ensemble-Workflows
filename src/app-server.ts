@@ -236,6 +236,15 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #pending = new Map<number, PendingRequest>();
   #turns = new Map<string, TurnState>();
   #transcripts = new Map<string, ThreadTranscript>();
+  /**
+   * Each open thread's served identity as its `thread/start` answer reported
+   * it — the model and reasoning effort the thread runs at for its whole
+   * life. `#completeTurn` prunes a turn's transcript buffer, so a held
+   * session's later turns re-register from here rather than from nothing:
+   * the engine confirmed the identity once, and every turn on the thread is
+   * served under it.
+   */
+  readonly #threadIdentity = new Map<string, Pick<ThreadTranscript, "resolvedModel" | "resolvedEffort">>();
   /** Ids of turns this transport has settled, insertion-ordered so the bound evicts the oldest. */
   #settledTurnIds = new Set<string>();
   #stderrTail: string[] = [];
@@ -315,9 +324,13 @@ export class CodexAppServerTransport implements RuntimeTransport {
       // reports what was served; nothing later overwrites either from the
       // request (a pin the server did not confirm is not served evidence).
       const resolvedEffort = resultObject?.reasoningEffort;
-      this.#transcripts.set(threadId, {
+      const identity = {
         resolvedModel: typeof resolvedModel === "string" && resolvedModel.length > 0 ? resolvedModel : null,
-        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null,
+        resolvedEffort: typeof resolvedEffort === "string" && resolvedEffort.length > 0 ? resolvedEffort : null
+      };
+      this.#threadIdentity.set(threadId, identity);
+      this.#transcripts.set(threadId, {
+        ...identity,
         events: [
           {
             direction: "client",
@@ -422,11 +435,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
     // A held Codex session reuses its thread, but each runtime turn writes a
     // separate agent record. #completeTurn prunes the previous turn's buffer,
     // so register a fresh capture before a follow-up turn begins rather than
-    // dropping its frames against an absent thread entry.
+    // dropping its frames against an absent thread entry — carrying the
+    // thread's start-reported identity, which every turn on it is served under.
     if (!this.#transcripts.has(threadId)) {
       this.#transcripts.set(threadId, {
-        resolvedModel: null,
-        resolvedEffort: null,
+        ...(this.#threadIdentity.get(threadId) ?? { resolvedModel: null, resolvedEffort: null }),
         events: []
       });
     }
@@ -493,6 +506,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       pending.reject(new AppServerExitedError("codex app-server closed"));
     }
     this.#pending.clear();
+    this.#threadIdentity.clear();
     // One error instance per turn: the partial-text carrier is per-worker
     // state, so a shared instance would smear one turn's text across all.
     for (const [threadId, turn] of [...this.#turns]) {

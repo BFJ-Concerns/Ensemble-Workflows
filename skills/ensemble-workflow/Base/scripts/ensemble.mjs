@@ -28446,9 +28446,9 @@ async function resolveWorkflowName(name, options) {
     ["project", dirs.project],
     ["user", dirs.user]
   ]) {
-    const listing = await listRegistryDir(dir, scope, options.readMeta);
-    skipped.push(...listing.notes);
-    const matches = listing.entries.filter((entry) => entry.name === name);
+    const listing2 = await listRegistryDir(dir, scope, options.readMeta);
+    skipped.push(...listing2.notes);
+    const matches = listing2.entries.filter((entry) => entry.name === name);
     if (matches.length === 1) {
       const [match] = matches;
       if (match !== void 0) {
@@ -28460,8 +28460,11 @@ async function resolveWorkflowName(name, options) {
     }
   }
   const skippedSuffix = skipped.length === 0 ? "" : `; skipped unreadable saved workflows: ${skipped.map((note) => `${note.scriptPath} (${note.message})`).join(", ")}`;
+  const listing = await listSavedWorkflows(options);
+  const registeredNames = [...new Set(listing.entries.map((entry) => entry.name))];
+  const registeredSuffix = `; registered workflows: ${registeredNames.length === 0 ? "none" : registeredNames.join(", ")}`;
   throw new WorkflowResolutionError(
-    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${skippedSuffix}`
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${registeredSuffix}${skippedSuffix}`
   );
 }
 async function listRegistryDir(dir, scope, readMeta) {
@@ -30005,6 +30008,16 @@ async function parseWorkflowInvocation(argv, cwd) {
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
+  for (const argument of argv) {
+    if (argument === "--") {
+      break;
+    }
+    if (optionName(argument) === "--fallback-model") {
+      throw new CliUsageError(
+        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+      );
+    }
+  }
   rejectMisplacedAgentTuningFlags(argv);
   rejectDuplicateScalarFlags(argv);
   let parsed;

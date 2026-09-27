@@ -153,8 +153,11 @@ async function resolveWorkflowName(
     skipped.length === 0
       ? ""
       : `; skipped unreadable saved workflows: ${skipped.map((note) => `${note.scriptPath} (${note.message})`).join(", ")}`;
+  const listing = await listSavedWorkflows(options);
+  const registeredNames = [...new Set(listing.entries.map((entry) => entry.name))];
+  const registeredSuffix = `; registered workflows: ${registeredNames.length === 0 ? "none" : registeredNames.join(", ")}`;
   throw new WorkflowResolutionError(
-    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${skippedSuffix}`
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${registeredSuffix}${skippedSuffix}`
   );
 }
 

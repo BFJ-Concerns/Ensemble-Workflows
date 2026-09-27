@@ -28975,15 +28975,22 @@ function workflowSyntaxError(error, workflow, filename) {
     bodyColumn: bodyPosition.column
   };
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
-  const authorPosition = wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  const bodyEnd = positionAt(wrappedSource, wrappedSource.length - "\n};".length);
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
+  const authorPosition = pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
   const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
-  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  const start = Math.max(0, authorPosition.column - 1 - 72);
+  const end = Math.min(sourceLine.length, start + 96);
+  const prefix = start > 0 ? "\u2026" : "";
+  const suffix = end < sourceLine.length ? "\u2026" : "";
+  const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
+  const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
   return new WorkflowScriptError(
-    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}
-  ${sourceLine}
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${pointsPastBody ? "Unexpected end of workflow body" : error.message}
+  ${snippet}
   ${caret}`,
     { cause: error }
   );

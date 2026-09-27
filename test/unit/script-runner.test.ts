@@ -1492,6 +1492,68 @@ test("a syntax error names the author's file, line, and column, with the offendi
   );
 });
 
+test("an unfinished body points to its own end rather than the wrapper's closing brace", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-end-"));
+  for (const { name, source, line, column, sourceLine } of [
+    {
+      name: "two-line",
+      source: "export const meta = { name: 'two-line' };\nreturn (\n",
+      line: 2,
+      column: 9,
+      sourceLine: "return ("
+    },
+    {
+      name: "first-line",
+      source: "export const meta = { name: 'first-line' }; const broken = ;\n",
+      line: 1,
+      column: 60,
+      sourceLine: "export const meta = { name: 'first-line' }; const broken = ;"
+    },
+    {
+      name: "multi-line-expression",
+      source: "export const meta = { name: 'multi-line-expression' };\nconst value = (\n  1 +\n  2\n",
+      line: 4,
+      column: 4,
+      sourceLine: "  2"
+    }
+  ]) {
+    const scriptPath = path.join(directory, `${name}.js`);
+    await assert.rejects(
+      runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowScriptError);
+        assert.match(error.message, new RegExp(`^Syntax error in ${scriptPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:${line}:${column}: `));
+        assert.ok(error.message.includes(`\n  ${sourceLine}\n`), error.message);
+        assert.ok(error.message.endsWith(`\n  ${" ".repeat(column - 1)}^`), error.message);
+        assert.doesNotMatch(error.message, /ensemble-workflow-body|node:|script-runner/);
+        return true;
+      }
+    );
+  }
+});
+
+test("a syntax error near the end of a long source line keeps the caret near its token", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-syntax-long-line-"));
+  const scriptPath = path.join(directory, "workflow.js");
+  const sourceLine = `const broken = ${"x".repeat(700)} + ;`;
+  const source = `export const meta = { name: 'long-line' };\n${sourceLine}\n`;
+  const column = sourceLine.indexOf(";") + 1;
+
+  await assert.rejects(
+    runWorkflowScript({ filename: scriptPath, runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.ok(error.message.startsWith(`Syntax error in ${scriptPath}:2:${column}: `), error.message);
+      const [snippet, caret] = error.message.split("\n").slice(-2);
+      assert.ok(snippet?.startsWith("  …"), error.message);
+      assert.ok((snippet?.length ?? Infinity) <= 110, error.message);
+      assert.equal(caret?.indexOf("^"), snippet?.indexOf(";"));
+      assert.doesNotMatch(error.message, /ensemble-workflow-body|node:|script-runner/);
+      return true;
+    }
+  );
+});
+
 test("a thrown error's reported position is the author's own line on an openable path, runtime frames cut", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-throw-position-"));
   const scriptPath = path.join(directory, "workflow.js");

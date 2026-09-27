@@ -37,7 +37,10 @@ timers, `require(...)` and dynamic `import()` resolving from the script's own
 path, `import.meta` — is available alongside the host-provided hooks. Workers
 are dispatched only through `agent()`; a free identifier that is neither a
 Node global, a bound hook, nor a module-scope binding fails at load, before
-any worker spawns.
+any worker spawns. Body syntax errors name the script's own line and column,
+showing a source excerpt with a caret; an unfinished body points just after its
+last non-whitespace character, and long lines show a short excerpt around the
+error.
 
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or

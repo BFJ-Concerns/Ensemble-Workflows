@@ -753,17 +753,32 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
   };
 
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
-  const authorPosition =
-    wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  // An unfinished expression can make V8 reject the wrapper's closing `}`.
+  // That token has no author coordinate; point to the end of their body.
+  const bodyEnd = positionAt(wrappedSource, wrappedSource.length - "\n};".length);
+  const pointsPastBody =
+    wrappedPosition !== null &&
+    (wrappedPosition.line > bodyEnd.line ||
+      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
+  const authorPosition = pointsPastBody
+    ? positionAt(workflow.source, workflow.source.trimEnd().length)
+    : wrappedPosition === null
+      ? null
+      : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
   const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
-  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  const start = Math.max(0, authorPosition.column - 1 - 72);
+  const end = Math.min(sourceLine.length, start + 96);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < sourceLine.length ? "…" : "";
+  const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
+  const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
   return new WorkflowScriptError(
-    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}\n` +
-      `  ${sourceLine}\n  ${caret}`,
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${pointsPastBody ? "Unexpected end of workflow body" : error.message}\n` +
+      `  ${snippet}\n  ${caret}`,
     { cause: error }
   );
 }

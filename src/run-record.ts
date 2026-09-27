@@ -486,6 +486,10 @@ interface HoldEventEntry {
   attempted_verdict: string | null;
   /** The evidence quality for `attempted_verdict`; null outside rejected answers. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable" | null;
+  /** On `answered`: who wrote the answer, as the decision file named it; null when it named no one, and elsewhere. */
+  answered_by: string | null;
+  /** On `answered`: the decider's note; null when none, and elsewhere. */
+  note: string | null;
   at: string;
 }
 
@@ -799,6 +803,8 @@ export class RunRecordWriter {
         kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState)
           ? event.params.attemptedVerdictState
           : null,
+      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {

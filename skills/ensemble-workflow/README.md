@@ -630,7 +630,8 @@ pipelines used to hand-roll per script.
   is never inferred from cwd or process ancestry.
 - **Answering:** any process — the launcher or not, alive at raise time or
   not — writes `{"nonce": "<the hold's nonce>", "verdict": "<one of the
-  accepted verdicts>", "note": "optional"}` to the hold's `decision_path`.
+  accepted verdicts>", "note": "optional", "answered_by": "optional"}` to
+  the hold's `decision_path`.
   Write-then-rename is the required write shape: write to a temp file beside
   that path and rename it into place. The runtime polls, and though an
   unparseable read is given a poll's grace before it is judged, rename
@@ -646,14 +647,30 @@ pipelines used to hand-roll per script.
   visible only after the poller's next read: an open hold carrying no
   rejection fields means the answer has not yet been judged — never that it
   was judged and accepted. An invalid answer never reaches
-  the script as a decision.
+  the script as a decision. `ensemble holds answer <hold-id> --verdict <v>
+  [--note <n>]` does all of this for you: it copies the nonce, writes then
+  renames, records the answerer (`ENSEMBLE_CALLER_IDENTITY`, else
+  host:pid), and watches the hold file for up to a few of the raiser's poll
+  intervals. It prints one JSON object on stdout and exits 0 when the
+  answer was consumed (the run resumed), 3 when it bounced (the rejection
+  reason is included; the hold keeps waiting), 4 when the raiser has not
+  read it yet (the answer file stays; never reported as accepted), and 5
+  when no open hold has that id. Exit 6 means the hold settled without
+  judging this answer; its stale decision file is removed. A vanished hold
+  alone does not establish that the answer was accepted.
 - **Enumerating:** two explicit listing contracts. `ensemble holds` shows
   the inherited scope's open holds (machine-wide when no scope is set);
   `ensemble holds --scope <scope>` names a scope explicitly; `ensemble
   holds --all` is the machine-wide view across every scope, the shared
-  scope included. Each listing carries id, scope, verdicts, decision path,
-  content, and any rejection feedback a bounced answer left behind; `--json`
-  emits the full records plus what was retired. Open holds also appear in the
+  scope included. Each listing carries id, state, scope, verdicts, decision
+  path, content, any rejection feedback a bounced answer left behind, and
+  the raising run's identity card — workflow name, phase, archive path, and
+  agent totals, all as of the raise (display-only, never a live view);
+  `--json` emits the full records (each with its `state` and
+  `run_identity`) plus what was retired. A listed hold is `open` or
+  `bounced` (a rejected answer is waiting to be corrected); a dead raiser's
+  hold is reported as `retired`. There is no accepted state: an accepted
+  answer removes the hold. Open holds also appear in the
   run's live status snapshot while it waits.
 - **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
   rejects the awaiting `hold()` with `HoldTimeoutError` (one clean line at
@@ -662,7 +679,9 @@ pipelines used to hand-roll per script.
   retirement each emit a runtime event and land in the archive manifest's
   `hold_events` list, so a consumer holding only the archive can
   reconstruct what the run waited on, including a rejected answer's
-  submitted verdict or why none was recoverable. Settled and abandoned holds
+  submitted verdict or why none was recoverable, and who answered
+  (`answered_by`, null when the decision file named no one) with their
+  `note`. Settled and abandoned holds
   remove their files, and a hold whose raiser is provably dead — judged from
   the liveness evidence the record carries, never guessed — is retired by the
   enumeration or sweep that observes it, so the listing only ever shows

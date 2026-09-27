@@ -52,7 +52,8 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
       "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n" +
-      "       ensemble holds [--json] [--scope <scope> | --all]\n");
+      "       ensemble holds [--json] [--scope <scope> | --all]\n" +
+      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n");
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {

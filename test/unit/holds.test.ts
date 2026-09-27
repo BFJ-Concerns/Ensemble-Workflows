@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { renameSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -6,8 +7,10 @@ import test from "node:test";
 
 import {
   HoldManager,
+  answerHold,
   defaultHoldsDirectory,
   enumerateHolds,
+  holdListingState,
   holdScopeSegment,
   resolveHoldScope
 } from "../../src/holds.js";
@@ -530,6 +533,158 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
   });
 });
 
+test("a raise carries the run's identity card, and the archive's answered event names the answerer and note", async () => {
+  await withHoldsDir(async (dir) => {
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-hold-answerer-record-"));
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd: process.cwd(),
+      runUuid: "hold-answerer",
+      workflowPath: path.join(process.cwd(), "test", "unit", "holds.test.ts"),
+      workflowSource: "export const meta = { name: 'hold-answerer' };\nreturn null;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry([]),
+      defaultMaxAttempts: 1,
+      holdsDir: dir,
+      holdPollIntervalMs: 5
+    });
+    runtime.setRunRecorder(writer);
+    runtime.progress.setWorkflow("release-gate");
+    runtime.progress.setPhase("review");
+    // Real progress in the raising runtime, each total distinct, so the card
+    // is proven to read the run's own counts rather than any constant.
+    const ids = Array.from({ length: 10 }, () => runtime.progress.queueAgent({ engine: "codex", label: null, phase: null }));
+    ids.slice(0, 9).forEach((id) => runtime.progress.startAgent(id));
+    ids.slice(0, 4).forEach((id) => runtime.progress.settleAgent(id, "done"));
+    ids.slice(4, 6).forEach((id) => runtime.progress.settleAgent(id, "failed"));
+    try {
+      const first = runtime.raiseHold({ content: "merge?", verdicts: ["yes", "no"] });
+      // A failing assertion closes the runtime, rejecting this wait: keep that
+      // teardown rejection from masking the assertion's own failure.
+      first.catch(() => undefined);
+      const record = await publishedHold(dir);
+      // Captured at raise from the raising runtime itself, display-only.
+      assert.deepEqual(record.run_identity, {
+        workflow: "release-gate",
+        phase: "review",
+        archive_path: writer.archiveDir,
+        totals: { active: 3, queued: 1, done: 4, failed: 2 }
+      });
+      assert.equal(record.poll_interval_ms, 5);
+      const outcome = await answerHold({ dir, holdId: record.hold_id, verdict: "yes", note: "ship it", answeredBy: "lead-7" });
+      assert.deepEqual(outcome, { outcome: "consumed", hold_id: record.hold_id, verdict: "yes" });
+      assert.deepEqual(await first, { verdict: "yes", note: "ship it" });
+
+      // A hand-authored answer naming no answerer records none — never a guess.
+      const second = runtime.raiseHold({ content: "tag?", verdicts: ["yes"] });
+      const secondRecord = await publishedHold(dir);
+      await writeFile(secondRecord.decision_path, JSON.stringify({ nonce: secondRecord.nonce, verdict: "yes" }));
+      await second;
+      await waitForArchiveHoldEvent(writer.archiveDir, "answered", 2);
+      const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+        hold_events: Array<{ event: string; answered_by: string | null; note: string | null }>;
+      };
+      assert.deepEqual(
+        manifest.hold_events
+          .filter((entry) => entry.event === "answered")
+          .map(({ answered_by, note }) => ({ answered_by, note })),
+        [
+          { answered_by: "lead-7", note: "ship it" },
+          { answered_by: null, note: null }
+        ]
+      );
+    } finally {
+      await runtime.close();
+      await writer.finish({ status: "complete", exitCode: 0, result: null });
+      await rm(store, { recursive: true, force: true });
+    }
+  });
+});
+
+test("answerHold reports a bounce with its reason, and never claims an unread answer as accepted", async () => {
+  await withHoldsDir(async (dir) => {
+    const events: RuntimeEvent[] = [];
+    const holds = manager(dir, events);
+    const decision = holds.raise({ content: "deploy?", verdicts: ["go"] });
+    // A failing assertion must not leave the raise polling for ever.
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+
+      const bounced = await answerHold({ dir, holdId: record.hold_id, verdict: "later", answeredBy: "me" });
+      assert.equal(bounced.outcome, "bounced");
+      assert.equal(bounced.outcome === "bounced" ? bounced.rejection.reason : null, "invalid-verdict");
+      // The hold keeps waiting, now listed as bounced.
+      assert.equal((await enumerateHolds(dir)).holds.length, 1);
+      const [listed] = (await enumerateHolds(dir)).holds;
+      assert.equal(listed !== undefined && holdListingState(listed.record), "bounced");
+      const accepted = await answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "me" });
+      assert.equal(accepted.outcome, "consumed");
+      assert.deepEqual(await decision, { verdict: "go", note: null });
+
+      // A live raiser that is not polling (a hand-built record owned by this
+      // very process): the answer stays unread, and the report says so.
+      const scopeDir = path.join(dir, holdScopeSegment(null));
+      const idle = holdRecord("run-idle-1", null, {
+        host: hostname(),
+        pid: process.pid,
+        start_ticks: null,
+        decisionDir: scopeDir
+      });
+      await writeFile(path.join(scopeDir, "run-idle-1.json"), JSON.stringify(idle));
+      assert.equal(holdListingState(idle), "open");
+      const unread = await answerHold({ dir, holdId: "run-idle-1", verdict: "ok", answeredBy: "me", waitMs: 30, checkIntervalMs: 5 });
+      assert.equal(unread.outcome, "not-consumed");
+      assert.deepEqual(JSON.parse(await readFile(idle.decision_path, "utf8")), { nonce: idle.nonce, verdict: "ok", answered_by: "me" });
+      assert.equal((await answerHold({ dir, holdId: "no-such-hold", verdict: "ok", answeredBy: "me" })).outcome, "not-found");
+    } finally {
+      holds.close();
+    }
+  });
+});
+
+test("answerHold reports retired when the hold times out before reading the written answer", async () => {
+  await withHoldsDir(async (dir) => {
+    let parkedDecision: string | null = null;
+    let decisionPath: string | null = null;
+    const holds = new HoldManager({
+      dir, runId: "run-timeout", cwd: "/fake/cwd", scope: null,
+      pollIntervalMs: 500,
+      onEvent: (event) => {
+        if (event.method === "hold/timedOut" && parkedDecision !== null && decisionPath !== null) {
+          renameSync(parkedDecision, decisionPath);
+        }
+      }
+    });
+    const decision = holds.raise({ content: "deploy?", verdicts: ["go"], timeoutMs: 40 });
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      decisionPath = record.decision_path;
+      const answering = answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "me", waitMs: 1000, checkIntervalMs: 5 });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          await stat(record.decision_path);
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+      }
+      parkedDecision = `${record.decision_path}.parked`;
+      renameSync(record.decision_path, parkedDecision);
+      const outcome = await answering;
+      assert.deepEqual(outcome, { outcome: "retired", hold_id: record.hold_id, verdict: "go" });
+      await assert.rejects(decision, HoldTimeoutError);
+      await assert.rejects(stat(record.decision_path));
+    } finally {
+      holds.close();
+    }
+  });
+});
+
 test("an explicitly blank runtime holdScope fails loud at construction", () => {
   assert.throws(
     () =>
@@ -606,13 +761,13 @@ async function waitForEvent(events: RuntimeEvent[], method: string, count = 1): 
   throw new Error(`event ${method} (x${count}) never arrived`);
 }
 
-async function waitForArchiveHoldEvent(archiveDir: string, event: string): Promise<void> {
+async function waitForArchiveHoldEvent(archiveDir: string, event: string, count = 1): Promise<void> {
   const manifestPath = path.join(archiveDir, "manifest.json");
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
       hold_events: Array<{ event: string }>;
     };
-    if (manifest.hold_events.some((entry) => entry.event === event)) {
+    if (manifest.hold_events.filter((entry) => entry.event === event).length >= count) {
       return;
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 2));

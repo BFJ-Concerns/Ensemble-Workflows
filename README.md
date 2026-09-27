@@ -95,6 +95,10 @@ error.
   across every scope — a hold whose raiser is provably dead is retired by
   the machinery that observes it, and every raise, answer, rejection,
   timeout, and retirement lands in the archive manifest's `hold_events`.
+  `ensemble holds answer <hold-id> --verdict <v> [--note <n>]` writes that
+  same decision file and reports whether the raiser consumed it, bounced it
+  (with the reason), has not read it yet, or settled without judging it
+  (`retired`, exit 6; the stale decision file is removed).
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   dispatched worker's failure is already the leg's own `null` (it never
   reaches the combinator as a throw); a thunk that throws for any other
@@ -478,7 +482,9 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
   answer, timeout, and dead-raiser retirements this run's sweep observed)
   in event order, each entry carrying `hold_id`, `event`,
-  `verdict`/`reason` where applicable, and a timestamp.
+  `verdict`/`reason` where applicable, and a timestamp. An `answered`
+  entry also carries `answered_by` (the answerer the decision file named,
+  or null when it named none) and the decider's `note` (or null).
 - `tallies`: `name -> number`, the counts the script recorded through the
   `tally` hook, stored verbatim (last write per name wins) and present in
   the manifest from the moment each is recorded — a count recorded before

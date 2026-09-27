@@ -781,6 +781,15 @@ export class EnsembleRuntime {
         this.#emitEvent(event);
         void this.#recordHoldEventSafely(event);
       },
+      identity: () => {
+        const snapshot = this.progress.snapshot();
+        return {
+          workflow: snapshot.workflow,
+          phase: snapshot.currentPhase,
+          archive_path: this.#runRecorder?.archiveDir ?? null,
+          totals: { ...snapshot.totals }
+        };
+      },
       onOpen: (hold) => this.progress.noteHoldRaised(hold),
       onSettled: (id) => this.progress.noteHoldSettled(id)
     });

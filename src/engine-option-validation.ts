@@ -209,6 +209,9 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
   if (!Array.isArray(chain)) {
     throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
   }
+  if (chain.length === 0) {
+    throw new FallbackTargetRejectedError("the chain must not be empty");
+  }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;
     if (target === null) {

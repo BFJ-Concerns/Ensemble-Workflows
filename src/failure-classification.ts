@@ -70,8 +70,8 @@ const CODEX_ERROR_CLASSES = new Map<string, FailureClassification>([
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
   ["AppServerRetryPromiseBrokenError", { class: "availability", rule: "codex.retry-promise-broken" }],
-  // Codex refused the schema before generation: the shape, not the engine.
-  ["CodexSchemaSubsetUnsupportedError", { class: "output", rule: "codex.schema-rejected" }],
+  // Codex refused the authored schema before generation: no worker answer exists.
+  ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]

@@ -88,7 +88,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     stdout.write(usage());
     stdout.write(
       "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\n" +
-        "or dispatches a single agent. Results are JSON on stdout; diagnostics on stderr.\n" +
+        "or dispatches a single agent. Workflow and agent runs return JSON on stdout.\n" +
+        "workflows and holds list prose on stdout; holds --json lists JSON.\n" +
+        "Help and version print text on stdout; diagnostics go to stderr.\n" +
         "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
         "workflows (list saved workflows), holds (list open decision holds), holds answer (answer one).\n" +
         "Each subcommand answers its own --help.\n"
@@ -173,22 +175,22 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         scopeFlag = rest[index + 1];
         index += 1;
         if (scopeFlag === undefined || scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else if (arg !== undefined && arg.startsWith("--scope=")) {
         scopeFlag = arg.slice("--scope=".length);
         if (scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else {
-        stderr.write(holdsUsage);
+        stderr.write(`${arg?.startsWith("-") ? "Unknown option" : "Unexpected argument"} for ensemble holds: ${arg}\n`);
         return 2;
       }
     }
     if (all && scopeFlag !== undefined) {
-      stderr.write(holdsUsage);
+      stderr.write("--scope and --all cannot be used together\n");
       return 2;
     }
     // --scope names one scope; --all forces machine-wide; otherwise the

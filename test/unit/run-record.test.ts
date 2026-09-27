@@ -1987,6 +1987,74 @@ test("a failed agent's account is readable cold from its archived record", async
   });
 });
 
+test("archived agent and attempt output distinguish a silent failed turn from an empty answer", async () => {
+  const cwd = await gitRepo("ensemble-record-no-output-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-no-output-store-"));
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd,
+      runUuid: "run-no-output",
+      workflowPath: path.join(cwd, "workflow.js"),
+      workflowSource: "return true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    const engines: EngineAdapter[] = (["claude", "opencode", "codex"] as const).map((name) => ({
+      name,
+      concurrency: 1,
+      schedule: async (task) => task(),
+      createInvocation: () => ({
+        runAttempt: async () =>
+          name === "codex"
+            ? turn("", 0)
+            : {
+                ...turn("", 0),
+                tokenUsageEvents: [],
+                transcripts: [],
+                attemptFailure: {
+                  kind: name === "claude" ? "claude-worker-error" : "opencode-run-error",
+                  message: "worker stopped before producing text"
+                }
+              }
+      }),
+      close: async () => undefined
+    }));
+    const runtime = new EnsembleRuntime({ engines: new EngineRegistry(engines), defaultMaxAttempts: 1 });
+    runtime.setRunRecorder(writer);
+
+    await runtime.agent("silent Claude failure", { engine: "claude" });
+    await runtime.agent("silent opencode failure", { engine: "opencode" });
+    await runtime.agent("answered empty", { engine: "codex" });
+    await runtime.close();
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+
+    const observed = [];
+    for (const id of ["000001", "000002", "000003"]) {
+      const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+        engine: EngineName;
+        raw_output: string | null;
+        attempts: Array<{ raw_output: string | null; failure: { kind: string } | null }>;
+      };
+      assert.equal(agent.attempts.length, 1);
+      observed.push({
+        engine: agent.engine,
+        agent: agent.raw_output,
+        attempt: agent.attempts[0]!.raw_output,
+        failure: agent.attempts[0]!.failure?.kind ?? null
+      });
+    }
+    assert.deepEqual(observed, [
+      { engine: "claude", agent: null, attempt: null, failure: "claude-worker-error" },
+      { engine: "opencode", agent: null, attempt: null, failure: "opencode-run-error" },
+      { engine: "codex", agent: "", attempt: "", failure: "empty-output" }
+    ]);
+  } finally {
+    await rm(store, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("script-recorded tallies land in the manifest beside the usage rollup, last write per name winning", async () => {
   // The count is in the archive before finish() and survives it; a consumer
   // reads it from the manifest without a transcript.

@@ -426,6 +426,8 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `raw_output`, `validated_output`, `parse_route` (`"direct"`,
 `"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
 `usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`.
+For `raw_output`, `null` means no output was produced; `""` means the worker
+answered with empty text. The same meaning applies to attempt records.
 
 `attempts` is an array; each entry carries: `attempt` (1-based index over
 every dispatch the call made), `status`, `target` (`{ engine, model }` the

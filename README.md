@@ -577,7 +577,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `"session-client-capture-gap"` when no transcript was archived.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
 - `decode_failure`: `{ byte_length, line_prefix }` or `null`.
-- `raw_output`: final raw model text, or the latest raw failed output.
+- `raw_output`: final raw model text, or the latest raw failed output;
+  `null` means no output was produced, while `""` means the worker answered
+  with empty text.
 - `validated_output`: validated object/text result, or `null` on failure.
 - `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
   (`"no-attempt-ran"`, `"engine-reported-no-usage"`).

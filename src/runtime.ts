@@ -2049,7 +2049,9 @@ export class EnsembleRuntime {
         attempts.target,
         "failed",
         result.attemptFailure,
-        result.text,
+        // Returned operational failures use empty text when the worker
+        // produced nothing; an answered empty string takes the output path.
+        result.text === "" ? null : result.text,
         null,
         startedAt,
         result,

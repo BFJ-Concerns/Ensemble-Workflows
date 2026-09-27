@@ -1042,9 +1042,26 @@ export class EnsembleRuntime {
         state.placement.cwd
       )
     );
-    const invocation = state.engineSession.beginTurn(prompt, {
+    const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
     });
+    const invocation: EngineInvocation = {
+      runAttempt: async (context) => {
+        const result = await turnInvocation.runAttempt(context);
+        // A held worker keeps its observed identity across turns. Some
+        // transports report the model only when the worker first starts;
+        // a later answer from that same worker still has that served model.
+        if (
+          result.resolvedModel === undefined &&
+          state.resolvedModel !== null &&
+          result.attemptFailure === undefined &&
+          result.text.trim().length > 0
+        ) {
+          return { ...result, resolvedModel: state.resolvedModel };
+        }
+        return result;
+      }
+    };
     const sharedOptions: Partial<AgentOptions> = {
       ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
       ...(options.model !== undefined ? { model: options.model } : {})
@@ -1071,7 +1088,11 @@ export class EnsembleRuntime {
       state.engineSession = null;
       await refused.close().catch(() => undefined);
     } else if (outcome.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return outcome;
   }
@@ -1841,7 +1862,11 @@ export class EnsembleRuntime {
       throw completion.error;
     }
     if (completion.execution.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return completion.execution;
   }

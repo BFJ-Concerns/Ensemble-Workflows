@@ -55,13 +55,15 @@ any worker spawns.
   Claude in any position — that the harness re-dispatches the call on when a
   target fails for **availability** (allowance exhausted, provider overload
   past its own retry, a dead or unstartable substrate); output failures retry
-  in place and never advance it, an opencode entry throws before any worker
-  spawns, and every step is the harness's own recorded dispatch — the engine
-  never swaps models behind the record's back. The launcher says on stderr
-  when a chain entry answered for a refused target, when a declared chain
-  was not consulted because the failure went unrecognised, and how many
-  chain targets an exhausted call tried; each attempt records the decision
-  the harness took after it.
+  in place and never advance it. A Codex rejection of the authored schema
+  before generation is `unclassified`: it returns `null` after one thread
+  start without retrying or advancing the chain. An empty chain or opencode
+  entry throws before any worker spawns, and every step is the harness's own
+  recorded dispatch — the engine never swaps models behind the record's back.
+  The launcher says on stderr when a chain entry answered for a refused target,
+  when a declared chain was not consulted because the failure went unrecognised,
+  and how many chain targets an exhausted call tried; each attempt records the
+  decision the harness took after it.
 - `export const defaults = { … }` — an optional second export after `meta` —
   sets per-engine `model`/`effort`/`fallback` that every `agent()` call
   inherits and call-site options override; the chain is engine-agnostic, so
@@ -141,7 +143,11 @@ any worker spawns.
   `--json-args '<json>'` or `--json-args @file`.
 
 `ensemble workflows` lists saved workflows in the project and user registries,
-printing each workflow's `meta.name` and `meta.description`. Files whose metadata
+printing prose on stdout with each workflow's `meta.name` and `meta.description`.
+`ensemble holds` likewise lists open holds as prose on stdout; `ensemble holds
+--json` emits JSON there. Workflow and direct-agent runs return JSON on stdout,
+while help and version print text there. Diagnostics and rejected-invocation
+guidance go to stderr. Files whose metadata
 cannot be parsed are noted on stderr and skipped, so one bad saved workflow does
 not hide the rest. A user-scope entry whose name is taken by a project-scope
 entry is labelled `user (shadowed by project)` because name resolution will
@@ -243,7 +249,7 @@ Example:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "workflow": "verify-findings",
@@ -296,7 +302,13 @@ Example:
       "startedAtMs": 1766491209000,
       "firstEvidenceAtMs": 1766491211200
     }
-  ]
+  ],
+  "holds": [],
+  "owner": {
+    "host": "build-host",
+    "pid": 43122,
+    "start_ticks": "98765432100"
+  }
 }
 ```
 
@@ -312,8 +324,11 @@ The archive is an ambient, machine-level data store, configured by environment:
 - Default: `$XDG_DATA_HOME/ensemble/`, or `~/.local/share/ensemble/` when
   `XDG_DATA_HOME` is unset.
 - `ENSEMBLE_RUN_RECORD=off` (or `0`/`false`/`no`) disables recording.
-- `ENSEMBLE_RUN_RECORD_DIR` relocates the store. If this variable is unset, the
-  default data-home path is still used; unset never means disabled.
+- `ENSEMBLE_RUN_RECORD_DIR` names the **data home** (the store root, `$STORE`
+  below), not the `runs/` subtree — archives land under `$STORE/runs/cwd/…`,
+  so a value ending in `runs` produces a `runs/runs/` path by design. If
+  this variable is unset, the default data-home path is still used; unset
+  never means disabled.
 
 Runs are stored under:
 
@@ -397,7 +412,7 @@ rewritten.
 
 ### Run record schema
 
-Every JSON artefact carries:
+Every durable record artefact carries:
 
 - `schema_version`: currently `4`. Version 4 replaces the agent record's
   `fallback_model` with the declared `fallback` chain and the `answered_by`
@@ -410,6 +425,14 @@ Every JSON artefact carries:
   later as additive version-3 fields. Version 2 added worktree provenance
   and cross-engine token derivations over version 1.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
+
+The completion sentinel (`completion-sentinel.json`) is a separate artefact
+with `kind: "completion_sentinel"` and its own `schema_version` (currently
+`3`); it is supervision surface, not a record member, and is written even
+when durable recording is disabled. The live status snapshot
+(`ensemble.<run-uuid>.local.json`, schema `2`) is a third artefact family —
+live-only and removed when its run finishes — documented under *Live status*
+above.
 
 The manifest is `manifest.json`. Its top-level fields are:
 
@@ -515,10 +538,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `fallback`: the declared fallback chain — the `[{ engine, model, effort? }]`
   list as the call or its engine defaults declared it — or `null`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, `entry`
-  being `-1` for the call's own target and the chain index thereafter — or
-  `null` while no attempt has completed (a failed agent names none). Read
-  beside each attempt's `target`, this is how a run that silently ran its
-  "Codex" legs on Claude is legible after the fact.
+  being `-1` for the call's own target and the chain index thereafter, and
+  `model` being the answering attempt's observed served model (`null` if the
+  engine did not report one) — or `null` while no attempt has completed (a
+  failed agent names none). Read beside each attempt's `target`, this is how
+  a run that silently ran its "Codex" legs on Claude is legible after the fact.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
@@ -559,10 +583,10 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   (`{ engine, model }` — the engine and requested pin this attempt was
   dispatched to; the call's own until the chain advances), `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
-  `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
-  `null`), `classification`, `chain_decision`, `observed_failure`,
-  `diagnostics`, `app_server_diagnostic`, `token_usage_events`,
-  `worker_exit`. Where the
+  `resolved_model` (including the observed model of a held worker on later
+  turns), `resolved_effort`, `failure` (`{ kind, message }` or
+  `null`), `classification`, `chain_decision`, `observed_failure`, `diagnostics`,
+  `app_server_diagnostic`, `token_usage_events`, `worker_exit`. Where the
   run's own settlement ended the turn, the attempt's `failure` names that
   settlement and `observed_failure` keeps the transport symptom the turn saw
   (a closed app-server, an aborted poll); `observed_failure` is `null` when
@@ -572,7 +596,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   answered: allowance exhausted, provider overload past its own retry, a
   dead or unstartable substrate — the one class that advances a fallback
   chain and consumes no attempt), `"output"` (the worker answered badly:
-  empty, unparseable, off-schema — retried in place), or `"unclassified"`;
+  empty, unparseable, off-schema — retried in place), or `"unclassified"`
+  (including a Codex rejection of the authored schema before generation);
   `rule` names the classifier rule that matched (`codex.usage-limit`,
   `claude.rate-limit`, `codex.substrate-dead`, `run-settlement`, …) and is
   `null` only when no rule recognised the diagnostic — the archive's tell

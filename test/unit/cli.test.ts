@@ -2044,6 +2044,50 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   );
 });
 
+test("CLI entrypoint keeps every exit-2 path on stderr", () => {
+  const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
+  const cases = [
+    { argv: ["--unknown"], stderr: "Unknown option before script path: --unknown\n" },
+    {
+      argv: ["agent", "--unknown", "prompt"],
+      stderr:
+        "Unknown option '--unknown'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"--unknown\"\n"
+    },
+    { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
+    { argv: ["workflows", "extra"], stderr: "Usage: ensemble workflows\n" },
+    { argv: ["holds", "--unknown"], stderr: "Unknown option for ensemble holds: --unknown\n" },
+    { argv: ["holds", "extra"], stderr: "Unexpected argument for ensemble holds: extra\n" },
+    { argv: ["holds", "--scope"], stderr: "--scope requires a non-empty value\n" },
+    { argv: ["holds", "--scope=", "--all"], stderr: "--scope requires a non-empty value\n" },
+    { argv: ["holds", "--scope", "named", "--all"], stderr: "--scope and --all cannot be used together\n" }
+  ];
+
+  for (const { argv, stderr } of cases) {
+    const result = spawnSync(process.execPath, [entrypointPath, ...argv], {
+      encoding: "utf8",
+      env: hermeticEstateEnvironment()
+    });
+    assert.equal(result.status, 2, argv.join(" "));
+    assert.equal(result.stdout, "", argv.join(" "));
+    assert.equal(result.stderr, stderr, argv.join(" "));
+  }
+});
+
+test("top-level help states each stdout format without promising JSON for prose listings", () => {
+  const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
+  const result = spawnSync(process.execPath, [entrypointPath, "--help"], {
+    encoding: "utf8",
+    env: hermeticEstateEnvironment()
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /Workflow and agent runs return JSON on stdout\./);
+  assert.match(result.stdout, /workflows and holds list prose on stdout; holds --json lists JSON\./);
+  assert.match(result.stdout, /Help and version print text on stdout; diagnostics go to stderr\./);
+  assert.doesNotMatch(result.stdout, /Results are JSON on stdout/);
+});
+
 test("the CLI attributes effective budget and timeout to the layers that actually decided them", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-effective-"));
   const runRecordDir = path.join(directory, "records");
@@ -2180,7 +2224,7 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
     }),
     2
   );
-  assert.match(conflicted.text(), /Usage: ensemble holds/);
+  assert.equal(conflicted.text(), "--scope and --all cannot be used together\n");
 });
 
 test("the help answers carry orientation beyond the bare usage grammar", async () => {

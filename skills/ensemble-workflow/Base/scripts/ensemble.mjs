@@ -15804,6 +15804,9 @@ function assertValidFallbackChain(chain) {
   if (!Array.isArray(chain)) {
     throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
   }
+  if (chain.length === 0) {
+    throw new FallbackTargetRejectedError("the chain must not be empty");
+  }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
@@ -16881,8 +16884,8 @@ var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   ["AppServerBackpressureError", { class: "availability", rule: "codex.backpressure" }],
   // The provider promised a retry and then went silent past the bound.
   ["AppServerRetryPromiseBrokenError", { class: "availability", rule: "codex.retry-promise-broken" }],
-  // Codex refused the schema before generation: the shape, not the engine.
-  ["CodexSchemaSubsetUnsupportedError", { class: "output", rule: "codex.schema-rejected" }],
+  // Codex refused the authored schema before generation: no worker answer exists.
+  ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]
@@ -21465,9 +21468,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.placement.cwd
       )
     );
-    const invocation = state.engineSession.beginTurn(prompt, {
+    const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...turn.schema !== void 0 ? { schema: turn.schema } : {}
     });
+    const invocation = {
+      runAttempt: async (context) => {
+        const result = await turnInvocation.runAttempt(context);
+        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
+          return { ...result, resolvedModel: state.resolvedModel };
+        }
+        return result;
+      }
+    };
     const sharedOptions = {
       ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
       ...options.model !== void 0 ? { model: options.model } : {}
@@ -21491,7 +21503,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       state.engineSession = null;
       await refused.close().catch(() => void 0);
     } else if (outcome.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return outcome;
   }
@@ -22082,7 +22098,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw completion.error;
     }
     if (completion.execution.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return completion.execution;
   }
@@ -29455,7 +29475,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "--help" || argv[0] === "-h") {
     stdout.write(usage());
     stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Results are JSON on stdout; diagnostics on stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
     );
     return 0;
   }
@@ -29519,22 +29539,23 @@ async function runEnsembleCli(argv, options = {}) {
         scopeFlag = rest[index + 1];
         index += 1;
         if (scopeFlag === void 0 || scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else if (arg !== void 0 && arg.startsWith("--scope=")) {
         scopeFlag = arg.slice("--scope=".length);
         if (scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else {
-        stderr.write(holdsUsage);
+        stderr.write(`${arg?.startsWith("-") ? "Unknown option" : "Unexpected argument"} for ensemble holds: ${arg}
+`);
         return 2;
       }
     }
     if (all && scopeFlag !== void 0) {
-      stderr.write(holdsUsage);
+      stderr.write("--scope and --all cannot be used together\n");
       return 2;
     }
     const scope = scopeFlag ?? (all ? null : resolveHoldScope(void 0, env));

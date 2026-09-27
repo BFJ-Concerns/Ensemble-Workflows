@@ -21,7 +21,8 @@ import type {
   ClaudeControlPlane,
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
-  ClaudeSessionStatus
+  ClaudeSessionStatus,
+  ValveDelivery
 } from "../../src/claude-control-plane.js";
 import { RunRecordWriter } from "../../src/run-record.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
@@ -620,12 +621,12 @@ class SessionFakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<boolean> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
     this.steered.push(message);
     if (this.#path !== null) {
       await appendFile(this.#path, this.#nextLine());
     }
-    return true;
+    return { delivered: true };
   }
 
   async stop(): Promise<void> {

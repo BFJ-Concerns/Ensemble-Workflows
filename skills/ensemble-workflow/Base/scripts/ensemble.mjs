@@ -17334,7 +17334,7 @@ var ClaudeCliControlPlane = class {
   }
   async steer(handle, message) {
     if ((await this.poll(handle)).present === false) {
-      return false;
+      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
     }
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
@@ -17352,20 +17352,23 @@ var ClaudeCliControlPlane = class {
         `${this.#claudeBin} attach ${handle.id}`
       ]);
       if (!created.ok) {
-        return false;
+        return refused("tmux new-session", created);
       }
       await delay(this.#valveAttachSettleMs);
-      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
-      if (!typed.ok) {
-        return false;
+      const slices = valveSlices(message);
+      for (const [index, slice] of slices.entries()) {
+        const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", slice]);
+        if (!typed.ok) {
+          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+        }
       }
       await delay(this.#valveSubmitSettleMs);
       const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) {
-        return false;
+        return refused("tmux send-keys (submit)", submitted);
       }
       await delay(this.#valveKillSettleMs);
-      return true;
+      return { delivered: true };
     } finally {
       await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
     }
@@ -17528,6 +17531,30 @@ function normaliseState(state) {
     return state;
   }
   return "unknown";
+}
+var VALVE_SLICE_BYTES = 8 * 1024;
+function refused(step, result) {
+  const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
+  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+}
+function valveSlices(message) {
+  const slices = [];
+  let current2 = "";
+  let currentBytes = 0;
+  for (const character of message) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
+      slices.push(current2);
+      current2 = "";
+      currentBytes = 0;
+    }
+    current2 += character;
+    currentBytes += characterBytes;
+  }
+  if (current2 !== "") {
+    slices.push(current2);
+  }
+  return slices;
 }
 function delay(ms) {
   return new Promise((resolve) => {
@@ -17913,9 +17940,9 @@ var ClaudeEngineInvocation = class {
   }
   /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
   async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
+    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
     await this.#awaitReceipt(handle, fromIndex);
     this.#turnDelivered = true;
@@ -17935,9 +17962,9 @@ var ClaudeEngineInvocation = class {
     }
   }
   async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
-    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the correction");
+    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
     await this.#awaitReceipt(handle, fromIndex);
     const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
@@ -18037,9 +18064,9 @@ var ClaudeEngineInvocation = class {
         }
         nudges += 1;
         const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
-        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!steered) {
-          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!delivery.delivered) {
+          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
         await this.#awaitReceipt(handle, mark);
         continue;
@@ -21154,9 +21181,9 @@ async function openCodexThread(transport, options, cwd) {
     });
   } catch (error) {
     if (error instanceof AppServerStartupTimeoutError || error instanceof AppServerExitedError) {
-      const refused = new CodexSubstrateRefusedError(cwd, error, presentOperationalError(error) ?? error.message);
+      const refused2 = new CodexSubstrateRefusedError(cwd, error, presentOperationalError(error) ?? error.message);
       const exit = workerExitStatusOf(error);
-      throw exit === null ? refused : attachWorkerExitStatus(refused, exit);
+      throw exit === null ? refused2 : attachWorkerExitStatus(refused2, exit);
     }
     throw error;
   }
@@ -21811,9 +21838,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       outcome = await this.#runTextAgent(state.engine.name, invocation, sharedOptions, agentId, agentRecord, attempts);
     }
     if (outcome.status === "refused") {
-      const refused = state.engineSession;
+      const refused2 = state.engineSession;
       state.engineSession = null;
-      await refused.close().catch(() => void 0);
+      await refused2.close().catch(() => void 0);
     } else if (outcome.status === "complete") {
       agentRecord.answeredBy = {
         entry: target.entry,
@@ -22621,8 +22648,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return void 0;
     }
     const classification = this.#classify(attempts.target.engine, result.attemptFailure, null, result.diagnostics);
-    const refused = classification.class === "availability" && attempts.chainRemains;
-    if (!refused) {
+    const refused2 = classification.class === "availability" && attempts.chainRemains;
+    if (!refused2) {
       attempts.ledger.answered += 1;
     }
     this.#pushFailedAttempt(
@@ -22642,10 +22669,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         null,
         null,
         classification,
-        chainDecisionAfter(attempts, classification, !refused && boundRemains(attempts.ledger))
+        chainDecisionAfter(attempts, classification, !refused2 && boundRemains(attempts.ledger))
       )
     );
-    return { failure: result.attemptFailure, refused };
+    return { failure: result.attemptFailure, refused: refused2 };
   }
   /**
    * A thrown failure (the Codex transport's shape, and any engine's
@@ -22663,8 +22690,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const failure = settlement ?? observed;
     const appServerDiagnostic = appServerDiagnosticOf(error);
     const classification = this.#classify(attempts.target.engine, failure, appServerDiagnostic, failedResult?.diagnostics);
-    const refused = settlement === null && classification.class === "availability" && attempts.chainRemains;
-    if (!refused && !(error instanceof SubstrateRefusedError)) {
+    const refused2 = settlement === null && classification.class === "availability" && attempts.chainRemains;
+    if (!refused2 && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
     const partialTranscript = partialTranscriptOf(error);
@@ -22673,7 +22700,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
       ...firstDeltaMs !== null ? { firstDeltaMs } : {}
     } : null);
-    const retries = !refused && !this.#crossesSpawnBoundary(error) && !(error instanceof CodexSchemaSubsetUnsupportedError) && boundRemains(attempts.ledger);
+    const retries = !refused2 && !this.#crossesSpawnBoundary(error) && !(error instanceof CodexSchemaSubsetUnsupportedError) && boundRemains(attempts.ledger);
     this.#pushFailedAttempt(
       record,
       attemptRecord(
@@ -22692,7 +22719,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         settlement === null ? chainDecisionAfter(attempts, classification, retries) : null
       )
     );
-    return { refused, failure: observed };
+    return { refused: refused2, failure: observed };
   }
   /**
    * The strip enforcement routes the archive records are the *dispatching*

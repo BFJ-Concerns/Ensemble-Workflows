@@ -33,13 +33,20 @@ export interface ClaudeControlPlane {
   poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus>;
   /** Locate the session's JSONL transcript on disk, or null if not yet present. */
   transcriptPath(handle: ClaudeSessionHandle): Promise<string | null>;
-  /** Inject a message into the live session (the valve). Returns false if it could not. */
-  steer(handle: ClaudeSessionHandle, message: string): Promise<boolean>;
+  /**
+   * Inject a message into the live session (the valve). A refusal names the
+   * step that failed and what it said, so the turn's failure record carries
+   * the cause rather than the bare fact of non-delivery.
+   */
+  steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery>;
   /** Tear the session down (stop + remove). Best-effort; never throws. */
   stop(handle: ClaudeSessionHandle): Promise<void>;
   /** Whether the tmux valve is usable; gates in-session correction and blocked recovery. */
   tmuxAvailable(): Promise<boolean>;
 }
+
+/** The valve's verdict on one injection: delivered, or refused with the failing step's account. */
+export type ValveDelivery = { delivered: true } | { delivered: false; reason: string };
 
 export interface ClaudeDispatchOptions {
   prompt: string;
@@ -385,9 +392,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(handle: ClaudeSessionHandle, message: string): Promise<boolean> {
+  async steer(handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
     if ((await this.poll(handle)).present === false) {
-      return false;
+      return { delivered: false, reason: "the session is no longer in the daemon's roster" };
     }
 
     this.#valveCounter += 1;
@@ -412,24 +419,31 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         `${this.#claudeBin} attach ${handle.id}`
       ]);
       if (!created.ok) {
-        return false;
+        return refused("tmux new-session", created);
       }
 
       // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
       // `-l` sends the message literally — no key-name interpretation, no quoting
-      // hazards. Submit follows as its own keystroke.
-      const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", message]);
-      if (!typed.ok) {
-        return false;
+      // hazards. Each call carries one bounded slice: a follow-up turn routinely
+      // holds whole diffs, and one command must fit both the platform's argv
+      // element cap and tmux's own client-message cap (see VALVE_SLICE_BYTES),
+      // so the bytes go to the same pane input in order across as many calls
+      // as the message needs. Submit follows as its own keystroke.
+      const slices = valveSlices(message);
+      for (const [index, slice] of slices.entries()) {
+        const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", slice]);
+        if (!typed.ok) {
+          return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
+        }
       }
       await delay(this.#valveSubmitSettleMs);
       const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) {
-        return false;
+        return refused("tmux send-keys (submit)", submitted);
       }
       await delay(this.#valveKillSettleMs);
-      return true;
+      return { delivered: true };
     } finally {
       await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
     }
@@ -637,6 +651,48 @@ function normaliseState(state: unknown): ClaudeSessionState {
     return state;
   }
   return "unknown";
+}
+
+/**
+ * Largest byte length of one `send-keys -l` argument. Two caps bound it: Linux
+ * rejects a single argv element over 128 KiB (`spawn E2BIG`), and tmux's client
+ * refuses any one command over its 16 KiB message size ("command too long",
+ * measured on tmux 3.7c: 16000 bytes accepted, 20000 refused). This sits well
+ * beneath both, so a valve message of any size reaches the pane as an ordered
+ * sequence of literal sends.
+ */
+export const VALVE_SLICE_BYTES = 8 * 1024;
+
+/** A refused valve step, named with the bounded text tmux gave for it. */
+function refused(step: string, result: ExecResult): ValveDelivery {
+  const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
+  return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
+}
+
+/**
+ * Split a valve message into `send-keys -l` arguments of at most
+ * `VALVE_SLICE_BYTES` bytes each, cutting only between code points so no
+ * character is torn across two sends. Exported for the delivery tests; a
+ * message within the bound is one slice, and an empty message is none.
+ */
+export function valveSlices(message: string): string[] {
+  const slices: string[] = [];
+  let current = "";
+  let currentBytes = 0;
+  for (const character of message) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
+      slices.push(current);
+      current = "";
+      currentBytes = 0;
+    }
+    current += character;
+    currentBytes += characterBytes;
+  }
+  if (current !== "") {
+    slices.push(current);
+  }
+  return slices;
 }
 
 function delay(ms: number): Promise<void> {

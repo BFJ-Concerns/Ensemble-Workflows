@@ -64,17 +64,29 @@ There is no `ensemble` binary on `PATH`. Run the bundle with Node (>= 24.14.0;
 older Nodes exit 1 with a version error):
 
 The synopsis below is the product's own usage output, printed on stderr when the
-bundle is invoked with no arguments:
+bundle is invoked with no arguments. It names the program as you invoked it —
+`node ensemble.mjs` here; a `bin` shim or symlink is named as itself:
 
 ```
-Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]
-       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]
-                      [--label <label>] [--phase <phase>] [--cwd <path>]
-                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]
-                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]
-       ensemble workflows
-       ensemble holds [--json] [--scope <scope> | --all]
-       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]
+Usage: node ensemble.mjs [run options] <script.js> [args...]
+       node ensemble.mjs agent --engine <engine> [agent options] [prompt]
+       node ensemble.mjs workflows
+       node ensemble.mjs holds [--json] [--scope <scope> | --all]
+       node ensemble.mjs holds answer <hold-id> --verdict <verdict>
+                         [--note <note>]
+
+Run options (before the script path):
+  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
+  --agent-ceiling N|null  --timeout ms  --strip capability
+  --caller-identity <identity>  --hold-scope <scope>
+Agent options (after agent, before the prompt):
+  --model <model>  --effort <effort>  --label <label>  --phase <phase>
+  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
+  --max-attempts N  --task <identity>  --strip capability  --budget engine=N
+  --agent-ceiling N|null  --concurrency engine=N  --timeout ms
+  --caller-identity <identity>  --hold-scope <scope>
+The prompt is the one positional argument, or stdin when omitted.
+Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
 ```
 
 - `--json-args` replaces the positional string args with a parsed JSON value

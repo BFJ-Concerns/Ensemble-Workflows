@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { runEnsembleCli } from "../cli.js";
+import { programNameFor, runEnsembleCli } from "../cli.js";
 import { nodeVersionError } from "../node-version.js";
 
 const isMain =
@@ -32,7 +32,8 @@ if (isMain) {
   } else {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
-      cwd
+      cwd,
+      programName: programNameFor(process.argv[1])
     });
     // The launcher's terminal work is done: the result or envelope is
     // printed, the record sealed, the sentinel written, the workers torn

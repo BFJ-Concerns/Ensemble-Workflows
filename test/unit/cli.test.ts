@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
-import { runEnsembleCli } from "../../src/cli.js";
+import { programNameFor, runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
@@ -2035,15 +2035,69 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   assert.equal(result.stdout, "");
   assert.equal(
     result.stderr,
-      "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]\n" +
-      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-        "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
-      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
+      "Usage: ensemble [run options] <script.js> [args...]\n" +
+      "       ensemble agent --engine <engine> [agent options] [prompt]\n" +
       "       ensemble workflows\n" +
       "       ensemble holds [--json] [--scope <scope> | --all]\n" +
-      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n"
+      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n" +
+      "\n" +
+      "Run options (before the script path):\n" +
+      "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
+      "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "Agent options (after agent, before the prompt):\n" +
+      "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
+      "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
+      "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
+      "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "The prompt is the one positional argument, or stdin when omitted.\n" +
+      "Run `ensemble --help` for orientation; each subcommand answers --help.\n"
   );
+});
+
+test("usage names the program as the caller invoked it and keeps every line within 80 columns", async () => {
+  // The word comes from what Node was handed: a script file reads as the
+  // command the reader must type, a bin shim or symlink as itself.
+  assert.equal(programNameFor(undefined), "ensemble");
+  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs"), "node ensemble.mjs");
+  assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js"), "node ensemble.js");
+  assert.equal(programNameFor("/home/me/.local/bin/ensemble"), "ensemble");
+
+  for (const programName of ["ensemble", "node ensemble.mjs"]) {
+    const escaped = programName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const stderr = new CaptureStream();
+    assert.equal(await runEnsembleCli([], { stdout: new CaptureStream(), stderr, programName }), 2);
+    const text = stderr.text();
+    const lines = text.split("\n");
+    // Pre-fix the first line ran to 226 columns and every form named
+    // `ensemble`, a binary that is not on PATH when the bundle runs under Node.
+    for (const line of lines) {
+      assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
+    }
+    assert.match(lines[0] ?? "", new RegExp(`^Usage: ${escaped} \\[run options\\] <script\\.js>`));
+    for (const form of ["agent --engine <engine>", "workflows", "holds \\[--json\\]", "holds answer <hold-id>"]) {
+      assert.match(text, new RegExp(`\\n {7}${escaped} ${form}`), `${programName}: ${form}`);
+    }
+    assert.match(text, new RegExp(`Run \`${escaped} --help\` for orientation`));
+    if (programName !== "ensemble") {
+      assert.doesNotMatch(text, /(^|\s)ensemble (agent|workflows|holds|\[run options\])/);
+    }
+
+    // The subcommand usage lines and the agent diagnostics name the same program.
+    const workflowsErr = new CaptureStream();
+    assert.equal(await runEnsembleCli(["workflows", "extra"], { stdout: new CaptureStream(), stderr: workflowsErr, programName }), 2);
+    assert.equal(workflowsErr.text(), `Usage: ${programName} workflows\n`);
+    const answerHelp = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds", "answer", "--help"], { stdout: answerHelp, stderr: new CaptureStream(), programName }), 0);
+    assert.match(answerHelp.text(), new RegExp(`^Usage: ${escaped} holds answer <hold-id>`));
+    const agentErr = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["agent", "prompt"], { stdin: Readable.from([]), stdout: new CaptureStream(), stderr: agentErr, programName }),
+      2
+    );
+    assert.equal(agentErr.text(), `${programName} agent requires --engine\n`);
+  }
 });
 
 test("CLI entrypoint keeps every exit-2 path on stderr", () => {
@@ -2056,9 +2110,10 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
         "Unknown option '--unknown'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"--unknown\"\n"
     },
     { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
-    { argv: ["workflows", "extra"], stderr: "Usage: ensemble workflows\n" },
-    { argv: ["holds", "--unknown"], stderr: "Unknown option for ensemble holds: --unknown\n" },
-    { argv: ["holds", "extra"], stderr: "Unexpected argument for ensemble holds: extra\n" },
+    // Spawned as `node ensemble.js`, so that is the program the lines name.
+    { argv: ["workflows", "extra"], stderr: "Usage: node ensemble.js workflows\n" },
+    { argv: ["holds", "--unknown"], stderr: "Unknown option for node ensemble.js holds: --unknown\n" },
+    { argv: ["holds", "extra"], stderr: "Unexpected argument for node ensemble.js holds: extra\n" },
     { argv: ["holds", "--scope"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope=", "--all"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope", "named", "--all"], stderr: "--scope and --all cannot be used together\n" }

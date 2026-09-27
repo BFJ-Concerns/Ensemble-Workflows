@@ -52,6 +52,13 @@ const AGENT_INVOCATION_OPTIONS = {
 
 export interface EnsembleCliOptions {
   cwd?: string;
+  /**
+   * How the caller addresses the CLI — the command word every usage line
+   * leads with. The launcher derives it from its own invocation
+   * (`programNameFor`); a library caller or test that gives none reads as
+   * `ensemble`.
+   */
+  programName?: string;
   stdin?: Readable;
   stdout?: Writable;
   stderr?: Writable;
@@ -78,6 +85,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   const stderr = options.stderr ?? process.stderr;
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
+  const program = options.programName ?? DEFAULT_PROGRAM_NAME;
 
   // Discovery gestures for a cold arrival: help and version answer before
   // any invocation parsing, and each subcommand's --help prints its own
@@ -85,7 +93,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   if (argv[0] === "--help" || argv[0] === "-h") {
     // The help gesture answers with orientation, not just the flag grammar
     // the bare usage error already shows.
-    stdout.write(usage());
+    stdout.write(usage(program));
     stdout.write(
       "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\n" +
         "or dispatches a single agent. Workflow and agent runs return JSON on stdout.\n" +
@@ -104,11 +112,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   if (argv[0] === "workflows") {
     if (argv[1] === "--help" || argv[1] === "-h") {
-      stdout.write("Usage: ensemble workflows\nLists saved workflows from the project and user registries.\n");
+      stdout.write(`Usage: ${program} workflows\nLists saved workflows from the project and user registries.\n`);
       return 0;
     }
     if (argv.length > 1) {
-      stderr.write("Usage: ensemble workflows\n");
+      stderr.write(`Usage: ${program} workflows\n`);
       return 2;
     }
     const listing = await listSavedWorkflows({ cwd, env, readMeta: readWorkflowMeta });
@@ -130,7 +138,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
-    stdout.write(usage());
+    stdout.write(usage(program));
     stdout.write(
       "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\n" +
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
@@ -142,12 +150,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   if (argv[0] === "holds" && argv[1] === "answer") {
-    return answerHoldCommand(argv.slice(2), env, stdout, stderr);
+    return answerHoldCommand(argv.slice(2), env, stdout, stderr, program);
   }
 
   if (argv[0] === "holds") {
     const holdsUsage =
-      "Usage: ensemble holds [--json] [--scope <scope> | --all]\n" +
+      `Usage: ${program} holds [--json] [--scope <scope> | --all]\n` +
       "Lists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;\n" +
       "--scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.\n";
     if (argv[1] === "--help" || argv[1] === "-h") {
@@ -185,7 +193,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           return 2;
         }
       } else {
-        stderr.write(`${arg?.startsWith("-") ? "Unknown option" : "Unexpected argument"} for ensemble holds: ${arg}\n`);
+        stderr.write(`${arg?.startsWith("-") ? "Unknown option" : "Unexpected argument"} for ${program} holds: ${arg}\n`);
         return 2;
       }
     }
@@ -267,7 +275,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let invocation: ParsedInvocation;
   let ambientSettings: AmbientSettings;
   try {
-    invocation = await parseInvocation(argv, cwd, stdin);
+    invocation = await parseInvocation(argv, cwd, stdin, program);
     ambientSettings = resolveAmbientSettings({
       env,
       cwd,
@@ -288,7 +296,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   if (invocation.kind === "workflow" && invocation.scriptArg === undefined) {
-    stderr.write(usage());
+    stderr.write(usage(program));
     return 2;
   }
 
@@ -988,15 +996,15 @@ class SingleAgentFailedError extends Error {
   }
 }
 
-async function parseInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedInvocation> {
+async function parseInvocation(argv: string[], cwd: string, stdin: Readable, program: string): Promise<ParsedInvocation> {
   if (argv[0] === "agent") {
-    return parseAgentInvocation(argv.slice(1), cwd, stdin);
+    return parseAgentInvocation(argv.slice(1), cwd, stdin, program);
   }
-  return parseWorkflowInvocation(argv, cwd);
+  return parseWorkflowInvocation(argv, cwd, program);
 }
 
-async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<ParsedWorkflowInvocation> {
-  const split = splitTuningFlags(argv);
+async function parseWorkflowInvocation(argv: string[], cwd: string, program: string): Promise<ParsedWorkflowInvocation> {
+  const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
   let parsed;
   try {
@@ -1048,7 +1056,12 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
   };
 }
 
-async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+async function parseAgentInvocation(
+  argv: string[],
+  cwd: string,
+  stdin: Readable,
+  program: string
+): Promise<ParsedAgentInvocation> {
   for (const argument of argv) {
     if (argument === "--") {
       break;
@@ -1075,16 +1088,16 @@ async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable
   }
 
   if (parsed.positionals.length > 1) {
-    throw new CliUsageError("ensemble agent accepts exactly one prompt argument, or reads the prompt from stdin");
+    throw new CliUsageError(`${program} agent accepts exactly one prompt argument, or reads the prompt from stdin`);
   }
   const prompt = parsed.positionals[0] ?? (await readPrompt(stdin));
   if (prompt.trim().length === 0) {
-    throw new CliUsageError("ensemble agent requires a prompt argument or a non-empty prompt on stdin");
+    throw new CliUsageError(`${program} agent requires a prompt argument or a non-empty prompt on stdin`);
   }
 
   const rawEngine = parsed.values.engine;
   if (rawEngine === undefined) {
-    throw new CliUsageError("ensemble agent requires --engine");
+    throw new CliUsageError(`${program} agent requires --engine`);
   }
   const engine = parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
@@ -1160,7 +1173,10 @@ function parseStripList(values: string[] | undefined): StrippableCapability[] | 
   return [...new Set(values)] as StrippableCapability[];
 }
 
-function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: string | undefined; scriptArgs: string[] } {
+function splitTuningFlags(
+  argv: string[],
+  program: string
+): { tuningArgs: string[]; scriptArg: string | undefined; scriptArgs: string[] } {
   const tuningArgs: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1178,7 +1194,7 @@ function splitTuningFlags(argv: string[]): { tuningArgs: string[]; scriptArg: st
     }
 
     if (value === "agent" && tuningArgs.length > 0) {
-      throw new CliUsageError("Tuning flags must appear after ensemble agent, not before it");
+      throw new CliUsageError(`Tuning flags must appear after ${program} agent, not before it`);
     }
 
     if (isKnownInlineOption(value)) {
@@ -1512,18 +1528,21 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   }
 }
 
-const HOLDS_ANSWER_USAGE =
-  "Usage: ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n" +
+function holdsAnswerUsage(program: string): string {
+  return (
+    `Usage: ${program} holds answer <hold-id> --verdict <verdict> [--note <note>]\n` +
   "Answers an open hold: writes the decision file the hold names (nonce copied from the hold),\n" +
   "then reports what the raiser did with it, as one JSON object on stdout.\n" +
   "The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\n" +
   "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected — the hold keeps\n" +
   "waiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\n" +
   "cadence — the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\n" +
-  "settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
+  "settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n"
+  );
+}
 
 /**
- * `ensemble holds answer`: a convenience writer of the same hand-writable
+ * `holds answer`: a convenience writer of the same hand-writable
  * decision file, reporting what the write produced under the protocol's
  * settled-means-removed rule. Never claims acceptance it did not observe.
  */
@@ -1531,10 +1550,12 @@ async function answerHoldCommand(
   args: string[],
   env: NodeJS.ProcessEnv,
   stdout: NodeJS.WritableStream,
-  stderr: NodeJS.WritableStream
+  stderr: NodeJS.WritableStream,
+  program: string
 ): Promise<number> {
+  const answerUsage = holdsAnswerUsage(program);
   if (args[0] === "--help" || args[0] === "-h") {
-    stdout.write(HOLDS_ANSWER_USAGE);
+    stdout.write(answerUsage);
     return 0;
   }
   let holdId: string | undefined;
@@ -1546,7 +1567,7 @@ async function answerHoldCommand(
     if (flag !== null) {
       const value = flag[2] ?? args[++index];
       if (value === undefined || (flag[1] === "verdict" && value.trim().length === 0)) {
-        stderr.write(HOLDS_ANSWER_USAGE);
+        stderr.write(answerUsage);
         return 2;
       }
       if (flag[1] === "verdict") {
@@ -1557,12 +1578,12 @@ async function answerHoldCommand(
     } else if (holdId === undefined && !arg.startsWith("-") && arg.trim().length > 0) {
       holdId = arg;
     } else {
-      stderr.write(HOLDS_ANSWER_USAGE);
+      stderr.write(answerUsage);
       return 2;
     }
   }
   if (holdId === undefined || verdict === undefined) {
-    stderr.write(HOLDS_ANSWER_USAGE);
+    stderr.write(answerUsage);
     return 2;
   }
   const answeredBy = resolveCallerIdentity(undefined, env) ?? `${hostname()}:${process.pid}`;
@@ -1603,18 +1624,116 @@ async function answerHoldCommand(
   }
 }
 
-function usage(): string {
-  return [
-    "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
-    "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]",
-    "                      [--label <label>] [--phase <phase>] [--cwd <path>]",
-    "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]",
-    "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
-    "       ensemble workflows",
-    "       ensemble holds [--json] [--scope <scope> | --all]",
-    "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]",
+/** The command word usage lines lead with when the caller names none. */
+const DEFAULT_PROGRAM_NAME = "ensemble";
+
+/**
+ * How the caller addresses the CLI, derived from the script path Node was
+ * given (`process.argv[1]`): a bundle or compiled entry run through Node
+ * reads `node <file>`, so the usage text tells the reader to type what they
+ * typed — there is no `ensemble` on PATH unless a bin shim or symlink puts
+ * one there, and such a shim (a file without a script extension) is named
+ * as itself. No path: the default word.
+ */
+export function programNameFor(scriptPath: string | undefined): string {
+  if (scriptPath === undefined || scriptPath.length === 0) {
+    return DEFAULT_PROGRAM_NAME;
+  }
+  const file = path.basename(scriptPath);
+  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+}
+
+/** Every usage line fits a conventional terminal; longer lines wrap at a token. */
+const USAGE_WIDTH = 80;
+const USAGE_LEAD = "Usage: ";
+
+/** The tuning flags a workflow run accepts before the script path. */
+const RUN_OPTION_SYNOPSES: readonly string[] = [
+  "--json-args '<json>|@file'",
+  "--budget engine=N",
+  "--concurrency engine=N",
+  "--agent-ceiling N|null",
+  "--timeout ms",
+  "--strip capability",
+  "--caller-identity <identity>",
+  "--hold-scope <scope>"
+];
+
+/** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
+const AGENT_OPTION_SYNOPSES: readonly string[] = [
+  "--model <model>",
+  "--effort <effort>",
+  "--label <label>",
+  "--phase <phase>",
+  "--cwd <path>",
+  "--isolation worktree",
+  "--identity",
+  "--schema '<json>|@file'",
+  "--max-attempts N",
+  "--task <identity>",
+  "--strip capability",
+  "--budget engine=N",
+  "--agent-ceiling N|null",
+  "--concurrency engine=N",
+  "--timeout ms",
+  "--caller-identity <identity>",
+  "--hold-scope <scope>"
+];
+
+/**
+ * The usage text: a synopsis of every invocation form naming the program
+ * as the caller invoked it, the option groups, and the route to more help.
+ * Printed on stdout as the head of the help answers and on stderr for the
+ * one usage error that names no work at all. A new subcommand or flag
+ * joins here in the same change that adds it.
+ */
+function usage(program: string): string {
+  const forms: readonly (readonly string[])[] = [
+    ["[run options]", "<script.js>", "[args...]"],
+    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    ["workflows"],
+    ["holds", "[--json]", "[--scope <scope> | --all]"],
+    ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
+  ];
+  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const lines: string[] = [];
+  forms.forEach((tokens, index) => {
+    const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
+    lines.push(...wrapTokens(lead, tokens, continuation, " "));
+  });
+  lines.push(
+    "",
+    "Run options (before the script path):",
+    ...wrapTokens("  ", RUN_OPTION_SYNOPSES, "  ", "  "),
+    "Agent options (after agent, before the prompt):",
+    ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
+    "The prompt is the one positional argument, or stdin when omitted.",
+    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
     ""
-  ].join("\n");
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Greedy wrap of `tokens` after `lead`, never splitting a token: a line that
+ * would pass `USAGE_WIDTH` ends before the token, which opens the next line
+ * at `indent`. The first token always follows the lead, so a lead longer
+ * than the width still produces a line rather than an empty one.
+ */
+function wrapTokens(lead: string, tokens: readonly string[], indent: string, separator: string): string[] {
+  const lines: string[] = [];
+  let line = lead;
+  tokens.forEach((token, index) => {
+    const joined = index === 0 ? `${lead}${lead.endsWith(" ") ? "" : " "}${token}` : `${line}${separator}${token}`;
+    if (index > 0 && joined.length > USAGE_WIDTH) {
+      lines.push(line);
+      line = `${indent}${token}`;
+    } else {
+      line = joined;
+    }
+  });
+  lines.push(line);
+  return lines;
 }
 
 function serialiseResult(result: unknown): string {

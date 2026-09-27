@@ -46,14 +46,29 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    assert.equal(result.stderr, "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]\n" +
-      "                      [--label <label>] [--phase <phase>] [--cwd <path>]\n" +
-      "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
-      "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
-      "       ensemble workflows\n" +
-      "       ensemble holds [--json] [--scope <scope> | --all]\n" +
-      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n");
+    // Run as `node ensemble.mjs`, so the usage names that invocation.
+    assert.equal(
+      result.stderr,
+      "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
+      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
+      "       node ensemble.mjs workflows\n" +
+      "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
+      "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +
+      "                         [--note <note>]\n" +
+      "\n" +
+      "Run options (before the script path):\n" +
+      "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
+      "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "Agent options (after agent, before the prompt):\n" +
+      "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
+      "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
+      "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
+      "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "The prompt is the one positional argument, or stdin when omitted.\n" +
+      "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
+    );
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) {

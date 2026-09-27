@@ -137,7 +137,11 @@ any worker spawns.
   `--json-args '<json>'` or `--json-args @file`.
 
 `ensemble workflows` lists saved workflows in the project and user registries,
-printing each workflow's `meta.name` and `meta.description`. Files whose metadata
+printing prose on stdout with each workflow's `meta.name` and `meta.description`.
+`ensemble holds` likewise lists open holds as prose on stdout; `ensemble holds
+--json` emits JSON there. Workflow and direct-agent runs return JSON on stdout,
+while help and version print text there. Diagnostics and rejected-invocation
+guidance go to stderr. Files whose metadata
 cannot be parsed are noted on stderr and skipped, so one bad saved workflow does
 not hide the rest. A user-scope entry whose name is taken by a project-scope
 entry is labelled `user (shadowed by project)` because name resolution will

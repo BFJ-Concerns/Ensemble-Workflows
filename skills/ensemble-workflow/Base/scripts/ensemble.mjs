@@ -29361,7 +29361,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "--help" || argv[0] === "-h") {
     stdout.write(usage());
     stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Results are JSON on stdout; diagnostics on stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
     );
     return 0;
   }
@@ -29425,22 +29425,23 @@ async function runEnsembleCli(argv, options = {}) {
         scopeFlag = rest[index + 1];
         index += 1;
         if (scopeFlag === void 0 || scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else if (arg !== void 0 && arg.startsWith("--scope=")) {
         scopeFlag = arg.slice("--scope=".length);
         if (scopeFlag.trim().length === 0) {
-          stderr.write(holdsUsage);
+          stderr.write("--scope requires a non-empty value\n");
           return 2;
         }
       } else {
-        stderr.write(holdsUsage);
+        stderr.write(`${arg?.startsWith("-") ? "Unknown option" : "Unexpected argument"} for ensemble holds: ${arg}
+`);
         return 2;
       }
     }
     if (all && scopeFlag !== void 0) {
-      stderr.write(holdsUsage);
+      stderr.write("--scope and --all cannot be used together\n");
       return 2;
     }
     const scope = scopeFlag ?? (all ? null : resolveHoldScope(void 0, env));

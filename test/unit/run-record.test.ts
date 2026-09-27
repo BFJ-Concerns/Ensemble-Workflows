@@ -352,7 +352,8 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   assert.ok(manifestRelative);
   const manifest = JSON.parse(
     await readFile(path.join(store, "runs", "cwd", manifestRelative), "utf8")
-  ) as { concurrency: unknown };
+  ) as { concurrency: unknown; agent_ceiling?: unknown };
+  assert.equal(Object.hasOwn(manifest, "agent_ceiling"), false);
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: 4, layer: "env" },
     engines: {
@@ -361,6 +362,99 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
       opencode: { value: 5, layer: "config-file" }
     }
   });
+});
+
+test("a dispatched worker with no usage has an unresolved roll-up reason", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-empty-rollup-"));
+  try {
+    const start = (runUuid: string) => RunRecordWriter.start({
+      storeDir: scratch,
+      cwd: process.cwd(),
+      runUuid,
+      workflowPath: path.join(scratch, "workflow.js"),
+      workflowSource: "export const meta = { name: 'empty-rollup' };\nreturn true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    const empty = await start("no-worker");
+    await empty.finish({ status: "complete", exitCode: 0, result: true });
+    const emptyManifest = JSON.parse(await readFile(path.join(empty.archiveDir, "manifest.json"), "utf8")) as {
+      cost_rollup: unknown;
+    };
+    assert.deepEqual(emptyManifest.cost_rollup, {});
+
+    const writer = await start("cut-short-worker");
+    const worker = agentRecord(1, "codex", null, 0);
+    worker.status = "timed-out";
+    worker.attempts = [];
+    worker.terminationCause = { kind: "WorkflowTimeoutError", message: "run deadline elapsed" };
+    await writer.recordAgent(worker);
+    await writer.finish({ status: "timed-out", exitCode: 1, result: null });
+    const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+      cost_rollup: Record<string, Record<string, unknown>>;
+    };
+    assert.deepEqual(manifest.cost_rollup.codex?.unresolved, { unavailable: "no-usage-reported" });
+
+    const attempted = await start("attempt-without-usage");
+    const attempt = agentRecord(1, "codex", null, 0);
+    attempt.attempts[0]!.status = "failed";
+    attempt.attempts[0]!.tokenUsageEvents = [];
+    await attempted.recordAgent(attempt);
+    await attempted.finish({ status: "failed", exitCode: 1, result: null });
+    const attemptedManifest = JSON.parse(
+      await readFile(path.join(attempted.archiveDir, "manifest.json"), "utf8")
+    ) as { cost_rollup: Record<string, Record<string, unknown>> };
+    assert.deepEqual(attemptedManifest.cost_rollup.codex?.unresolved, { unavailable: "no-usage-reported" });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a standalone bundle does not attribute the workflow checkout to its own build", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-build-identity-"));
+  try {
+    const bundle = path.join(scratch, "ensemble.mjs");
+    await writeFile(bundle, await readFile("skills/ensemble-workflow/Base/scripts/ensemble.mjs"));
+    const workflow = path.join(scratch, "workflow.js");
+    await writeFile(workflow, "export const meta = { name: 'build-identity' };\nreturn true;\n");
+    await execFileAsync(process.execPath, [bundle, workflow], {
+      cwd: process.cwd(),
+      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: path.join(scratch, "records"), XDG_CONFIG_HOME: scratch }
+    });
+    const manifest = JSON.parse(await readFile(await findManifest(path.join(scratch, "records")), "utf8")) as {
+      harness: { commit: string | null; commit_unavailable: string | null };
+    };
+    assert.deepEqual(
+      { commit: manifest.harness.commit, commit_unavailable: manifest.harness.commit_unavailable },
+      { commit: null, commit_unavailable: "bundle-has-no-embedded-commit" }
+    );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("an empty tallies object explains that the script recorded no counts", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-tallies-state-"));
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: scratch,
+      cwd: process.cwd(),
+      runUuid: "tallies-state",
+      workflowPath: path.join(scratch, "workflow.js"),
+      workflowSource: "export const meta = { name: 'tallies-state' };\nreturn true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false }
+    });
+    const read = async () => JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+      tallies: Record<string, number>;
+      tallies_unavailable: string | null;
+    };
+    assert.deepEqual([(await read()).tallies, (await read()).tallies_unavailable], [{}, "none-recorded"]);
+    await writer.recordTally("accepted", 0);
+    assert.deepEqual([(await read()).tallies, (await read()).tallies_unavailable], [{ accepted: 0 }, null]);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("files table hashes artefacts and cost roll-up stays per engine and per model", async () => {

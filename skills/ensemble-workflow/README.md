@@ -382,7 +382,8 @@ material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
 `"interrupted"`, `"incomplete"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
 `abandonment` (present on reaped manifests only), `tallies` (`name -> number`,
 the counts the script recorded through `tally()`, last write per name
-winning), `started_at`/`ended_at` (ISO;
+winning), `tallies_unavailable` (`"none-recorded"` while empty, otherwise
+`null`), `started_at`/`ended_at` (ISO;
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
 and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
@@ -392,7 +393,9 @@ auditable shape as `concurrency`),
 `git` (start/end HEAD, dirty flag, diff path; all-`null` outside a git
 repository), `environment` (OS arch/platform/
 release, Node version, tool versions for claude/codex/git/opencode), `harness`
-(package name, version, git commit), `result` (archive path, exit code),
+(package name, version, git commit, and `commit_unavailable` when a bundle
+has no embedded commit or a checkout HEAD cannot be read), `result` (archive
+path, exit code),
 `error` (`{ kind, message }` or `null` — what ended the run; the source
 repository's root README under *Run record schema* has the full description),
 `cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
@@ -400,6 +403,12 @@ path, size, SHA-256 for each archived artefact; the manifest itself is excluded)
 `integrity` (`manifest_sha256` self-digest, `files_lost` entries; the source
 repository's root README under *Run record schema* has the canonical
 semantics).
+
+The effective agent ceiling is `concurrency.agent_ceiling`; no top-level
+`agent_ceiling` appears in the manifest. A dispatched worker with no usage
+observation gets a reason-bearing `cost_rollup` bucket under its engine and
+served model, or `unresolved` when no served model was learned. A run that
+dispatched no worker keeps an empty roll-up.
 
 ### Agent record (`agents/<id>/agent.json`)
 

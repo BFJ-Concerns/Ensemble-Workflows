@@ -14753,8 +14753,9 @@ var RunRecordWriter = class _RunRecordWriter {
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
     await mkdir(archiveDir, { recursive: true });
-    const harnessRoot = await findHarnessRoot() ?? options.cwd;
-    const packageInfo = await readPackageInfo(harnessRoot);
+    const harnessRoot = await findHarnessRoot();
+    const packageInfo = await readPackageInfo(harnessRoot ?? path3.dirname(fileURLToPath2(import.meta.url)));
+    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
     const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
     const canonicalArgs = canonicalJson(options.args);
     const writer = new _RunRecordWriter(archiveDir, options.cwd, {
@@ -14809,7 +14810,8 @@ var RunRecordWriter = class _RunRecordWriter {
       harness: {
         package_name: packageInfo.name,
         package_version: packageInfo.version,
-        commit: await git(["rev-parse", "HEAD"], harnessRoot)
+        commit: harnessCommit,
+        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
       },
       result: {
         archive_path: null,
@@ -14834,6 +14836,7 @@ var RunRecordWriter = class _RunRecordWriter {
       ],
       hold_events: [],
       tallies: {},
+      tallies_unavailable: "none-recorded",
       cost_rollup: {},
       files: [],
       integrity: {
@@ -14960,6 +14963,7 @@ var RunRecordWriter = class _RunRecordWriter {
         return;
       }
       Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      this.manifest.tallies_unavailable = null;
       await this.#writeManifest();
     });
   }
@@ -15209,16 +15213,24 @@ function agentUsage(record) {
 function buildCostRollup(records) {
   const rollup = {};
   const accumulators = /* @__PURE__ */ new Map();
+  const noteAbsentUsage = (engine, model) => {
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
+  };
   for (const record of records) {
+    if (record.attempts.length === 0) {
+      noteAbsentUsage(record.engine, "unresolved");
+    }
     const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
     for (const attempt of record.attempts) {
       const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      if (summary === null) {
-        continue;
-      }
       const borrowed = engine === lastReporter ? record.resolvedModel : null;
       const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
+      if (summary === null) {
+        noteAbsentUsage(engine, model);
+        continue;
+      }
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
       const key = `${engine}\0${model}`;
@@ -15228,7 +15240,7 @@ function buildCostRollup(records) {
         addProviderCost(accumulator, event);
       }
       rollup[engine][model] = {
-        tokens: existing === void 0 ? summary : addUsageSummary(existing.tokens, summary),
+        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
         cost: publishedCost(accumulator)
       };
     }

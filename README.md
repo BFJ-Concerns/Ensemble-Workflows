@@ -455,7 +455,8 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `concurrency`: the effective agent ceiling and per-engine caps —
   `agent_ceiling` as `Resolved<number | null>`, `engines` as a partial map of
   engine name to `Resolved<number>` — each recording the value and the layer
-  that supplied it (`flag`, `env`, `config-file`, or `default`).
+  that supplied it (`flag`, `env`, `config-file`, or `default`). The manifest
+  has no separate top-level agent ceiling.
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }` naming the
   layer that won — the same auditable shape as `concurrency` (both settings
@@ -475,10 +476,16 @@ The manifest is `manifest.json`. Its top-level fields are:
   `tally` hook, stored verbatim (last write per name wins) and present in
   the manifest from the moment each is recorded — a count recorded before
   the run ended is in the archive whether or not the run finished cleanly.
+  `tallies_unavailable` is `"none-recorded"` while the map is empty and
+  `null` once the script records a count, including zero.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
   all-`null` outside a git repository.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
+  `commit_unavailable` is `null` when the commit is known; a standalone
+  bundle carries `"bundle-has-no-embedded-commit"`, and a checkout whose
+  HEAD cannot be read carries `"git-head-unavailable"`. The workflow's
+  checkout is never substituted for the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
 - `error`: the `{ kind, message }` of whatever ended the run — a script fault,
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
@@ -495,6 +502,9 @@ The manifest is `manifest.json`. Its top-level fields are:
   `{ "unavailable": "unlike-currencies" }` where the attempts under one served
   model reported spend in currencies that cannot be added. The reason is stated
   rather than an amount-less entry a consumer cannot tell from zero. Each
+  dispatched engine/model with no usage observation has
+  `{ "unavailable": "no-usage-reported" }` instead of a zero-token summary;
+  a run with no dispatched worker keeps an empty roll-up. Each
   `tokens` object uses one declared vocabulary: `freshInputTokens` (uncached
   input), `cachedInputTokens` (the combined cache figure for admission and
   total reconciliation, not a pricing class when it combines reads and writes;

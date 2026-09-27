@@ -561,6 +561,9 @@ test("a raise carries the run's identity card, and the archive's answered event 
     ids.slice(4, 6).forEach((id) => runtime.progress.settleAgent(id, "failed"));
     try {
       const first = runtime.raiseHold({ content: "merge?", verdicts: ["yes", "no"] });
+      // A failing assertion closes the runtime, rejecting this wait: keep that
+      // teardown rejection from masking the assertion's own failure.
+      first.catch(() => undefined);
       const record = await publishedHold(dir);
       // Captured at raise from the raising runtime itself, display-only.
       assert.deepEqual(record.run_identity, {

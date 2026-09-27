@@ -99,7 +99,11 @@ any worker spawns.
   that a pre-spawn author error — a rejected `agent()` option, a malformed
   schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
   arguments, a nesting violation — propagates and fails the run. The
-  documented route for telling a failed leg from one that legitimately
+  option check names every invalid option found on one call. A schema object
+  that refers to itself is refused with the cycle's location before dispatch;
+  recursive JSON Schema `$ref` values that compile remain accepted, while a
+  ref-only cycle that overflows compilation is named as a cycle. The documented route for
+  telling a failed leg from one that legitimately
   answered `null` is `identity: true`: an identified call resolves
   `{ label, phase, output, failure }`, and `failure` is `null` exactly when
   the worker's own settlement completed — a collapse (a dispatched worker's

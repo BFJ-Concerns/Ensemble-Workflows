@@ -12,7 +12,7 @@ import {
   runWorkflowScript
 } from "../../src/script-runner.js";
 import { TokenBudget } from "../../src/budget.js";
-import { FallbackTargetRejectedError, OpenCodeModelNotRegisteredError, TallyRejectedError } from "../../src/errors.js";
+import { CyclicAgentSchemaError, FallbackTargetRejectedError, InvalidAgentOptionsError, OpenCodeModelNotRegisteredError, TallyRejectedError } from "../../src/errors.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 
@@ -33,6 +33,49 @@ const runtime: WorkflowRuntime = {
   agent: (async (prompt: string) => `agent:${prompt}`) as unknown as WorkflowRuntime["agent"],
   notePhase: () => {}
 };
+
+test("pre-spawn validation errors pass through combinators and real agent() calls name every fault", async () => {
+  const validationRuntime = new EnsembleRuntime({ transport: {} as never, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const fixture = (body: string) => runWorkflowScript({ filename: "validation.js", runtime: validationRuntime, log: () => {}, source: `export const meta = { name: "validation" };\n${body}` });
+  await assert.rejects(
+    fixture('return await parallel([() => agent("go", { engine: "codex", mystery: true, identity: "yes", effort: "extreme" })]);'),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionsError);
+      assert.match(error.message, /Unrecognised agent\(\) option "mystery"/);
+      assert.match(error.message, /Invalid agent\(\) option "identity" value "yes"/);
+      assert.match(error.message, /Invalid agent\(\) option "effort" value "extreme"/);
+      return true;
+    }
+  );
+  await assert.rejects(
+    fixture('const schema = { type: "object" }; schema.self = schema; return await pipeline([1], () => agent("go", { engine: "codex", schema }));'),
+    (error: unknown) => {
+      assert.ok(error instanceof CyclicAgentSchemaError);
+      assert.match(error.message, /cycle at #\/self \(back to #\)/);
+      return true;
+    }
+  );
+  await assert.rejects(
+    fixture('const schema = { type: "object", properties: { child: { $ref: "#/$defs/a" } }, $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } } }; return await parallel([() => agent("go", { engine: "codex", schema })]);'),
+    (error: unknown) => {
+      assert.ok(error instanceof CyclicAgentSchemaError);
+      assert.match(error.message, /\$ref cycle at #\/\$defs\/b\/\$ref/);
+      return true;
+    }
+  );
+});
+
+test("concrete validation classes propagate unchanged through a combinator", async () => {
+  const optionError = new InvalidAgentOptionsError([]);
+  const cycleError = new CyclicAgentSchemaError("#/self", "#");
+  for (const error of [optionError, cycleError]) {
+    const refusingRuntime: WorkflowRuntime = { ...runtime, agent: (async () => { throw error; }) as WorkflowRuntime["agent"] };
+    await assert.rejects(
+      runWorkflowScript({ filename: "pass-through.js", runtime: refusingRuntime, log: () => {}, source: 'export const meta = { name: "pass-through" }; return await parallel([() => agent("go", { engine: "codex" })]);' }),
+      (caught: unknown) => caught === error
+    );
+  }
+});
 
 test("runs a script with hooks as globals and captures its return value", async () => {
   const logs: string[] = [];

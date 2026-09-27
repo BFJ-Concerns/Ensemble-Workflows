@@ -14425,6 +14425,11 @@ var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
     );
   }
 };
+var InvalidAgentOptionsError = class extends AgentOptionRejectedError {
+  constructor(errors) {
+    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+  }
+};
 var UnreadableAgentOptionError = class extends AgentOptionRejectedError {
   constructor(option, expected, cause) {
     super(
@@ -14439,6 +14444,11 @@ var InvalidAgentSchemaError = class extends AgentOptionRejectedError {
       `agent schema does not compile as JSON Schema: ${message}${renderOffendingSchema(options?.offending)}`,
       options
     );
+  }
+};
+var CyclicAgentSchemaError = class extends InvalidAgentSchemaError {
+  constructor(location, firstSeenAt, kind = "object") {
+    super(kind === "object" ? `object-reference cycle at ${location} (back to ${firstSeenAt}); replace the object link with a JSON Schema $ref` : `JSON Schema $ref cycle at ${location} (back to ${firstSeenAt}); make a reference lead through a concrete schema constraint`);
   }
 };
 function renderOffendingSchema(offending) {
@@ -15723,9 +15733,6 @@ function snapshotAgentCwd(options) {
   } catch (error) {
     throw new UnreadableAgentOptionError("cwd", "a string path", error);
   }
-  if (cwd !== void 0 && typeof cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
-  }
   return new Proxy(options, {
     get(target, property, receiver) {
       return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
@@ -15733,30 +15740,55 @@ function snapshotAgentCwd(options) {
   });
 }
 function assertValidAgentOptions(options) {
+  const errors = [];
+  const collect = (check) => {
+    try {
+      check();
+    } catch (error) {
+      if (!(error instanceof AgentOptionRejectedError)) {
+        throw error;
+      }
+      errors.push(error);
+    }
+  };
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
-      throw new RemovedAgentOptionError(key);
-    }
-    if (!AGENT_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+      errors.push(new RemovedAgentOptionError(key));
+    } else if (!AGENT_OPTION_KEY_SET.has(key)) {
+      errors.push(new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS));
     }
   }
   const values = options;
-  if (values.isolation !== void 0 && values.isolation !== "worktree") {
-    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-  }
+  collect(() => {
+    if (values.cwd !== void 0 && typeof values.cwd !== "string") {
+      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+    }
+  });
+  collect(() => {
+    if (values.isolation !== void 0 && values.isolation !== "worktree") {
+      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+    }
+  });
   if (values.engine !== "opencode") {
-    assertCanonicalEffortSupported(values.effort);
+    collect(() => assertCanonicalEffortSupported(values.effort));
   }
-  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
-  assertPositiveIntegerOption(values, "maxAttempts");
-  if (values.identity !== void 0 && typeof values.identity !== "boolean") {
-    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-  }
+  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
+  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
+  collect(() => {
+    if (values.identity !== void 0 && typeof values.identity !== "boolean") {
+      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+    }
+  });
   if (values.strip !== void 0) {
-    assertValidStripOption(values.strip);
+    collect(() => assertValidStripOption(values.strip));
   }
-  assertValidFallbackChain(values.fallback);
+  collect(() => assertValidFallbackChain(values.fallback));
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 0) {
+    throw new InvalidAgentOptionsError(errors);
+  }
 }
 var WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
@@ -20214,11 +20246,18 @@ function validateJsonSchema(value, schema) {
   return { ok, value, errors: validate.errors };
 }
 function assertCompilableSchema(schema) {
+  assertAcyclicSchemaObject(schema);
   try {
     compileSchema(schema);
   } catch (error) {
     if (error instanceof InvalidAgentSchemaError) {
       throw error;
+    }
+    if (error instanceof RangeError) {
+      const cycle = findLocalReferenceCycle(schema);
+      if (cycle !== null) {
+        throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
+      }
     }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
       cause: error,
@@ -20226,8 +20265,65 @@ function assertCompilableSchema(schema) {
     });
   }
 }
+function findLocalReferenceCycle(schema) {
+  const seenObjects = /* @__PURE__ */ new Set();
+  const visit = (value, path14) => {
+    if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
+    seenObjects.add(value);
+    const object = value;
+    if (typeof object.$ref === "string") {
+      const seenRefs = /* @__PURE__ */ new Set([path14]);
+      let current2 = object;
+      let currentPath = path14;
+      while (typeof current2.$ref === "string") {
+        const targetPath = current2.$ref;
+        const target = localPointerTarget(schema, targetPath);
+        if (target === null) break;
+        if (seenRefs.has(targetPath)) return { at: `${currentPath}/$ref`, back: targetPath };
+        seenRefs.add(targetPath);
+        current2 = target;
+        currentPath = targetPath;
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      const cycle = visit(child, `${path14}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      if (cycle !== null) return cycle;
+    }
+    return null;
+  };
+  return visit(schema, "#");
+}
+function localPointerTarget(schema, pointer) {
+  if (pointer === "#") return asJsonObject2(schema);
+  if (!pointer.startsWith("#/")) return null;
+  let current2 = schema;
+  for (const encoded of pointer.slice(2).split("/")) {
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current2 !== "object" || current2 === null || !Object.hasOwn(current2, key)) return null;
+    current2 = current2[key];
+  }
+  return asJsonObject2(current2);
+}
 function normaliseForCodexOutputSchema(schema) {
+  assertAcyclicSchemaObject(schema);
   return normaliseSchemaNode(schema);
+}
+function assertAcyclicSchemaObject(schema) {
+  const active = /* @__PURE__ */ new Map();
+  const visited = /* @__PURE__ */ new Set();
+  const walk = (value, path14) => {
+    if (typeof value !== "object" || value === null) return;
+    const firstSeenAt = active.get(value);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path14, firstSeenAt);
+    if (visited.has(value)) return;
+    active.set(value, path14);
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, `${path14}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+    }
+    active.delete(value);
+    visited.add(value);
+  };
+  walk(schema, "#");
 }
 function compileSchema(schema) {
   return compilerFor(schema).compile(schema);

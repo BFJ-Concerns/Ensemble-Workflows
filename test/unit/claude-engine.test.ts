@@ -460,7 +460,7 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
         ) as {
           status: string;
           usage: { summary?: { totalTokens: number } };
-          transcripts: Array<{ path: string }>;
+          transcripts: Array<{ path: string; partial: boolean }>;
           attempts: Array<{
             raw_output: string | null;
             resolved_model: string | null;
@@ -472,6 +472,7 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
         assert.equal(attempt?.raw_output, "partial from Claude");
         assert.equal(attempt?.resolved_model, "claude-served");
         assert.equal(archived.transcripts.length, 1);
+        assert.equal(archived.transcripts[0]?.partial, true);
         assert.match(
           await readFile(path.join(writer.archiveDir, archived.transcripts[0]!.path), "utf8"),
           /partial from Claude/
@@ -832,7 +833,8 @@ test("a failed correction does not attach text from the previous turn", async ()
         assert.equal(result, null);
         const settledRecord = records.at(-1);
         assert.equal(settledRecord?.attempts[0]?.rawOutput, "stale previous answer");
-        assert.equal(settledRecord?.attempts[1]?.rawOutput, "");
+        // The failed correction produced no output: `null`, not an empty answer.
+        assert.equal(settledRecord?.attempts[1]?.rawOutput, null);
       } finally {
         await runtime.close();
       }
@@ -1250,9 +1252,10 @@ test("a client diagnostic in place of a model reply is archived as a failure, no
         assert.equal(settled?.validatedOutput, null);
         // The diagnostic is the failure's message and nothing else. A cold
         // consumer reading raw_output must not find an API error string
-        // sitting where the worker's own text belongs.
-        assert.equal(settled?.rawOutput, "");
-        assert.equal(settled?.attempts[0]?.rawOutput, "");
+        // sitting where the worker's own text belongs; no output was produced,
+        // which the archive encodes as `null`.
+        assert.equal(settled?.rawOutput, null);
+        assert.equal(settled?.attempts[0]?.rawOutput, null);
       } finally {
         await runtime.close();
       }
@@ -1362,7 +1365,7 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
         // The diagnostic stays a failure and the placeholder stays no model:
         // retaining the evidence reclassifies nothing.
         assert.equal(records.at(-1)?.resolvedModel, null);
-        assert.equal(attempt?.rawOutput, "");
+        assert.equal(attempt?.rawOutput, null);
       } finally {
         await runtime.close();
       }

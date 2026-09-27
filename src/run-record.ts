@@ -27,9 +27,9 @@ const execFileAsync = promisify(execFile);
 /**
  * 4 (2026-09-04): the agent record's `fallback_model` is replaced by the
  * declared `fallback` chain and the `answered_by` target; every attempt
- * carries its `target` and, when failed, its `classification`; the
- * manifest gains script-recorded `tallies`. A breaking shape change on
- * the agent record, so the version moves.
+ * carries its `target` and, when failed, its `classification`;
+ * the manifest gains script-recorded `tallies`. A breaking shape
+ * change on the agent record, so the version moves.
  */
 const SCHEMA_VERSION = 4;
 const MANIFEST_PATH = "manifest.json";
@@ -104,8 +104,8 @@ export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
   /**
-   * The target this attempt was dispatched to: the call's own engine and
-   * model until the chain advances, then the entry it advanced to. The
+   * The target this attempt was dispatched to: the call's own engine
+   * and model until the chain advances, then the entry it advanced to. The
    * model is the *requested* pin (null when the call left it unpinned);
    * `resolvedModel` beside it is what the engine served.
    */
@@ -432,6 +432,7 @@ interface Manifest {
     package_name: string;
     package_version: string;
     commit: string | null;
+    commit_unavailable: "bundle-has-no-embedded-commit" | "git-head-unavailable" | null;
   };
   result: {
     archive_path: string | null;
@@ -465,7 +466,8 @@ interface Manifest {
    * validates the shape and knows nothing of the meaning.
    */
   tallies: Record<string, number>;
-  cost_rollup: Record<string, Record<string, UsageRollup>>;
+  tallies_unavailable: "none-recorded" | null;
+  cost_rollup: Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>>;
   files: FileEntry[];
   integrity: ManifestIntegrity;
 }
@@ -587,8 +589,11 @@ export class RunRecordWriter {
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
     await mkdir(archiveDir, { recursive: true });
 
-    const harnessRoot = (await findHarnessRoot()) ?? options.cwd;
-    const packageInfo = await readPackageInfo(harnessRoot);
+    const harnessRoot = await findHarnessRoot();
+    const packageInfo = await readPackageInfo(harnessRoot ?? path.dirname(fileURLToPath(import.meta.url)));
+    // A standalone bundle has no checkout beside it. The workflow's cwd is
+    // not the product's source and must never be reported as its commit.
+    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
     const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
     const canonicalArgs = canonicalJson(options.args);
     const writer = new RunRecordWriter(archiveDir, options.cwd, {
@@ -643,7 +648,10 @@ export class RunRecordWriter {
       harness: {
         package_name: packageInfo.name,
         package_version: packageInfo.version,
-        commit: await git(["rev-parse", "HEAD"], harnessRoot)
+        commit: harnessCommit,
+        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null
+          ? "bundle-has-no-embedded-commit"
+          : "git-head-unavailable"
       },
       result: {
         archive_path: null,
@@ -668,6 +676,7 @@ export class RunRecordWriter {
       ],
       hold_events: [],
       tallies: {},
+      tallies_unavailable: "none-recorded",
       cost_rollup: {},
       files: [],
       integrity: {
@@ -819,6 +828,7 @@ export class RunRecordWriter {
       // of `__proto__` would invoke the inherited setter and record nothing,
       // so the count is always defined as an own enumerable property.
       Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      this.manifest.tallies_unavailable = null;
       await this.#writeManifest();
     });
   }
@@ -862,6 +872,7 @@ export class RunRecordWriter {
           path: relativePath,
           format: transcript.format,
           source: transcript.source,
+          partial: transcript.partial === true,
           thread_id: transcript.threadId ?? null,
           session_id: transcript.sessionId ?? null
         });
@@ -1088,9 +1099,9 @@ export class RunRecordWriter {
 
 /**
  * Why an agent record carries no transcript, in the same vocabulary shape as
- * `usage.unavailable`: the worker never ran, the runtime ended it before a
- * transcript existed, the Codex session client did not retain a follow-up
- * capture, or its engine produced none for the attempts that ran.
+ * `usage.unavailable`: no attempt ran, every substrate refused before a
+ * worker existed, the runtime ended the turn before a transcript existed,
+ * the Codex session client lost capture, or an engine produced no transcript.
  */
 function transcriptAbsenceReason(
   record: RuntimeAgentRecord
@@ -1099,9 +1110,15 @@ function transcriptAbsenceReason(
   | "worker-interrupted"
   | "worker-timed-out"
   | "session-client-capture-gap"
-  | "engine-produced-no-transcript" {
+  | "engine-produced-no-transcript"
+  | "substrate-never-started" {
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
+  }
+  if (record.attempts.every((attempt) =>
+    attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
   }
   if (record.status === "interrupted") {
     return "worker-interrupted";
@@ -1118,8 +1135,8 @@ function transcriptAbsenceReason(
 function agentUsage(
   record: RuntimeAgentRecord
 ): { summary: UsageSummary } | { unavailable: "no-attempt-ran" | "engine-reported-no-usage" } {
-  // Summed attempt by attempt under each attempt's own engine: a fallback
-  // chain can put one agent's attempts on two engines, and each engine's
+  // Summed attempt by attempt under each attempt's own engine: a chain
+  // can put one agent's attempts on two engines, and each engine's
   // native usage is read by its own inclusion rule before the summaries
   // fold together in the declared vocabulary.
   let summary: UsageSummary | null = null;
@@ -1135,15 +1152,24 @@ function agentUsage(
   return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
 }
 
-function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<string, UsageRollup>> {
-  const rollup: Record<string, Record<string, UsageRollup>> = {};
+function buildCostRollup(
+  records: RuntimeAgentRecord[]
+): Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>> {
+  const rollup: Record<string, Record<string, UsageRollup | { unavailable: "no-usage-reported" }>> = {};
   // Cost is accumulated separately from the published shape because the
   // published shape is a statement, not a running total: a bucket that never
   // sees a provider-reported figure must publish the reason rather than a
   // zero, and one that sees unlike currencies must publish that reason
   // rather than a cross-currency sum.
   const accumulators = new Map<string, CostAccumulator>();
+  const noteAbsentUsage = (engine: EngineName, model: string): void => {
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
+  };
   for (const record of records) {
+    if (record.attempts.length === 0) {
+      noteAbsentUsage(record.engine, "unresolved");
+    }
     // Spend is keyed under the engine and model that actually served each
     // attempt's turns — attempts can resolve different served models (a
     // retry opens a fresh thread) and, under a fallback chain,
@@ -1151,8 +1177,8 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     // the agent-level answer and then to the literal "unresolved". Never
     // the requested pin: a rollup label is a claim about what ran, not
     // about what was asked for. A no-event attempt adds no bucket —
-    // the agent's own record says why (its `usage.unavailable` reason); a
-    // zero bucket would read as zero spend, which is a different claim.
+    // an unavailable bucket states that no usage was observed; a zero token
+    // summary would claim a measurement that never happened.
     // An attempt that reported no served model of its own may borrow the
     // agent-level answer only when that answer came from its own engine:
     // the agent-level field is last-write-wins across attempts, and under
@@ -1162,11 +1188,12 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
     for (const attempt of record.attempts) {
       const engine = attempt.target.engine;
       const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      if (summary === null) {
-        continue;
-      }
       const borrowed = engine === lastReporter ? record.resolvedModel : null;
       const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
+      if (summary === null) {
+        noteAbsentUsage(engine, model);
+        continue;
+      }
       rollup[engine] ??= {};
       const existing = rollup[engine][model];
       const key = `${engine}\u0000${model}`;
@@ -1176,7 +1203,7 @@ function buildCostRollup(records: RuntimeAgentRecord[]): Record<string, Record<s
         addProviderCost(accumulator, event);
       }
       rollup[engine][model] = {
-        tokens: existing === undefined ? summary : addUsageSummary(existing.tokens, summary),
+        tokens: existing === undefined || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
         cost: publishedCost(accumulator)
       };
     }

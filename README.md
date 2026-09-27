@@ -103,7 +103,11 @@ any worker spawns.
   that a pre-spawn author error — a rejected `agent()` option, a malformed
   schema, an unresolvable `workflow()` reference, non-JSON `workflow()`
   arguments, a nesting violation — propagates and fails the run. The
-  documented route for telling a failed leg from one that legitimately
+  option check names every invalid option found on one call. A schema object
+  that refers to itself is refused with the cycle's location before dispatch;
+  recursive JSON Schema `$ref` values that compile remain accepted, while a
+  ref-only cycle that overflows compilation is named as a cycle. The documented route for
+  telling a failed leg from one that legitimately
   answered `null` is `identity: true`: an identified call resolves
   `{ label, phase, output, failure }`, and `failure` is `null` exactly when
   the worker's own settlement completed — a collapse (a dispatched worker's
@@ -459,7 +463,8 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `concurrency`: the effective agent ceiling and per-engine caps —
   `agent_ceiling` as `Resolved<number | null>`, `engines` as a partial map of
   engine name to `Resolved<number>` — each recording the value and the layer
-  that supplied it (`flag`, `env`, `config-file`, or `default`).
+  that supplied it (`flag`, `env`, `config-file`, or `default`). The manifest
+  has no separate top-level agent ceiling.
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }` naming the
   layer that won — the same auditable shape as `concurrency` (both settings
@@ -481,14 +486,26 @@ The manifest is `manifest.json`. Its top-level fields are:
   `tally` hook, stored verbatim (last write per name wins) and present in
   the manifest from the moment each is recorded — a count recorded before
   the run ended is in the archive whether or not the run finished cleanly.
+  `tallies_unavailable` is `"none-recorded"` while the map is empty and
+  `null` once the script records a count, including zero.
 - `git`: start/end HEAD, dirty flag, and archived diff path when dirty;
   all-`null` outside a git repository.
 - `environment`: OS, Node, and available tool versions.
 - `harness`: package name/version and git commit of the harness checkout.
+  `commit_unavailable` is `null` when the commit is known; a standalone
+  bundle carries `"bundle-has-no-embedded-commit"`, and a checkout whose
+  HEAD cannot be read carries `"git-head-unavailable"`. The workflow's
+  checkout is never substituted for the harness checkout.
 - `result`: archived `result.json` path and exit code once final.
 - `error`: the `{ kind, message }` of whatever ended the run — a script fault,
   an unknown engine, a budget refusal, a whole-run timeout — or `null` when the
-  run ended cleanly. Present on both the manifest and `result.json`.
+  run ended cleanly. Present on both the manifest and `result.json`. A budget
+  refusal at a ceiling of 0 reads `Token budget for <engine> is 0, which admits
+  no agent: this agent was not started`; a spent ceiling reads `Token budget
+  exhausted for <engine>: spent N of M tokens`. A Codex schema rejection
+  recorded on an agent attempt's `failure.message` names `claude` and
+  `opencode` as the engines to move to and carries the app-server diagnostic
+  once — the payload's echo of the message reads `"(the diagnostic above)"`.
 - `cost_rollup`: `engine -> model -> usage`, never a cross-engine total. Spend
   keys under each attempt's *own target engine* and *served* model — an agent
   whose fallback chain advanced across engines books each attempt under the
@@ -501,6 +518,9 @@ The manifest is `manifest.json`. Its top-level fields are:
   `{ "unavailable": "unlike-currencies" }` where the attempts under one served
   model reported spend in currencies that cannot be added. The reason is stated
   rather than an amount-less entry a consumer cannot tell from zero. Each
+  dispatched engine/model with no usage observation has
+  `{ "unavailable": "no-usage-reported" }` instead of a zero-token summary;
+  a run with no dispatched worker keeps an empty roll-up. Each
   `tokens` object uses one declared vocabulary: `freshInputTokens` (uncached
   input), `cachedInputTokens` (the combined cache figure for admission and
   total reconciliation, not a pricing class when it combines reads and writes;
@@ -573,7 +593,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `"session-client-capture-gap"` when no transcript was archived.
 - `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
 - `decode_failure`: `{ byte_length, line_prefix }` or `null`.
-- `raw_output`: final raw model text, or the latest raw failed output.
+- `raw_output`: final raw model text, or the latest raw failed output;
+  `null` means no output was produced, while `""` means the worker answered
+  with empty text.
 - `validated_output`: validated object/text result, or `null` on failure.
 - `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
   (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
@@ -605,10 +627,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   diagnostic stays in `failure`, `app_server_diagnostic`, and `diagnostics`
   beside it, never folded into a class. `null` on a complete attempt.
 - `transcripts`: array. Each entry: `attempt`, `path`, `format`, `source`,
-  `session_id`, `thread_id`; empty when none were archived.
+  `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
+  completion, otherwise `false`); empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
   the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
-  `"worker-timed-out"`, `"session-client-capture-gap"`, or
+  `"worker-timed-out"`, `"substrate-never-started"`, `"session-client-capture-gap"`, or
   `"engine-produced-no-transcript"`. The reason names an observed capture
   loss only when `transcript_capture` is `"lost"`; it does not infer one from
   a held session's turn number.

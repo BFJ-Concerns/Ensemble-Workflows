@@ -2972,7 +2972,7 @@ test("the durable surfaces name what ended a failed run, discriminating one caus
       name: "budget-refusal",
       source: `export const meta = { name: "cause-budget" };\nawait agent("hi", { engine: "codex" });`,
       kind: "BudgetExceededError",
-      message: /Token budget exhausted for codex/
+      message: /Token budget for codex is 0, which admits no agent/
     }
   ] as const;
 

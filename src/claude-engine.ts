@@ -948,7 +948,8 @@ function failedTurnResult(
               format: "jsonl" as const,
               source: "claude-session-jsonl",
               sessionId: evidence.handle.sessionId,
-              content: evidence.transcript.text
+              content: evidence.transcript.text,
+              partial: true
             }
           ]
         })

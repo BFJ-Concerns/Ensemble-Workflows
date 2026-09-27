@@ -229,6 +229,8 @@ Environment variables are `ENSEMBLE_AGENT_CEILING`,
 `ENSEMBLE_CONCURRENCY_CODEX`, `ENSEMBLE_CONCURRENCY_CLAUDE`,
 `ENSEMBLE_CONCURRENCY_OPENCODE`, `ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, and `ENSEMBLE_STATUS_DIR`.
+A malformed value is refused before the run starts, naming the variable, the
+accepted form, and the value it got.
 `ENSEMBLE_CALLER_IDENTITY` is separate from those runtime settings: when
 present, it records the invoking session's opaque identity in the manifest;
 an explicit `--caller-identity` wins. With neither, `caller_identity` is
@@ -382,7 +384,8 @@ material), `status` (`"in-progress"`, `"complete"`, `"failed"`, `"timed-out"`,
 `"interrupted"`, `"incomplete"`, `"abandoned"`), `owner` (`pid`, `start_ticks`, `host`),
 `abandonment` (present on reaped manifests only), `tallies` (`name -> number`,
 the counts the script recorded through `tally()`, last write per name
-winning), `started_at`/`ended_at` (ISO;
+winning), `tallies_unavailable` (`"none-recorded"` while empty, otherwise
+`null`), `started_at`/`ended_at` (ISO;
 `ended_at` `null` until final), `workflow` (path, archived file, SHA-256),
 `args` (envelope, canonical archive path, SHA-256), `meta` (raw workflow meta
 and `task`, or `null`), `cli_flags` (parsed run-tuning flags),
@@ -392,7 +395,9 @@ auditable shape as `concurrency`),
 `git` (start/end HEAD, dirty flag, diff path; all-`null` outside a git
 repository), `environment` (OS arch/platform/
 release, Node version, tool versions for claude/codex/git/opencode), `harness`
-(package name, version, git commit), `result` (archive path, exit code),
+(package name, version, git commit, and `commit_unavailable` when a bundle
+has no embedded commit or a checkout HEAD cannot be read), `result` (archive
+path, exit code),
 `error` (`{ kind, message }` or `null` — what ended the run; the source
 repository's root README under *Run record schema* has the full description),
 `cost_rollup`, `workflow_invocations`, `concurrency`, `files` (integrity table:
@@ -400,6 +405,12 @@ path, size, SHA-256 for each archived artefact; the manifest itself is excluded)
 `integrity` (`manifest_sha256` self-digest, `files_lost` entries; the source
 repository's root README under *Run record schema* has the canonical
 semantics).
+
+The effective agent ceiling is `concurrency.agent_ceiling`; no top-level
+`agent_ceiling` appears in the manifest. A dispatched worker with no usage
+observation gets a reason-bearing `cost_rollup` bucket under its engine and
+served model, or `unresolved` when no served model was learned. A run that
+dispatched no worker keeps an empty roll-up.
 
 ### Agent record (`agents/<id>/agent.json`)
 
@@ -417,6 +428,8 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `raw_output`, `validated_output`, `parse_route` (`"direct"`,
 `"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
 `usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`.
+For `raw_output`, `null` means no output was produced; `""` means the worker
+answered with empty text. The same meaning applies to attempt records.
 
 `attempts` is an array; each entry carries: `attempt` (1-based index over
 every dispatch the call made), `status`, `target` (`{ engine, model }` the
@@ -433,9 +446,11 @@ under its own `target.engine` and served model, so a chained agent's spend
 lands where it was spent.
 
 `transcripts` is an array; each entry carries: `attempt`, `path`, `format`,
-`source`, and engine-specific ids (`session_id`, `thread_id`).
+`source`, `partial` (`true` if its turn ended before completion, otherwise
+`false`), and engine-specific ids (`session_id`, `thread_id`).
 `transcripts_unavailable` is `null` when that array has entries; otherwise it
-names why it is empty.
+names why it is empty. `substrate-never-started` means every recorded attempt
+was refused before its worker existed.
 
 ## Script shape
 
@@ -673,7 +688,11 @@ Schemas are JSON Schema **draft-07** (the default when `$schema` is
 omitted) or **draft 2020-12** (declare
 `"$schema": "https://json-schema.org/draft/2020-12/schema"`). Any other
 declared dialect is rejected before a worker spawns, naming the supported
-dialects.
+dialects. A recursive `$ref` schema that compiles remains accepted; a ref-only
+cycle that the compiler cannot process is refused with its location. A JavaScript
+schema object with an object-reference cycle is also refused before dispatch,
+with its location and a remedy. If several `agent()` options are
+invalid, their names and reasons appear in one rejection.
 
 ## Programmatic runtime options
 
@@ -760,7 +779,7 @@ attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record with no retained transcript
 keeps `transcripts` as `[]` and carries the reason in
-`transcripts_unavailable` — `no-attempt-ran`, `worker-interrupted`,
+`transcripts_unavailable` — `no-attempt-ran`, `substrate-never-started`, `worker-interrupted`,
 `worker-timed-out`, `session-client-capture-gap` (the engine's capture path
 observed the turn's transcript lost — `transcript_capture` carries that
 observation as `retained`, `lost`, or `null` where nothing was observed, and
@@ -874,7 +893,9 @@ rejection itself is unchanged, invoking no engine.
   execution status is failed; `ensemble agent` uses that status to emit the
   failure envelope and exit 1. A malformed schema throws before the first
   attempt. Codex may additionally reject a schema outside its `outputSchema`
-  subset, with an error saying so.
+  subset, with an error saying so and naming `claude` and `opencode` as the
+  engines that validate the full JSON Schema client-side; the server's
+  diagnostic appears in the error once.
 
   On Claude and opencode the schema rides the prompt, and the worker is asked
   for a conforming JSON value while being allowed to surround it with prose or
@@ -916,7 +937,7 @@ rejection itself is unchanged, invoking no engine.
   `usageLimitExceeded`, `rateLimitExceeded`, `serverOverloaded`, a
   connection the provider refused, a dead or unstartable app-server;
   Claude's synthetic API-refusal reply carrying a 429, 503, or 529, a
-  `claude --bg` Claude Code refused — a refusal is
+  `claude --bg` Claude Code refused — the bullet below: a refusal is
   never a spent attempt — a dispatch the daemon never registered, a session
   that never showed life),
   `output` (empty, unparseable, off-schema), or `unclassified` (a deadline,
@@ -968,8 +989,8 @@ rejection itself is unchanged, invoking no engine.
   hanging or throwing, with the worker's partial text, exit evidence, and the
   engine's own diagnostic retained in the failed attempt record. A Codex turn
   deadline, first-output deadline, or a thread the app-server declared failed
-  is the same operational failure under the one retry rule: it consumes an
-  attempt and the call retries within its bound
+  is the same operational failure under the one retry rule (settled
+  2026-09-14): it consumes an attempt and the call retries within its bound
   with the failure carried into the next attempt's prompt, resolving `null`
   at exhaustion with every attempt on the record — a call whose deadline
   should end it sets `maxAttempts: 1`. The rule's one exemption is Codex's
@@ -1008,7 +1029,8 @@ rejection itself is unchanged, invoking no engine.
 - **Budget**: each `agent()` call checks the engine's ceiling once, at
   dispatch — synchronously at the `agent()` call site, before the worker
   enters the concurrency queue. Once spend reaches the ceiling, a
-  call that has not yet dispatched throws a budget-exhausted error. A call that
+  call that has not yet dispatched throws a budget-exhausted error (a ceiling
+  of 0 admits no call and says so, naming the ceiling to raise). A call that
   starts under the ceiling runs its full retry bound even if spend crosses
   the ceiling mid-call, so a worker's own failure is never rewritten as
   budget exhaustion by concurrent spend; turns already started can

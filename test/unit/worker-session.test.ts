@@ -7,6 +7,7 @@ import test from "node:test";
 import { ClaudeEngineAdapter, CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
   BudgetExceededError,
+  FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   MultiTurnUnsupportedError,
   SessionBusyError,
@@ -98,6 +99,17 @@ class ScriptedTransport implements RuntimeTransport {
 
   async close(): Promise<void> {}
 }
+
+test("an empty session fallback chain is rejected at creation before a worker spawns", async () => {
+  const transport = new ScriptedTransport([]);
+  const runtime = codexRuntime(transport);
+  assert.throws(
+    () => runtime.createWorkerSession({ engine: "codex", fallback: [] }),
+    (error: unknown) => error instanceof FallbackTargetRejectedError && /chain must not be empty/.test(error.message)
+  );
+  assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
 
 function codexRuntime(
   transport: RuntimeTransport,
@@ -844,7 +856,10 @@ test("a session's chain applies to the creating turn alone, and the answering ta
       assert.equal(controlPlane.dispatched[0]?.effort, "low");
       assert.equal(codexSessionClosed, 1, "the refused Codex session was closed on the advance");
       const turnOne = records.at(-1)!;
-      assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: "claude", model: "opus" });
+      // The entry that answered is named by `entry`; `model` is the served
+      // model the engine reported, and this scripted Claude turn reports none,
+      // so the record makes no claim from the target's requested pin.
+      assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: "claude", model: null });
       assert.deepEqual(
         turnOne.attempts.map((attempt) => [attempt.target.engine, attempt.target.model, attempt.classification?.class ?? null]),
         [

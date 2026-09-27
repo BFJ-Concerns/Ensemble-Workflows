@@ -1,4 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
+import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
@@ -8,7 +9,7 @@ import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
-import { defaultHoldsDirectory, enumerateHolds, resolveHoldScope } from "./holds.js";
+import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
 import { createRuntime } from "./index.js";
 import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeoutError } from "./script-runner.js";
@@ -91,7 +92,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         "workflows and holds list prose on stdout; holds --json lists JSON.\n" +
         "Help and version print text on stdout; diagnostics go to stderr.\n" +
         "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
-        "workflows (list saved workflows), holds (list open decision holds).\n" +
+        "workflows (list saved workflows), holds (list open decision holds), holds answer (answer one).\n" +
         "Each subcommand answers its own --help.\n"
     );
     return 0;
@@ -138,6 +139,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         "{ label, phase, output, failure }.\n"
     );
     return 0;
+  }
+
+  if (argv[0] === "holds" && argv[1] === "answer") {
+    return answerHoldCommand(argv.slice(2), env, stdout, stderr);
   }
 
   if (argv[0] === "holds") {
@@ -204,7 +209,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     if (json) {
       stdout.write(
         `${JSON.stringify({
-          holds: enumeration.holds.map((hold) => hold.record),
+          holds: enumeration.holds.map((hold) => ({ ...hold.record, state: holdListingState(hold.record) })),
           retired: enumeration.retired
         })}\n`
       );
@@ -221,9 +226,20 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     for (const hold of enumeration.holds) {
       const { record } = hold;
       stdout.write(
-        `${record.hold_id}\tscope ${record.scope ?? "(shared)"}\traised ${record.raised_at}` +
+        `${record.hold_id}\t${holdListingState(record)}\tscope ${record.scope ?? "(shared)"}\traised ${record.raised_at}` +
           `${record.timeout_at !== null ? `\ttimes out ${record.timeout_at}` : ""}\n`
       );
+      // The raising run's identity card, as of the raise: display-only.
+      const identity = record.run_identity;
+      if (identity !== undefined && identity !== null) {
+        stdout.write(
+          `  run:      ${identity.workflow ?? "(unnamed)"} · phase ${identity.phase ?? "(none)"} · ` +
+            `agents ${identity.totals.done} done, ${identity.totals.active} active, ${identity.totals.queued} queued, ${identity.totals.failed} failed (at raise)\n`
+        );
+        if (identity.archive_path !== null) {
+          stdout.write(`  archive:  ${identity.archive_path}\n`);
+        }
+      }
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}\n`);
       // A listed hold is answerable by construction: the enumeration retires
       // any whose raiser it can prove dead. The template spells a real
@@ -1033,6 +1049,16 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
 }
 
 async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+  for (const argument of argv) {
+    if (argument === "--") {
+      break;
+    }
+    if (optionName(argument) === "--fallback-model") {
+      throw new CliUsageError(
+        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+      );
+    }
+  }
   rejectMisplacedAgentTuningFlags(argv);
   rejectDuplicateScalarFlags(argv);
   let parsed;
@@ -1486,6 +1512,97 @@ function announceRunRecord(writer: RunRecordWriter, stderr: Writable): void {
   }
 }
 
+const HOLDS_ANSWER_USAGE =
+  "Usage: ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n" +
+  "Answers an open hold: writes the decision file the hold names (nonce copied from the hold),\n" +
+  "then reports what the raiser did with it, as one JSON object on stdout.\n" +
+  "The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\n" +
+  "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected — the hold keeps\n" +
+  "waiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\n" +
+  "cadence — the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\n" +
+  "settled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
+
+/**
+ * `ensemble holds answer`: a convenience writer of the same hand-writable
+ * decision file, reporting what the write produced under the protocol's
+ * settled-means-removed rule. Never claims acceptance it did not observe.
+ */
+async function answerHoldCommand(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream
+): Promise<number> {
+  if (args[0] === "--help" || args[0] === "-h") {
+    stdout.write(HOLDS_ANSWER_USAGE);
+    return 0;
+  }
+  let holdId: string | undefined;
+  let verdict: string | undefined;
+  let note: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string;
+    const flag = /^--(verdict|note)(?:=(.*))?$/s.exec(arg);
+    if (flag !== null) {
+      const value = flag[2] ?? args[++index];
+      if (value === undefined || (flag[1] === "verdict" && value.trim().length === 0)) {
+        stderr.write(HOLDS_ANSWER_USAGE);
+        return 2;
+      }
+      if (flag[1] === "verdict") {
+        verdict = value;
+      } else {
+        note = value;
+      }
+    } else if (holdId === undefined && !arg.startsWith("-") && arg.trim().length > 0) {
+      holdId = arg;
+    } else {
+      stderr.write(HOLDS_ANSWER_USAGE);
+      return 2;
+    }
+  }
+  if (holdId === undefined || verdict === undefined) {
+    stderr.write(HOLDS_ANSWER_USAGE);
+    return 2;
+  }
+  const answeredBy = resolveCallerIdentity(undefined, env) ?? `${hostname()}:${process.pid}`;
+  let result;
+  try {
+    result = await answerHold({
+      dir: defaultHoldsDirectory(env),
+      holdId,
+      verdict,
+      answeredBy,
+      ...(note !== undefined ? { note } : {})
+    });
+  } catch (error) {
+    stderr.write(`cannot answer hold ${holdId}: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}\n`);
+  switch (result.outcome) {
+    case "consumed":
+      stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
+      return 0;
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer — the stale decision file was removed\n`);
+      return 6;
+    case "bounced":
+      stderr.write(
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`
+      );
+      return 3;
+    case "not-consumed":
+      stderr.write(
+        `hold ${holdId}: answer written to ${result.decision_path} but not yet consumed after ${result.waited_ms}ms — not accepted yet\n`
+      );
+      return 4;
+    case "not-found":
+      stderr.write(`hold ${holdId}: no open hold with that id under ${defaultHoldsDirectory(env)}\n`);
+      return 5;
+  }
+}
+
 function usage(): string {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
@@ -1495,6 +1612,7 @@ function usage(): string {
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     "       ensemble holds [--json] [--scope <scope> | --all]",
+    "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]",
     ""
   ].join("\n");
 }

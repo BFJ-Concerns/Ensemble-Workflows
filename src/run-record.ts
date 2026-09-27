@@ -192,6 +192,8 @@ export interface DecodeFailureDiagnostic {
 export interface RuntimeAgentRecord {
   id: number;
   engine: EngineName;
+  /** The top-level engine, model, and effort describe the original request. */
+  headerIdentity: "original_request";
   /** The dispatched prompt, recorded before the engine is called. */
   prompt: string;
   /** Options as the runtime resolved them at dispatch (defaults applied). */
@@ -239,6 +241,7 @@ export interface RuntimeAgentRecord {
    */
   terminationCause: TerminalErrorRecord | null;
   creationOrder: number;
+  /** The engine group of the latest admitted target; initially the requested engine. */
   concurrencyGroup: string;
   schema: JsonSchema | null;
   /**
@@ -504,6 +507,10 @@ interface HoldEventEntry {
   attempted_verdict: string | null;
   /** The evidence quality for `attempted_verdict`; null outside rejected answers. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable" | null;
+  /** On `answered`: who wrote the answer, as the decision file named it; null when it named no one, and elsewhere. */
+  answered_by: string | null;
+  /** On `answered`: the decider's note; null when none, and elsewhere. */
+  note: string | null;
   at: string;
 }
 
@@ -817,6 +824,8 @@ export class RunRecordWriter {
         kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState)
           ? event.params.attemptedVerdictState
           : null,
+      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -900,6 +909,7 @@ export class RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      header_identity: record.headerIdentity,
       prompt: record.prompt,
       options: {
         timeout_ms: record.options.timeoutMs,

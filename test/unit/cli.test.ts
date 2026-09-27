@@ -14,13 +14,14 @@ import { runEnsembleCli } from "../../src/cli.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
+import { HoldManager, enumerateHolds } from "../../src/holds.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
-import type { Budget, EngineName, RuntimeOptions, TurnResult } from "../../src/types.js";
+import type { Budget, EngineName, RuntimeEvent, RuntimeOptions, TurnResult } from "../../src/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -987,27 +988,27 @@ test("the archive records the effort the engine actually served, beside the effo
   assert.equal(record.attempts[0]?.resolved_effort, "medium");
 });
 
-test("the retired --fallback-model flag is unknown to the CLI, and a misplaced flag is still a placement error", async () => {
-  // The engine-side switch is retired with its flag: the CLI names an
-  // unknown option at exit 2 with no runtime created, and the chain is a
-  // script-side declaration with no direct-agent flag.
+test("the retired --fallback-model flag names its script-side replacement, and a misplaced flag is still a placement error", async () => {
   let runtimeCreations = 0;
-  const stderr = new CaptureStream();
-  const exitCode = await runEnsembleCli(
-    ["agent", "--engine=claude", "--fallback-model=sonnet", "prompt"],
-    {
-      stdout: new CaptureStream(),
+  for (const flag of [["--fallback-model=sonnet"], ["--fallback-model", "sonnet"]]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(["agent", "--engine=claude", ...flag, "prompt"], {
+      stdout,
       stderr,
       createRuntime: async () => {
         runtimeCreations += 1;
         return fakeRuntime();
       }
-    }
-  );
-  assert.equal(exitCode, 2);
-  assert.equal(runtimeCreations, 0);
-  assert.match(stderr.text(), /--fallback-model/);
-  assert.doesNotMatch(stderr.text(), /\n\s+at /);
+    });
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(
+      stderr.text(),
+      "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead.\n"
+    );
+    assert.equal(runtimeCreations, 0);
+  }
 
   const malformedStderr = new CaptureStream();
   const malformedExit = await runEnsembleCli(
@@ -2040,7 +2041,8 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
         "                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]\n" +
       "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]\n" +
       "       ensemble workflows\n" +
-      "       ensemble holds [--json] [--scope <scope> | --all]\n"
+      "       ensemble holds [--json] [--scope <scope> | --all]\n" +
+      "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n"
   );
 });
 
@@ -2138,7 +2140,7 @@ test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
   assert.match(stdout.text().trim(), /^\d+\.\d+\.\d+/);
 
   // Per-subcommand help is an answer, never a usage *error*: exit 0.
-  for (const argv of [["workflows", "--help"], ["holds", "--help"], ["agent", "--help"]]) {
+  for (const argv of [["workflows", "--help"], ["holds", "--help"], ["holds", "answer", "--help"], ["agent", "--help"]]) {
     const subStdout = new CaptureStream();
     assert.equal(await runEnsembleCli(argv, { stdout: subStdout, stderr: new CaptureStream() }), 0);
     assert.match(subStdout.text(), /Usage: ensemble/);
@@ -3479,3 +3481,81 @@ class AlwaysFailingEngine implements EngineAdapter {
     return Promise.resolve();
   }
 }
+
+test("ensemble holds answer writes the decision, reports what the raiser did with it, and exits by outcome", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-holds-answer-"));
+  const dataHome = path.join(directory, "data-home");
+  const holdsDir = path.join(dataHome, "ensemble", "holds");
+  const env = { XDG_DATA_HOME: dataHome, ENSEMBLE_CALLER_IDENTITY: "lead-session-7" };
+  const events: RuntimeEvent[] = [];
+  const holds = new HoldManager({
+    dir: holdsDir,
+    runId: "run-cli-answer",
+    cwd: directory,
+    scope: null,
+    pollIntervalMs: 5,
+    onEvent: (event) => events.push(event),
+    identity: () => ({ workflow: "release-gate", phase: "review", archive_path: "/archive/run-cli-answer", totals: { active: 0, queued: 1, done: 2, failed: 0 } })
+  });
+  const decision = holds.raise({ content: "ship?", verdicts: ["yes", "no"] });
+  // A failing assertion must not leave the raise polling for ever.
+  decision.catch(() => undefined);
+  try {
+    for (let attempt = 0; attempt < 400 && (await enumerateHolds(holdsDir)).holds.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+
+    // The listing gives the decider the run's identity card and the hold's state.
+    const listing = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout: listing, stderr: new CaptureStream(), env }), 0);
+    assert.match(listing.text(), /run-cli-answer-1\topen\t/);
+    assert.match(listing.text(), /run: +release-gate · phase review · agents 2 done, 0 active, 1 queued, 0 failed \(at raise\)/);
+    assert.match(listing.text(), /archive: +\/archive\/run-cli-answer/);
+
+    // An unlisted verdict bounces: exit 3, the reason on stdout, the hold still waiting.
+    const bounced = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: new CaptureStream(), env }),
+      3
+    );
+    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string } };
+    assert.equal(bouncedReport.outcome, "bounced");
+    assert.equal(bouncedReport.rejection.reason, "invalid-verdict");
+    const afterBounce = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds", "--json"], { cwd: directory, stdout: afterBounce, stderr: new CaptureStream(), env }), 0);
+    assert.deepEqual(
+      (JSON.parse(afterBounce.text()) as { holds: Array<{ state: string }> }).holds.map((hold) => hold.state),
+      ["bounced"]
+    );
+
+    // A listed verdict is consumed: exit 0, and the run resumes with it and the note.
+    const consumed = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict=yes", "--note", "looks good"], { cwd: directory, stdout: consumed, stderr: new CaptureStream(), env }),
+      0
+    );
+    assert.deepEqual(JSON.parse(consumed.text()), { outcome: "consumed", hold_id: "run-cli-answer-1", verdict: "yes", answered_by: "lead-session-7" });
+    assert.deepEqual(await decision, { verdict: "yes", note: "looks good" });
+    const answered = events.find((event) => event.method === "hold/answered");
+    assert.equal(answered?.params.answeredBy, "lead-session-7");
+    assert.equal(answered?.params.note, "looks good");
+
+    // The hold is gone now: answering it again finds nothing (exit 5).
+    const missing = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "yes"], { cwd: directory, stdout: missing, stderr: new CaptureStream(), env }),
+      5
+    );
+    assert.equal((JSON.parse(missing.text()) as { outcome: string }).outcome, "not-found");
+
+    // Missing --verdict is a usage error, on stderr.
+    const usageErr = new CaptureStream();
+    const usageOut = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds", "answer", "run-cli-answer-1"], { cwd: directory, stdout: usageOut, stderr: usageErr, env }), 2);
+    assert.equal(usageOut.text(), "");
+    assert.match(usageErr.text(), /Usage: ensemble holds answer/);
+  } finally {
+    holds.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

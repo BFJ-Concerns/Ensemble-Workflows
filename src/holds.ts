@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
 
@@ -69,6 +69,20 @@ export interface RaiseHoldOptions {
   timeoutMs?: number;
 }
 
+/**
+ * The raising run's identity card, captured once at raise time so a decider
+ * can tell which run is asking: display-only and bounded — never a live
+ * progress mirror, never anything an answer's correctness depends on.
+ */
+export interface HoldRunIdentity {
+  workflow: string | null;
+  phase: string | null;
+  /** The run's archive directory; null when the run keeps no record. */
+  archive_path: string | null;
+  /** Worker counts as of the raise. */
+  totals: { active: number; queued: number; done: number; failed: number };
+}
+
 /** What the awaiting script resolves: the accepted verdict and the decider's note. */
 export interface HoldDecision {
   verdict: string;
@@ -91,6 +105,10 @@ export interface HoldFileRecord {
   timeout_at: string | null;
   /** Display-only metadata: never the scope, never a liveness judgement. */
   cwd: string;
+  /** Display-only: the raising run's identity card as of the raise; null when none was supplied, absent from an older raiser. */
+  run_identity?: HoldRunIdentity | null;
+  /** The raiser's decision-poll cadence, so an answering writer knows how long consumption can take. */
+  poll_interval_ms?: number;
   /**
    * The raising process's liveness evidence — the same `{host, pid,
    * start_ticks}` block the archive and status snapshot carry, judged with
@@ -99,7 +117,7 @@ export interface HoldFileRecord {
   owner: SnapshotOwnerEvidence;
   /** The latest rejected answer, republished for the decider who made it. */
   answer_rejection?: HoldAnswerRejection;
-  /** Where the decider writes the answer: `{ "nonce", "verdict", "note"? }`. */
+  /** Where the decider writes the answer: `{ "nonce", "verdict", "note"?, "answered_by"? }`. */
   decision_path: string;
 }
 
@@ -156,6 +174,8 @@ export interface HoldManagerOptions {
   onSettled?: (id: string) => void;
   /** Test seam for the retirement sweep's liveness evidence. */
   procDir?: string;
+  /** Reads the raising run's identity card at each raise (display-only). */
+  identity?: () => HoldRunIdentity;
 }
 
 export class HoldManager {
@@ -169,6 +189,7 @@ export class HoldManager {
   #onOpen: HoldManagerOptions["onOpen"];
   #onSettled: HoldManagerOptions["onSettled"];
   #procDir: string;
+  #identity: (() => HoldRunIdentity) | undefined;
   #sequence = 0;
   #closed = false;
   #abort = new AbortController();
@@ -185,6 +206,7 @@ export class HoldManager {
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
     this.#procDir = options.procDir ?? "/proc";
+    this.#identity = options.identity;
   }
 
   async raise(options: RaiseHoldOptions): Promise<HoldDecision> {
@@ -211,6 +233,8 @@ export class HoldManager {
       raised_at: new Date(raisedAt).toISOString(),
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
+      run_identity: null,
+      poll_interval_ms: this.#pollIntervalMs,
       owner: {
         host: hostname(),
         pid: process.pid,
@@ -225,6 +249,11 @@ export class HoldManager {
     // The first raise sweeps this scope for dead-raiser leftovers, so a
     // lead's own scope never accumulates holds nobody can answer.
     await this.#retireDeadSiblings();
+    // The identity card is read here, after the raise has yielded, rather
+    // than when the record is built: a hold raised in a script's first
+    // synchronous stretch would otherwise predate the runner reporting the
+    // script's meta, and name no workflow.
+    record.run_identity = this.#identity?.() ?? null;
     // Atomic publish: a decider never reads a half-written hold.
     await publishHoldRecord(holdPath, record);
 
@@ -290,8 +319,13 @@ export class HoldManager {
     for (;;) {
       const decision = await this.#readDecision(record, holdPath, decisionPath, grace);
       if (decision !== null) {
-        this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
-        return decision;
+        this.#emit("hold/answered", {
+          holdId: record.hold_id,
+          verdict: decision.verdict,
+          note: decision.note,
+          answeredBy: decision.answeredBy
+        });
+        return { verdict: decision.verdict, note: decision.note };
       }
       if (deadline !== null && this.#now() >= deadline) {
         this.#emit("hold/timedOut", { holdId: record.hold_id });
@@ -313,7 +347,7 @@ export class HoldManager {
     holdPath: string,
     decisionPath: string,
     grace: { lastUnparseable: string | null }
-  ): Promise<HoldDecision | null> {
+  ): Promise<ReadDecision | null> {
     let raw: string;
     try {
       raw = await readFile(decisionPath, "utf8");
@@ -322,16 +356,22 @@ export class HoldManager {
       return null;
     }
     let rejection: HoldAnswerRejection | null = null;
-    let decision: HoldDecision | null = null;
+    let decision: ReadDecision | null = null;
     try {
-      const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown };
+      const parsed = JSON.parse(raw) as { nonce?: unknown; verdict?: unknown; note?: unknown; answered_by?: unknown };
       grace.lastUnparseable = null;
       if (parsed.nonce !== record.nonce) {
         rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
         rejection = rejectedAnswer("invalid-verdict", parsed.verdict, this.#now());
       } else {
-        decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
+        decision = {
+          verdict: parsed.verdict,
+          note: typeof parsed.note === "string" ? parsed.note : null,
+          // Read from the decision file as written: a hand-authored answer
+          // that names no answerer records none — never a guess.
+          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
+        };
       }
     } catch {
       if (grace.lastUnparseable !== raw) {
@@ -390,6 +430,115 @@ export class HoldManager {
 
   #emit(method: string, params: Record<string, unknown>): void {
     this.#onEvent?.({ method, params, receivedAt: Date.now() });
+  }
+}
+
+/** An accepted decision as read from the file, before the script sees its verdict and note. */
+interface ReadDecision extends HoldDecision {
+  answeredBy: string | null;
+}
+
+/**
+ * A listed hold's state. There is no `accepted` state: acceptance removes
+ * the hold file, and a dead raiser's hold is `retired` by enumeration
+ * (reported beside the listing, never in it).
+ */
+export function holdListingState(record: HoldFileRecord): "open" | "bounced" {
+  return record.answer_rejection === undefined ? "open" : "bounced";
+}
+
+export interface AnswerHoldOptions {
+  /** The holds root; the hold is found by id across every scope. */
+  dir: string;
+  holdId: string;
+  verdict: string;
+  note?: string;
+  /** Written into the decision file as `answered_by`. */
+  answeredBy: string;
+  /** How long to wait for the raiser before reporting not-yet-consumed; defaults from the record's cadence. */
+  waitMs?: number;
+  /** Gap between hold-file re-reads while waiting. */
+  checkIntervalMs?: number;
+  procDir?: string;
+}
+
+/** What an answer write produced, judged by the hold and decision files. */
+export type AnswerHoldOutcome =
+  | { outcome: "consumed"; hold_id: string; verdict: string }
+  | { outcome: "retired"; hold_id: string; verdict: string }
+  | { outcome: "bounced"; hold_id: string; verdict: string; rejection: HoldAnswerRejection }
+  | { outcome: "not-consumed"; hold_id: string; verdict: string; decision_path: string; waited_ms: number }
+  | { outcome: "not-found"; hold_id: string };
+
+/**
+ * Answer a hold the way a hand-writing decider would — the same plain-JSON
+ * decision file at the record's `decision_path`, nonce copied from the hold
+ * file, written then renamed into place — and then report what the write
+ * produced. Both files gone means the raiser consumed an accepted answer;
+ * a vanished hold with the decision still present settled without judging
+ * this answer; a freshly written `answer_rejection` means it bounced;
+ * neither within the raiser's poll cadence means not yet consumed (never
+ * claimed as accepted). This is a convenience writer only: the raiser's
+ * nonce and verdict checks remain the correctness boundary.
+ */
+export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHoldOutcome> {
+  const enumeration = await enumerateHolds(options.dir, options.procDir !== undefined ? { procDir: options.procDir } : {});
+  const found = enumeration.holds.find((hold) => hold.record.hold_id === options.holdId);
+  if (found === undefined) {
+    return { outcome: "not-found", hold_id: options.holdId };
+  }
+  const { record, path: holdPath } = found;
+  const priorRejection = JSON.stringify(record.answer_rejection ?? null);
+  const answer: Record<string, string> = { nonce: record.nonce, verdict: options.verdict };
+  if (options.note !== undefined) {
+    answer.note = options.note;
+  }
+  answer.answered_by = options.answeredBy;
+  const tmp = `${record.decision_path}.${process.pid}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(answer)}\n`, { encoding: "utf8" });
+  await rename(tmp, record.decision_path);
+
+  const cadence = typeof record.poll_interval_ms === "number" && record.poll_interval_ms > 0 ? record.poll_interval_ms : 500;
+  const waitMs = options.waitMs ?? cadence * 4 + 1000;
+  const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
+  const started = Date.now();
+  for (;;) {
+    let current: HoldFileRecord | null;
+    try {
+      current = JSON.parse(await readFile(holdPath, "utf8")) as HoldFileRecord;
+    } catch (error) {
+      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        current = null;
+      } else {
+        throw error;
+      }
+    }
+    if (current === null) {
+      try {
+        await stat(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
+    }
+    if (current.answer_rejection !== undefined && JSON.stringify(current.answer_rejection) !== priorRejection) {
+      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current.answer_rejection };
+    }
+    const waited = Date.now() - started;
+    if (waited >= waitMs) {
+      return {
+        outcome: "not-consumed",
+        hold_id: record.hold_id,
+        verdict: options.verdict,
+        decision_path: record.decision_path,
+        waited_ms: waited
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
   }
 }
 

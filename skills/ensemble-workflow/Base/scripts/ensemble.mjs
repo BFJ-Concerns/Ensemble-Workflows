@@ -13821,7 +13821,8 @@ import path13 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile8, stat as stat3 } from "node:fs/promises";
+import { readFile as readFile8, stat as stat4 } from "node:fs/promises";
+import { hostname as hostname3 } from "node:os";
 import path12 from "node:path";
 import { parseArgs } from "node:util";
 
@@ -15016,6 +15017,8 @@ var RunRecordWriter = class _RunRecordWriter {
       reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
       attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
       attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
+      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -15082,6 +15085,7 @@ var RunRecordWriter = class _RunRecordWriter {
       kind: "agent_record",
       id: record.id,
       engine: record.engine,
+      header_identity: record.headerIdentity,
       prompt: record.prompt,
       options: {
         timeout_ms: record.options.timeoutMs,
@@ -15979,7 +15983,7 @@ function assertPositiveIntegerOption(options, option, maximum) {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir3, readFile as readFile3, readdir as readdir3, rename as rename4, rm as rm3, stat as stat2, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2, hostname as hostname2 } from "node:os";
 import path6 from "node:path";
 
@@ -16205,6 +16209,7 @@ var HoldManager = class {
   #onOpen;
   #onSettled;
   #procDir;
+  #identity;
   #sequence = 0;
   #closed = false;
   #abort = new AbortController();
@@ -16220,6 +16225,7 @@ var HoldManager = class {
     this.#onOpen = options.onOpen;
     this.#onSettled = options.onSettled;
     this.#procDir = options.procDir ?? "/proc";
+    this.#identity = options.identity;
   }
   async raise(options) {
     assertValidRaiseHoldOptions(options);
@@ -16245,6 +16251,8 @@ var HoldManager = class {
       raised_at: new Date(raisedAt).toISOString(),
       timeout_at: deadline === null ? null : new Date(deadline).toISOString(),
       cwd: this.#cwd,
+      run_identity: null,
+      poll_interval_ms: this.#pollIntervalMs,
       owner: {
         host: hostname2(),
         pid: process.pid,
@@ -16254,6 +16262,7 @@ var HoldManager = class {
     };
     await mkdir3(this.#dir, { recursive: true });
     await this.#retireDeadSiblings();
+    record.run_identity = this.#identity?.() ?? null;
     await publishHoldRecord(holdPath, record);
     this.#onOpen?.({ id: holdId, content: options.content, verdicts: record.verdicts });
     this.#emit("hold/raised", {
@@ -16300,8 +16309,13 @@ var HoldManager = class {
     for (; ; ) {
       const decision = await this.#readDecision(record, holdPath, decisionPath, grace);
       if (decision !== null) {
-        this.#emit("hold/answered", { holdId: record.hold_id, verdict: decision.verdict });
-        return decision;
+        this.#emit("hold/answered", {
+          holdId: record.hold_id,
+          verdict: decision.verdict,
+          note: decision.note,
+          answeredBy: decision.answeredBy
+        });
+        return { verdict: decision.verdict, note: decision.note };
       }
       if (deadline !== null && this.#now() >= deadline) {
         this.#emit("hold/timedOut", { holdId: record.hold_id });
@@ -16335,7 +16349,13 @@ var HoldManager = class {
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
         rejection = rejectedAnswer("invalid-verdict", parsed.verdict, this.#now());
       } else {
-        decision = { verdict: parsed.verdict, note: typeof parsed.note === "string" ? parsed.note : null };
+        decision = {
+          verdict: parsed.verdict,
+          note: typeof parsed.note === "string" ? parsed.note : null,
+          // Read from the decision file as written: a hand-authored answer
+          // that names no answerer records none — never a guess.
+          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
+        };
       }
     } catch {
       if (grace.lastUnparseable !== raw) {
@@ -16388,6 +16408,69 @@ var HoldManager = class {
     this.#onEvent?.({ method, params, receivedAt: Date.now() });
   }
 };
+function holdListingState(record) {
+  return record.answer_rejection === void 0 ? "open" : "bounced";
+}
+async function answerHold(options) {
+  const enumeration = await enumerateHolds(options.dir, options.procDir !== void 0 ? { procDir: options.procDir } : {});
+  const found = enumeration.holds.find((hold) => hold.record.hold_id === options.holdId);
+  if (found === void 0) {
+    return { outcome: "not-found", hold_id: options.holdId };
+  }
+  const { record, path: holdPath } = found;
+  const priorRejection = JSON.stringify(record.answer_rejection ?? null);
+  const answer = { nonce: record.nonce, verdict: options.verdict };
+  if (options.note !== void 0) {
+    answer.note = options.note;
+  }
+  answer.answered_by = options.answeredBy;
+  const tmp = `${record.decision_path}.${process.pid}.tmp`;
+  await writeFile4(tmp, `${JSON.stringify(answer)}
+`, { encoding: "utf8" });
+  await rename4(tmp, record.decision_path);
+  const cadence = typeof record.poll_interval_ms === "number" && record.poll_interval_ms > 0 ? record.poll_interval_ms : 500;
+  const waitMs = options.waitMs ?? cadence * 4 + 1e3;
+  const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
+  const started = Date.now();
+  for (; ; ) {
+    let current2;
+    try {
+      current2 = JSON.parse(await readFile3(holdPath, "utf8"));
+    } catch (error) {
+      if (error instanceof Error && error.code === "ENOENT") {
+        current2 = null;
+      } else {
+        throw error;
+      }
+    }
+    if (current2 === null) {
+      try {
+        await stat2(record.decision_path);
+      } catch (error) {
+        if (error instanceof Error && error.code === "ENOENT") {
+          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
+        }
+        throw error;
+      }
+      await rm3(record.decision_path, { force: true });
+      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
+    }
+    if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
+      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
+    }
+    const waited = Date.now() - started;
+    if (waited >= waitMs) {
+      return {
+        outcome: "not-consumed",
+        hold_id: record.hold_id,
+        verdict: options.verdict,
+        decision_path: record.decision_path,
+        waited_ms: waited
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, checkIntervalMs));
+  }
+}
 async function enumerateHolds(dir, options = {}) {
   const procDir = options.procDir ?? "/proc";
   if (options.scope !== void 0) {
@@ -16628,7 +16711,7 @@ function findErrorCode(error, code) {
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
-import { stat as stat2 } from "node:fs/promises";
+import { stat as stat3 } from "node:fs/promises";
 import path8 from "node:path";
 
 // src/worktree-isolation.ts
@@ -16744,7 +16827,7 @@ var AgentPlacementManager = class {
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
     try {
-      if (!(await stat2(requestedCwd)).isDirectory()) {
+      if (!(await stat3(requestedCwd)).isDirectory()) {
         throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
       }
     } catch (error) {
@@ -21463,6 +21546,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
         this.#emitEvent(event);
         void this.#recordHoldEventSafely(event);
       },
+      identity: () => {
+        const snapshot = this.progress.snapshot();
+        return {
+          workflow: snapshot.workflow,
+          phase: snapshot.currentPhase,
+          archive_path: this.#runRecorder?.archiveDir ?? null,
+          totals: { ...snapshot.totals }
+        };
+      },
       onOpen: (hold) => this.progress.noteHoldRaised(hold),
       onSettled: (id) => this.progress.noteHoldSettled(id)
     });
@@ -21807,6 +21899,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (target.engine !== admittedEngine.name) {
               return new ChainAdvance(target.engine);
             }
+            agentRecord.concurrencyGroup = admittedEngine.name;
             const settled = await runTarget(target, admittedEngine, ledger, position.next + 1 < targets.length);
             if (settled.status !== "refused") {
               return settled;
@@ -22686,6 +22779,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return {
       id,
       engine,
+      headerIdentity: "original_request",
       prompt,
       options: {
         timeoutMs: options.timeoutMs ?? this.#defaultTurnTimeoutMs ?? null,
@@ -28769,9 +28863,9 @@ async function resolveWorkflowName(name, options) {
     ["project", dirs.project],
     ["user", dirs.user]
   ]) {
-    const listing = await listRegistryDir(dir, scope, options.readMeta);
-    skipped.push(...listing.notes);
-    const matches = listing.entries.filter((entry) => entry.name === name);
+    const listing2 = await listRegistryDir(dir, scope, options.readMeta);
+    skipped.push(...listing2.notes);
+    const matches = listing2.entries.filter((entry) => entry.name === name);
     if (matches.length === 1) {
       const [match] = matches;
       if (match !== void 0) {
@@ -28783,8 +28877,11 @@ async function resolveWorkflowName(name, options) {
     }
   }
   const skippedSuffix = skipped.length === 0 ? "" : `; skipped unreadable saved workflows: ${skipped.map((note) => `${note.scriptPath} (${note.message})`).join(", ")}`;
+  const listing = await listSavedWorkflows(options);
+  const registeredNames = [...new Set(listing.entries.map((entry) => entry.name))];
+  const registeredSuffix = `; registered workflows: ${registeredNames.length === 0 ? "none" : registeredNames.join(", ")}`;
   throw new WorkflowResolutionError(
-    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${skippedSuffix}`
+    `workflow(${JSON.stringify(name)}) was not found in ${dirs.project} or ${dirs.user}${registeredSuffix}${skippedSuffix}`
   );
 }
 async function listRegistryDir(dir, scope, readMeta) {
@@ -29180,11 +29277,11 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
   }
   return defaults;
 }
+var WORKFLOW_WRAPPER_SUFFIX = "\n};";
 function buildWrappedSource(workflow) {
   return `export default async (__ensembleHooks) => {
 const { ${HOOK_BINDING_NAMES.join(", ")} } = __ensembleHooks;
-${workflow.bodySource}
-};`;
+${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
@@ -29298,18 +29395,41 @@ function workflowSyntaxError(error, workflow, filename) {
     bodyColumn: bodyPosition.column
   };
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
-  const authorPosition = wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
+  const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
+  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
   const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
-  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  const start = Math.max(0, authorPosition.column - 1 - 72);
+  const end = Math.min(sourceLine.length, start + 96);
+  const prefix = start > 0 ? "\u2026" : "";
+  const suffix = end < sourceLine.length ? "\u2026" : "";
+  const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
+  const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
+  const message = earlyClose !== null ? "Unexpected closing '}' in workflow body" : pointsPastBody ? "Unexpected end of workflow body" : error.message;
   return new WorkflowScriptError(
-    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}
-  ${sourceLine}
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${message}
+  ${snippet}
   ${caret}`,
     { cause: error }
   );
+}
+function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
+  try {
+    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
+    const declaration = program.body[0];
+    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
+      return null;
+    }
+    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+  } catch {
+    return null;
+  }
 }
 function v8SyntaxErrorPosition(error) {
   const stack = typeof error.stack === "string" ? error.stack : "";
@@ -29684,7 +29804,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "--help" || argv[0] === "-h") {
     stdout.write(usage());
     stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds).\nEach subcommand answers its own --help.\n"
+      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds), holds answer (answer one).\nEach subcommand answers its own --help.\n"
     );
     return 0;
   }
@@ -29727,6 +29847,9 @@ async function runEnsembleCli(argv, options = {}) {
       "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
     );
     return 0;
+  }
+  if (argv[0] === "holds" && argv[1] === "answer") {
+    return answerHoldCommand(argv.slice(2), env, stdout, stderr);
   }
   if (argv[0] === "holds") {
     const holdsUsage = "Usage: ensemble holds [--json] [--scope <scope> | --all]\nLists open holds: the inherited scope's (ENSEMBLE_HOLD_SCOPE) or machine-wide when none is set;\n--scope names a scope explicitly, --all forces the machine-wide view, --json emits the full records.\n";
@@ -29781,7 +29904,7 @@ async function runEnsembleCli(argv, options = {}) {
     if (json) {
       stdout.write(
         `${JSON.stringify({
-          holds: enumeration.holds.map((hold) => hold.record),
+          holds: enumeration.holds.map((hold) => ({ ...hold.record, state: holdListingState(hold.record) })),
           retired: enumeration.retired
         })}
 `
@@ -29801,9 +29924,20 @@ async function runEnsembleCli(argv, options = {}) {
     for (const hold of enumeration.holds) {
       const { record } = hold;
       stdout.write(
-        `${record.hold_id}	scope ${record.scope ?? "(shared)"}	raised ${record.raised_at}${record.timeout_at !== null ? `	times out ${record.timeout_at}` : ""}
+        `${record.hold_id}	${holdListingState(record)}	scope ${record.scope ?? "(shared)"}	raised ${record.raised_at}${record.timeout_at !== null ? `	times out ${record.timeout_at}` : ""}
 `
       );
+      const identity = record.run_identity;
+      if (identity !== void 0 && identity !== null) {
+        stdout.write(
+          `  run:      ${identity.workflow ?? "(unnamed)"} \xB7 phase ${identity.phase ?? "(none)"} \xB7 agents ${identity.totals.done} done, ${identity.totals.active} active, ${identity.totals.queued} queued, ${identity.totals.failed} failed (at raise)
+`
+        );
+        if (identity.archive_path !== null) {
+          stdout.write(`  archive:  ${identity.archive_path}
+`);
+        }
+      }
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
       const [firstVerdict, ...otherVerdicts] = record.verdicts;
@@ -30172,7 +30306,7 @@ async function prepareRun(invocation, cwd) {
       const requestedCwd = path12.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat3(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -30368,6 +30502,16 @@ async function parseWorkflowInvocation(argv, cwd) {
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin) {
+  for (const argument of argv) {
+    if (argument === "--") {
+      break;
+    }
+    if (optionName(argument) === "--fallback-model") {
+      throw new CliUsageError(
+        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+      );
+    }
+  }
   rejectMisplacedAgentTuningFlags(argv);
   rejectDuplicateScalarFlags(argv);
   let parsed;
@@ -30725,6 +30869,84 @@ function announceRunRecord(writer, stderr) {
   } catch {
   }
 }
+var HOLDS_ANSWER_USAGE = "Usage: ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\nAnswers an open hold: writes the decision file the hold names (nonce copied from the hold),\nthen reports what the raiser did with it, as one JSON object on stdout.\nThe answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set, otherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected \u2014 the hold keeps\nwaiting; the reason is reported); 4 not yet consumed (the raiser has not read it within its poll\ncadence \u2014 the answer file stays in place); 5 no open hold with that id; 6 retired (the hold\nsettled without judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
+async function answerHoldCommand(args, env, stdout, stderr) {
+  if (args[0] === "--help" || args[0] === "-h") {
+    stdout.write(HOLDS_ANSWER_USAGE);
+    return 0;
+  }
+  let holdId;
+  let verdict;
+  let note;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const flag = /^--(verdict|note)(?:=(.*))?$/s.exec(arg);
+    if (flag !== null) {
+      const value = flag[2] ?? args[++index];
+      if (value === void 0 || flag[1] === "verdict" && value.trim().length === 0) {
+        stderr.write(HOLDS_ANSWER_USAGE);
+        return 2;
+      }
+      if (flag[1] === "verdict") {
+        verdict = value;
+      } else {
+        note = value;
+      }
+    } else if (holdId === void 0 && !arg.startsWith("-") && arg.trim().length > 0) {
+      holdId = arg;
+    } else {
+      stderr.write(HOLDS_ANSWER_USAGE);
+      return 2;
+    }
+  }
+  if (holdId === void 0 || verdict === void 0) {
+    stderr.write(HOLDS_ANSWER_USAGE);
+    return 2;
+  }
+  const answeredBy = resolveCallerIdentity(void 0, env) ?? `${hostname3()}:${process.pid}`;
+  let result;
+  try {
+    result = await answerHold({
+      dir: defaultHoldsDirectory(env),
+      holdId,
+      verdict,
+      answeredBy,
+      ...note !== void 0 ? { note } : {}
+    });
+  } catch (error) {
+    stderr.write(`cannot answer hold ${holdId}: ${error instanceof Error ? error.message : String(error)}
+`);
+    return 1;
+  }
+  stdout.write(`${JSON.stringify({ ...result, answered_by: answeredBy })}
+`);
+  switch (result.outcome) {
+    case "consumed":
+      stderr.write(`hold ${holdId}: answer consumed \u2014 the run resumed with verdict ${JSON.stringify(verdict)}
+`);
+      return 0;
+    case "retired":
+      stderr.write(`hold ${holdId}: hold settled without judging this answer \u2014 the stale decision file was removed
+`);
+      return 6;
+    case "bounced":
+      stderr.write(
+        `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer
+`
+      );
+      return 3;
+    case "not-consumed":
+      stderr.write(
+        `hold ${holdId}: answer written to ${result.decision_path} but not yet consumed after ${result.waited_ms}ms \u2014 not accepted yet
+`
+      );
+      return 4;
+    case "not-found":
+      stderr.write(`hold ${holdId}: no open hold with that id under ${defaultHoldsDirectory(env)}
+`);
+      return 5;
+  }
+}
 function usage() {
   return [
     "Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]",
@@ -30734,6 +30956,7 @@ function usage() {
     "                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]",
     "       ensemble workflows",
     "       ensemble holds [--json] [--scope <scope> | --all]",
+    "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]",
     ""
   ].join("\n");
 }

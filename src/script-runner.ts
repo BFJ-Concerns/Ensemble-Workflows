@@ -539,11 +539,12 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
   return defaults;
 }
 
+const WORKFLOW_WRAPPER_SUFFIX = "\n};";
+
 function buildWrappedSource(workflow: ExtractedWorkflow): string {
   return `export default async (__ensembleHooks) => {
 const { ${HOOK_BINDING_NAMES.join(", ")} } = __ensembleHooks;
-${workflow.bodySource}
-};`;
+${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 
 /**
@@ -736,7 +737,8 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
 /**
  * Render a body syntax error against the author's own file: path, line,
  * column, the offending source line, and a caret. V8 stays the syntax
- * authority — the rejection already happened; this only translates where.
+ * authority — the rejection already happened; this translates its location
+ * and distinguishes an unfinished body from an extra author closing brace.
  * Position comes from V8's own stack header when it carries one, from an
  * acorn parse of the same wrapped source otherwise, and is dropped (path
  * and message alone) when neither yields it — a render must never fail
@@ -753,19 +755,67 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
   };
 
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
+  // An unfinished expression or an extra author `}` can make V8 reject the
+  // wrapper's suffix. Neither suffix token has an author coordinate.
+  const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
+  const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
+  const pointsPastBody =
+    wrappedPosition !== null &&
+    (wrappedPosition.line > bodyEnd.line ||
+      (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
+  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
   const authorPosition =
-    wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+    earlyClose ??
+    (pointsPastBody
+      ? positionAt(workflow.source, workflow.source.trimEnd().length)
+      : wrappedPosition === null
+        ? null
+        : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
   const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
-  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  const start = Math.max(0, authorPosition.column - 1 - 72);
+  const end = Math.min(sourceLine.length, start + 96);
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < sourceLine.length ? "…" : "";
+  const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
+  const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
+  const message = earlyClose !== null
+    ? "Unexpected closing '}' in workflow body"
+    : pointsPastBody
+      ? "Unexpected end of workflow body"
+      : error.message;
   return new WorkflowScriptError(
-    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}\n` +
-      `  ${sourceLine}\n  ${caret}`,
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${message}\n` +
+      `  ${snippet}\n  ${caret}`,
     { cause: error }
   );
+}
+
+/** Find an author brace that closed the wrapper before its own suffix did. */
+function prematureWrapperClose(
+  wrappedSource: string,
+  bodyEndOffset: number,
+  origin: WorkflowModuleOrigin
+): { line: number; column: number } | null {
+  try {
+    const program = acorn.parse(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
+    const declaration = program.body[0];
+    if (
+      declaration?.type !== "ExportDefaultDeclaration" ||
+      declaration.declaration.type !== "ArrowFunctionExpression" ||
+      declaration.declaration.body.type !== "BlockStatement"
+    ) {
+      return null;
+    }
+    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+  } catch {
+    // Acorn is only helping describe a rejection V8 has already made.
+    return null;
+  }
 }
 
 /**

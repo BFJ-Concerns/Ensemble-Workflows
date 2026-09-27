@@ -37,7 +37,10 @@ timers, `require(...)` and dynamic `import()` resolving from the script's own
 path, `import.meta` — is available alongside the host-provided hooks. Workers
 are dispatched only through `agent()`; a free identifier that is neither a
 Node global, a bound hook, nor a module-scope binding fails at load, before
-any worker spawns.
+any worker spawns. Body syntax errors name the script's own line and column,
+showing a source excerpt with a caret; an unfinished body points just after its
+last non-whitespace character, and long lines show a short excerpt around the
+error.
 
 - `agent(prompt, opts)` runs one worker on `opts.engine` (`"codex"`, `"claude"`,
   or `"opencode"`). With `opts.schema`, it returns a schema-validated object or
@@ -96,6 +99,10 @@ any worker spawns.
   across every scope — a hold whose raiser is provably dead is retired by
   the machinery that observes it, and every raise, answer, rejection,
   timeout, and retirement lands in the archive manifest's `hold_events`.
+  `ensemble holds answer <hold-id> --verdict <v> [--note <n>]` writes that
+  same decision file and reports whether the raiser consumed it, bounced it
+  (with the reason), has not read it yet, or settled without judging it
+  (`retired`, exit 6; the stale decision file is removed).
 - `parallel(thunks)` runs all thunks concurrently and returns all results. A
   dispatched worker's failure is already the leg's own `null` (it never
   reaches the combinator as a throw); a thunk that throws for any other
@@ -481,7 +488,9 @@ The manifest is `manifest.json`. Its top-level fields are:
 - `hold_events`: the run's hold lifecycle (raise, accepted answer, rejected
   answer, timeout, and dead-raiser retirements this run's sweep observed)
   in event order, each entry carrying `hold_id`, `event`,
-  `verdict`/`reason` where applicable, and a timestamp.
+  `verdict`/`reason` where applicable, and a timestamp. An `answered`
+  entry also carries `answered_by` (the answerer the decision file named,
+  or null when it named none) and the decider's `note` (or null).
 - `tallies`: `name -> number`, the counts the script recorded through the
   `tally` hook, stored verbatim (last write per name wins) and present in
   the manifest from the moment each is recorded — a count recorded before
@@ -548,7 +557,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 
 - `schema_version`: `4`.
 - `kind`: `"agent_record"`.
-- `id`, `creation_order`, `concurrency_group`.
+- `id`, `creation_order`, `concurrency_group` (the last target's admitted
+  engine group; initially the requested engine, and the answering engine's
+  group when a fallback answers).
+- `header_identity`: `"original_request"` identifies what the top-level
+  `engine`, `model`, and `effort` fields describe.
 - `engine`, `model`, `effort` (what was asked for — the canonical level),
   and `resolved_model` / `resolved_effort` — what was actually served: the
   engine's own report where it makes one (Codex), or the native value the

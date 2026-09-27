@@ -90,6 +90,8 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
       reason: "invalid-verdict",
       attempted_verdict: "later",
       attempted_verdict_state: "submitted",
+      answered_by: null,
+      note: null,
       at: new Date(0).toISOString()
     },
     {
@@ -99,6 +101,8 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
       reason: "malformed",
       attempted_verdict: null,
       attempted_verdict_state: "unparseable",
+      answered_by: null,
+      note: null,
       at: new Date(1).toISOString()
     }
   ]);
@@ -200,6 +204,7 @@ test("run record manifest and agent schemas are fixture-locked", async () => {
   assert.equal(manifest.caller_identity, "session:run-record-test");
   assert.equal(agent.schema_version, 4);
   assert.equal(agent.kind, "agent_record");
+  assert.equal(agent.header_identity, "original_request");
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: null, layer: "default" },
     engines: {
@@ -1053,6 +1058,7 @@ function agentRecord(
   return {
     id,
     engine,
+    headerIdentity: "original_request",
     prompt: "fixture prompt",
     options: { timeoutMs: null, maxAttempts: 3 },
     session: null,

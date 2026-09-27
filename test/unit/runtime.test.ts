@@ -1933,6 +1933,62 @@ test("an agent's record exists from dispatch, in-progress with prompt and resolv
   assert.equal(records.at(-1)?.prompt, "what was asked");
 });
 
+test("an unpinned answer names the engine-reported model, not an absent request pin", async () => {
+  for (const engine of ["codex", "claude"] as const) {
+    const model = engine === "codex" ? "gpt-served" : "claude-served";
+    const worker = new ChainEngine(engine, [async () => ({ ...turn("answered"), resolvedModel: model })]);
+    const { runtime, records } = chainRuntime([worker], 1);
+
+    assert.equal(await runtime.agent("work", { engine }), "answered");
+    const settled = records.at(-1)!;
+    assert.equal(settled.model, null);
+    assert.equal(settled.resolvedModel, model);
+    assert.deepEqual(settled.answeredBy, { entry: -1, engine, model });
+    await runtime.close();
+  }
+});
+
+test("an answer with no served-model report does not claim its requested pin", async () => {
+  const worker = new ChainEngine("codex", [answers("answered")]);
+  const { runtime, records } = chainRuntime([worker], 1);
+
+  assert.equal(await runtime.agent("work", { engine: "codex", model: "gpt-requested" }), "answered");
+  const settled = records.at(-1)!;
+  assert.equal(settled.model, "gpt-requested");
+  assert.equal(settled.attempts[0]?.resolvedModel, null);
+  assert.deepEqual(settled.answeredBy, { entry: -1, engine: "codex", model: null });
+  await runtime.close();
+});
+
+test("each held turn's attempt retains the worker's observed model", async () => {
+  const model = "gpt-served";
+  const transport = new FakeTransport([
+    { ...turn("first"), resolvedModel: model },
+    turn("second"),
+    turn("third")
+  ]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+
+  for (const prompt of ["first", "second", "third"]) {
+    assert.equal(await session.send(prompt), prompt);
+  }
+
+  const settled = records.filter((record) => record.status === "complete");
+  assert.equal(transport.openedThreads.length, 1);
+  assert.deepEqual(settled.map((record) => record.session?.turn), [1, 2, 3]);
+  assert.deepEqual(settled.map((record) => record.attempts[0]?.resolvedModel), [model, model, model]);
+  assert.deepEqual(settled.map((record) => record.answeredBy?.model), [model, model, model]);
+  await session.close();
+  await runtime.close();
+});
+
 test("a worker that dies uncleanly leaves its dispatch-time record", async () => {
   const records: Array<{ status: string; prompt: string }> = [];
   const runtime = new EnsembleRuntime({
@@ -3048,8 +3104,8 @@ function claudeRefusal(status: number, code: string): () => Promise<EngineAttemp
   });
 }
 
-function answers(text: string): () => Promise<EngineAttemptResult> {
-  return async () => turn(text);
+function answers(text: string, resolvedModel?: string): () => Promise<EngineAttemptResult> {
+  return async () => ({ ...turn(text), ...(resolvedModel === undefined ? {} : { resolvedModel }) });
 }
 
 function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
@@ -3071,7 +3127,7 @@ function chainRuntime(engines: EngineAdapter[], defaultMaxAttempts = 3): {
 }
 
 test("an availability refusal advances the chain to the next target on the same engine, costing no attempt", async () => {
-  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("from the fallback")]);
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("from the fallback", "gpt-served-fallback")]);
   const { runtime, records } = chainRuntime([codex], 1);
 
   const output = await runtime.agent("work", {
@@ -3102,7 +3158,7 @@ test("an availability refusal advances the chain to the next target on the same 
     ]
   );
   assert.deepEqual(settled.fallback, [{ engine: "codex", model: "gpt-5.6-terra" }]);
-  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-5.6-terra" });
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-fallback" });
   await runtime.close();
 });
 
@@ -3537,7 +3593,7 @@ test("a refused Claude dispatch with no chain entry left throws out of agent(), 
 
 test("a refused Claude dispatch advances the chain where an entry remains, costing no attempt", async () => {
   const claude = new ChainEngine("claude", [claudeDispatchRefused()]);
-  const codex = new ChainEngine("codex", [answers("from codex")]);
+  const codex = new ChainEngine("codex", [answers("from codex", "gpt-served-after-claude")]);
   const { runtime, records } = chainRuntime([claude, codex], 1);
 
   const output = await runtime.agent("blind stage", {
@@ -3558,7 +3614,7 @@ test("a refused Claude dispatch advances the chain where an entry remains, costi
       [2, "complete", { engine: "codex", model: "gpt-6-sol" }, null]
     ]
   );
-  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-6-sol" });
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-after-claude" });
   await runtime.close();
 });
 
@@ -3639,7 +3695,7 @@ test("a Codex substrate that cannot start refuses the dispatch pre-spawn: one re
 test("a Codex substrate refusal advances the chain to a Claude target, costing no attempt", async () => {
   const transport = new UnstartableTransport();
   const codex = new CodexEngineAdapter({ transport, concurrency: 1 });
-  const claude = new ChainEngine("claude", [answers("from claude")]);
+  const claude = new ChainEngine("claude", [answers("from claude", "claude-served-after-codex")]);
   const { runtime, records } = chainRuntime([codex, claude], 1);
 
   const output = await runtime.agent("blind stage", {
@@ -3659,6 +3715,6 @@ test("a Codex substrate refusal advances the chain to a Claude target, costing n
       [2, "complete", { engine: "claude", model: "opus" }, null]
     ]
   );
-  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "claude", model: "opus" });
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "claude", model: "claude-served-after-codex" });
   await runtime.close();
 });

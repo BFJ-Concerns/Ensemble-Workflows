@@ -21464,9 +21464,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
         state.placement.cwd
       )
     );
-    const invocation = state.engineSession.beginTurn(prompt, {
+    const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...turn.schema !== void 0 ? { schema: turn.schema } : {}
     });
+    const invocation = {
+      runAttempt: async (context) => {
+        const result = await turnInvocation.runAttempt(context);
+        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
+          return { ...result, resolvedModel: state.resolvedModel };
+        }
+        return result;
+      }
+    };
     const sharedOptions = {
       ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
       ...options.model !== void 0 ? { model: options.model } : {}
@@ -21490,7 +21499,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       state.engineSession = null;
       await refused.close().catch(() => void 0);
     } else if (outcome.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return outcome;
   }
@@ -22015,7 +22028,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw completion.error;
     }
     if (completion.execution.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return completion.execution;
   }

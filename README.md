@@ -509,10 +509,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
 - `fallback`: the declared fallback chain — the `[{ engine, model, effort? }]`
   list as the call or its engine defaults declared it — or `null`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, `entry`
-  being `-1` for the call's own target and the chain index thereafter — or
-  `null` while no attempt has completed (a failed agent names none). Read
-  beside each attempt's `target`, this is how a run that silently ran its
-  "Codex" legs on Claude is legible after the fact.
+  being `-1` for the call's own target and the chain index thereafter, and
+  `model` being the answering attempt's observed served model (`null` if the
+  engine did not report one) — or `null` while no attempt has completed (a
+  failed agent names none). Read beside each attempt's `target`, this is how
+  a run that silently ran its "Codex" legs on Claude is legible after the fact.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
@@ -553,7 +554,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   (`{ engine, model }` — the engine and requested pin this attempt was
   dispatched to; the call's own until the chain advances), `started_at`,
   `ended_at`, `duration_ms`, `first_delta_ms`, `raw_output`, `validated_output`,
-  `resolved_model`, `resolved_effort`, `failure` (`{ kind, message }` or
+  `resolved_model` (including the observed model of a held worker on later
+  turns), `resolved_effort`, `failure` (`{ kind, message }` or
   `null`), `classification`, `observed_failure`, `diagnostics`,
   `app_server_diagnostic`, `token_usage_events`, `worker_exit`. Where the
   run's own settlement ended the turn, the attempt's `failure` names that

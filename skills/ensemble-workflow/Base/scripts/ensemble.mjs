@@ -29089,11 +29089,11 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
   }
   return defaults;
 }
+var WORKFLOW_WRAPPER_SUFFIX = "\n};";
 function buildWrappedSource(workflow) {
   return `export default async (__ensembleHooks) => {
 const { ${HOOK_BINDING_NAMES.join(", ")} } = __ensembleHooks;
-${workflow.bodySource}
-};`;
+${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
@@ -29207,18 +29207,41 @@ function workflowSyntaxError(error, workflow, filename) {
     bodyColumn: bodyPosition.column
   };
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
-  const authorPosition = wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+  const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
+  const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
+  const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
+  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
   const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
-  const caret = `${" ".repeat(Math.max(0, authorPosition.column - 1))}^`;
+  const start = Math.max(0, authorPosition.column - 1 - 72);
+  const end = Math.min(sourceLine.length, start + 96);
+  const prefix = start > 0 ? "\u2026" : "";
+  const suffix = end < sourceLine.length ? "\u2026" : "";
+  const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
+  const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
+  const message = earlyClose !== null ? "Unexpected closing '}' in workflow body" : pointsPastBody ? "Unexpected end of workflow body" : error.message;
   return new WorkflowScriptError(
-    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${error.message}
-  ${sourceLine}
+    `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${message}
+  ${snippet}
   ${caret}`,
     { cause: error }
   );
+}
+function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
+  try {
+    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
+    const declaration = program.body[0];
+    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
+      return null;
+    }
+    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
+    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+  } catch {
+    return null;
+  }
 }
 function v8SyntaxErrorPosition(error) {
   const stack = typeof error.stack === "string" ? error.stack : "";

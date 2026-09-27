@@ -472,6 +472,10 @@ inconclusive, the runtime says so and preserves the original `SyntaxError` as
 its cause. The rest of the file is the workflow body,
 executed as **ordinary, unsandboxed Node** — the body of a single async
 function, so `return` produces the run's result and top-level `await` works.
+Body syntax errors name the script's own line and column with a source excerpt
+and caret. If the body ends mid-expression, the position is just after its last
+non-whitespace character; long source lines show a short excerpt around the
+error.
 The full platform is available alongside the hooks below: every Node global
 (`process`, `Buffer`, `fetch`, timers — a
 `await new Promise(r => setTimeout(r, ms))` sleep is ordinary code), the

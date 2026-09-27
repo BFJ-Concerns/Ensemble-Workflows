@@ -1989,6 +1989,36 @@ test("each held turn's attempt retains the worker's observed model", async () =>
   await runtime.close();
 });
 
+test("a held turn that answered empty acquires no served-model claim", async () => {
+  // The carry-forward is for answers from the observed worker; an empty
+  // answer produced nothing to attribute to it, and the carry resumes on the
+  // next real answer.
+  const model = "gpt-served";
+  const transport = new FakeTransport([
+    { ...turn("first"), resolvedModel: model },
+    turn(""),
+    turn("third")
+  ]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+
+  assert.equal(await session.send("first"), "first");
+  assert.equal(await session.send("second"), null);
+  assert.equal(await session.send("third"), "third");
+
+  const settled = [1, 2, 3].map((turnNumber) => records.filter((record) => record.session?.turn === turnNumber).at(-1)!);
+  assert.deepEqual(settled.map((record) => record.attempts[0]?.resolvedModel), [model, null, model]);
+  assert.deepEqual(settled.map((record) => record.answeredBy?.model ?? null), [model, null, model]);
+  await session.close();
+  await runtime.close();
+});
+
 test("a worker that dies uncleanly leaves its dispatch-time record", async () => {
   const records: Array<{ status: string; prompt: string }> = [];
   const runtime = new EnsembleRuntime({

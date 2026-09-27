@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertCompilableSchema, parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
-import { InvalidAgentSchemaError } from "../../src/errors.js";
+import { assertCompilableSchema, normaliseForCodexOutputSchema, parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
+import { CyclicAgentSchemaError, InvalidAgentSchemaError } from "../../src/errors.js";
 
 const nestedSchema = {
   type: "object",
@@ -20,6 +20,44 @@ const nestedSchema = {
     }
   }
 };
+
+test("object-reference cycles name their location before schema compilation or normalisation", () => {
+  const schema: Record<string, unknown> = { type: "object", $defs: { node: { type: "object" } } };
+  (schema.$defs as { node: Record<string, unknown> }).node.properties = { next: schema.$defs };
+  for (const check of [assertCompilableSchema, normaliseForCodexOutputSchema]) {
+    assert.throws(() => check(schema), (error: unknown) => {
+      assert.ok(error instanceof CyclicAgentSchemaError);
+      assert.match(error.message, /cycle at #\/\$defs\/node\/properties\/next \(back to #\/\$defs\)/);
+      assert.doesNotMatch(error.message, /Maximum call stack|\[object Object\]/);
+      return true;
+    });
+  }
+});
+
+test("recursive JSON Schema references remain compilable and normalisable", () => {
+  const root = { type: "object", properties: { next: { $ref: "#" } } };
+  const defs = { type: "object", $defs: { node: { type: "object", properties: { next: { $ref: "#/$defs/node" } } } }, properties: { root: { $ref: "#/$defs/node" } } };
+  for (const schema of [root, defs]) {
+    assert.doesNotThrow(() => assertCompilableSchema(schema));
+    assert.doesNotThrow(() => normaliseForCodexOutputSchema(schema));
+  }
+  assert.equal(validateJsonSchema({ next: { next: {} } }, root).ok, true);
+  assert.equal(validateJsonSchema({ root: { next: {} } }, defs).ok, true);
+});
+
+test("a ref-only cycle that overflows compilation names the repeated reference", () => {
+  const schema = {
+    type: "object",
+    properties: { child: { $ref: "#/$defs/a" } },
+    $defs: { a: { $ref: "#/$defs/b" }, b: { $ref: "#/$defs/a" } }
+  };
+  assert.throws(() => assertCompilableSchema(schema), (error: unknown) => {
+    assert.ok(error instanceof CyclicAgentSchemaError);
+    assert.match(error.message, /\$ref cycle at #\/\$defs\/b\/\$ref \(back to #\/\$defs\/a\)/);
+    assert.doesNotMatch(error.message, /Maximum call stack|\[object Object\]/);
+    return true;
+  });
+});
 
 test("the standard draft 2020-12 declaration is accepted and enforced under its own dialect", () => {
   // The discriminating shape: under 2020-12, `items: false` constrains only

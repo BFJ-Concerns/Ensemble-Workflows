@@ -68,6 +68,17 @@ test("a dead or unstartable Codex substrate is availability, a deadline is recog
   );
 });
 
+test("Codex schema rejection before generation is recognised without attributing a worker answer", () => {
+  assert.deepEqual(
+    classifyAttemptFailure(evidence({
+      engine: "codex",
+      failure: { kind: "CodexSchemaSubsetUnsupportedError", message: "arbitrary wording" },
+      appServerDiagnostic: { code: -32602 }
+    })),
+    { class: "unclassified", rule: "codex.schema-rejected" }
+  );
+});
+
 test("an unrecognised Codex diagnostic is unclassified with no rule, never defaulted into a class", () => {
   // A code the table has never seen — the shape a stale table produces when
   // Codex rewords its errors. `rule: null` is the archive's tell.

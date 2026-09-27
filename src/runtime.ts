@@ -31,7 +31,9 @@ import {
   attachAgentIdentity,
   describeError,
   failedTurnResultOf,
+  firstDeltaMsOf,
   partialWorkerTextOf,
+  partialTranscriptOf,
   SubstrateRefusedError,
   TurnTimeoutError,
   UnknownEngineError,
@@ -1036,9 +1038,26 @@ export class EnsembleRuntime {
         state.placement.cwd
       )
     );
-    const invocation = state.engineSession.beginTurn(prompt, {
+    const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
     });
+    const invocation: EngineInvocation = {
+      runAttempt: async (context) => {
+        const result = await turnInvocation.runAttempt(context);
+        // A held worker keeps its observed identity across turns. Some
+        // transports report the model only when the worker first starts;
+        // a later answer from that same worker still has that served model.
+        if (
+          result.resolvedModel === undefined &&
+          state.resolvedModel !== null &&
+          result.attemptFailure === undefined &&
+          result.text.trim().length > 0
+        ) {
+          return { ...result, resolvedModel: state.resolvedModel };
+        }
+        return result;
+      }
+    };
     const sharedOptions: Partial<AgentOptions> = {
       ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
       ...(options.model !== undefined ? { model: options.model } : {})
@@ -1065,7 +1084,11 @@ export class EnsembleRuntime {
       state.engineSession = null;
       await refused.close().catch(() => undefined);
     } else if (outcome.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return outcome;
   }
@@ -1752,7 +1775,11 @@ export class EnsembleRuntime {
       throw completion.error;
     }
     if (completion.execution.status === "complete") {
-      agentRecord.answeredBy = { entry: target.entry, engine: target.engine, model: target.model ?? null };
+      agentRecord.answeredBy = {
+        entry: target.entry,
+        engine: target.engine,
+        model: agentRecord.attempts.at(-1)?.resolvedModel ?? null
+      };
     }
     return completion.execution;
   }
@@ -2024,7 +2051,9 @@ export class EnsembleRuntime {
         attempts.target,
         "failed",
         result.attemptFailure,
-        result.text,
+        // Returned operational failures use empty text when the worker
+        // produced nothing; an answered empty string takes the output path.
+        result.text === "" ? null : result.text,
         null,
         startedAt,
         result,
@@ -2076,6 +2105,16 @@ export class EnsembleRuntime {
     if (!refused && !(error instanceof SubstrateRefusedError)) {
       attempts.ledger.answered += 1;
     }
+    const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult =
+      failedResult ??
+      (partialTranscript !== null || firstDeltaMs !== null
+        ? {
+            ...(partialTranscript !== null ? { transcripts: [partialTranscript] } : {}),
+            ...(firstDeltaMs !== null ? { firstDeltaMs } : {})
+          }
+        : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -2085,7 +2124,7 @@ export class EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult,
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,
@@ -2299,7 +2338,7 @@ function attemptRecord(
   rawOutput: string | null,
   validatedOutput: unknown,
   startedAtMs: number,
-  result: Pick<
+  result: Partial<Pick<
     TurnResult,
     | "durationMs"
     | "firstDeltaMs"
@@ -2308,7 +2347,7 @@ function attemptRecord(
     | "diagnostics"
     | "resolvedModel"
     | "resolvedEffort"
-  > | null,
+  >> | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
   observedFailure: { kind: string; message: string } | null = null,

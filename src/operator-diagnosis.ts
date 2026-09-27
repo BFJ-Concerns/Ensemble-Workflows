@@ -1,4 +1,6 @@
 import {
+  BudgetExceededError,
+  CODEX_SCHEMA_REJECTION_REMEDY,
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
   HoldTimeoutError,
@@ -6,6 +8,7 @@ import {
   TurnTimeoutError,
   agentIdentityOf,
   appServerDiagnosticOf,
+  payloadBesideMessage,
   workerExitStatusOf
 } from "./errors.js";
 import { AmbientConfigError } from "./ambient-settings.js";
@@ -72,9 +75,12 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
       if (attempt.failure !== null) {
         const diagnosis = attempt.rawOutput === null ? "" : bounded(attempt.rawOutput);
         const workerDiagnosis = diagnosis === "" ? "" : `; worker diagnosis: ${diagnosis}`;
-        lines.push(
-          `attempt ${attempt.attempt} (${attempt.failure.kind}): ${bounded(attempt.failure.message)}${workerDiagnosis}`
-        );
+        // A failure kind from the attempt vocabulary (`empty-output`) tells
+        // the operator what went wrong; one that is an internal error class
+        // name tells them nothing the message does not, so it stays in the
+        // archive.
+        const kind = INTERNAL_CLASS_NAME.test(attempt.failure.kind) ? "" : ` (${attempt.failure.kind})`;
+        lines.push(`attempt ${attempt.attempt}${kind}: ${bounded(attempt.failure.message)}${workerDiagnosis}`);
       }
     }
     const record = context.lastAgentRecord;
@@ -99,18 +105,27 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   if (error instanceof CodexSchemaSubsetUnsupportedError) {
     // Cause and remedy first; the app-server's diagnostic once, bounded —
-    // the raw error duplicates the payload into the message and the data
-    // field, and neither copy belongs on the default surface twice.
+    // the server echoes its message inside the data field, and the echo is
+    // dropped so the diagnostic reaches the reader once.
     const lines = [
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
-      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+      CODEX_SCHEMA_REJECTION_REMEDY
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      const rest = payloadBesideMessage(diagnostic);
+      const payload = rest.trim().length === 0 ? "" : `; data: ${bounded(rest)}`;
       lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
     }
     return lines;
+  }
+  if (error instanceof BudgetExceededError) {
+    // A budget refusal is the operator's own ceiling doing its job: the
+    // remedy is the ceiling, and the stack behind it is harness interior.
+    return [
+      error.message,
+      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+    ];
   }
   if (error instanceof EngineShutdownError) {
     // Reached the operator only because the run was already ending: the
@@ -183,6 +198,9 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   return null;
 }
+
+/** An error class name (`CodexSchemaSubsetUnsupportedError`), as opposed to an attempt-vocabulary kind. */
+const INTERNAL_CLASS_NAME = /^[A-Z][A-Za-z0-9]*Error$/;
 
 function recordSuffix(context: TerminalPresentationContext): string {
   return context.archiveDir !== null ? `; record: ${context.archiveDir}` : "";

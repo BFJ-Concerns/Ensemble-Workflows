@@ -158,6 +158,27 @@ test("malformed environment values fail naming the variable", () => {
   );
 });
 
+test("every environment-variable refusal quotes the offending value", () => {
+  const cases: Array<[string, string]> = [
+    ["ENSEMBLE_AGENT_CEILING", "two"],
+    ["ENSEMBLE_CONCURRENCY_CODEX", "0"],
+    ["ENSEMBLE_CONCURRENCY_CLAUDE", "-3"],
+    ["ENSEMBLE_STATUS", "perhaps"],
+    ["ENSEMBLE_RUN_RECORD", "maybe"],
+    ["ENSEMBLE_STATUS_DIR", "  "],
+    ["ENSEMBLE_RUN_RECORD_DIR", ""],
+    ["ENSEMBLE_AGENT_CEILING", "9".repeat(400)],
+    ["ENSEMBLE_CONCURRENCY_OPENCODE", "9007199254740993"]
+  ];
+  for (const [key, value] of cases) {
+    assert.throws(
+      () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", [key]: value }, cwd: "/tmp" }),
+      (error: Error) => error.message.startsWith(`Invalid value for ${key}:`) && error.message.endsWith(`; got ${JSON.stringify(value)}`),
+      `${key}=${JSON.stringify(value)}`
+    );
+  }
+});
+
 test("worker_environment resolves per engine from the config file alone", async () => {
   const fixture = await configFixture({
     schema_version: 1,
@@ -277,3 +298,11 @@ async function rawConfigFixture(source: string): Promise<{
     cleanup: async () => rm(cwd, { recursive: true, force: true })
   };
 }
+
+test("a configured status directory that does not exist is refused quoting the path", () => {
+  const missing = "/definitely/absent/status dir";
+  assert.throws(
+    () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", ENSEMBLE_STATUS_DIR: missing }, cwd: "/tmp" }),
+    (error: Error) => error.message.includes(`not a directory: ${JSON.stringify(missing)} (from the ENSEMBLE_STATUS_DIR`)
+  );
+});

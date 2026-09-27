@@ -2,7 +2,7 @@ import { Ajv } from "ajv/dist/ajv.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { ErrorObject, ValidateFunction } from "ajv";
 
-import { InvalidAgentSchemaError } from "./errors.js";
+import { CyclicAgentSchemaError, InvalidAgentSchemaError } from "./errors.js";
 
 import type { JsonSchema } from "./types.js";
 
@@ -128,6 +128,7 @@ export function validateJsonSchema(value: unknown, schema: JsonSchema): Validati
 
 /** Compile-check a schema up front so a malformed one fails before a worker spawns, not after a paid turn. */
 export function assertCompilableSchema(schema: JsonSchema): void {
+  assertAcyclicSchemaObject(schema);
   try {
     compileSchema(schema);
   } catch (error) {
@@ -136,6 +137,15 @@ export function assertCompilableSchema(schema: JsonSchema): void {
       // re-wrapping would bury the remedy under a second layer of message.
       throw error;
     }
+    // Ajv can recurse indefinitely through a chain of local $refs that
+    // never reaches a concrete schema. Identify the chain structurally;
+    // ordinary recursive schemas compile and never enter this branch.
+    if (error instanceof RangeError) {
+      const cycle = findLocalReferenceCycle(schema);
+      if (cycle !== null) {
+        throw new CyclicAgentSchemaError(cycle.at, cycle.back, "reference");
+      }
+    }
     throw new InvalidAgentSchemaError(error instanceof Error ? error.message : String(error), {
       cause: error,
       offending: schema
@@ -143,8 +153,68 @@ export function assertCompilableSchema(schema: JsonSchema): void {
   }
 }
 
+function findLocalReferenceCycle(schema: unknown): { at: string; back: string } | null {
+  const seenObjects = new Set<object>();
+  const visit = (value: unknown, path: string): { at: string; back: string } | null => {
+    if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
+    seenObjects.add(value);
+    const object = value as Record<string, unknown>;
+    if (typeof object.$ref === "string") {
+      const seenRefs = new Set<string>([path]);
+      let current = object;
+      let currentPath = path;
+      while (typeof current.$ref === "string") {
+        const targetPath = current.$ref;
+        const target = localPointerTarget(schema, targetPath);
+        if (target === null) break;
+        if (seenRefs.has(targetPath)) return { at: `${currentPath}/$ref`, back: targetPath };
+        seenRefs.add(targetPath);
+        current = target;
+        currentPath = targetPath;
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      const cycle = visit(child, `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      if (cycle !== null) return cycle;
+    }
+    return null;
+  };
+  return visit(schema, "#");
+}
+
+function localPointerTarget(schema: unknown, pointer: string): Record<string, unknown> | null {
+  if (pointer === "#") return asJsonObject(schema);
+  if (!pointer.startsWith("#/")) return null;
+  let current: unknown = schema;
+  for (const encoded of pointer.slice(2).split("/")) {
+    const key = encoded.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current !== "object" || current === null || !Object.hasOwn(current, key)) return null;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return asJsonObject(current);
+}
+
 export function normaliseForCodexOutputSchema(schema: JsonSchema): JsonSchema {
+  assertAcyclicSchemaObject(schema);
   return normaliseSchemaNode(schema) as JsonSchema;
+}
+
+function assertAcyclicSchemaObject(schema: unknown): void {
+  const active = new Map<object, string>();
+  const visited = new Set<object>();
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value !== "object" || value === null) return;
+    const firstSeenAt = active.get(value);
+    if (firstSeenAt !== undefined) throw new CyclicAgentSchemaError(path, firstSeenAt);
+    if (visited.has(value)) return;
+    active.set(value, path);
+    for (const [key, child] of Object.entries(value)) {
+      walk(child, `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+    }
+    active.delete(value);
+    visited.add(value);
+  };
+  walk(schema, "#");
 }
 
 function compileSchema(schema: JsonSchema): ValidateFunction {

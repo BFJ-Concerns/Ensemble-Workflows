@@ -1,5 +1,7 @@
 import {
   FallbackTargetRejectedError,
+  InvalidAgentOptionsError,
+  AgentOptionRejectedError,
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
@@ -86,9 +88,6 @@ export function snapshotAgentCwd<T extends object>(options: T): T {
   } catch (error) {
     throw new UnreadableAgentOptionError("cwd", "a string path", error);
   }
-  if (cwd !== undefined && typeof cwd !== "string") {
-    throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
-  }
   return new Proxy(options, {
     get(target, property, receiver) {
       return property === "cwd" ? cwd : Reflect.get(target, property, receiver);
@@ -97,33 +96,58 @@ export function snapshotAgentCwd<T extends object>(options: T): T {
 }
 
 export function assertValidAgentOptions(options: object): void {
+  const errors: AgentOptionRejectedError[] = [];
+  const collect = (check: () => void): void => {
+    try {
+      check();
+    } catch (error) {
+      if (!(error instanceof AgentOptionRejectedError)) {
+        throw error;
+      }
+      errors.push(error);
+    }
+  };
   for (const key of Object.keys(options)) {
     if (REMOVED_AGENT_OPTION_KEYS.has(key)) {
-      throw new RemovedAgentOptionError(key);
-    }
-    if (!AGENT_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS);
+      errors.push(new RemovedAgentOptionError(key));
+    } else if (!AGENT_OPTION_KEY_SET.has(key)) {
+      errors.push(new UnrecognisedAgentOptionError(key, AGENT_OPTION_KEYS));
     }
   }
 
   const values = options as Record<string, unknown>;
-  if (values.isolation !== undefined && values.isolation !== "worktree") {
-    throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-  }
+  collect(() => {
+    if (values.cwd !== undefined && typeof values.cwd !== "string") {
+      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+    }
+  });
+  collect(() => {
+    if (values.isolation !== undefined && values.isolation !== "worktree") {
+      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
+    }
+  });
   // Harness-owned domain, judged before any worker spawns; opencode's
   // effort is the registry entry's served variants, judged by its adapter.
   if (values.engine !== "opencode") {
-    assertCanonicalEffortSupported(values.effort);
+    collect(() => assertCanonicalEffortSupported(values.effort));
   }
-  assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
-  assertPositiveIntegerOption(values, "maxAttempts");
-  if (values.identity !== undefined && typeof values.identity !== "boolean") {
-    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-  }
+  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
+  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
+  collect(() => {
+    if (values.identity !== undefined && typeof values.identity !== "boolean") {
+      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
+    }
+  });
   if (values.strip !== undefined) {
-    assertValidStripOption(values.strip);
+    collect(() => assertValidStripOption(values.strip));
   }
-  assertValidFallbackChain(values.fallback);
+  collect(() => assertValidFallbackChain(values.fallback));
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 0) {
+    throw new InvalidAgentOptionsError(errors);
+  }
 }
 
 const WORKER_SESSION_OPTION_KEYS = Object.keys({
@@ -208,6 +232,9 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
   }
   if (!Array.isArray(chain)) {
     throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+  }
+  if (chain.length === 0) {
+    throw new FallbackTargetRejectedError("the chain must not be empty");
   }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;

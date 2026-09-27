@@ -3304,59 +3304,64 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
     identity: () => ({ workflow: "release-gate", phase: "review", archive_path: "/archive/run-cli-answer", totals: { active: 0, queued: 1, done: 2, failed: 0 } })
   });
   const decision = holds.raise({ content: "ship?", verdicts: ["yes", "no"] });
-  for (let attempt = 0; attempt < 400 && (await enumerateHolds(holdsDir)).holds.length === 0; attempt += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  // A failing assertion must not leave the raise polling for ever.
+  decision.catch(() => undefined);
+  try {
+    for (let attempt = 0; attempt < 400 && (await enumerateHolds(holdsDir)).holds.length === 0; attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+
+    // The listing gives the decider the run's identity card and the hold's state.
+    const listing = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout: listing, stderr: new CaptureStream(), env }), 0);
+    assert.match(listing.text(), /run-cli-answer-1\topen\t/);
+    assert.match(listing.text(), /run: +release-gate · phase review · agents 2 done, 0 active, 1 queued, 0 failed \(at raise\)/);
+    assert.match(listing.text(), /archive: +\/archive\/run-cli-answer/);
+
+    // An unlisted verdict bounces: exit 3, the reason on stdout, the hold still waiting.
+    const bounced = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: new CaptureStream(), env }),
+      3
+    );
+    const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string } };
+    assert.equal(bouncedReport.outcome, "bounced");
+    assert.equal(bouncedReport.rejection.reason, "invalid-verdict");
+    const afterBounce = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds", "--json"], { cwd: directory, stdout: afterBounce, stderr: new CaptureStream(), env }), 0);
+    assert.deepEqual(
+      (JSON.parse(afterBounce.text()) as { holds: Array<{ state: string }> }).holds.map((hold) => hold.state),
+      ["bounced"]
+    );
+
+    // A listed verdict is consumed: exit 0, and the run resumes with it and the note.
+    const consumed = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict=yes", "--note", "looks good"], { cwd: directory, stdout: consumed, stderr: new CaptureStream(), env }),
+      0
+    );
+    assert.deepEqual(JSON.parse(consumed.text()), { outcome: "consumed", hold_id: "run-cli-answer-1", verdict: "yes", answered_by: "lead-session-7" });
+    assert.deepEqual(await decision, { verdict: "yes", note: "looks good" });
+    const answered = events.find((event) => event.method === "hold/answered");
+    assert.equal(answered?.params.answeredBy, "lead-session-7");
+    assert.equal(answered?.params.note, "looks good");
+
+    // The hold is gone now: answering it again finds nothing (exit 5).
+    const missing = new CaptureStream();
+    assert.equal(
+      await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "yes"], { cwd: directory, stdout: missing, stderr: new CaptureStream(), env }),
+      5
+    );
+    assert.equal((JSON.parse(missing.text()) as { outcome: string }).outcome, "not-found");
+
+    // Missing --verdict is a usage error, on stderr.
+    const usageErr = new CaptureStream();
+    const usageOut = new CaptureStream();
+    assert.equal(await runEnsembleCli(["holds", "answer", "run-cli-answer-1"], { cwd: directory, stdout: usageOut, stderr: usageErr, env }), 2);
+    assert.equal(usageOut.text(), "");
+    assert.match(usageErr.text(), /Usage: ensemble holds answer/);
+  } finally {
+    holds.close();
+    await rm(directory, { recursive: true, force: true });
   }
-
-  // The listing gives the decider the run's identity card and the hold's state.
-  const listing = new CaptureStream();
-  assert.equal(await runEnsembleCli(["holds"], { cwd: directory, stdout: listing, stderr: new CaptureStream(), env }), 0);
-  assert.match(listing.text(), /run-cli-answer-1\topen\t/);
-  assert.match(listing.text(), /run: +release-gate · phase review · agents 2 done, 0 active, 1 queued, 0 failed \(at raise\)/);
-  assert.match(listing.text(), /archive: +\/archive\/run-cli-answer/);
-
-  // An unlisted verdict bounces: exit 3, the reason on stdout, the hold still waiting.
-  const bounced = new CaptureStream();
-  assert.equal(
-    await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "maybe"], { cwd: directory, stdout: bounced, stderr: new CaptureStream(), env }),
-    3
-  );
-  const bouncedReport = JSON.parse(bounced.text()) as { outcome: string; rejection: { reason: string } };
-  assert.equal(bouncedReport.outcome, "bounced");
-  assert.equal(bouncedReport.rejection.reason, "invalid-verdict");
-  const afterBounce = new CaptureStream();
-  assert.equal(await runEnsembleCli(["holds", "--json"], { cwd: directory, stdout: afterBounce, stderr: new CaptureStream(), env }), 0);
-  assert.deepEqual(
-    (JSON.parse(afterBounce.text()) as { holds: Array<{ state: string }> }).holds.map((hold) => hold.state),
-    ["bounced"]
-  );
-
-  // A listed verdict is consumed: exit 0, and the run resumes with it and the note.
-  const consumed = new CaptureStream();
-  assert.equal(
-    await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict=yes", "--note", "looks good"], { cwd: directory, stdout: consumed, stderr: new CaptureStream(), env }),
-    0
-  );
-  assert.deepEqual(JSON.parse(consumed.text()), { outcome: "consumed", hold_id: "run-cli-answer-1", verdict: "yes", answered_by: "lead-session-7" });
-  assert.deepEqual(await decision, { verdict: "yes", note: "looks good" });
-  const answered = events.find((event) => event.method === "hold/answered");
-  assert.equal(answered?.params.answeredBy, "lead-session-7");
-  assert.equal(answered?.params.note, "looks good");
-
-  // The hold is gone now: answering it again finds nothing (exit 5).
-  const missing = new CaptureStream();
-  assert.equal(
-    await runEnsembleCli(["holds", "answer", "run-cli-answer-1", "--verdict", "yes"], { cwd: directory, stdout: missing, stderr: new CaptureStream(), env }),
-    5
-  );
-  assert.equal((JSON.parse(missing.text()) as { outcome: string }).outcome, "not-found");
-
-  // Missing --verdict is a usage error, on stderr.
-  const usageErr = new CaptureStream();
-  const usageOut = new CaptureStream();
-  assert.equal(await runEnsembleCli(["holds", "answer", "run-cli-answer-1"], { cwd: directory, stdout: usageOut, stderr: usageErr, env }), 2);
-  assert.equal(usageOut.text(), "");
-  assert.match(usageErr.text(), /Usage: ensemble holds answer/);
-  holds.close();
-  await rm(directory, { recursive: true, force: true });
 });

@@ -599,34 +599,40 @@ test("answerHold reports a bounce with its reason, and never claims an unread an
     const events: RuntimeEvent[] = [];
     const holds = manager(dir, events);
     const decision = holds.raise({ content: "deploy?", verdicts: ["go"] });
-    const record = await publishedHold(dir);
+    // A failing assertion must not leave the raise polling for ever.
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
 
-    const bounced = await answerHold({ dir, holdId: record.hold_id, verdict: "later", answeredBy: "me" });
-    assert.equal(bounced.outcome, "bounced");
-    assert.equal(bounced.outcome === "bounced" ? bounced.rejection.reason : null, "invalid-verdict");
-    // The hold keeps waiting, now listed as bounced.
-    assert.equal((await enumerateHolds(dir)).holds.length, 1);
-    const [listed] = (await enumerateHolds(dir)).holds;
-    assert.equal(listed !== undefined && holdListingState(listed.record), "bounced");
-    const accepted = await answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "me" });
-    assert.equal(accepted.outcome, "consumed");
-    assert.deepEqual(await decision, { verdict: "go", note: null });
+      const bounced = await answerHold({ dir, holdId: record.hold_id, verdict: "later", answeredBy: "me" });
+      assert.equal(bounced.outcome, "bounced");
+      assert.equal(bounced.outcome === "bounced" ? bounced.rejection.reason : null, "invalid-verdict");
+      // The hold keeps waiting, now listed as bounced.
+      assert.equal((await enumerateHolds(dir)).holds.length, 1);
+      const [listed] = (await enumerateHolds(dir)).holds;
+      assert.equal(listed !== undefined && holdListingState(listed.record), "bounced");
+      const accepted = await answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "me" });
+      assert.equal(accepted.outcome, "consumed");
+      assert.deepEqual(await decision, { verdict: "go", note: null });
 
-    // A live raiser that is not polling (a hand-built record owned by this
-    // very process): the answer stays unread, and the report says so.
-    const scopeDir = path.join(dir, holdScopeSegment(null));
-    const idle = holdRecord("run-idle-1", null, {
-      host: hostname(),
-      pid: process.pid,
-      start_ticks: null,
-      decisionDir: scopeDir
-    });
-    await writeFile(path.join(scopeDir, "run-idle-1.json"), JSON.stringify(idle));
-    assert.equal(holdListingState(idle), "open");
-    const unread = await answerHold({ dir, holdId: "run-idle-1", verdict: "ok", answeredBy: "me", waitMs: 30, checkIntervalMs: 5 });
-    assert.equal(unread.outcome, "not-consumed");
-    assert.deepEqual(JSON.parse(await readFile(idle.decision_path, "utf8")), { nonce: idle.nonce, verdict: "ok", answered_by: "me" });
-    assert.equal((await answerHold({ dir, holdId: "no-such-hold", verdict: "ok", answeredBy: "me" })).outcome, "not-found");
+      // A live raiser that is not polling (a hand-built record owned by this
+      // very process): the answer stays unread, and the report says so.
+      const scopeDir = path.join(dir, holdScopeSegment(null));
+      const idle = holdRecord("run-idle-1", null, {
+        host: hostname(),
+        pid: process.pid,
+        start_ticks: null,
+        decisionDir: scopeDir
+      });
+      await writeFile(path.join(scopeDir, "run-idle-1.json"), JSON.stringify(idle));
+      assert.equal(holdListingState(idle), "open");
+      const unread = await answerHold({ dir, holdId: "run-idle-1", verdict: "ok", answeredBy: "me", waitMs: 30, checkIntervalMs: 5 });
+      assert.equal(unread.outcome, "not-consumed");
+      assert.deepEqual(JSON.parse(await readFile(idle.decision_path, "utf8")), { nonce: idle.nonce, verdict: "ok", answered_by: "me" });
+      assert.equal((await answerHold({ dir, holdId: "no-such-hold", verdict: "ok", answeredBy: "me" })).outcome, "not-found");
+    } finally {
+      holds.close();
+    }
   });
 });
 

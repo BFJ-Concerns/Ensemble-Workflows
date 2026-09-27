@@ -4,6 +4,7 @@ import test from "node:test";
 import { presentOperationalError, presentTerminalError } from "../../src/operator-diagnosis.js";
 import {
   AppServerExitedError,
+  BudgetExceededError,
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
   InvalidAgentSchemaError,
@@ -184,7 +185,7 @@ test("a Codex schema rejection leads with the remedy and carries the diagnostic 
   assert.ok(rendered !== null);
   const lines = rendered.split("\n");
   assert.match(lines[0] ?? "", /^Codex rejected outputSchema before generation/);
-  assert.match(lines[1] ?? "", /Use a schema supported by Codex outputSchema/);
+  assert.match(lines[1] ?? "", /Codex's outputSchema subset/);
   // The diagnostic appears exactly once, and no frame reaches the surface.
   assert.equal(rendered.split("invalid schema").length - 1, 1);
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
@@ -320,4 +321,54 @@ test("the combinators' context-free presentation uses the same seam", () => {
     "claude engine is shutting down — this worker was interrupted by the run ending, not by its own failure"
   );
   assert.equal(presentOperationalError(new Error("novel failure")), null);
+});
+
+// The shape Codex's app-server actually sends for an out-of-subset schema:
+// the readable message, with the same text echoed as an escaped JSON string
+// inside the payload's `error.message`.
+const serverBody =
+  '{\n  "type": "error",\n  "error": {\n    "code": "invalid_json_schema",\n    "message": "Invalid schema for response_format \'codex_output_schema\': In context=(), \'if\' is not permitted."\n  },\n  "status": 400\n}';
+const echoingDiagnostic = {
+  code: "other",
+  message: `other: ${serverBody}`,
+  payload: JSON.stringify({ error: { message: serverBody, codexErrorInfo: "other" }, willRetry: false })
+};
+
+function echoingRejection(): CodexSchemaSubsetUnsupportedError {
+  return attachAppServerDiagnostic(
+    new CodexSchemaSubsetUnsupportedError({ code: "other", message: echoingDiagnostic.message }, echoingDiagnostic),
+    echoingDiagnostic
+  );
+}
+
+test("a Codex schema rejection's remedy names engines the author can move to, not Codex", () => {
+  for (const text of [presentTerminalError(echoingRejection(), noContext) ?? "", echoingRejection().message]) {
+    const remedy = text.split(/(?<=\.)\s/).find((sentence) => sentence.includes("client-side")) ?? "";
+    assert.match(remedy, /'claude' or 'opencode'/);
+    assert.doesNotMatch(remedy, /run (?:\S+ )*on an engine that/);
+  }
+});
+
+test("a recorded Codex schema rejection carries the server's diagnostic once, not again as escaped JSON", () => {
+  const message = echoingRejection().message;
+  assert.equal(message.split("is not permitted").length - 1, 1, message);
+  // The payload's other fields survive beside the dropped echo.
+  assert.match(message, /"codexErrorInfo":"other"/);
+  const rendered = presentTerminalError(echoingRejection(), noContext) ?? "";
+  assert.equal(rendered.split("is not permitted").length - 1, 1, rendered);
+});
+
+test("a zero token budget says it admitted nothing and names the ceiling to set, without a stack", () => {
+  const rendered = presentTerminalError(new BudgetExceededError("codex", 0, 0), noContext);
+  assert.ok(rendered !== null, "the budget refusal must be diagnosed, not handed back to the stack renderer");
+  const lines = rendered.split("\n");
+  assert.equal(lines[0], "Token budget for codex is 0, which admits no agent: this agent was not started");
+  assert.match(lines[1] ?? "", /--budget codex=<tokens>/);
+  assert.doesNotMatch(rendered, /exhausted|spent 0 of 0|BudgetExceededError/);
+  assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
+});
+
+test("a spent token budget keeps its spend figures and gains the same remedy", () => {
+  const rendered = presentTerminalError(new BudgetExceededError("claude", 5, 7), noContext) ?? "";
+  assert.match(rendered, /^Token budget exhausted for claude: spent 7 of 5 tokens\n {2}Raise the claude ceiling/);
 });

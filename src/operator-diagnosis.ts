@@ -1,4 +1,6 @@
 import {
+  BudgetExceededError,
+  CODEX_SCHEMA_REJECTION_REMEDY,
   CodexSchemaSubsetUnsupportedError,
   EngineShutdownError,
   HoldTimeoutError,
@@ -6,6 +8,7 @@ import {
   TurnTimeoutError,
   agentIdentityOf,
   appServerDiagnosticOf,
+  payloadBesideMessage,
   workerExitStatusOf
 } from "./errors.js";
 import { AmbientConfigError } from "./ambient-settings.js";
@@ -99,18 +102,27 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   if (error instanceof CodexSchemaSubsetUnsupportedError) {
     // Cause and remedy first; the app-server's diagnostic once, bounded —
-    // the raw error duplicates the payload into the message and the data
-    // field, and neither copy belongs on the default surface twice.
+    // the server echoes its message inside the data field, and the echo is
+    // dropped so the diagnostic reaches the reader once.
     const lines = [
       "Codex rejected outputSchema before generation: the schema is outside Codex's accepted subset or malformed.",
-      "Use a schema supported by Codex outputSchema, or run on an engine that validates the full JSON Schema client-side."
+      CODEX_SCHEMA_REJECTION_REMEDY
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
-      const payload = diagnostic.payload.trim().length === 0 ? "" : `; data: ${bounded(diagnostic.payload)}`;
+      const rest = payloadBesideMessage(diagnostic);
+      const payload = rest.trim().length === 0 ? "" : `; data: ${bounded(rest)}`;
       lines.push(`server diagnostic (${String(diagnostic.code)}): ${bounded(diagnostic.message)}${payload}`);
     }
     return lines;
+  }
+  if (error instanceof BudgetExceededError) {
+    // A budget refusal is the operator's own ceiling doing its job: the
+    // remedy is the ceiling, and the stack behind it is harness interior.
+    return [
+      error.message,
+      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+    ];
   }
   if (error instanceof EngineShutdownError) {
     // Reached the operator only because the run was already ending: the

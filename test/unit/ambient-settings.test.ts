@@ -158,6 +158,25 @@ test("malformed environment values fail naming the variable", () => {
   );
 });
 
+test("every environment-variable refusal quotes the offending value", () => {
+  const cases: Array<[string, string]> = [
+    ["ENSEMBLE_AGENT_CEILING", "two"],
+    ["ENSEMBLE_CONCURRENCY_CODEX", "0"],
+    ["ENSEMBLE_CONCURRENCY_CLAUDE", "-3"],
+    ["ENSEMBLE_STATUS", "perhaps"],
+    ["ENSEMBLE_RUN_RECORD", "maybe"],
+    ["ENSEMBLE_STATUS_DIR", "  "],
+    ["ENSEMBLE_RUN_RECORD_DIR", ""]
+  ];
+  for (const [key, value] of cases) {
+    assert.throws(
+      () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", [key]: value }, cwd: "/tmp" }),
+      (error: Error) => error.message.startsWith(`Invalid value for ${key}:`) && error.message.endsWith(`; got ${JSON.stringify(value)}`),
+      `${key}=${JSON.stringify(value)}`
+    );
+  }
+});
+
 test("worker_environment resolves per engine from the config file alone", async () => {
   const fixture = await configFixture({
     schema_version: 1,

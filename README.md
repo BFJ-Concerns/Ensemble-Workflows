@@ -308,8 +308,11 @@ The archive is an ambient, machine-level data store, configured by environment:
 - Default: `$XDG_DATA_HOME/ensemble/`, or `~/.local/share/ensemble/` when
   `XDG_DATA_HOME` is unset.
 - `ENSEMBLE_RUN_RECORD=off` (or `0`/`false`/`no`) disables recording.
-- `ENSEMBLE_RUN_RECORD_DIR` relocates the store. If this variable is unset, the
-  default data-home path is still used; unset never means disabled.
+- `ENSEMBLE_RUN_RECORD_DIR` names the **data home** (the store root, `$STORE`
+  below), not the `runs/` subtree — archives land under `$STORE/runs/cwd/…`,
+  so a value ending in `runs` produces a `runs/runs/` path by design. If
+  this variable is unset, the default data-home path is still used; unset
+  never means disabled.
 
 Runs are stored under:
 
@@ -393,7 +396,7 @@ rewritten.
 
 ### Run record schema
 
-Every JSON artefact carries:
+Every durable record artefact carries:
 
 - `schema_version`: currently `4`. Version 4 replaces the agent record's
   `fallback_model` with the declared `fallback` chain and the `answered_by`
@@ -404,6 +407,14 @@ Every JSON artefact carries:
   later as additive version-3 fields. Version 2 added worktree provenance
   and cross-engine token derivations over version 1.
 - `kind`: one of `run_manifest`, `run_args`, `workflow_args`, `run_result`, or `agent_record`.
+
+The completion sentinel (`completion-sentinel.json`) is a separate artefact
+with `kind: "completion_sentinel"` and its own `schema_version` (currently
+`3`); it is supervision surface, not a record member, and is written even
+when durable recording is disabled. The live status snapshot
+(`ensemble.<run-uuid>.local.json`, schema `2`) is a third artefact family —
+live-only and removed when its run finishes — documented under *Live status*
+above.
 
 The manifest is `manifest.json`. Its top-level fields are:
 

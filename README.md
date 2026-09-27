@@ -239,7 +239,7 @@ Example:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "workflow": "verify-findings",

@@ -10,7 +10,9 @@ import {
   CLAUDE_CACHE_TTL_VARIABLE,
   ClaudeCliControlPlane,
   SANDBOXED_WORKSPACE_VARIABLE,
-  WORKER_MARKER_VARIABLE
+  VALVE_SLICE_BYTES,
+  WORKER_MARKER_VARIABLE,
+  valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
@@ -514,7 +516,7 @@ test("steer returns false when either tmux delivery step fails", async (context)
           "continue"
         );
 
-        assert.equal(steered, false);
+        assert.equal(steered.delivered, false);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
@@ -664,11 +666,96 @@ test("the valve's attach client receives the sandboxed-workspace declaration bes
       valveKillSettleMs: 0
     });
     const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
-    assert.equal(steered, true);
+    assert.deepEqual(steered, { delivered: true });
 
     const newSession = JSON.parse((await readFile(tmuxArgvPath, "utf8")).trim()) as string[];
     const flags = newSession.flatMap((argument, index) => (argument === "-e" ? [newSession[index + 1]] : []));
     assert.deepEqual(flags, ["ANTHROPIC_BASE_URL=https://declared.example", `${SANDBOXED_WORKSPACE_VARIABLE}=1`]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("valveSlices cuts a message into bounded, code-point-whole send-keys arguments that rejoin exactly", () => {
+  assert.deepEqual(valveSlices(""), []);
+  assert.deepEqual(valveSlices("continue"), ["continue"]);
+
+  // Three-byte characters never divide the bound evenly, so every cut lands
+  // mid-character on a byte slicer; the newline keeps the fixture line-shaped.
+  const message = "€\n".repeat(60_000);
+  const slices = valveSlices(message);
+  assert.ok(slices.length > 1);
+  for (const slice of slices) {
+    assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
+    assert.equal(Buffer.from(slice, "utf8").toString("utf8"), slice, "a slice is whole UTF-8, never a torn character");
+  }
+  assert.equal(slices.join(""), message);
+});
+
+test("a follow-up turn larger than one argv element reaches the valve whole, in order, before its submit keystroke", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-large-"));
+  try {
+    const claudeStub = path.join(dir, "claude-stub.mjs");
+    const tmuxStub = path.join(dir, "tmux-stub.mjs");
+    const sendKeysPath = path.join(dir, "send-keys.jsonl");
+    const sessionId = "00000000-0000-4000-8000-000000000023";
+    await writeFile(
+      claudeStub,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "valve-2",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: "valve-large-probe",
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "idle",
+            state: "blocked"
+          }]));
+        }
+      `
+    );
+    await writeFile(
+      tmuxStub,
+      `#!/usr/bin/env node
+        import { appendFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "send-keys") {
+          await appendFile(${JSON.stringify(sendKeysPath)}, JSON.stringify(args.slice(3)) + "\\n");
+        }
+      `
+    );
+    await chmod(claudeStub, 0o755);
+    await chmod(tmuxStub, 0o755);
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: claudeStub,
+      tmuxBin: tmuxStub,
+      projectsDir: dir,
+      valveAttachSettleMs: 0,
+      valveSubmitSettleMs: 0,
+      valveKillSettleMs: 0
+    });
+    // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
+    // of the size that a one-argument send fails on with `spawn E2BIG`.
+    const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
+    assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
+
+    const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message);
+    assert.deepEqual(steered, { delivered: true });
+
+    const sends = (await readFile(sendKeysPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[1] ?? "");
+    assert.ok(literal.length > 1, "the message took more than one literal send");
+    for (const slice of literal) {
+      assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
+    }
+    assert.equal(literal.join(""), message);
+    assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

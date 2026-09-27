@@ -25,7 +25,8 @@ import type {
   ClaudeControlPlane,
   ClaudeDispatchOptions,
   ClaudeSessionHandle,
-  ClaudeSessionStatus
+  ClaudeSessionStatus,
+  ValveDelivery
 } from "../../src/claude-control-plane.js";
 
 /**
@@ -140,17 +141,17 @@ class FakeControlPlane implements ClaudeControlPlane {
     return this.#path;
   }
 
-  async steer(_handle: ClaudeSessionHandle, message: string): Promise<boolean> {
+  async steer(_handle: ClaudeSessionHandle, message: string): Promise<ValveDelivery> {
     this.steerCount += 1;
     this.steered.push(message);
     this.#steered = true;
     if (!this.#steerSucceeds) {
-      return false;
+      return { delivered: false, reason: "fake valve refused" };
     }
     if (this.#steerConsumesTurn) {
       await this.#consume("append");
     }
-    return true;
+    return { delivered: true };
   }
 
   async stop(): Promise<void> {
@@ -1045,8 +1046,8 @@ class MissingTranscriptControlPlane implements ClaudeControlPlane {
     return null;
   }
 
-  async steer(): Promise<boolean> {
-    return false;
+  async steer(): Promise<ValveDelivery> {
+    return { delivered: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1089,8 +1090,8 @@ class SlowAliveControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<boolean> {
-    return false;
+  async steer(): Promise<ValveDelivery> {
+    return { delivered: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {
@@ -1472,8 +1473,8 @@ class CompactingControlPlane implements ClaudeControlPlane {
     return this.#present ? this.#path : null;
   }
 
-  async steer(): Promise<boolean> {
-    return false;
+  async steer(): Promise<ValveDelivery> {
+    return { delivered: false, reason: "fake valve refused" };
   }
 
   async stop(): Promise<void> {

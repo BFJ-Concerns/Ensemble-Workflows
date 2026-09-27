@@ -56,7 +56,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -148,7 +148,7 @@ export function claudeCacheTtlToMs(value: string): number | null {
  * its transcripts report serving, 2026-09-27); `max` is native but outside
  * the canonical set, so nothing maps to it, and `minimal` is the one
  * canonical level the CLI lacks. The CLI silently
- * accepts an unknown `--effort` value and runs at its default (observed
+ * accepts an unknown `--effort` value and runs at its default (witnessed
  * 2026-08-30: `--effort definitely-invalid` reached a healthy worker at
  * exit 0), so conversion is the only loud boundary: nothing non-native may
  * reach the CLI. What the run record reports as `resolved_effort` is not
@@ -441,9 +441,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     fromIndex: number,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
-    const steered = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the follow-up turn");
+    const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
 
     await this.#awaitReceipt(handle, fromIndex);
@@ -471,9 +471,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     fromIndex: number,
     onLiveEvidence: (() => void) | undefined
   ): Promise<TurnResult> {
-    const steered = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
-    if (!steered) {
-      throw new ClaudeValveError("reply valve failed to inject the correction");
+    const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
+    if (!delivery.delivered) {
+      throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
 
     await this.#awaitReceipt(handle, fromIndex);
@@ -597,9 +597,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         // and the blocked observation would otherwise satisfy the receipt's
         // growth test immediately, acknowledging a nudge never received.
         const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
-        const steered = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
-        if (!steered) {
-          throw new ClaudeValveError("reply valve failed to inject the blocked-worker nudge");
+        const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
+        if (!delivery.delivered) {
+          throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
         await this.#awaitReceipt(handle, mark);
         continue;

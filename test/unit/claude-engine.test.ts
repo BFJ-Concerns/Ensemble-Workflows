@@ -460,7 +460,7 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
         ) as {
           status: string;
           usage: { summary?: { totalTokens: number } };
-          transcripts: Array<{ path: string }>;
+          transcripts: Array<{ path: string; partial: boolean }>;
           attempts: Array<{
             raw_output: string | null;
             resolved_model: string | null;
@@ -472,6 +472,7 @@ test("Claude interruption retains transcript-proved turn evidence in the archive
         assert.equal(attempt?.raw_output, "partial from Claude");
         assert.equal(attempt?.resolved_model, "claude-served");
         assert.equal(archived.transcripts.length, 1);
+        assert.equal(archived.transcripts[0]?.partial, true);
         assert.match(
           await readFile(path.join(writer.archiveDir, archived.transcripts[0]!.path), "utf8"),
           /partial from Claude/

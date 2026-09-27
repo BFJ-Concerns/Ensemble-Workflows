@@ -279,6 +279,8 @@ export interface EngineTranscriptArtifact {
   format: "jsonl" | "text";
   source: string;
   content: string;
+  /** True when the turn ended before its transcript proved completion. */
+  partial?: boolean;
   threadId?: string;
   sessionId?: string;
 }

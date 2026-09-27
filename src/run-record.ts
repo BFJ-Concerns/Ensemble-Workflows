@@ -27,9 +27,9 @@ const execFileAsync = promisify(execFile);
 /**
  * 4 (2026-09-04): the agent record's `fallback_model` is replaced by the
  * declared `fallback` chain and the `answered_by` target; every attempt
- * carries its `target` and, when failed, its `classification`;
- * the manifest gains script-recorded `tallies`. A breaking shape
- * change on the agent record, so the version moves.
+ * carries its `target` and, when failed, its `classification`; the
+ * manifest gains script-recorded `tallies`. A breaking shape change on
+ * the agent record, so the version moves.
  */
 const SCHEMA_VERSION = 4;
 const MANIFEST_PATH = "manifest.json";
@@ -100,12 +100,25 @@ export interface EffectiveRunSettingsRecord {
   runTimeoutMs: Resolved<number | null>;
 }
 
+/**
+ * The harness's decision after a failed attempt under a declared chain:
+ *
+ * - `advanced` — an availability failure while a later entry remained; the
+ *   call moved to that entry and the attempt spent none of the bound.
+ * - `retried-in-place` — the call stays on this target for another attempt.
+ * - `exhausted` — nothing remains to try: the call settles on this failure.
+ * - `chain-not-consulted` — the classifier recognised nothing (`rule:
+ *   null`) while a later entry remained, so the chain, which advances on
+ *   availability alone, was not asked; any further attempt stays in place.
+ */
+export type ChainDecision = "advanced" | "retried-in-place" | "exhausted" | "chain-not-consulted";
+
 export interface RuntimeAgentAttemptRecord {
   attempt: number;
   status: "complete" | "failed";
   /**
-   * The target this attempt was dispatched to: the call's own engine
-   * and model until the chain advances, then the entry it advanced to. The
+   * The target this attempt was dispatched to: the call's own engine and
+   * model until the chain advances, then the entry it advanced to. The
    * model is the *requested* pin (null when the call left it unpinned);
    * `resolvedModel` beside it is what the engine served.
    */
@@ -119,6 +132,14 @@ export interface RuntimeAgentAttemptRecord {
    * `failure`, `appServerDiagnostic`, and `diagnostics` beside it.
    */
   classification: FailureClassification | null;
+  /**
+   * What the harness decided after this failed attempt, under a declared
+   * fallback chain — stated, so a reader never re-derives it from the
+   * classification and the chain rules. Null on a complete attempt, on
+   * every attempt of a call that declared no chain, and on an attempt the
+   * run's own ending cut short (the run ended; nothing was decided).
+   */
+  chainDecision: ChainDecision | null;
   /**
    * The transport symptom this attempt observed, when what `failure` names
    * is the run's own settlement rather than an engine fault. A shutdown or
@@ -944,6 +965,7 @@ export class RunRecordWriter {
         target: attempt.target,
         failure: attempt.failure,
         classification: attempt.classification,
+        chain_decision: attempt.chainDecision,
         observed_failure: attempt.observedFailure,
         worker_exit:
           attempt.workerExit === null
@@ -1139,8 +1161,8 @@ function transcriptAbsenceReason(
 function agentUsage(
   record: RuntimeAgentRecord
 ): { summary: UsageSummary } | { unavailable: "no-attempt-ran" | "engine-reported-no-usage" } {
-  // Summed attempt by attempt under each attempt's own engine: a chain
-  // can put one agent's attempts on two engines, and each engine's
+  // Summed attempt by attempt under each attempt's own engine: a fallback
+  // chain can put one agent's attempts on two engines, and each engine's
   // native usage is read by its own inclusion rule before the summaries
   // fold together in the declared vocabulary.
   let summary: UsageSummary | null = null;

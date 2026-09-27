@@ -14218,6 +14218,16 @@ function attachPartialTranscript(error, transcript) {
 function partialTranscriptOf(error) {
   return error instanceof Error ? error.partialTranscript ?? null : null;
 }
+function attachFirstDeltaMs(error, firstDeltaMs) {
+  const carrier = error;
+  if (carrier.firstDeltaMs === void 0) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+function firstDeltaMsOf(error) {
+  return error instanceof Error ? error.firstDeltaMs ?? null : null;
+}
 function attachFailedTurnResult(error, result) {
   const carrier = error;
   if (carrier.failedTurnResult === void 0) {
@@ -19218,6 +19228,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    */
   #rejectTurn(threadId, turn, error) {
     this.#turns.delete(threadId);
+    if (turn.firstDeltaAt !== null) {
+      attachFirstDeltaMs(error, turn.firstDeltaAt - turn.startedAt);
+    }
     const transcript = this.#transcripts.get(threadId);
     if (transcript?.events.some((event) => event.direction === "server")) {
       attachPartialTranscript(error, {
@@ -22289,6 +22302,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       attempts.ledger.answered += 1;
     }
     const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult = failedResult ?? (partialTranscript !== null || firstDeltaMs !== null ? {
+      ...partialTranscript !== null ? { transcripts: [partialTranscript] } : {},
+      ...firstDeltaMs !== null ? { firstDeltaMs } : {}
+    } : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -22298,7 +22316,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult ?? (partialTranscript === null ? null : { transcripts: [partialTranscript] }),
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,

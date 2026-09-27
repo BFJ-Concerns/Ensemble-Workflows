@@ -31,6 +31,7 @@ import {
   attachAgentIdentity,
   describeError,
   failedTurnResultOf,
+  firstDeltaMsOf,
   partialWorkerTextOf,
   partialTranscriptOf,
   SubstrateRefusedError,
@@ -2078,6 +2079,15 @@ export class EnsembleRuntime {
       attempts.ledger.answered += 1;
     }
     const partialTranscript = partialTranscriptOf(error);
+    const firstDeltaMs = firstDeltaMsOf(error);
+    const observedResult =
+      failedResult ??
+      (partialTranscript !== null || firstDeltaMs !== null
+        ? {
+            ...(partialTranscript !== null ? { transcripts: [partialTranscript] } : {}),
+            ...(firstDeltaMs !== null ? { firstDeltaMs } : {})
+          }
+        : null);
     record.attempts.push(
       attemptRecord(
         attempt,
@@ -2087,7 +2097,7 @@ export class EnsembleRuntime {
         partialWorkerTextOf(error),
         null,
         startedAt,
-        failedResult ?? (partialTranscript === null ? null : { transcripts: [partialTranscript] }),
+        observedResult,
         workerExitStatusOf(error),
         appServerDiagnostic,
         settlement === null ? null : observed,

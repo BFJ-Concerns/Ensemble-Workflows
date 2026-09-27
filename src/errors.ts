@@ -170,6 +170,23 @@ export function partialTranscriptOf(error: unknown): EngineTranscriptArtifact | 
   return error instanceof Error ? (error as PartialTranscriptCarrier).partialTranscript ?? null : null;
 }
 
+/** First answer delta timing observed before a failed turn was discarded. */
+interface FirstDeltaMsCarrier {
+  firstDeltaMs?: number;
+}
+
+export function attachFirstDeltaMs<T extends Error>(error: T, firstDeltaMs: number): T {
+  const carrier = error as T & FirstDeltaMsCarrier;
+  if (carrier.firstDeltaMs === undefined) {
+    carrier.firstDeltaMs = firstDeltaMs;
+  }
+  return error;
+}
+
+export function firstDeltaMsOf(error: unknown): number | null {
+  return error instanceof Error ? (error as FirstDeltaMsCarrier).firstDeltaMs ?? null : null;
+}
+
 /**
  * A thrown terminal interruption keeps the turn result the engine had already
  * assembled. The shared retry loop still receives the same rejection; the

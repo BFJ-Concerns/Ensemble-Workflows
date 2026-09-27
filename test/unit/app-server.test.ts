@@ -787,10 +787,11 @@ test("a run-ended Codex turn archives its streamed transcript as partial", async
       status: string;
       transcripts: Array<{ path: string; partial: boolean }>;
       transcripts_unavailable: string | null;
-      attempts: Array<{ status: string }>;
+      attempts: Array<{ status: string; first_delta_ms: number | null }>;
     };
     assert.equal(archived.status, "timed-out");
     assert.equal(archived.attempts[0]?.status, "failed");
+    assert.notEqual(archived.attempts[0]?.first_delta_ms, null);
     assert.equal(archived.transcripts.length, 1);
     assert.equal(archived.transcripts[0]?.partial, true);
     assert.equal(archived.transcripts_unavailable, null);

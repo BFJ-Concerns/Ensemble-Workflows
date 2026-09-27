@@ -105,8 +105,9 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope 
   `--phase` annotate the worker in progress output and its durable run record.
   There is no direct-agent fallback flag: a fallback chain is a script-side
   declaration (`fallback` in `agent()` or `defaults`), and the retired
-  `--fallback-model` is an unknown option (exit 2). `--task` copies an
-  optional identity into the run record for benchmark grouping.
+  `--fallback-model` exits 2 with a one-line retirement message pointing to
+  that declaration. `--task` copies an optional identity into the run record
+  for benchmark grouping.
 - `--strip capability` (repeatable) strips a named tool-surface capability —
   `skills` or `agents` — from workers. Before a workflow script it applies
   run-wide to every `agent()` call; on the `agent` subcommand it applies to

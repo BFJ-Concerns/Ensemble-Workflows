@@ -523,7 +523,7 @@ test("CLI separates --json-args from its malformed-JSON diagnostic", async () =>
     stderr.text(),
     "--json-args: the argument must contain valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)\n"
   );
-  // The flag must not run into the sentence with no separator.
+  // The flag ran into the sentence with no separator.
   assert.doesNotMatch(stderr.text(), /--json-args the argument must contain valid JSON:/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
   assert.equal(runtimeCreations, 0);
@@ -987,27 +987,27 @@ test("the archive records the effort the engine actually served, beside the effo
   assert.equal(record.attempts[0]?.resolved_effort, "medium");
 });
 
-test("the retired --fallback-model flag is unknown to the CLI, and a misplaced flag is still a placement error", async () => {
-  // The engine-side switch is retired with its flag: the CLI names an
-  // unknown option at exit 2 with no runtime created, and the chain is a
-  // script-side declaration with no direct-agent flag.
+test("the retired --fallback-model flag names its script-side replacement, and a misplaced flag is still a placement error", async () => {
   let runtimeCreations = 0;
-  const stderr = new CaptureStream();
-  const exitCode = await runEnsembleCli(
-    ["agent", "--engine=claude", "--fallback-model=sonnet", "prompt"],
-    {
-      stdout: new CaptureStream(),
+  for (const flag of [["--fallback-model=sonnet"], ["--fallback-model", "sonnet"]]) {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(["agent", "--engine=claude", ...flag, "prompt"], {
+      stdout,
       stderr,
       createRuntime: async () => {
         runtimeCreations += 1;
         return fakeRuntime();
       }
-    }
-  );
-  assert.equal(exitCode, 2);
-  assert.equal(runtimeCreations, 0);
-  assert.match(stderr.text(), /--fallback-model/);
-  assert.doesNotMatch(stderr.text(), /\n\s+at /);
+    });
+    assert.equal(exitCode, 2);
+    assert.equal(stdout.text(), "");
+    assert.equal(
+      stderr.text(),
+      "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead.\n"
+    );
+    assert.equal(runtimeCreations, 0);
+  }
 
   const malformedStderr = new CaptureStream();
   const malformedExit = await runEnsembleCli(
@@ -1087,7 +1087,6 @@ test("ensemble agent names an invalid --engine value without repeating the flag"
   assert.equal(exitCode, 2);
   assert.equal(stdout.text(), "");
   assert.equal(stderr.text(), "--engine must be codex, claude, or opencode; got nope\n");
-  // The flag name must not be doubled, nor the separator a comma:
   // "--engine engine must be codex, claude, or opencode, got nope".
   assert.doesNotMatch(stderr.text(), /--engine engine must be codex, claude, or opencode, got nope/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
@@ -2925,9 +2924,9 @@ test("a missing workflow script path is a rejected invocation: exit 2, one clean
 });
 
 test("a direct agent whose --cwd is missing is rejected the same way, before any run artefact exists", async () => {
-  // The same boundary from the other side: this path must not write an
-  // archive or a sentinel for a rejection that comes before either. One rule,
-  // both forms.
+  // The same boundary from the other side: this path must not write a full
+  // archive and a sentinel for a rejection that is placed before either. One
+  // rule, both forms.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-cwd-"));
   const runRecordDir = path.join(directory, "records");
   const missingCwd = path.join(directory, "nowhere");
@@ -3055,8 +3054,8 @@ test("a clean run's durable surfaces carry no invented cause", async () => {
 });
 
 test("a workflow's failed worker is announced on stderr under its engine tag, with the record's own account", async () => {
-  // A dispatched worker's failure resolves to the script as a value, so the
-  // notice is where an operator watching the terminal learns which
+  // A dispatched worker's failure resolves to the script as a value,
+  // so the notice is where an operator watching the terminal learns which
   // worker failed and why. The direct-agent form is exempt: its collapse
   // is the run's own failure and the terminal diagnosis renders it.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-failed-notice-"));

@@ -987,6 +987,16 @@ async function parseWorkflowInvocation(argv: string[], cwd: string): Promise<Par
 }
 
 async function parseAgentInvocation(argv: string[], cwd: string, stdin: Readable): Promise<ParsedAgentInvocation> {
+  for (const argument of argv) {
+    if (argument === "--") {
+      break;
+    }
+    if (optionName(argument) === "--fallback-model") {
+      throw new CliUsageError(
+        "--fallback-model was retired; declare a script-side fallback chain in agent() or defaults instead."
+      );
+    }
+  }
   rejectMisplacedAgentTuningFlags(argv);
   rejectDuplicateScalarFlags(argv);
   let parsed;

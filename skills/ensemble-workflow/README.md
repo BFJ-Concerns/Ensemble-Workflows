@@ -63,19 +63,18 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs hello.js
 There is no `ensemble` binary on `PATH`. Run the bundle with Node (>= 24.14.0;
 older Nodes exit 1 with a version error):
 
+The synopsis below is the product's own usage output, printed on stderr when the
+bundle is invoked with no arguments:
+
 ```
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs \
-  [--json-args '<json>'|@file] [--budget engine=N] [--agent-ceiling N|null] \
-  [--concurrency engine=N] [--timeout ms] [--strip capability] <script.js> [args...]
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
-  --engine <engine> [--model <model>] [--effort <effort>] \
-  [--label <label>] [--phase <phase>] [--cwd <path>] \
-  [--isolation worktree] [--identity] [--schema '<json>'|@file] \
-  [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] \
-  [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] \
-  [--timeout ms] [prompt]
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope <scope> | --all]
+Usage: ensemble [--json-args '<json>|@file'] [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [--strip capability] [--caller-identity <identity>] [--hold-scope <scope>] <script.js> [args...]
+       ensemble agent --engine <engine> [--model <model>] [--effort <effort>]
+                      [--label <label>] [--phase <phase>] [--cwd <path>]
+                      [--isolation worktree] [--identity] [--schema '<json>|@file'] [--max-attempts N] [--strip capability] [--task <identity>] [--caller-identity <identity>] [--hold-scope <scope>]
+                      [--budget engine=N] [--agent-ceiling N|null] [--concurrency engine=N] [--timeout ms] [prompt]
+       ensemble workflows
+       ensemble holds [--json] [--scope <scope> | --all]
+       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]
 ```
 
 - `--json-args` replaces the positional string args with a parsed JSON value
@@ -96,6 +95,8 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope 
 - `--caller-identity <identity>` records the opaque identity of the invoking
   session. It applies to both workflow and direct-agent runs and outranks
   `ENSEMBLE_CALLER_IDENTITY` when both are supplied.
+- `--hold-scope <scope>` sets the scope key for holds raised during the run,
+  on both workflow and direct-agent forms. See the *Holds* section below.
 - `agent` runs one worker without a script. Supply its non-empty prompt as the final
   argument, or omit the argument and pipe the prompt on stdin; put run-tuning
   flags after `agent` and before that prompt. `--schema`
@@ -121,8 +122,9 @@ node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json] [--scope 
   (project) and `$XDG_DATA_HOME/ensemble/workflows/` (user); unparseable
   entries are noted on stderr and skipped. Its listing is prose on stdout.
 - `holds` lists open decision holds as prose on stdout; `holds --json` prints
-  the full records as JSON on stdout. Help and version print text on stdout.
-  Diagnostics go to stderr.
+  the full records as JSON on stdout. `holds answer` answers an open hold from
+  the CLI — see the *Holds* section below. Help and version print text on
+  stdout. Diagnostics go to stderr.
 
 Exit 0 prints the script's return value, or the direct agent's return value, as
 JSON on stdout — always JSON, every return type. A schema agent's structured

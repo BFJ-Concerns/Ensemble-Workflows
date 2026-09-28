@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { access, glob, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -323,6 +324,44 @@ test("the sentinel is written even when durable recording is disabled ambiently"
   await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
 });
 
+test("the sentinel identifies an archive that failed to start while recording was enabled", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-record-start-failure-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "record-start-failure" }; return "ok";`);
+  let sentinelPath: string | undefined;
+  const stderr = new CaptureStream();
+  const originalWrite = stderr.write.bind(stderr);
+  stderr.write = ((chunk: string) => {
+    const announced = chunk.match(/^\[sentinel\] will write (\S+) when the run ends\n$/);
+    if (announced) {
+      sentinelPath = announced[1]!;
+      // A real archive-start failure: the writer cannot replace this directory
+      // with its args.json file, while the neighbouring sentinel remains writable.
+      mkdirSync(path.join(path.dirname(sentinelPath), "args.json"), { recursive: true });
+    }
+    return originalWrite(chunk);
+  }) as typeof stderr.write;
+
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr,
+      runRecordDir: path.join(directory, "records"),
+      createRuntime: async () => fakeRuntime()
+    });
+    assert.equal(exitCode, 1);
+    assert.ok(sentinelPath);
+    const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+      manifest: { unavailable?: string };
+    };
+    assert.deepEqual(sentinel.manifest, { unavailable: "recording-start-failed" });
+    await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the sentinel carries each terminal outcome the launcher can handle", async () => {
   // Failure and timeout, driven through the same terminal finally as
   // success; interruption shares that path (the SIGINT test above proves the
@@ -528,6 +567,83 @@ test("CLI separates --json-args from its malformed-JSON diagnostic", async () =>
   assert.doesNotMatch(stderr.text(), /--json-args the argument must contain valid JSON:/);
   assert.doesNotMatch(stderr.text(), /Usage: ensemble/);
   assert.equal(runtimeCreations, 0);
+});
+
+test("CLI refuses over-deep JSON args before a run begins, inline and from a file", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-deep-json-args-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "deep-json-args" }; return "ok";`);
+  const nested = (shape: "array" | "object" | "mixed", depth: number): string => {
+    let value = "0";
+    for (let level = 0; level < depth; level += 1) {
+      value = shape === "array" || (shape === "mixed" && level % 2 === 0) ? `[${value}]` : `{"child":${value}}`;
+    }
+    return value;
+  };
+
+  try {
+    const cases = [
+      { shape: "object", form: "file", depth: 4_000 },
+      ...(["array", "object", "mixed"] as const).flatMap((shape) =>
+        (["inline", "file"] as const).map((form) => ({ shape, form, depth: 257 }))
+      )
+    ] as const;
+    for (const { shape, form, depth } of cases) {
+      const source = nested(shape, depth);
+      const input = path.join(directory, `${shape}.json`);
+      if (form === "file") await writeFile(input, source);
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      let runtimeCreations = 0;
+      const recordDir = path.join(directory, `${shape}-${form}-records`);
+      const exitCode = await runEnsembleCli(["--json-args", form === "inline" ? source : `@${input}`, script], {
+        cwd: directory,
+        stdout,
+        stderr,
+        runRecordDir: recordDir,
+        createRuntime: async () => {
+          runtimeCreations += 1;
+          return fakeRuntime();
+        }
+      });
+
+      assert.equal(exitCode, 2, `${shape}/${form}: ${stderr.text()}`);
+      assert.equal(stdout.text(), "");
+      assert.equal(stderr.text(), "--json-args exceeds maximum nesting depth of 256\n");
+      assert.equal(runtimeCreations, 0);
+      await assert.rejects(access(recordDir));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI accepts JSON args at the nesting limit", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-json-args-limit-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `
+    export const meta = { name: "json-args-limit" };
+    let depth = 0;
+    let value = args;
+    while (Array.isArray(value)) { depth += 1; value = value[0]; }
+    return depth;
+  `);
+  const source = `${"[".repeat(256)}0${"]".repeat(256)}`;
+  try {
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(["--json-args", source, script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir: null,
+      createRuntime: async () => fakeRuntime()
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    assert.equal(stdout.text(), "256\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("CLI reads parsed JSON args from an @file path", async () => {

@@ -29,6 +29,8 @@ import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
 
+const MAX_JSON_ARGS_DEPTH = 256;
+
 const AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
   model: { type: "string" },
@@ -320,6 +322,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   let progress: RunProgress | undefined;
   let statusWriter: StatusFileWriter | null = null;
   let runRecordWriter: RunRecordWriter | null = null;
+  let recordingEnabled = false;
   let finalRecord: { status: "complete" | "failed" | "timed-out" | "interrupted"; exitCode: number; result: unknown } | null = null;
   // What ended the run. The diagnostic exists on stderr already; a consumer
   // holding only the archive has no way to reconstruct it, so it is
@@ -359,6 +362,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     progress = (runtime as { progress?: RunProgress }).progress;
 
     const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
+    recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
 
@@ -682,9 +686,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         workers: workerOutcomes(progress, runtime),
         error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
-        // it covers. Absent recording, or a seal that never landed, says so
-        // rather than omitting the field.
-        manifest: manifestAttestation(runRecordWriter)
+        // it covers. A missing writer or an unsealed archive says why no
+        // digest can be attested rather than omitting the field.
+        manifest: manifestAttestation(runRecordWriter, recordingEnabled)
       });
     }
   }
@@ -1370,12 +1374,32 @@ async function parseJsonValue(value: string, cwd: string, flagName: "--json-args
     }
   }
 
+  let parsed: unknown;
   try {
-    return JSON.parse(source);
+    parsed = JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const diagnosticPrefix = flagName === "--json-args" ? `${flagName}: ` : `${flagName} `;
     throw new CliUsageError(`${diagnosticPrefix}${sourceDescription} must contain valid JSON: ${message}`);
+  }
+  if (flagName === "--json-args") {
+    assertJsonArgsDepth(parsed);
+  }
+  return parsed;
+}
+
+function assertJsonArgsDepth(value: unknown): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.value === null || typeof current.value !== "object") continue;
+    const depth = current.depth + 1;
+    if (depth > MAX_JSON_ARGS_DEPTH) {
+      throw new CliUsageError(`--json-args exceeds maximum nesting depth of ${MAX_JSON_ARGS_DEPTH}`);
+    }
+    for (const child of Object.values(current.value)) {
+      pending.push({ value: child, depth });
+    }
   }
 }
 
@@ -1512,9 +1536,9 @@ function resolveCallerIdentity(flag: string | undefined, env: NodeJS.ProcessEnv)
  * manifest beside this sentinel, whatever its own self-digest says, is
  * not one this run sealed.
  */
-function manifestAttestation(writer: RunRecordWriter | null): SentinelManifestAttestation {
+function manifestAttestation(writer: RunRecordWriter | null, recordingEnabled: boolean): SentinelManifestAttestation {
   if (writer === null) {
-    return { unavailable: "recording-disabled" };
+    return { unavailable: recordingEnabled ? "recording-start-failed" : "recording-disabled" };
   }
   const digest = writer.sealedManifestDigest();
   return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };

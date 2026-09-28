@@ -29821,6 +29821,7 @@ async function createRuntime2(options = {}) {
 }
 
 // src/cli.ts
+var MAX_JSON_ARGS_DEPTH = 256;
 var AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
   model: { type: "string" },
@@ -30038,6 +30039,7 @@ async function runEnsembleCli(argv, options = {}) {
   let progress;
   let statusWriter = null;
   let runRecordWriter = null;
+  let recordingEnabled = false;
   let finalRecord = null;
   let terminalError = null;
   const sentinel = new CompletionSentinel();
@@ -30060,6 +30062,7 @@ async function runEnsembleCli(argv, options = {}) {
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
+    recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
     const sentinelStoreDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordStoreDir.value;
@@ -30309,9 +30312,9 @@ async function runEnsembleCli(argv, options = {}) {
         workers: workerOutcomes(progress, runtime),
         error: terminalError ?? teardownError,
         // The sealed manifest's own digest, attested from outside the file
-        // it covers. Absent recording, or a seal that never landed, says so
-        // rather than omitting the field.
-        manifest: manifestAttestation(runRecordWriter)
+        // it covers. A missing writer or an unsealed archive says why no
+        // digest can be attested rather than omitting the field.
+        manifest: manifestAttestation(runRecordWriter, recordingEnabled)
       });
     }
   }
@@ -30793,12 +30796,31 @@ async function parseJsonValue(value, cwd, flagName) {
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
     }
   }
+  let parsed;
   try {
-    return JSON.parse(source);
+    parsed = JSON.parse(source);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const diagnosticPrefix = flagName === "--json-args" ? `${flagName}: ` : `${flagName} `;
     throw new CliUsageError(`${diagnosticPrefix}${sourceDescription} must contain valid JSON: ${message}`);
+  }
+  if (flagName === "--json-args") {
+    assertJsonArgsDepth(parsed);
+  }
+  return parsed;
+}
+function assertJsonArgsDepth(value) {
+  const pending = [{ value, depth: 0 }];
+  while (pending.length > 0) {
+    const current2 = pending.pop();
+    if (current2.value === null || typeof current2.value !== "object") continue;
+    const depth = current2.depth + 1;
+    if (depth > MAX_JSON_ARGS_DEPTH) {
+      throw new CliUsageError(`--json-args exceeds maximum nesting depth of ${MAX_JSON_ARGS_DEPTH}`);
+    }
+    for (const child of Object.values(current2.value)) {
+      pending.push({ value: child, depth });
+    }
   }
 }
 function parseEngineMap(values, parseValue, flagName) {
@@ -30903,9 +30925,9 @@ function resolveCallerIdentity(flag, env) {
   const inherited = env[CALLER_IDENTITY_ENV];
   return inherited !== void 0 && inherited.trim().length > 0 ? inherited : void 0;
 }
-function manifestAttestation(writer) {
+function manifestAttestation(writer, recordingEnabled) {
   if (writer === null) {
-    return { unavailable: "recording-disabled" };
+    return { unavailable: recordingEnabled ? "recording-start-failed" : "recording-disabled" };
   }
   const digest = writer.sealedManifestDigest();
   return digest === null ? { unavailable: "manifest-unsealed" } : { sha256: digest };

@@ -48,7 +48,7 @@ export interface SentinelWorkerOutcomes {
  */
 export type SentinelManifestAttestation =
   | { sha256: string }
-  | { unavailable: "recording-disabled" | "manifest-unsealed" };
+  | { unavailable: "recording-disabled" | "recording-start-failed" | "manifest-unsealed" };
 
 export interface SentinelTerminalDetail {
   workers?: SentinelWorkerOutcomes | null;

@@ -1125,19 +1125,24 @@ export class RunRecordWriter {
 
 /**
  * Why an agent record carries no transcript, in the same vocabulary shape as
- * `usage.unavailable`: no attempt ran, every substrate refused before a
- * worker existed, the runtime ended the turn before a transcript existed,
- * the Codex session client lost capture, or an engine produced no transcript.
+ * `usage.unavailable`: the record is not yet settled, no attempt ran, every
+ * substrate refused before a worker existed, the runtime ended the turn
+ * before a transcript existed, the Codex session client lost capture, or an
+ * engine produced no transcript.
  */
 function transcriptAbsenceReason(
   record: RuntimeAgentRecord
 ):
+  | "record-unsettled"
   | "no-attempt-ran"
   | "worker-interrupted"
   | "worker-timed-out"
   | "session-client-capture-gap"
   | "engine-produced-no-transcript"
   | "substrate-never-started" {
+  if (record.status === "in-progress") {
+    return "record-unsettled";
+  }
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
@@ -1158,9 +1163,20 @@ function transcriptAbsenceReason(
   return "engine-produced-no-transcript";
 }
 
+/**
+ * The record's usage in the declared vocabulary, or the reason there is
+ * none. Absence is derived from what the record can say at the moment it
+ * is written: the dispatch-time write (`in-progress`) has not settled an
+ * attempt, so it says `record-unsettled` — the attempt in flight and its
+ * spend are unobserved, not absent. That wording survives an unclean death
+ * unchanged: the reaper resolves the status to `abandoned` and rewrites no
+ * content, so a killed run's record never denies the attempt its live
+ * status snapshot showed running. Only a settled record with no attempts
+ * says `no-attempt-ran`.
+ */
 function agentUsage(
   record: RuntimeAgentRecord
-): { summary: UsageSummary } | { unavailable: "no-attempt-ran" | "engine-reported-no-usage" } {
+): { summary: UsageSummary } | { unavailable: "record-unsettled" | "no-attempt-ran" | "engine-reported-no-usage" } {
   // Summed attempt by attempt under each attempt's own engine: a fallback
   // chain can put one agent's attempts on two engines, and each engine's
   // native usage is read by its own inclusion rule before the summaries
@@ -1174,6 +1190,9 @@ function agentUsage(
   }
   if (summary !== null) {
     return { summary };
+  }
+  if (record.status === "in-progress") {
+    return { unavailable: "record-unsettled" };
   }
   return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
 }
@@ -1318,11 +1337,12 @@ export interface ReapAbandonedRunsOptions {
  * away. The reaper resolves *statuses*, never content: beside the manifest
  * flip it rewrites the run's own still-`in-progress` agent records to
  * `abandoned` with the same abandonment provenance, because a dispatch-time
- * agent record frozen at `in-progress` reads to a consumer as "no attempt
- * ran, nothing spent" — a claim the run's death made undecidable, not
- * false. `abandoned` marks the recording as truncated: whatever attempts
- * and usage the record carries are what was recorded before the death,
- * and their absence is unobserved, never zero. Each rewritten record's
+ * agent record frozen at `in-progress` would otherwise read to a consumer
+ * as a run still going. `abandoned` marks the recording as truncated:
+ * whatever attempts and usage the record carries are what was recorded
+ * before the death — `attempts` lists settled attempts only, and the
+ * writer-side `record-unsettled` absence reason survives the flip — so
+ * their absence is unobserved, never zero and never "no attempt ran". Each rewritten record's
  * entry in the manifest's files table is refreshed in the same manifest
  * write as the status flip, so a reaped archive still verifies. The
  * reaper still never deletes, never invents usage or attempts, and never

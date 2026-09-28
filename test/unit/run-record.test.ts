@@ -646,6 +646,76 @@ test("each agent record carries its usage in the declared vocabulary, or the rea
   assert.deepEqual((await agentJson("000003")).usage, { unavailable: "no-attempt-ran" });
 });
 
+test("a dispatch-time record says unsettled, not no-attempt-ran, before and after an unclean death", async () => {
+  // The killed-run journey as the archive sees it: the dispatch-time write
+  // lands while the attempt is running, the launcher dies by SIGKILL, and
+  // the next writer's sweep reaps the record. At every step a cold reader
+  // must find no denial of the attempt the live status snapshot showed
+  // running, and no zero-cost claim — only "unsettled".
+  const cwd = await gitRepo("ensemble-record-unsettled-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const proc = await mkdtemp(path.join(tmpdir(), "ensemble-record-unsettled-proc-"));
+  try {
+    await writeProcStat(proc, process.pid, "1111");
+    const writer = await RunRecordWriter.start({
+      storeDir: store,
+      cwd,
+      runUuid: "run-unsettled",
+      workflowPath: path.join(cwd, "workflow.js"),
+      workflowSource: "export const meta = { name: 'unsettled' };\nreturn true;\n",
+      args: [],
+      cliFlags: { jsonArgs: false },
+      procDir: proc
+    });
+    const inFlight = agentRecord(1, "claude", null, 0);
+    inFlight.status = "in-progress";
+    inFlight.attempts = [];
+    inFlight.rawOutput = null;
+    inFlight.validatedOutput = null;
+    await writer.recordAgent(inFlight);
+
+    const agentJsonPath = path.join(writer.archiveDir, "agents", "000001", "agent.json");
+    const readAgent = async () =>
+      JSON.parse(await readFile(agentJsonPath, "utf8")) as {
+        status: string;
+        attempts: unknown[];
+        usage: { unavailable?: string; summary?: unknown };
+        transcripts_unavailable: string | null;
+      };
+    const dispatched = await readAgent();
+    assert.equal(dispatched.status, "in-progress");
+    assert.deepEqual(dispatched.attempts, [], "the attempt in flight has not settled, so it is not listed");
+    assert.deepEqual(dispatched.usage, { unavailable: "record-unsettled" });
+    assert.equal(dispatched.transcripts_unavailable, "record-unsettled");
+
+    // The launcher dies without sealing: the manifest's owner is rewritten
+    // to a pid that is provably gone, as the next writer will find it.
+    const manifestPath = path.join(writer.archiveDir, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    await writeAttestedRunManifest(
+      path.dirname(writer.archiveDir),
+      path.basename(writer.archiveDir),
+      { ...manifest, owner: { pid: 999999, start_ticks: "3333", host: hostname() } },
+      (manifest.files as Array<{ path: string; size: number; sha256: string }>)
+    );
+    const reaped = await reapAbandonedRuns({
+      namespaceDir: path.dirname(writer.archiveDir),
+      procDir: proc,
+      observer: { pid: process.pid, runUuid: "sweeper-run" }
+    });
+    assert.deepEqual(reaped, [path.basename(writer.archiveDir)]);
+
+    const abandoned = await readAgent();
+    assert.equal(abandoned.status, "abandoned");
+    assert.deepEqual(abandoned.attempts, [], "the reap invents no attempt");
+    assert.deepEqual(abandoned.usage, { unavailable: "record-unsettled" }, "the reap never turns unsettled into no-attempt-ran");
+    assert.equal(abandoned.transcripts_unavailable, "record-unsettled");
+  } finally {
+    await rm(store, { recursive: true, force: true });
+    await rm(proc, { recursive: true, force: true });
+  }
+});
+
 test("standalone git diff write stages beside its destination and succeeds", async () => {
   const source = await readFile("src/run-record.ts", "utf8");
   const standaloneWrite = source.match(/async function writeStandaloneText[\s\S]*?\n}/)?.[0] ?? "";

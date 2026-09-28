@@ -301,8 +301,10 @@ bucket with no provider figure reads `unavailable` with the reason
 estimate. Agent records record `resolved_effort` beside `resolved_model`, at
 record and attempt level. Each agent record carries its own `usage` — the
 summary, or `unavailable` with the reason
-(`no-attempt-ran`, `engine-reported-no-usage`) so an agent with no usage data
-is never indistinguishable from a zero-spend one. The engine-native usage
+(`record-unsettled` for a record its writer never settled — `in-progress`, or
+`abandoned` by the reaper after an unclean death; `no-attempt-ran`;
+`engine-reported-no-usage`) so an agent with
+no usage data is never indistinguishable from a zero-spend one. The engine-native usage
 events remain per attempt beneath the summaries, untouched. On Claude, the
 budget charges a per-component high-water mark on each compacted turn's
 input snapshot, so budget spend can only grow even when the input side
@@ -396,7 +398,10 @@ matching start ticks is live; and everything else (another host,
 undecidable — never assumed live or dead. The next run's startup sweep in the
 namespace applies the same rule and rewrites a provably-dead run's manifest
 and stranded agent records to `"abandoned"`, so a cold reader arriving
-after that sweep meets the verdict already written. The `files` table
+after that sweep meets the verdict already written. An abandoned agent
+record's `attempts` lists settled attempts only and its `usage` and
+`transcripts_unavailable` read `record-unsettled`: the attempt the death cut
+short, and whatever it spent, are unobserved — never denied, never zero. The `files` table
 (path, size, SHA-256 per artefact) and the canonical-form hashes of the
 workflow source and arguments are present in every record and each
 verifiable from the artefact alone.
@@ -816,7 +821,9 @@ attempt — decided it: a run that ended under the worker, or a turn timeout.
 It is `null` for a worker whose attempts already tell the story, so a record
 never contradicts its own attempts. A record with no retained transcript
 keeps `transcripts` as `[]` and carries the reason in
-`transcripts_unavailable` — `no-attempt-ran`, `substrate-never-started`, `worker-interrupted`,
+`transcripts_unavailable` — `record-unsettled` (the writer never settled the
+record: `in-progress`, or reaper-`abandoned`), `no-attempt-ran`,
+`substrate-never-started`, `worker-interrupted`,
 `worker-timed-out`, `session-client-capture-gap` (the engine's capture path
 observed the turn's transcript lost — `transcript_capture` carries that
 observation as `retained`, `lost`, or `null` where nothing was observed, and

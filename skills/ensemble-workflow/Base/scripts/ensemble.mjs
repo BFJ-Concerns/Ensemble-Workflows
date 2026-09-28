@@ -15264,6 +15264,9 @@ var RunRecordWriter = class _RunRecordWriter {
   }
 };
 function transcriptAbsenceReason(record) {
+  if (record.status === "in-progress") {
+    return "record-unsettled";
+  }
   if (record.attempts.length === 0) {
     return "no-attempt-ran";
   }
@@ -15293,6 +15296,9 @@ function agentUsage(record) {
   }
   if (summary !== null) {
     return { summary };
+  }
+  if (record.status === "in-progress") {
+    return { unavailable: "record-unsettled" };
   }
   return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
 }

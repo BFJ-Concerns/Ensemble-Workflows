@@ -415,11 +415,15 @@ tell a killed run from a running one at read time, on an archive nobody has
 rewritten. A reap also resolves the run's own stranded agent records: every
 `agent.json` still `in-progress` flips to `"abandoned"` carrying the same
 `abandonment` block, because a dispatch-time record frozen at `in-progress`
-would otherwise read as "no attempt ran, nothing spent" — a claim the death
-made undecidable, not false. An abandoned agent record's attempts and usage
-are exactly what was recorded before the death: their absence means
-unobserved, never zero. Settled agent records are evidence and are never
-rewritten.
+would otherwise read as a run still going. An abandoned agent record's
+attempts and usage are exactly what was recorded before the death: `attempts`
+lists settled attempts only (an attempt in flight at the death is not among
+them), and `usage` and `transcripts_unavailable` carry the reason the
+dispatch-time write gave, `record-unsettled` — the attempt and its spend are
+unobserved, never zero and never "no attempt ran". (A record the run's *own*
+close abandons — one still at the dispatching stage when the run ended — is
+settled by a writer that knows no attempt began, and says `no-attempt-ran`.)
+Settled agent records are evidence and are never rewritten.
 
 ### Run record schema
 
@@ -615,9 +619,16 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   with empty text.
 - `validated_output`: validated object/text result, or `null` on failure.
 - `usage`: summary in the declared vocabulary, or `"unavailable"` with reason
-  (`"no-attempt-ran"`, `"engine-reported-no-usage"`).
+  (`"record-unsettled"` — the writer never settled the record: it is
+  `in-progress`, or `abandoned` by the reaper after an unclean death, so the
+  attempt in flight and its spend are unobserved; `"no-attempt-ran"` — a
+  settled record, or one the run's own close abandoned before any attempt
+  began; `"engine-reported-no-usage"`).
 - `queued_ms`, `execution_ms`.
-- `attempts`: array. Each entry: `attempt` (1-based, numbering every
+- `attempts`: array of the attempts that have settled — an attempt still
+  running when the record was written is not among them, so an
+  `in-progress` or `abandoned` record's empty array means unobserved, never
+  "none ran". Each entry: `attempt` (1-based, numbering every
   dispatch the call made — refused ones included), `status`, `target`
   (`{ engine, model }` — the engine and requested pin this attempt was
   dispatched to; the call's own until the chain advances), `started_at`,
@@ -658,7 +669,8 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `session_id`, `thread_id`, and `partial` (`true` when the turn ended before
   completion, otherwise `false`); empty when none were archived.
 - `transcripts_unavailable`: `null` when `transcripts` has entries, otherwise
-  the absence reason: `"no-attempt-ran"`, `"worker-interrupted"`,
+  the absence reason: `"record-unsettled"` (the writer never settled the
+  record: `in-progress`, or reaper-`abandoned`), `"no-attempt-ran"`, `"worker-interrupted"`,
   `"worker-timed-out"`, `"substrate-never-started"`, `"session-client-capture-gap"`, or
   `"engine-produced-no-transcript"`. The reason names an observed capture
   loss only when `transcript_capture` is `"lost"`; it does not infer one from

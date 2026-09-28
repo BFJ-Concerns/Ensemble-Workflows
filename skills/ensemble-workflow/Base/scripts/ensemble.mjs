@@ -18771,6 +18771,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
     this.#wireReader();
     this.#wireStderr();
+    this.#process.stdin.on("error", (error) => {
+      this.#failAll(new AppServerExitedError(`codex app-server stdin error: ${error.message}`));
+    });
     this.#process.once("exit", (code, signal) => {
       this.#exitStatus = { exitCode: code, signal };
       this.#failAll(new AppServerExitedError(`codex app-server exited with code ${code ?? "null"} signal ${signal ?? "null"}`));
@@ -19022,7 +19025,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
   }
   #sendNotification(method, params) {
-    void this.#writeLine(JSON.stringify({ method, params }));
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+    });
   }
   /** Sends a request through stdin without retaining or awaiting its response. */
   async #sendUnacknowledgedRequest(method, params) {
@@ -19039,7 +19043,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       this.#process.stdin.write(`${framedLine}
 `, (error) => {
         if (error !== null && error !== void 0) {
-          reject(error);
+          const exited = new AppServerExitedError(`codex app-server stdin error: ${error.message}`);
+          this.#failAll(exited);
+          reject(exited);
           return;
         }
         resolve();
@@ -19580,7 +19586,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
           reason: "Ensemble workers run with approvalPolicy never"
         }
       })
-    );
+    ).catch(() => {
+    });
   }
   #failAll(error) {
     if (this.#hasExited) {

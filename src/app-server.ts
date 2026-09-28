@@ -273,6 +273,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     this.#wireReader();
     this.#wireStderr();
+    this.#process.stdin.on("error", (error) => {
+      // Writable.write reports a closed pipe both here and through its
+      // callback. The stream event must be observed even when the callback
+      // has already failed the pending request.
+      this.#failAll(new AppServerExitedError(`codex app-server stdin error: ${error.message}`));
+    });
     this.#process.once("exit", (code, signal) => {
       // The observed exit is evidence: retained so every turn this death
       // terminalises carries how the process died, not only that it did.
@@ -578,7 +584,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   #sendNotification(method: string, params: JsonObject): void {
-    void this.#writeLine(JSON.stringify({ method, params }));
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+      // #writeLine has already failed every pending request and turn. This
+      // notification has no response to await or caller to reject.
+    });
   }
 
   /** Sends a request through stdin without retaining or awaiting its response. */
@@ -596,7 +605,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
     await new Promise<void>((resolve, reject) => {
       this.#process.stdin.write(`${framedLine}\n`, (error) => {
         if (error !== null && error !== undefined) {
-          reject(error);
+          // A dead pipe is a transport death, including when its write
+          // callback beats the child's exit event. Thread-open callers must
+          // see AppServerExitedError so the engine can raise its refusal.
+          const exited = new AppServerExitedError(`codex app-server stdin error: ${error.message}`);
+          this.#failAll(exited);
+          reject(exited);
           return;
         }
         resolve();
@@ -1259,7 +1273,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
           reason: "Ensemble workers run with approvalPolicy never"
         }
       })
-    );
+    ).catch(() => {
+      // Best-effort response to a server request; transport failure already
+      // settles the affected worker through #failAll.
+    });
   }
 
   #failAll(error: Error): void {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -37,27 +37,34 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
       // remove the abandoned root only after that child has actually exited.
       held = await startHeldSuite(temporaryRoot);
       await waitForFile(held.readyPath);
+      const heldHandoff = await suiteHandoffForProcess(temporaryRoot, requiredPid(held));
+      assert.ok(heldHandoff, "the held suite must have its own hand-off root");
+      const heldGroup = await childProcessGroup(heldHandoff);
       held.process.kill("SIGKILL");
       const stopped = await held.result;
       assert.equal(stopped.signal, "SIGKILL", stopped.output);
-      const [abandonedRoot] = await suiteRunRoots(temporaryRoot);
-      assert.ok(abandonedRoot, "the killed suite must leave its root for recovery");
-      assert.ok((await schemaCaches(path.join(temporaryRoot, abandonedRoot))).length > 0, "the killed suite must leave an observable cache for recovery");
+      const abandonedRoot = path.dirname(heldHandoff);
+      await access(path.join(heldHandoff, "schema-cache"));
 
       // A second, unrelated suite owns a live root in the same TMPDIR. Its
       // state is visible to recovery but cannot decide this fixture's result.
       foreign = await startHeldSuite(temporaryRoot, "foreign-control");
       await waitForFile(foreign.readyPath);
-      const [foreignRoot] = (await suiteRunRoots(temporaryRoot)).filter((entry) => entry !== abandonedRoot);
-      assert.ok(foreignRoot, "the foreign suite must have its own live root");
+      const foreignHandoff = await suiteHandoffForProcess(temporaryRoot, requiredPid(foreign));
+      assert.ok(foreignHandoff, "the foreign suite must have its own hand-off root");
+      const foreignGroup = await childProcessGroup(foreignHandoff);
+      const foreignRoot = path.dirname(foreignHandoff);
 
       await runAndRequireClean(temporaryRoot, unitTestPath);
-      assert.ok((await schemaCaches(path.join(temporaryRoot, abandonedRoot))).length > 0, "recovery must retain the killed suite's live child cache");
+      await access(path.join(heldHandoff, "schema-cache"));
+      await access(foreignRoot);
 
       await writeFile(held.releasePath, "release\n");
       await waitForFile(held.finishedPath);
+      await waitForProcessGroupExit(heldGroup);
       await runAndRequireClean(temporaryRoot, unitTestPath);
-      assert.deepEqual(await ownedEntries(temporaryRoot), [foreignRoot], "recovery must remove the dead run's state while retaining the foreign live root");
+      await assertMissing(abandonedRoot, "recovery must remove state once the dead run has no live child");
+      await access(foreignRoot);
 
       // Clean representative unit and integration suite exits leave no
       // suite-owned state in the isolated observer root.
@@ -65,13 +72,14 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
         const clean = runSuite(temporaryRoot, testPath);
         const result = await clean.result;
         assert.equal(result.code, 0, result.output);
-        assert.deepEqual(await ownedEntries(temporaryRoot), [foreignRoot], `clean ${path.basename(testPath)} left owned state`);
+        assert.equal(await suiteHandoffForProcess(temporaryRoot, requiredPid(clean)), null, `clean ${path.basename(testPath)} left owned state`);
       }
       await writeFile(foreign.releasePath, "release\n");
       await waitForFile(foreign.finishedPath);
+      await waitForProcessGroupExit(foreignGroup);
       assert.equal((await foreign.result).code, 0);
       await runAndRequireClean(temporaryRoot, unitTestPath);
-      assert.deepEqual(await ownedEntries(temporaryRoot), [], "recovery must remove the foreign root after its child exits");
+      await assertMissing(foreignRoot, "recovery must remove the foreign root after its child exits");
       t.diagnostic("clean unit and integration exits, killed-parent recovery, and live-child retention exercised through scripts/run-test-suite.mjs");
     } finally {
       if (held !== undefined) {
@@ -138,39 +146,58 @@ async function runAndRequireClean(temporaryRoot: string, testPath: string): Prom
   assert.equal(result.code, 0, result.output);
 }
 
-async function ownedEntries(temporaryRoot: string): Promise<string[]> {
-  return (await readdir(temporaryRoot)).filter((entry) => entry.startsWith("ensemble-")).sort();
+function requiredPid(suite: SuiteProcess): number {
+  assert.ok(suite.process.pid !== undefined && suite.process.pid > 0, "suite runner must have a process ID");
+  return suite.process.pid;
 }
 
-async function suiteRunRoots(temporaryRoot: string): Promise<string[]> {
-  return (await ownedEntries(temporaryRoot)).filter((entry) => entry.startsWith("ensemble-test-suite-run-"));
-}
-
-async function schemaCaches(temporaryRoot: string): Promise<string[]> {
-  const caches: string[] = [];
-  for (const entry of await ownedEntries(temporaryRoot)) {
-    const candidate = path.join(temporaryRoot, entry);
-    if (entry.startsWith("ensemble-codex-schema-")) caches.push(candidate);
-    if (entry.startsWith("ensemble-test-suite-run-")) {
-      for (const handoff of await readdir(candidate, { withFileTypes: true })) {
-        if (!handoff.isDirectory() || !handoff.name.startsWith("ensemble-test-suite-")) continue;
-        await collectSchemaCache(path.join(candidate, handoff.name), caches);
-      }
-    } else if (entry.startsWith("ensemble-test-suite-")) {
-      await collectSchemaCache(candidate, caches);
+async function suiteHandoffForProcess(temporaryRoot: string, pid: number): Promise<string | null> {
+  for (const entry of await readdir(temporaryRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("ensemble-test-suite-run-")) continue;
+    const namespace = path.join(temporaryRoot, entry.name);
+    let handoffs;
+    try {
+      handoffs = await readdir(namespace, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
+    const handoff = handoffs.find((child) => child.isDirectory() && child.name.startsWith(`ensemble-test-suite-handoff-pending-parent-${pid}-`));
+    if (handoff) return path.join(namespace, handoff.name);
   }
-  return caches;
+  return null;
 }
 
-async function collectSchemaCache(suiteRoot: string, caches: string[]): Promise<void> {
-  const cache = path.join(suiteRoot, "schema-cache");
-  try {
-    await access(cache);
-    caches.push(cache);
-  } catch {
-    // The root may have been removed by a concurrent finished suite.
+async function childProcessGroup(handoff: string): Promise<number> {
+  const ownerPath = path.join(handoff, "owner.json");
+  await waitForFile(ownerPath);
+  const owner = JSON.parse(await readFile(ownerPath, "utf8")) as { childProcessGroup?: number };
+  assert.ok(Number.isInteger(owner.childProcessGroup) && (owner.childProcessGroup ?? 0) > 0, "suite owner must identify its child process group");
+  return owner.childProcessGroup!;
+}
+
+async function waitForProcessGroupExit(pgid: number): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (true) {
+    try {
+      process.kill(-pgid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    assert.ok(Date.now() < deadline, `suite child process group ${pgid} remained alive after its finished marker`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function assertMissing(candidate: string, message: string): Promise<void> {
+  try {
+    await access(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  assert.fail(message);
 }
 
 async function waitForFile(file: string): Promise<void> {

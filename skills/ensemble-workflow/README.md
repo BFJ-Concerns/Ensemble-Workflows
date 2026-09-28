@@ -241,7 +241,24 @@ predates the run, so the harness delivers their declarations through a
 private per-dispatch settings file (`claude --bg --settings`) whose `env`
 block Claude Code layers additively over the operator's own settings —
 declared keys win collisions, nothing else is touched, and the file is
-removed when the session stops.
+removed when the session stops. Its directory also carries the launcher's
+owner evidence (`owner.json`: pid, start ticks, host), so a directory a
+killed or crashed launcher could not remove is judged abandoned and removed
+by the next run that dispatches a Claude worker; a live launcher's directory
+is never touched. Every `claude` process the harness launches — dispatch,
+roster query, stop — can start that per-user daemon when none is running,
+and the daemon then serves every later Claude session on the machine, so the
+run's own environment-layer settings (`ENSEMBLE_RUN_RECORD`,
+`ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, `ENSEMBLE_STATUS_DIR`,
+`ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`,
+`ENSEMBLE_CALLER_IDENTITY`) are withheld from those processes; everything
+else inherits, and a `worker_environment` declaration of one of those names
+is still injected. Variables the harness does not own are not withheld:
+relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, never by pointing
+`XDG_DATA_HOME` at a scratch directory — Claude Code homes its own
+installation and daemon on `XDG_DATA_HOME` too, and a dispatch that starts
+the daemon under a relocated value re-homes the operator's `claude` launcher
+and every later background session with it.
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, unknown key, invalid value, unreadable file, or
@@ -368,6 +385,11 @@ By default, every run writes a permanent archive (recording is disabled by
 `ENSEMBLE_RUN_RECORD=off` or a null run-record directory). Archives are stored
 under `$STORE/runs/cwd/<namespace-sha256>/<run-uuid>/`, where `$STORE`
 defaults to `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`).
+To relocate the archive for a run, set `ENSEMBLE_RUN_RECORD_DIR` (or the
+machine config's `run_record.dir`); do not relocate `XDG_DATA_HOME` itself —
+Claude Code homes its installation and per-user daemon there, and a Claude
+dispatch that starts the daemon would carry the relocated value into the
+operator's later sessions (see *Worker environment*).
 The full schema is in the source repository's root README under
 *Run record schema* (outside this bundle); the key structures are summarised
 here for quick reference.

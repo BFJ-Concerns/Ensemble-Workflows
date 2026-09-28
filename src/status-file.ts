@@ -2,7 +2,7 @@ import { readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 
-import { readProcessStartTicks } from "./run-record.js";
+import { readProcessStartTicks } from "./process-owner-evidence.js";
 
 import type { ProgressSnapshot, RunProgress } from "./progress.js";
 

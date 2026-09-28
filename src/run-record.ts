@@ -16,9 +16,11 @@ import type {
 } from "./types.js";
 import { DIGEST_RECIPE, canonicalJson, compareCodeUnits, sha256 } from "./canonical-document.js";
 import { harnessVersion } from "./harness-version.js";
+import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
+import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { UsageSummary } from "./usage-summary.js";
@@ -386,16 +388,12 @@ interface GitState {
  * null-ticks owner is never reaped — evidence that was never recorded
  * cannot be judged, so the conservative reading is "possibly live".
  */
-interface RunOwnerRecord {
-  pid: number;
-  start_ticks: string | null;
-  host: string;
-}
+type RunOwnerRecord = ProcessOwnerRecord;
 
 /** Written by the reaper beside the flipped status: what it observed, when, and as whom. */
 interface AbandonmentRecord {
   observed_at: string;
-  reason: "owner-process-gone" | "manifest-predates-owner-recording";
+  reason: OwnerGoneReason;
   observed_by: { pid: number; run_uuid: string };
 }
 
@@ -628,11 +626,7 @@ export class RunRecordWriter {
       caller_identity: options.callerIdentity ?? null,
       namespace,
       status: "in-progress",
-      owner: {
-        pid: process.pid,
-        start_ticks: await readProcessStartTicks(options.procDir ?? "/proc", process.pid),
-        host: os.hostname()
-      },
+      owner: await captureProcessOwner(options.procDir ?? "/proc", os.hostname()),
       started_at: options.startedAt ?? new Date().toISOString(),
       ended_at: null,
       workflow: {
@@ -1485,55 +1479,6 @@ async function resolveAbandonedAgentRecords(
     }
   }
   return rewritten;
-}
-
-async function judgeOwnerGone(
-  owner: unknown,
-  procDir: string,
-  host: string
-): Promise<AbandonmentRecord["reason"] | null> {
-  if (owner === undefined || owner === null) {
-    return "manifest-predates-owner-recording";
-  }
-  if (typeof owner !== "object") {
-    return null;
-  }
-  const record = owner as Partial<RunOwnerRecord>;
-  if (typeof record.pid !== "number" || record.host !== host) {
-    return null;
-  }
-  if (typeof record.start_ticks !== "string") {
-    // Recorded without proc evidence (a platform with no readable proc
-    // filesystem): liveness is unjudgeable, so the run stays as written.
-    return null;
-  }
-  const liveTicks = await readProcessStartTicks(procDir, record.pid);
-  if (liveTicks === record.start_ticks) {
-    return null;
-  }
-  // The judging side needs a readable proc filesystem too: distinguish
-  // "the pid is gone" from "proc itself is unreadable here" by probing the
-  // proc root before treating an absent stat as evidence of death.
-  if (liveTicks === null && (await readProcessStartTicks(procDir, process.pid)) === null) {
-    return null;
-  }
-  return "owner-process-gone";
-}
-
-/**
- * The process's start time in clock ticks since boot — field 22 of
- * `/proc/<pid>/stat`, parsed after the parenthesised comm field (which may
- * itself contain spaces and parentheses, hence the last-close-paren split).
- * Null where the stat file cannot be read: pid gone, or no proc filesystem.
- */
-export async function readProcessStartTicks(procDir: string, pid: number): Promise<string | null> {
-  try {
-    const statLine = await readFile(path.join(procDir, String(pid), "stat"), "utf8");
-    const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
-    return afterComm.split(" ")[19] ?? null;
-  } catch {
-    return null;
-  }
 }
 
 function runDirectoryFor(storeDir: string, namespace: NamespaceRecord, runUuid: string): string {

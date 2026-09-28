@@ -1,9 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
 
+import { withoutRunScopedVariables } from "./ambient-settings.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
 
 /**
@@ -13,10 +15,14 @@ import { boundedEvidence } from "./operator-diagnosis.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (witnessed as orphaned
+ * worker escaped the cancellation plumbing entirely (observed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+/** Per-dispatch settings directories live under the temp root as `<prefix><dispatch name>-<random>`. */
+const SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
+/** The owner evidence written beside `settings.json`, judged by the next launcher's sweep. */
+const OWNER_FILENAME = "owner.json";
 
 /**
  * The seam between the Claude engine's orchestration brain and the actual
@@ -138,7 +144,14 @@ export interface ClaudeCliControlPlaneOptions {
    *   `dispatch()` writes that file per dispatch and passes the flag.
    * - **Control-plane children** (dispatch, roster queries, stop) get the
    *   spread `#env`, because any of them can auto-start the daemon and the
-   *   dispatch command itself may read gateway settings.
+   *   dispatch command itself may read gateway settings. That daemon
+   *   outlives the run and serves every later session on the machine, so
+   *   the run's own environment-layer settings (`ENSEMBLE_RUN_RECORD_DIR`,
+   *   `ENSEMBLE_STATUS_DIR` and their siblings — `isRunScopedEnvironmentVariable`)
+   *   are withheld from these children: a daemon homed on one run's
+   *   relocated store would otherwise carry it into the operator's later
+   *   sessions. Everything else inherits; a declared value for one of those
+   *   names is still injected, since a declaration is the operator's word.
    * - **The valve's `claude attach` client** gets explicit tmux `-e` flags:
    *   a pre-existing tmux server starts pane commands from the *server's*
    *   environment, not this client's.
@@ -193,6 +206,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #launchEnv: Record<string, string>;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = new Map<string, string>();
+  /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
+  #orphanSweep: Promise<void> | null = null;
 
   constructor(options: ClaudeCliControlPlaneOptions = {}) {
     this.#claudeBin = options.claudeBin ?? "claude";
@@ -206,7 +221,10 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // last, above any machine declaration of the same name: every `claude`
     // this control plane launches must see it, or dispatch fails on trust.
     this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
-    this.#env = { ...process.env, ...this.#launchEnv };
+    // Inherit the operator's environment minus the run's own settings: a
+    // child here can start the per-user daemon, and the daemon must not be
+    // homed on this run's record or status directories (see `workerEnv`).
+    this.#env = { ...withoutRunScopedVariables(process.env), ...this.#launchEnv };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
@@ -232,6 +250,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // and user settings, declared keys winning collisions, so the file
     // carries only this run's declarations and never touches the operator's
     // own settings.
+    // Directories an earlier launcher could not remove — it was killed, or
+    // crashed — are swept before this run adds its own, so they never
+    // accumulate across runs. Once per control plane: later dispatches
+    // share the first one's sweep.
+    this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
+    await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
     args.push("--settings", path.join(settingsDir, "settings.json"));
     let registered: ClaudeSessionHandle | null = null;
@@ -328,11 +352,21 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       permissionDenyRules !== undefined && permissionDenyRules.length > 0
         ? { env, permissions: { deny: permissionDenyRules } }
         : { env };
-    const dir = await mkdtemp(path.join(tmpdir(), `ensemble-claude-env-${dispatchName}-`));
+    const dir = await mkdtemp(path.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
       await writeFile(path.join(dir, "settings.json"), `${JSON.stringify(settings)}\n`, {
         mode: 0o600
       });
+      // Beside the settings file, never inside it: the file stays Claude
+      // Code's single-purpose input, and the owner record is the harness's
+      // own evidence — this launcher's pid and start ticks — so a later
+      // launcher can judge the directory abandoned after an ending this one
+      // could not handle (the same evidence the run manifest carries).
+      await writeFile(
+        path.join(dir, OWNER_FILENAME),
+        `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname()))}\n`,
+        { mode: 0o600 }
+      );
     } catch (error) {
       // A failed write means the caller never learns the directory exists,
       // so nothing else can clean it up — remove it (and any partial file)
@@ -345,6 +379,41 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   async #removeSettingsDir(dir: string): Promise<void> {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  /**
+   * Remove every per-dispatch settings directory whose recorded owner is
+   * provably gone — a launcher that died by SIGKILL or crashed never reached
+   * `stop()`. Judgement is the run manifest's: same-host, evidence-only,
+   * conservative on every unjudgeable case (a live owner, another host, no
+   * readable proc filesystem), and a directory with no owner record at all
+   * predates owner recording and is judged abandoned under that reason. An
+   * orphaned session the daemon is still serving loses its declared
+   * variables when its file goes — an accepted cost: no launcher will ever
+   * collect that session, and checking the roster here would itself start
+   * the daemon. Best-effort throughout: this is housekeeping, and nothing
+   * here may fail or delay a dispatch on its own account.
+   */
+  async #sweepOrphanedSettingsDirs(): Promise<void> {
+    const root = tmpdir();
+    const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+    const host = hostname();
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
+        continue;
+      }
+      const dir = path.join(root, entry.name);
+      try {
+        const owner: unknown = await readFile(path.join(dir, OWNER_FILENAME), "utf8")
+          .then((text) => JSON.parse(text) as unknown)
+          .catch(() => null);
+        if ((await judgeOwnerGone(owner, this.#procDir, host)) !== null) {
+          await this.#removeSettingsDir(dir);
+        }
+      } catch {
+        // One unjudgeable directory must not end the sweep.
+      }
+    }
   }
 
   async poll(handle: ClaudeSessionHandle): Promise<ClaudeSessionStatus> {

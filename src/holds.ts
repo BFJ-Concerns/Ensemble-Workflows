@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { HoldRejectedError, HoldTimeoutError } from "./errors.js";
 import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
-import { readProcessStartTicks } from "./run-record.js";
+import { readProcessStartTicks } from "./process-owner-evidence.js";
 import { snapshotOwnerGone } from "./status-file.js";
 
 import type { SnapshotOwnerEvidence } from "./status-file.js";

@@ -8,6 +8,8 @@ import {
   defaultOpenCodeConcurrency
 } from "./concurrency-defaults.js";
 
+import { HOLD_SCOPE_ENV } from "./holds.js";
+
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
 export const CONFIG_SCHEMA_VERSION = 1;
@@ -22,6 +24,42 @@ export const RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 export const CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 
 export type SettingLayer = "flag" | "env" | "config-file" | "default";
+
+/**
+ * The environment layer's own variable names — the settings a run reads
+ * from its environment, each scoped to that run: where its records and
+ * status files go, its ceilings, its hold scope, who invoked it. A child
+ * process that can outlive the run — Claude Code's per-user daemon, which
+ * any `claude` invocation may start — must not inherit them: a daemon
+ * homed on one run's relocated store would serve every later session from
+ * it. Maintained beside the settings themselves: a new environment-layer
+ * setting joins this list in the same change.
+ */
+const RUN_SCOPED_ENVIRONMENT_VARIABLES: ReadonlySet<string> = new Set([
+  AGENT_CEILING_ENV,
+  RUN_RECORD_ENV,
+  RUN_RECORD_DIR_ENV,
+  CALLER_IDENTITY_ENV,
+  "ENSEMBLE_STATUS",
+  "ENSEMBLE_STATUS_DIR",
+  HOLD_SCOPE_ENV
+]);
+
+/** Whether a variable is one of the run's own environment-layer settings (the concurrency caps are a per-engine family). */
+export function isRunScopedEnvironmentVariable(name: string): boolean {
+  return RUN_SCOPED_ENVIRONMENT_VARIABLES.has(name) || name.startsWith("ENSEMBLE_CONCURRENCY_");
+}
+
+/** The environment with the run's own settings withheld; everything else inherits unchanged. */
+export function withoutRunScopedVariables(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const inherited: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (!isRunScopedEnvironmentVariable(name)) {
+      inherited[name] = value;
+    }
+  }
+  return inherited;
+}
 
 export interface Resolved<T> {
   value: T;

@@ -9,7 +9,7 @@ import { CodexAppServerTransport } from "../../src/app-server.js";
 import { TurnTimeoutError } from "../../src/errors.js";
 import { RunProgress } from "../../src/progress.js";
 import { LEGACY_STATUS_FILENAME, StatusFileWriter, statusFileName } from "../../src/status-file.js";
-import { readProcessStartTicks } from "../../src/run-record.js";
+import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
 import { assertSalvageEnvelope, executablePath, findOnlyFile, hermeticEstateEnvironment, runNode, runProcess } from "./estate-process.js";
 
 import type { BudgetView } from "../../src/progress.js";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -135,6 +135,181 @@ test("a declared worker environment reaches the dispatched claude child, above i
     const observed = JSON.parse(await readFile(envPath, "utf8")) as { base: string | null; inherited: string | null };
     assert.equal(observed.base, "https://declared.example");
     assert.equal(observed.inherited, "still-here");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the run's own environment-layer settings are withheld from every claude child, while the rest inherits and declarations still win", async () => {
+  // Any control-plane child can start Claude Code's per-user daemon, which
+  // outlives the run and serves every later session on the machine. The
+  // run's record and status directories (and their sibling settings) must
+  // not become the daemon's; an unrelated inherited variable still passes,
+  // and an operator's explicit declaration of one of those names is still
+  // injected — the declaration is their word, the withholding is the
+  // harness's default.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-run-scoped-env-"));
+  try {
+    const envPath = path.join(dir, "observed-env.json");
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000013";
+    const name = "run-scoped-env-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { writeFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
+            recordDir: process.env.ENSEMBLE_RUN_RECORD_DIR ?? null,
+            record: process.env.ENSEMBLE_RUN_RECORD ?? null,
+            statusDir: process.env.ENSEMBLE_STATUS_DIR ?? null,
+            concurrency: process.env.ENSEMBLE_CONCURRENCY_CLAUDE ?? null,
+            inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
+          }));
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "run-scoped-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const saved = Object.fromEntries(
+      ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_RUN_RECORD", "ENSEMBLE_STATUS_DIR", "ENSEMBLE_CONCURRENCY_CLAUDE", "ENSEMBLE_TEST_INHERITED"].map(
+        (key) => [key, process.env[key]]
+      )
+    );
+    process.env.ENSEMBLE_RUN_RECORD_DIR = path.join(dir, "relocated-store");
+    process.env.ENSEMBLE_RUN_RECORD = "on";
+    process.env.ENSEMBLE_STATUS_DIR = path.join(dir, "relocated-status");
+    process.env.ENSEMBLE_CONCURRENCY_CLAUDE = "3";
+    process.env.ENSEMBLE_TEST_INHERITED = "still-here";
+    try {
+      const controlPlane = new ClaudeCliControlPlane({
+        claudeBin: stubPath,
+        projectsDir: dir,
+        dispatchTimeoutMs: 1_000,
+        workerEnv: { ENSEMBLE_STATUS_DIR: path.join(dir, "declared-status") }
+      });
+      await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        restoreEnv(key, value);
+      }
+    }
+
+    assert.deepEqual(JSON.parse(await readFile(envPath, "utf8")), {
+      recordDir: null,
+      record: null,
+      statusDir: path.join(dir, "declared-status"),
+      concurrency: null,
+      inherited: "still-here"
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the first dispatch sweeps settings directories whose owning launcher is provably gone and keeps every other", async () => {
+  // A launcher killed by SIGKILL or crashed never reaches stop(), so its
+  // per-dispatch settings directory outlives it. Each directory carries the
+  // launcher's owner evidence beside the settings file; the next control
+  // plane's first dispatch removes the ones whose owner is provably gone,
+  // under the run manifest's own judgement — a live owner's directory and
+  // an unrelated directory are left exactly as found, and one with no owner
+  // record predates owner recording and goes.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-settings-sweep-"));
+  const tempRoot = path.join(dir, "tmp");
+  const proc = path.join(dir, "proc");
+  await mkdir(tempRoot);
+  await writeProcStat(proc, process.pid, "1111");
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000014";
+    const name = "sweep-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "sweep-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+    const host = hostname();
+    const leftover = async (basename: string, owner: object | null): Promise<string> => {
+      const leftoverDir = path.join(tempRoot, basename);
+      await mkdir(leftoverDir, { mode: 0o700 });
+      await writeFile(path.join(leftoverDir, "settings.json"), `${JSON.stringify({ env: { [WORKER_MARKER_VARIABLE]: basename } })}\n`);
+      if (owner !== null) {
+        await writeFile(path.join(leftoverDir, "owner.json"), `${JSON.stringify(owner)}\n`);
+      }
+      return leftoverDir;
+    };
+    const deadOwner = await leftover("ensemble-claude-env-dead-aaaaaa", { pid: 999999, start_ticks: "3333", host });
+    const reusedPid = await leftover("ensemble-claude-env-reused-bbbbbb", { pid: process.pid, start_ticks: "9999", host });
+    const liveOwner = await leftover("ensemble-claude-env-live-cccccc", { pid: process.pid, start_ticks: "1111", host });
+    const foreignHost = await leftover("ensemble-claude-env-foreign-dddddd", { pid: 999999, start_ticks: "3333", host: `${host}-elsewhere` });
+    const noOwner = await leftover("ensemble-claude-env-legacy-eeeeee", null);
+    const unrelated = path.join(tempRoot, "someone-elses-dir");
+    await mkdir(unrelated);
+
+    const savedTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = tempRoot;
+    try {
+      const controlPlane = new ClaudeCliControlPlane({
+        claudeBin: stubPath,
+        projectsDir: dir,
+        dispatchTimeoutMs: 1_000,
+        procDir: proc
+      });
+      const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+
+      const survivors = (await readdir(tempRoot)).sort();
+      const ownDir = survivors.find((entry) => entry.startsWith(`ensemble-claude-env-${name}-`));
+      assert.ok(ownDir, "this dispatch's own directory exists");
+      assert.deepEqual(
+        survivors.filter((entry) => entry !== ownDir),
+        [path.basename(liveOwner), path.basename(foreignHost), path.basename(unrelated)].sort(),
+        "provably-dead and legacy directories go; live, foreign-host and unrelated ones stay"
+      );
+      for (const gone of [deadOwner, reusedPid, noOwner]) {
+        await assert.rejects(access(gone), gone);
+      }
+      // This dispatch's own directory carries the evidence a later sweep judges by.
+      const owner = JSON.parse(await readFile(path.join(tempRoot, ownDir, "owner.json"), "utf8")) as {
+        pid: number;
+        start_ticks: string | null;
+        host: string;
+      };
+      assert.deepEqual(owner, { pid: process.pid, start_ticks: "1111", host });
+      assert.equal((await stat(path.join(tempRoot, ownDir, "owner.json"))).mode & 0o777, 0o600);
+      await controlPlane.stop(handle);
+      await assert.rejects(access(path.join(tempRoot, ownDir)), "stop() still removes the whole directory");
+    } finally {
+      restoreEnv("TMPDIR", savedTmpdir);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -836,6 +1011,14 @@ test("a dispatch the daemon accepted but never registered is a registration time
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+/** A fake `/proc/<pid>/stat` whose comm carries a space, so the parser's last-close-paren split is what the fixture exercises. */
+async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
+  const statDir = path.join(procDir, String(pid));
+  await mkdir(statDir, { recursive: true });
+  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
+  await writeFile(path.join(statDir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
+}
 
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {

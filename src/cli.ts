@@ -563,29 +563,30 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     };
     interrupt ??= watchWorkflowInterrupts();
     void interrupt.promise.catch(() => undefined);
-    try {
-      const { result } = await Promise.race([
-        runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
-        interrupt.promise
-      ]);
-      // Under identity the resolution is an envelope, so the collapse
-      // signal is the envelope's output — an exhausted identified worker
-      // must still fail the run, not print `{output: null}` at exit 0.
-      const directAgentOutput =
-        invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null
-          ? (result as { output: unknown }).output
-          : result;
-      if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-        throw new SingleAgentFailedError();
-      }
-
-      const serialised = serialiseResult(result);
-      stdout.write(`${serialised}\n`);
-      finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      exitCode = 0;
-    } finally {
-      interrupt.dispose();
+    // A signal that landed while the run was being set up — between the
+    // sentinel announcement and here — has already declared the run
+    // interrupted: the body does not start, so nothing of the script's own
+    // can print after the hand-off line the catch below writes.
+    interrupt.throwIfInterrupted();
+    const { result } = await Promise.race([
+      runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
+      interrupt.promise
+    ]);
+    // Under identity the resolution is an envelope, so the collapse
+    // signal is the envelope's output — an exhausted identified worker
+    // must still fail the run, not print `{output: null}` at exit 0.
+    const directAgentOutput =
+      invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null
+        ? (result as { output: unknown }).output
+        : result;
+    if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
+      throw new SingleAgentFailedError();
     }
+
+    const serialised = serialiseResult(result);
+    stdout.write(`${serialised}\n`);
+    finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
+    exitCode = 0;
   } catch (error) {
     // A failed workflow would otherwise discard every completed worker's
     // output — whether it was stopped, timed out, or threw (a transport hiccup
@@ -624,7 +625,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     let teardownError: { kind: string; message: string } | null = null;
     try {
       try {
-        interrupt?.dispose();
+        // The interrupt watch stays armed through everything below: a
+        // second signal during teardown, seal, or sentinel write is
+        // absorbed, never handed to the signal's default.
         // Tear workers down while the archive is still open so their terminal
         // status can replace the dispatch-time snapshot before the run is sealed.
         progress?.finish();
@@ -682,14 +685,20 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // field, so the payload grows by nothing.
       const terminal = teardownError === null ? settled : { status: "failed" as const, exitCode: 1 };
       exitCode = terminal.exitCode;
-      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress, runtime),
-        error: terminalError ?? teardownError,
-        // The sealed manifest's own digest, attested from outside the file
-        // it covers. A missing writer or an unsealed archive says why no
-        // digest can be attested rather than omitting the field.
-        manifest: manifestAttestation(runRecordWriter, recordingEnabled)
-      });
+      try {
+        await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
+          workers: workerOutcomes(progress, runtime),
+          error: terminalError ?? teardownError,
+          // The sealed manifest's own digest, attested from outside the file
+          // it covers. A missing writer or an unsealed archive says why no
+          // digest can be attested rather than omitting the field.
+          manifest: manifestAttestation(runRecordWriter, recordingEnabled)
+        });
+      } finally {
+        // The run's terminal work is done: the handlers come off so a
+        // library caller's process keeps its own signal behaviour.
+        interrupt?.dispose();
+      }
     }
   }
   return exitCode;
@@ -965,26 +974,51 @@ class WorkflowInterruptedError extends Error {
 
 const INTERRUPT_SIGNAL_NUMBERS: Record<InterruptSignal, number> = { SIGINT: 2, SIGTERM: 15 };
 
-function watchWorkflowInterrupts(): { promise: Promise<never>; dispose: () => void } {
+interface InterruptWatch {
+  /** Rejects with `WorkflowInterruptedError` on the first signal observed. */
+  promise: Promise<never>;
+  /** Throws that same error if a signal has already been observed — the gate before work that must not start once the run is declared interrupted. */
+  throwIfInterrupted: () => void;
+  /** Releases the handlers: only once the launcher's terminal work is done, never on the way there. */
+  dispose: () => void;
+}
+
+/**
+ * Arms SIGINT and SIGTERM for the life of the run. The first signal
+ * declares the run interrupted; every later one is absorbed — the
+ * handlers stay installed through the handled shutdown, so an impatient
+ * second Ctrl-C cannot hand the process to the signal's default and kill
+ * it with the envelope printed but the record unsealed and the sentinel
+ * unwritten. A run the launcher has declared interrupted ends exactly
+ * once, fully accounted; the operator who needs it dead sooner has
+ * SIGKILL, which no handler can absorb and the sentinel never promised.
+ */
+function watchWorkflowInterrupts(): InterruptWatch {
   const signals: readonly InterruptSignal[] = ["SIGINT", "SIGTERM"];
   const handlers = new Map<InterruptSignal, () => void>();
+  let observed: InterruptSignal | null = null;
 
   const promise = new Promise<never>((_resolve, reject) => {
     for (const signal of signals) {
       const handler = () => {
-        for (const [registeredSignal, registeredHandler] of handlers) {
-          process.off(registeredSignal, registeredHandler);
+        if (observed !== null) {
+          return;
         }
-        handlers.clear();
+        observed = signal;
         reject(new WorkflowInterruptedError(signal));
       };
       handlers.set(signal, handler);
-      process.once(signal, handler);
+      process.on(signal, handler);
     }
   });
 
   return {
     promise,
+    throwIfInterrupted: () => {
+      if (observed !== null) {
+        throw new WorkflowInterruptedError(observed);
+      }
+    },
     dispose: () => {
       for (const [signal, handler] of handlers) {
         process.off(signal, handler);

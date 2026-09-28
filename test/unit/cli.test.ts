@@ -1907,6 +1907,132 @@ test("a SIGTERM-stopped run exits 143 and records 143 on every durable surface",
   assert.equal(result.exit_code, 143);
 });
 
+test("a second interrupt during the handled shutdown is absorbed and the run still ends once, fully accounted", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-double-interrupt-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-double-interrupt" };
+      await agent("hang", { engine: "codex" });
+      return "never reached";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  // The impatient operator: a second Ctrl-C right behind the first, and a
+  // third while the worker is being torn down. In-process the signal's
+  // default cannot fire, so the discriminating observation is the watch
+  // itself: its handlers must still be installed during teardown (the
+  // former code had removed them the moment the first signal landed), and
+  // gone once the run has ended.
+  const baselineListeners = process.listenerCount("SIGINT");
+  let listenersDuringTeardown: number | null = null;
+  const hangingEngine = new HangOnPromptEngine("codex", 4, () => {
+    process.emit("SIGINT");
+    process.emit("SIGINT");
+  });
+  const engineClose = hangingEngine.close.bind(hangingEngine);
+  hangingEngine.close = async () => {
+    listenersDuringTeardown = process.listenerCount("SIGINT");
+    process.emit("SIGINT");
+    await engineClose();
+  };
+
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([hangingEngine]),
+          defaultTurnTimeoutMs: 1_000,
+          defaultMaxAttempts: 1
+        })
+    });
+
+    assert.equal(exitCode, 130);
+    assert.equal(hangingEngine.cancelCount, 1, "the worker is torn down exactly once");
+    assert.equal(listenersDuringTeardown, baselineListeners + 1, "the interrupt watch stays armed through teardown");
+    assert.equal(process.listenerCount("SIGINT"), baselineListeners, "the watch is released once the run has ended");
+    assert.deepEqual(JSON.parse(stdout.text()), {
+      partial: true,
+      reason: "interrupted",
+      error: { kind: "WorkflowInterruptedError", message: "Workflow interrupted by SIGINT" },
+      completed: []
+    });
+    // Every durable surface the hand-off line points at exists and agrees.
+    const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, stderr.text());
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.deepEqual({ outcome: sentinel.outcome, exit_code: sentinel.exit_code }, { outcome: "interrupted", exit_code: 130 });
+    const runDirectory = path.dirname(announced[1]!);
+    const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8")) as {
+      status: string;
+      ended_at: string | null;
+      result: { exit_code: number | null };
+    };
+    assert.equal(manifest.status, "interrupted");
+    assert.equal(typeof manifest.ended_at, "string");
+    assert.equal(manifest.result.exit_code, 130);
+    const result = JSON.parse(await readFile(path.join(runDirectory, "result.json"), "utf8")) as { exit_code: number };
+    assert.equal(result.exit_code, 130);
+    assert.match(stderr.text(), /Interrupted \(SIGINT\) — partial result on stdout/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an interrupt observed before the script body starts ends the run without starting it", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-early-interrupt-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  const startedMarker = path.join(directory, "body.started");
+  // The body announces itself twice over — a file and a progress line —
+  // before doing anything else. Neither may appear: the signal landed
+  // while the run was still being set up, after the sentinel announcement,
+  // and a run declared interrupted then has no body to run.
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "cli-early-interrupt" };
+      require("node:fs").writeFileSync(${JSON.stringify(startedMarker)}, "started");
+      log("[phase] waiting");
+      return "unreached";
+    `
+  );
+
+  const stdout = new CaptureStream();
+  const stderr = new InterruptOnSentinelAnnouncementStream();
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 130);
+    await assert.rejects(access(startedMarker), "the script body must not start once the run is declared interrupted");
+    assert.doesNotMatch(stderr.text(), /\[phase\] waiting/);
+    const lines = stderr.text().trimEnd().split("\n");
+    assert.match(lines.at(-1) ?? "", /^Interrupted \(SIGINT\) — partial result on stdout; record: /, "the hand-off line is stderr's last line");
+    assert.deepEqual(JSON.parse(stdout.text()), {
+      partial: true,
+      reason: "interrupted",
+      error: { kind: "WorkflowInterruptedError", message: "Workflow interrupted by SIGINT" },
+      completed: []
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("CLI rejects a non-numeric --timeout with one clean line and exit code 2", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-timeout-bad-"));
   const script = path.join(directory, "workflow.js");

@@ -162,7 +162,14 @@ with every successfully finished worker's output and, in `error`, the same
 run — so a consumer capturing stdout learns why without scraping stderr. Its
 exit code is 1 for a failure or timeout and the shell convention for a
 signal — 130 for SIGINT, 143 for SIGTERM — recorded identically in the
-manifest, `result.json`, and the sentinel. A direct agent (either shape) that
+manifest, `result.json`, and the sentinel. The first signal declares the run
+interrupted; the launcher then ends it exactly once, fully accounted: a
+second SIGINT or SIGTERM during that handled shutdown is absorbed, never
+handed to the signal's default (SIGKILL remains the operator's way to end
+the process sooner, and the sentinel never promised that case), and a signal
+that lands after the sentinel announcement but before the script body starts
+ends the run without starting the body — nothing of the script's own follows
+the `Interrupted (…)` hand-off line on stderr. A direct agent (either shape) that
 exhausts its attempts also exits 1 with this envelope rather than printing
 bare `null` — with no script to receive the value, the collapsed worker is
 the run's failure. If the schema accepts JSON `null` and the worker

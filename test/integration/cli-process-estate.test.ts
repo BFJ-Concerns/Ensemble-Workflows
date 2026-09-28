@@ -2436,6 +2436,163 @@ test("the launcher exits once its terminal work is done, whatever the script bod
   }
 });
 
+test("a second interrupt during the handled shutdown leaves the run ended once, with sentinel, manifest and result on disk", { timeout: 60_000 }, async () => {
+  // The impatient operator's double Ctrl-C, with a real worker mid-turn:
+  // the second signal lands while the launcher is tearing the worker down.
+  // A launcher that hands that signal to Node's default dies by signal
+  // (exit by SIGINT, no sentinel, manifest left in-progress, no
+  // result.json), leaving the reported interruption stranded until some
+  // later run's sweep rewrites it abandoned. The finding reproduced twice,
+  // so the journey runs twice, and no other run starts in between.
+  const fixture = await createProcessFixture("double-interrupt");
+  try {
+    await writeFile(
+      fixture.script,
+      `export const meta = { name: "double-interrupt" };\nawait agent("hang", { engine: "codex" });\nreturn "unreached";\n`
+    );
+    // The archive seal calls git during teardown; the delaying shim keeps
+    // the launcher inside its handled shutdown for long enough that the
+    // second signal — sent the moment the hand-off line shows the first
+    // was handled — cannot arrive at a process that has already exited.
+    const shimBin = await delayingGitShim(path.dirname(fixture.script));
+    for (const round of [1, 2]) {
+      const turnStarted = path.join(path.dirname(fixture.script), `turn-started-${round}`);
+      const child = spawn(process.execPath, [bundledCliPath, fixture.script], {
+        env: hermeticEstateEnvironment({
+          ...fixture.env,
+          PATH: `${shimBin}${path.delimiter}${fixture.env.PATH ?? ""}`,
+          ENSEMBLE_RUN_RECORD: "1",
+          ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+          ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStarted
+        }),
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      let stdout = "";
+      let stderr = "";
+      let secondSignalSent = false;
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => (stdout += chunk));
+      child.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+        if (!secondSignalSent && /Interrupted \(SIGINT\) — partial result on stdout/.test(stderr)) {
+          secondSignalSent = true;
+          child.kill("SIGINT");
+        }
+      });
+      const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      const deadline = Date.now() + 20_000;
+      while (!(await exists(turnStarted))) {
+        assert.ok(Date.now() < deadline, `round ${round}: the worker's turn never started\n${stderr}`);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      child.kill("SIGINT");
+      const ended = await exit;
+
+      assert.ok(secondSignalSent, `round ${round}: the hand-off line never appeared\n${stderr}`);
+
+      assert.equal(ended.signal, null, `round ${round}: the launcher must exit on its own account, never by the second signal\n${stderr}`);
+      assert.equal(ended.code, 130, `round ${round}\n${stderr}`);
+      const envelope = assertSalvageEnvelope(stdout, "interrupted");
+      assert.equal(envelope.error.kind, "WorkflowInterruptedError");
+      const announced = stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+      assert.ok(announced, stderr);
+      const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+      assert.deepEqual({ outcome: sentinel.outcome, exit_code: sentinel.exit_code }, { outcome: "interrupted", exit_code: 130 });
+      const runDirectory = path.dirname(announced[1]!);
+      const manifest = JSON.parse(await readFile(path.join(runDirectory, "manifest.json"), "utf8")) as {
+        status: string;
+        ended_at: string | null;
+        result: { exit_code: number | null };
+      };
+      assert.equal(manifest.status, "interrupted", `round ${round}: the manifest is sealed by the launcher, not left for a later sweep`);
+      assert.equal(typeof manifest.ended_at, "string");
+      assert.equal(manifest.result.exit_code, 130);
+      const recorded = JSON.parse(await readFile(path.join(runDirectory, "result.json"), "utf8")) as { exit_code: number };
+      assert.equal(recorded.exit_code, 130);
+      assert.match(stderr, /Interrupted \(SIGINT\) — partial result on stdout; record: /);
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("an interrupt that lands before the script body starts ends the run with nothing of the body's on stderr", { timeout: 60_000 }, async () => {
+  // The window is real but short: after the sentinel announcement the
+  // launcher opens the archive (several git calls) before the body runs. A
+  // git shim that sleeps before delegating widens that window so the
+  // signal — sent the moment the announcement appears — lands inside it
+  // deterministically. The body announces itself with a file and a
+  // progress line before anything else; neither may appear, and the
+  // hand-off line must be stderr's last.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-early-interrupt-estate-"));
+  const script = path.join(directory, "workflow.js");
+  const startedMarker = path.join(directory, "body.started");
+  try {
+    const binDirectory = await delayingGitShim(directory);
+    await writeFile(
+      script,
+      `export const meta = { name: "early-interrupt" };\nrequire("node:fs").writeFileSync(${JSON.stringify(startedMarker)}, "started");\nlog("[phase] waiting");\nreturn "unreached";\n`
+    );
+    const child = spawn(process.execPath, [bundledCliPath, script], {
+      env: hermeticEstateEnvironment({
+        XDG_DATA_HOME: path.join(directory, "data"),
+        ENSEMBLE_RUN_RECORD_DIR: undefined,
+        ENSEMBLE_STATUS: "0",
+        PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`
+      }),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let signalled = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+      if (!signalled && /\[sentinel\] will write \S+ when the run ends/.test(stderr)) {
+        signalled = true;
+        child.kill("SIGINT");
+      }
+    });
+    const ended = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+
+    assert.ok(signalled, `the sentinel announcement never appeared\n${stderr}`);
+    assert.equal(ended.signal, null, stderr);
+    assert.equal(ended.code, 130, stderr);
+    assert.equal(await exists(startedMarker), false, "the script body must not start once the run is declared interrupted");
+    assert.doesNotMatch(stderr, /\[phase\] waiting/);
+    const lines = stderr.trimEnd().split("\n");
+    assert.match(lines.at(-1) ?? "", /^Interrupted \(SIGINT\) — partial result on stdout; record: /, `the hand-off line is stderr's last line\n${stderr}`);
+    const envelope = assertSalvageEnvelope(stdout, "interrupted");
+    assert.equal(envelope.error.kind, "WorkflowInterruptedError");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A `git` on PATH that sleeps before delegating to the real one. The
+ * launcher calls git while opening and sealing the archive, so the shim
+ * widens those windows to a deterministic width for a journey that must
+ * land a signal inside one of them.
+ */
+async function delayingGitShim(directory: string): Promise<string> {
+  const binDirectory = path.join(directory, "git-shim-bin");
+  await mkdir(binDirectory);
+  const realGit = await executablePath("git");
+  await writeFile(path.join(binDirectory, "git"), `#!/bin/sh\nsleep 0.3\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  await chmod(path.join(binDirectory, "git"), 0o755);
+  return binDirectory;
+}
+
 async function exists(file: string): Promise<boolean> {
   try {
     await readFile(file);
@@ -2472,6 +2629,8 @@ interface ProcessFixture {
   dataHome: string;
   codexBin: string;
   schemaCli: string;
+  /** The declared overrides every `run*` method spawns with — for a journey that must drive the child process itself. */
+  env: NodeJS.ProcessEnv;
   run: () => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgs: (args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
   runArgsWithEnv: (
@@ -2529,6 +2688,7 @@ async function createProcessFixture(name: string, response = "worker-ok"): Promi
     dataHome: path.join(directory, "data"),
     codexBin: fakeCodex,
     schemaCli,
+    env,
     run: () => runNode([bundledCliPath, script], env),
     runArgs: (args) => runNode([bundledCliPath, ...args], env),
     runArgsWithEnv: (args, overrides, timeoutMs) =>

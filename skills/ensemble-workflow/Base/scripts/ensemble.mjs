@@ -30311,23 +30311,20 @@ async function runEnsembleCli(argv, options = {}) {
     };
     interrupt ??= watchWorkflowInterrupts();
     void interrupt.promise.catch(() => void 0);
-    try {
-      const { result } = await Promise.race([
-        runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
-        interrupt.promise
-      ]);
-      const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
-      if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
-        throw new SingleAgentFailedError();
-      }
-      const serialised = serialiseResult(result);
-      stdout.write(`${serialised}
-`);
-      finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
-      exitCode = 0;
-    } finally {
-      interrupt.dispose();
+    interrupt.throwIfInterrupted();
+    const { result } = await Promise.race([
+      runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
+      interrupt.promise
+    ]);
+    const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
+    if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
+      throw new SingleAgentFailedError();
     }
+    const serialised = serialiseResult(result);
+    stdout.write(`${serialised}
+`);
+    finalRecord = { status: "complete", exitCode: 0, result: JSON.parse(serialised) };
+    exitCode = 0;
   } catch (error) {
     const status = error instanceof WorkflowTimeoutError ? "timed-out" : error instanceof WorkflowInterruptedError ? "interrupted" : "failed";
     terminalError = describeError(error);
@@ -30347,7 +30344,6 @@ async function runEnsembleCli(argv, options = {}) {
     let teardownError = null;
     try {
       try {
-        interrupt?.dispose();
         progress?.finish();
         if (statusWriter !== null) {
           await statusWriter.close();
@@ -30380,14 +30376,18 @@ async function runEnsembleCli(argv, options = {}) {
       const settled = finalRecord ?? { status: "failed", exitCode: 1 };
       const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
       exitCode = terminal.exitCode;
-      await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
-        workers: workerOutcomes(progress, runtime),
-        error: terminalError ?? teardownError,
-        // The sealed manifest's own digest, attested from outside the file
-        // it covers. A missing writer or an unsealed archive says why no
-        // digest can be attested rather than omitting the field.
-        manifest: manifestAttestation(runRecordWriter, recordingEnabled)
-      });
+      try {
+        await sentinel.writeTerminal(terminal.status, terminal.exitCode, reportSentinelError, {
+          workers: workerOutcomes(progress, runtime),
+          error: terminalError ?? teardownError,
+          // The sealed manifest's own digest, attested from outside the file
+          // it covers. A missing writer or an unsealed archive says why no
+          // digest can be attested rather than omitting the field.
+          manifest: manifestAttestation(runRecordWriter, recordingEnabled)
+        });
+      } finally {
+        interrupt?.dispose();
+      }
     }
   }
   return exitCode;
@@ -30541,21 +30541,27 @@ var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
 function watchWorkflowInterrupts() {
   const signals = ["SIGINT", "SIGTERM"];
   const handlers = /* @__PURE__ */ new Map();
+  let observed = null;
   const promise = new Promise((_resolve, reject) => {
     for (const signal of signals) {
       const handler = () => {
-        for (const [registeredSignal, registeredHandler] of handlers) {
-          process.off(registeredSignal, registeredHandler);
+        if (observed !== null) {
+          return;
         }
-        handlers.clear();
+        observed = signal;
         reject(new WorkflowInterruptedError(signal));
       };
       handlers.set(signal, handler);
-      process.once(signal, handler);
+      process.on(signal, handler);
     }
   });
   return {
     promise,
+    throwIfInterrupted: () => {
+      if (observed !== null) {
+        throw new WorkflowInterruptedError(observed);
+      }
+    },
     dispose: () => {
       for (const [signal, handler] of handlers) {
         process.off(signal, handler);

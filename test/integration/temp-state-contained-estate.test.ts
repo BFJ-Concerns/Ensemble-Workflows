@@ -30,23 +30,34 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
   test("the suite runner removes clean and killed state without reaping a live child cache", { timeout: 90_000 }, async (t) => {
     assertNotInsideSuiteSpawningTest();
     const temporaryRoot = await mkdtemp(path.join(tmpdir(), "ensemble-temp-state-contained-estate-"));
+    let held: Awaited<ReturnType<typeof startHeldSuite>> | undefined;
+    let foreign: Awaited<ReturnType<typeof startHeldSuite>> | undefined;
     try {
       // Kill a suite parent during an active child test. The next suite must
       // remove the abandoned root only after that child has actually exited.
-      const held = await startHeldSuite(temporaryRoot);
+      held = await startHeldSuite(temporaryRoot);
       await waitForFile(held.readyPath);
       held.process.kill("SIGKILL");
       const stopped = await held.result;
       assert.equal(stopped.signal, "SIGKILL", stopped.output);
-      assert.ok((await schemaCaches(temporaryRoot)).length > 0, "the killed suite must leave an observable cache for recovery");
+      const [abandonedRoot] = await suiteRunRoots(temporaryRoot);
+      assert.ok(abandonedRoot, "the killed suite must leave its root for recovery");
+      assert.ok((await schemaCaches(path.join(temporaryRoot, abandonedRoot))).length > 0, "the killed suite must leave an observable cache for recovery");
+
+      // A second, unrelated suite owns a live root in the same TMPDIR. Its
+      // state is visible to recovery but cannot decide this fixture's result.
+      foreign = await startHeldSuite(temporaryRoot, "foreign-control");
+      await waitForFile(foreign.readyPath);
+      const [foreignRoot] = (await suiteRunRoots(temporaryRoot)).filter((entry) => entry !== abandonedRoot);
+      assert.ok(foreignRoot, "the foreign suite must have its own live root");
 
       await runAndRequireClean(temporaryRoot, unitTestPath);
-      assert.ok((await schemaCaches(temporaryRoot)).length > 0, "recovery must retain a live child cache");
+      assert.ok((await schemaCaches(path.join(temporaryRoot, abandonedRoot))).length > 0, "recovery must retain the killed suite's live child cache");
 
       await writeFile(held.releasePath, "release\n");
       await waitForFile(held.finishedPath);
       await runAndRequireClean(temporaryRoot, unitTestPath);
-      assert.deepEqual(await ownedEntries(temporaryRoot), [], "recovery must remove state once the dead run has no live child");
+      assert.deepEqual(await ownedEntries(temporaryRoot), [foreignRoot], "recovery must remove the dead run's state while retaining the foreign live root");
 
       // Clean representative unit and integration suite exits leave no
       // suite-owned state in the isolated observer root.
@@ -54,10 +65,24 @@ if (process.env.ENSEMBLE_TEMP_STATE_ESTATE_CHILD === "hold") {
         const clean = runSuite(temporaryRoot, testPath);
         const result = await clean.result;
         assert.equal(result.code, 0, result.output);
-        assert.deepEqual(await ownedEntries(temporaryRoot), [], `clean ${path.basename(testPath)} left owned state`);
+        assert.deepEqual(await ownedEntries(temporaryRoot), [foreignRoot], `clean ${path.basename(testPath)} left owned state`);
       }
+      await writeFile(foreign.releasePath, "release\n");
+      await waitForFile(foreign.finishedPath);
+      assert.equal((await foreign.result).code, 0);
+      await runAndRequireClean(temporaryRoot, unitTestPath);
+      assert.deepEqual(await ownedEntries(temporaryRoot), [], "recovery must remove the foreign root after its child exits");
       t.diagnostic("clean unit and integration exits, killed-parent recovery, and live-child retention exercised through scripts/run-test-suite.mjs");
     } finally {
+      if (held !== undefined) {
+        await writeFile(held.releasePath, "release\n");
+        if (held.process.exitCode === null && held.process.signalCode === null) held.process.kill("SIGKILL");
+        await held.result.catch(() => undefined);
+      }
+      if (foreign !== undefined) {
+        await writeFile(foreign.releasePath, "release\n");
+        await foreign.result.catch(() => undefined);
+      }
       await rm(temporaryRoot, { recursive: true, force: true });
     }
   });
@@ -89,8 +114,8 @@ function runSuite(temporaryRoot: string, testPath: string, additions: NodeJS.Pro
   };
 }
 
-async function startHeldSuite(temporaryRoot: string): Promise<SuiteProcess & { readyPath: string; releasePath: string; finishedPath: string }> {
-  const controlDirectory = path.join(temporaryRoot, "control");
+async function startHeldSuite(temporaryRoot: string, controlName = "control"): Promise<SuiteProcess & { readyPath: string; releasePath: string; finishedPath: string }> {
+  const controlDirectory = path.join(temporaryRoot, controlName);
   await mkdir(controlDirectory);
   const readyPath = path.join(controlDirectory, "ready");
   const releasePath = path.join(controlDirectory, "release");
@@ -114,7 +139,11 @@ async function runAndRequireClean(temporaryRoot: string, testPath: string): Prom
 }
 
 async function ownedEntries(temporaryRoot: string): Promise<string[]> {
-  return (await readdir(temporaryRoot)).filter((entry) => entry.startsWith("ensemble-"));
+  return (await readdir(temporaryRoot)).filter((entry) => entry.startsWith("ensemble-")).sort();
+}
+
+async function suiteRunRoots(temporaryRoot: string): Promise<string[]> {
+  return (await ownedEntries(temporaryRoot)).filter((entry) => entry.startsWith("ensemble-test-suite-run-"));
 }
 
 async function schemaCaches(temporaryRoot: string): Promise<string[]> {

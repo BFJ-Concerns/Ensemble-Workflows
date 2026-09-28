@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -121,6 +121,25 @@ test("suite runner bounds its close wait when a detached descendant retains its 
   });
 });
 
+test("pipe-holder cleanup reaps its detached descendant after an assertion fails", async () => {
+  assertNotInsideSuiteSpawningTest();
+  let descendantPid: number | undefined;
+  await assert.rejects(
+    withPipeHolder(async (pipeHolder) => {
+      const run = startSuite(pipeHolder);
+      try {
+        descendantPid = await pipeHolderPid(pipeHolder);
+        throw new Error("seeded pipe-holder assertion failure");
+      } finally {
+        await stopSuite(run);
+      }
+    }),
+    /seeded pipe-holder assertion failure/
+  );
+  assert.ok(descendantPid !== undefined);
+  assert.equal(await processIsRunning(descendantPid), false, "the failing journey left its descendant running");
+});
+
 test("concurrent suite runners keep their hand-off state in separate namespaces", async () => {
   assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-concurrent-"));
@@ -238,6 +257,8 @@ async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>): P
     await run(pipeHolder);
   } finally {
     await releasePipeHolder(pipeHolder);
+    const pid = await pipeHolderPid(pipeHolder);
+    await waitForProcessExit(pid);
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -313,6 +334,31 @@ async function stopSuite(run: ReturnType<typeof startSuite>): Promise<void> {
 
 async function releasePipeHolder(pipeHolder: PipeHolder): Promise<void> {
   await writeFile(pipeHolder.releasePath, "release\n");
+}
+
+async function pipeHolderPid(pipeHolder: PipeHolder): Promise<number> {
+  await waitForFile(pipeHolder.readyPath);
+  const pid = Number((await readFile(pipeHolder.readyPath, "utf8")).trim());
+  assert.ok(Number.isInteger(pid) && pid > 0, "pipe-holder ready marker must identify its descendant");
+  return pid;
+}
+
+async function processIsRunning(pid: number): Promise<boolean> {
+  try {
+    const status = await readFile(`/proc/${pid}/stat`, "utf8");
+    return !/\) [ZX] /.test(status);
+  } catch (error) {
+    if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + completionGuardMilliseconds;
+  while (await processIsRunning(pid)) {
+    assert.ok(Date.now() < deadline, `pipe-holder descendant ${pid} remained alive after release`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 async function waitForFile(file: string): Promise<void> {

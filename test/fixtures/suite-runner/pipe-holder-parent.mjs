@@ -11,5 +11,5 @@ const descendant = spawn(process.execPath, [path.join(fixtureDirectory, "pipe-ho
   stdio: ["ignore", "inherit", "inherit"]
 });
 descendant.unref();
-await writeFile(process.env.ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH, "ready\n");
+await writeFile(process.env.ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH, `${descendant.pid}\n`);
 process.exit(0);

@@ -91,6 +91,34 @@ test("lazy Codex transport spawns once even after a startup failure", async () =
   await transport.close();
 });
 
+test("an observed app-server exit remains the cause of a later thread-open refusal", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("exit-at-thread-start");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    await assert.rejects(
+      () => transport.openThread({}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerExitedError);
+        assert.deepEqual(workerExitStatusOf(error), { exitCode: 73, signal: null });
+        return true;
+      }
+    );
+    // The first rejection proves that the exit event has been observed.
+    // A new thread request now reaches an already-terminal transport.
+    await assert.rejects(
+      () => transport.openThread({}),
+      (error: unknown) => {
+        assert.ok(error instanceof AppServerExitedError);
+        assert.match(error.message, /exited with code 73 signal null/);
+        assert.deepEqual(workerExitStatusOf(error), { exitCode: 73, signal: null });
+        return true;
+      }
+    );
+  } finally {
+    await transport.close();
+  }
+});
+
 test("concurrent first Codex uses share a single app-server handshake", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-lazy-codex-"));
   const capturePath = path.join(directory, "requests.jsonl");
@@ -1661,6 +1689,7 @@ async function fakeCodexFailingTurnServer(
     | "promise-foreign-frame-then-silence"
     | "promise-mcp-alternation"
     | "turn-start-error"
+    | "exit-at-thread-start"
     | "oversized-line"
     | "just-under-limit-line"
     | "tool-active-output-silent"
@@ -1693,6 +1722,10 @@ reader.on("line", (line) => {
     return;
   }
   if (message.method === "thread/start") {
+    if (mode === "exit-at-thread-start") {
+      process.stderr.write("fake app-server exits while opening a thread\\n", () => process.exit(73));
+      return;
+    }
     threadCounter += 1;
     send({ id: message.id, result: { thread: { id: "thread-" + threadCounter } } });
     return;

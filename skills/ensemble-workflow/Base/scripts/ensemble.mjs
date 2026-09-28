@@ -18675,6 +18675,7 @@ var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+var STDIN_CLOSE_EXIT_GRACE_MS = 500;
 var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
 var MAX_APP_SERVER_STDOUT_LINE_BYTES = 1024 * 1024;
 var DECODE_FAILURE_BUFFER_PREFIX_BYTES = 512;
@@ -18752,6 +18753,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #stderrTail = [];
   #exitStatus = null;
   #hasExited = false;
+  #stdinFailureGrace;
+  #terminalError;
+  #writeFailureWaiters = /* @__PURE__ */ new Set();
   #onEvent;
   constructor(options) {
     this.cwd = options.cwd;
@@ -18771,8 +18775,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     });
     this.#wireReader();
     this.#wireStderr();
-    this.#process.stdin.on("error", (error) => {
-      this.#failAll(new AppServerExitedError(`codex app-server stdin error: ${error.message}`));
+    this.#process.stdin.on("error", () => {
+      this.#scheduleStdinFailure();
     });
     this.#process.once("exit", (code, signal) => {
       this.#exitStatus = { exitCode: code, signal };
@@ -18953,21 +18957,14 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     return this.#transcripts.size;
   }
   async close() {
-    if (this.#hasExited) {
+    if (!this.#hasExited) {
+      this.#failAll(new AppServerExitedError("codex app-server closed"));
+    }
+    this.#threadIdentity.clear();
+    this.#transcripts.clear();
+    if (this.#exitStatus !== null || this.#process.pid === void 0) {
       return;
     }
-    this.#hasExited = true;
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#pending.clear();
-    this.#threadIdentity.clear();
-    for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
-    }
-    this.#turns.clear();
-    this.#transcripts.clear();
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
     await new Promise((resolve) => {
@@ -19036,16 +19033,23 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   }
   async #writeLine(line) {
     if (this.#hasExited) {
-      throw new AppServerExitedError("codex app-server is not running");
+      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(failure, this.#exitStatus);
+      }
+      throw failure;
     }
     const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     await new Promise((resolve, reject) => {
       this.#process.stdin.write(`${framedLine}
 `, (error) => {
         if (error !== null && error !== void 0) {
-          const exited = new AppServerExitedError(`codex app-server stdin error: ${error.message}`);
-          this.#failAll(exited);
-          reject(exited);
+          this.#scheduleStdinFailure();
+          if (this.#terminalError !== void 0) {
+            reject(this.#terminalError);
+          } else {
+            this.#writeFailureWaiters.add(reject);
+          }
           return;
         }
         resolve();
@@ -19589,15 +19593,36 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     ).catch(() => {
     });
   }
+  #scheduleStdinFailure() {
+    if (this.#hasExited || this.#stdinFailureGrace !== void 0) {
+      return;
+    }
+    this.#stdinFailureGrace = setTimeout(() => {
+      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
+    }, STDIN_CLOSE_EXIT_GRACE_MS);
+    this.#stdinFailureGrace.unref();
+  }
   #failAll(error) {
     if (this.#hasExited) {
       return;
     }
     this.#hasExited = true;
+    if (this.#stdinFailureGrace !== void 0) {
+      clearTimeout(this.#stdinFailureGrace);
+      this.#stdinFailureGrace = void 0;
+    }
     const stderr = this.#stderrTail.length > 0 ? `
 Recent stderr:
 ${this.#stderrTail.join("\n")}` : "";
     const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    this.#terminalError = wrapped;
+    if (this.#exitStatus !== null) {
+      attachWorkerExitStatus(wrapped, this.#exitStatus);
+    }
+    for (const reject of this.#writeFailureWaiters) {
+      reject(wrapped);
+    }
+    this.#writeFailureWaiters.clear();
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(wrapped);

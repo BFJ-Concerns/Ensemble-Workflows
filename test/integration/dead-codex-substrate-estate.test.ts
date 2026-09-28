@@ -54,7 +54,8 @@ if (process.argv[2] === "--version") {
         assert.ok(result.stdout.trim().length > 0, `${mode} run ${attempt}: missing failure envelope on stdout; stderr:\n${result.stderr}`);
         const envelope = assertSalvageEnvelope(result.stdout, "failed");
         assert.equal(envelope.error.kind, "CodexSubstrateRefusedError", `${mode} run ${attempt}: ${result.stderr}`);
-        assert.doesNotMatch(result.stderr, /(?:Error: write EPIPE|Unhandled 'error' event|unhandledRejection)/);
+        assert.doesNotMatch(result.stderr, /(?:write EPIPE|Unhandled 'error' event|unhandledRejection)/);
+        assert.match(result.stderr, /codex app-server exited with code 73 signal null/);
         const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
         assert.ok(announced, `${mode} run ${attempt}: ${result.stderr}`);
         const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
@@ -65,7 +66,7 @@ if (process.argv[2] === "--version") {
         };
         assert.deepEqual({ status: manifest.status, exit_code: manifest.result.exit_code }, { status: "failed", exit_code: 1 });
         if (mode === "close-stdin-before-exit") {
-          assert.match(result.stderr, /codex app-server stdin error: write EPIPE/);
+          assert.match(result.stderr, /fake app-server closed stdin before exit/);
         }
       }
     } finally {

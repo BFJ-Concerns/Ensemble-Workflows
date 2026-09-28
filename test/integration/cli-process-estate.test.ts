@@ -2469,15 +2469,16 @@ test("a second interrupt during the handled shutdown leaves the run ended once, 
       });
       let stdout = "";
       let stderr = "";
-      let secondSignalSent = false;
+      // `kill` reports whether the signal was delivered: a second signal
+      // that only reached an already-exited process would prove nothing.
+      let secondSignalDelivered: boolean | null = null;
       child.stdout.setEncoding("utf8");
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => (stdout += chunk));
       child.stderr.on("data", (chunk: string) => {
         stderr += chunk;
-        if (!secondSignalSent && /Interrupted \(SIGINT\) — partial result on stdout/.test(stderr)) {
-          secondSignalSent = true;
-          child.kill("SIGINT");
+        if (secondSignalDelivered === null && /Interrupted \(SIGINT\) — partial result on stdout/.test(stderr)) {
+          secondSignalDelivered = child.kill("SIGINT");
         }
       });
       const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
@@ -2492,7 +2493,7 @@ test("a second interrupt during the handled shutdown leaves the run ended once, 
       child.kill("SIGINT");
       const ended = await exit;
 
-      assert.ok(secondSignalSent, `round ${round}: the hand-off line never appeared\n${stderr}`);
+      assert.equal(secondSignalDelivered, true, `round ${round}: the second signal must reach the live launcher\n${stderr}`);
 
       assert.equal(ended.signal, null, `round ${round}: the launcher must exit on its own account, never by the second signal\n${stderr}`);
       assert.equal(ended.code, 130, `round ${round}\n${stderr}`);
@@ -2538,8 +2539,12 @@ test("an interrupt that lands before the script body starts ends the run with no
       `export const meta = { name: "early-interrupt" };\nrequire("node:fs").writeFileSync(${JSON.stringify(startedMarker)}, "started");\nlog("[phase] waiting");\nreturn "unreached";\n`
     );
     const child = spawn(process.execPath, [bundledCliPath, script], {
+      // Recording on, explicitly: the widened window is the archive's own
+      // git calls, so a host whose machine config disables recording must
+      // not silently remove the window this journey lands its signal in.
       env: hermeticEstateEnvironment({
         XDG_DATA_HOME: path.join(directory, "data"),
+        ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: undefined,
         ENSEMBLE_STATUS: "0",
         PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`
@@ -2615,7 +2620,7 @@ interface RecordedMessage {
 
 interface RecordedAgent {
   status: "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
-  parse_route: "direct" | "object-fallback" | "array-fallback" | null;
+  parse_route: "direct" | "object-fallback" | "array-fallback" | "scalar-line" | null;
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;

@@ -14,6 +14,7 @@ import { EngineRegistry } from "../../src/engines.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
+import { writeProcStat } from "../fixtures/proc-stat.js";
 import type { RuntimeAgentRecord } from "../../src/run-record.js";
 import { runEnsembleCli } from "../../src/cli.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -1724,14 +1725,6 @@ test("a new writer records its own liveness evidence and reaps its dead siblings
   }
 });
 
-async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
-  const dir = path.join(procDir, String(pid));
-  await mkdir(dir, { recursive: true });
-  // Fields 3–21 precede starttime (field 22); the comm field carries a
-  // space so the parser's last-close-paren split is what the fixture tests.
-  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
-  await writeFile(path.join(dir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
-}
 
 async function writeRunManifest(namespaceDir: string, runName: string, manifest: unknown): Promise<void> {
   const dir = path.join(namespaceDir, runName);

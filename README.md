@@ -335,11 +335,13 @@ The archive is an ambient, machine-level data store, configured by environment:
 - Default: `$XDG_DATA_HOME/ensemble/`, or `~/.local/share/ensemble/` when
   `XDG_DATA_HOME` is unset. Relocate the store with `ENSEMBLE_RUN_RECORD_DIR`
   below, not by pointing `XDG_DATA_HOME` at a scratch directory: Claude Code
-  homes its own installation and per-user daemon on `XDG_DATA_HOME`, and a
-  Claude dispatch that starts that daemon would re-home the operator's
-  `claude` launcher and later sessions on the relocated value. The run's own
-  `ENSEMBLE_*` settings are withheld from every `claude` process the harness
-  launches for the same reason.
+  homes its own data on `XDG_DATA_HOME` too, and a Claude dispatch that
+  starts its per-user daemon was measured to leave the daemon carrying the
+  relocated value for every later background session (the operator's
+  `claude` launcher was found re-pointed in the same incident). The run's
+  own `ENSEMBLE_*` settings are withheld from every `claude` process the
+  harness launches for the same reason; Codex and opencode children, which
+  die with the run, inherit them as before.
 - `ENSEMBLE_RUN_RECORD=off` (or `0`/`false`/`no`) disables recording.
 - `ENSEMBLE_RUN_RECORD_DIR` names the **data home** (the store root, `$STORE`
   below), not the `runs/` subtree — archives land under `$STORE/runs/cwd/…`,

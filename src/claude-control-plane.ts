@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { withoutRunScopedVariables } from "./ambient-settings.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
+import { HOLD_SCOPE_ENV } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
 
@@ -15,7 +16,7 @@ import { boundedEvidence } from "./operator-diagnosis.js";
  * inherits it. That inheritance is what gives worker-spawned subprocesses a
  * named owner: `stop()` reaps any surviving process still carrying the
  * dispatch's tag, closing the gap where descendants of a daemon-hosted
- * worker escaped the cancellation plumbing entirely (observed as orphaned
+ * worker escaped the cancellation plumbing entirely (witnessed as orphaned
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
@@ -152,6 +153,11 @@ export interface ClaudeCliControlPlaneOptions {
    *   relocated store would otherwise carry it into the operator's later
    *   sessions. Everything else inherits; a declared value for one of those
    *   names is still injected, since a declaration is the operator's word.
+   *   The withholding is this control plane's alone — Codex and opencode
+   *   children die with the run and inherit as before — so a nested
+   *   `ensemble` run inside a Claude worker resolves those settings from
+   *   the machine config and the defaults, except the hold scope, whose
+   *   contract is inheritance and which the settings file carries.
    * - **The valve's `claude attach` client** gets explicit tmux `-e` flags:
    *   a pre-existing tmux server starts pane commands from the *server's*
    *   environment, not this client's.
@@ -336,7 +342,16 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // dispatch asks for, so a machine-declared worker_environment value for
     // the same variable (spread after it) wins, and the ownership tag —
     // harness bookkeeping, not configuration — always lands last.
+    // The hold scope is per-lead coordination state whose contract is
+    // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
+    // withheld from control-plane children like every run-level setting —
+    // the daemon must not carry it — so it reaches the worker session by
+    // the one route that does: this file, below the machine's declarations.
+    const inheritedHoldScope = process.env[HOLD_SCOPE_ENV];
     const env = {
+      ...(inheritedHoldScope !== undefined && inheritedHoldScope.trim().length > 0
+        ? { [HOLD_SCOPE_ENV]: inheritedHoldScope }
+        : {}),
       ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
@@ -352,21 +367,23 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       permissionDenyRules !== undefined && permissionDenyRules.length > 0
         ? { env, permissions: { deny: permissionDenyRules } }
         : { env };
+    // The owner record is captured before the directory exists and written
+    // first: a concurrent launcher's sweep that finds a directory with no
+    // readable owner record leaves it alone, so the only window in which
+    // this directory could be misjudged — between mkdtemp and the owner
+    // write — is one the sweep treats as unjudgeable, never as abandoned.
+    const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname()))}\n`;
     const dir = await mkdtemp(path.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify(settings)}\n`, {
-        mode: 0o600
-      });
       // Beside the settings file, never inside it: the file stays Claude
       // Code's single-purpose input, and the owner record is the harness's
       // own evidence — this launcher's pid and start ticks — so a later
       // launcher can judge the directory abandoned after an ending this one
       // could not handle (the same evidence the run manifest carries).
-      await writeFile(
-        path.join(dir, OWNER_FILENAME),
-        `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname()))}\n`,
-        { mode: 0o600 }
-      );
+      await writeFile(path.join(dir, OWNER_FILENAME), owner, { mode: 0o600 });
+      await writeFile(path.join(dir, "settings.json"), `${JSON.stringify(settings)}\n`, {
+        mode: 0o600
+      });
     } catch (error) {
       // A failed write means the caller never learns the directory exists,
       // so nothing else can clean it up — remove it (and any partial file)
@@ -386,8 +403,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * provably gone — a launcher that died by SIGKILL or crashed never reached
    * `stop()`. Judgement is the run manifest's: same-host, evidence-only,
    * conservative on every unjudgeable case (a live owner, another host, no
-   * readable proc filesystem), and a directory with no owner record at all
-   * predates owner recording and is judged abandoned under that reason. An
+   * readable proc filesystem). A directory with no readable owner record is
+   * unjudgeable too and is left alone — unlike the manifest, whose owner
+   * block is written atomically inside the artefact judged, a sidecar can
+   * be observed before it lands, and a concurrent launcher between its
+   * mkdtemp and its owner write must never lose a live directory. (The
+   * directories launchers left before owner recording existed are
+   * therefore not swept; they are the operator's to remove.) An
    * orphaned session the daemon is still serving loses its declared
    * variables when its file goes — an accepted cost: no launcher will ever
    * collect that session, and checking the roster here would itself start
@@ -404,14 +426,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       }
       const dir = path.join(root, entry.name);
       try {
-        const owner: unknown = await readFile(path.join(dir, OWNER_FILENAME), "utf8")
-          .then((text) => JSON.parse(text) as unknown)
-          .catch(() => null);
-        if ((await judgeOwnerGone(owner, this.#procDir, host)) !== null) {
+        const owner: unknown = JSON.parse(await readFile(path.join(dir, OWNER_FILENAME), "utf8"));
+        if (owner !== null && typeof owner === "object" && (await judgeOwnerGone(owner, this.#procDir, host)) !== null) {
           await this.#removeSettingsDir(dir);
         }
       } catch {
-        // One unjudgeable directory must not end the sweep.
+        // No readable owner record, or one unjudgeable directory: leave it
+        // as found; the sweep goes on.
       }
     }
   }

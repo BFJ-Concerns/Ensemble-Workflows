@@ -162,14 +162,18 @@ with every successfully finished worker's output and, in `error`, the same
 run — so a consumer capturing stdout learns why without scraping stderr. Its
 exit code is 1 for a failure or timeout and the shell convention for a
 signal — 130 for SIGINT, 143 for SIGTERM — recorded identically in the
-manifest, `result.json`, and the sentinel. The first signal declares the run
-interrupted; the launcher then ends it exactly once, fully accounted: a
-second SIGINT or SIGTERM during that handled shutdown is absorbed, never
-handed to the signal's default (SIGKILL remains the operator's way to end
-the process sooner, and the sentinel never promised that case), and a signal
-that lands after the sentinel announcement but before the script body starts
-ends the run without starting the body — nothing of the script's own follows
-the `Interrupted (…)` hand-off line on stderr. A direct agent (either shape) that
+manifest, `result.json`, and the sentinel. The first signal while the body
+is running (or still to start) declares the run interrupted; the launcher
+then ends it exactly once, fully accounted: a second SIGINT or SIGTERM
+during that handled shutdown is absorbed, never handed to the signal's
+default (SIGKILL remains the operator's way to end the process sooner, and
+the sentinel never promised that case), and a signal that lands after the
+invocation is accepted but before the script body starts ends the run
+without starting the body — nothing of the script's own follows the
+`Interrupted (…)` hand-off line on stderr. A signal arriving only after the
+body has returned, during the launcher's teardown, is absorbed the same way
+and changes nothing: the result already printed stands and the run ends
+`complete`. A direct agent (either shape) that
 exhausts its attempts also exits 1 with this envelope rather than printing
 bare `null` — with no script to receive the value, the collapsed worker is
 the run's failure. If the schema accepts JSON `null` and the worker
@@ -253,12 +257,18 @@ run's own environment-layer settings (`ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`,
 `ENSEMBLE_CALLER_IDENTITY`) are withheld from those processes; everything
 else inherits, and a `worker_environment` declaration of one of those names
-is still injected. Variables the harness does not own are not withheld:
-relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, never by pointing
-`XDG_DATA_HOME` at a scratch directory — Claude Code homes its own
-installation and daemon on `XDG_DATA_HOME` too, and a dispatch that starts
-the daemon under a relocated value re-homes the operator's `claude` launcher
-and every later background session with it.
+is still injected. The withholding is the Claude control plane's alone —
+Codex and opencode children die with the run and inherit as before — so a
+nested `ensemble` invocation inside a Claude worker resolves those settings
+from the machine config and the defaults; the hold scope, whose contract is
+inheritance by every nested invocation, rides the settings file to the
+worker session instead. Variables the harness does not own are not
+withheld: relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, never by
+pointing `XDG_DATA_HOME` at a scratch directory — Claude Code homes its own
+data on `XDG_DATA_HOME` too, and a dispatch that starts the daemon under a
+relocated value was measured (2026-09-28) to leave the daemon carrying it
+for every later background session; the operator's `claude` launcher was
+found re-pointed into the relocated tree in the same incident.
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, unknown key, invalid value, unreadable file, or
@@ -387,9 +397,9 @@ under `$STORE/runs/cwd/<namespace-sha256>/<run-uuid>/`, where `$STORE`
 defaults to `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`).
 To relocate the archive for a run, set `ENSEMBLE_RUN_RECORD_DIR` (or the
 machine config's `run_record.dir`); do not relocate `XDG_DATA_HOME` itself —
-Claude Code homes its installation and per-user daemon there, and a Claude
-dispatch that starts the daemon would carry the relocated value into the
-operator's later sessions (see *Worker environment*).
+Claude Code homes its own data there too, and a Claude dispatch that starts
+the per-user daemon carries the relocated value into every later background
+session (see the `worker_environment` section).
 The full schema is in the source repository's root README under
 *Run record schema* (outside this bundle); the key structures are summarised
 here for quick reference.
@@ -785,7 +795,7 @@ the time to the first agent-message delta.
 | `timeoutMs` | positive integer per-turn deadline, at most `2147483647`; omitted → unbounded; any other defined value throws | same (poll deadline) | same (subprocess killed) |
 | `maxAttempts` | positive integer; default 3; any other defined value throws | same | same |
 | `label`, `phase` | bookkeeping only, all engines | | |
-| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary test observes). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
+| `strip` | array of capability names (`'skills'`, `'agents'`); anything else throws. Both are enforced mechanically through a per-thread `thread/start` overlay. `agents.enabled = false` removes the collaboration tool namespace (measured 2026-08-28 on codex-cli 0.149.1). For `skills`, fresh `skills/list` queries are one second apart (up to ten samples; an aggregate wall-clock deadline, checked between samples, stops the loop once its elapsed budget is spent — each call itself is bounded by the request timeout; the result is cached per transport and cwd for the run's life, so retries and sibling stripped dispatches pay discovery once). Discovery qualifies only after the set grows from its cold result and the grown set then repeats — a tendency observed on codex-cli 0.151.0, not a structural guarantee of completeness: the acceptance is any grown-then-repeated set, so a repeated *cold* state fails closed instead of being treated as complete, and the heuristic is re-verified per codex-cli upgrade (discovery has no protocol-level completion signal). The overlay disables bundled skills and adds an exact `skills.config` deny for every accepted name (measured across three fresh codex-cli 0.151.0 processes on 2026-08-30). Discovery errors, a response that never grows, ten calls without that growth-and-repeat sequence, or the deadline expiring fail before the worker spawns. | both enforced mechanically: permission deny rules (`Skill`; `Task`/`Agent`/`ListAgents`/`SendMessage`) ride the per-dispatch settings file. Worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used `mcp__`-prefixed names; that session's skills pair showed the bare `Skill` deny working (`Skill` absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. `Agent` was also absent, but the witness cannot isolate it from the machine-wide `Agent` deny. `Task` remains in the delivered deny set, which the exact-set regression proves. Deny is expected to outrank every allow layer and permission mode (a judgement the live worker-boundary proof witnesses). | both **throw before the worker spawns**: measured 2026-08-27 on opencode 1.18.4, `OPENCODE_CONFIG_CONTENT` merges `permission.skill` and `permission.task` denies, but enforcement has not been demonstrated at a live worker boundary  |
 | `identity: true` | identified resolution, all engines: the call resolves `{ label, phase, output, failure }` (label/phase `null` when unset) instead of the bare output. `failure` is the discrimination: `null` exactly when the worker's own settlement completed — so `output: null` beside `failure: null` is a genuine answer — and a `{ message }` account when the leg failed (a schema call's exhausted collapse, or an operational failure inside `parallel()`/`pipeline()`, where the combinator resolves `{ label, phase, output: null, failure }` for an identified call, never bare `null`). This envelope is the documented route for telling a fan-out's failed legs from legitimate `null` answers: give discrimination-sensitive legs `identity: true` and read `failure`. Non-boolean values throw before the worker spawns; the durable record is unchanged. `ensemble agent --identity` prints the envelope. | | |
 
 Every worker is unrestricted by default: it can read and write wherever the

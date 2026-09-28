@@ -332,7 +332,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // The launcher owns the sentinel: written on every terminal transition this
   // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
-  let interrupt: ReturnType<typeof watchWorkflowInterrupts> | null = null;
+  // Armed for the whole accepted run: from here to the sentinel write every
+  // ending is a run ending with envelope, record and sentinel, so a signal
+  // during runtime creation or archive setup is observed and honoured at
+  // the pre-body gate rather than handed to Node's default.
+  const interrupt = watchWorkflowInterrupts();
+  void interrupt.promise.catch(() => undefined);
   const reportSentinelError = (error: unknown): void => {
     stderr.write(`[sentinel] ${formatError(error)}\n`);
   };
@@ -383,11 +388,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         reportSentinelError
       );
       if (sentinelPath !== null) {
-        // Once this path is published, the launcher promises to honour it on
-        // every signal it can handle. Arm before the synchronous stderr write
-        // so no announced-path startup window remains.
-        interrupt = watchWorkflowInterrupts();
-        void interrupt.promise.catch(() => undefined);
+        // The interrupt watch is already armed, so the published path is
+        // honoured on every signal from the moment it is announced.
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends\n`);
       }
     }
@@ -561,12 +563,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         }
       }
     };
-    interrupt ??= watchWorkflowInterrupts();
-    void interrupt.promise.catch(() => undefined);
-    // A signal that landed while the run was being set up — between the
-    // sentinel announcement and here — has already declared the run
-    // interrupted: the body does not start, so nothing of the script's own
-    // can print after the hand-off line the catch below writes.
+    // A signal that landed while the run was being set up has already
+    // declared the run interrupted: the body does not start, so nothing of
+    // the script's own can print after the hand-off line the catch below
+    // writes.
     interrupt.throwIfInterrupted();
     const { result } = await Promise.race([
       runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
@@ -697,7 +697,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       } finally {
         // The run's terminal work is done: the handlers come off so a
         // library caller's process keeps its own signal behaviour.
-        interrupt?.dispose();
+        interrupt.dispose();
       }
     }
   }
@@ -975,7 +975,7 @@ class WorkflowInterruptedError extends Error {
 const INTERRUPT_SIGNAL_NUMBERS: Record<InterruptSignal, number> = { SIGINT: 2, SIGTERM: 15 };
 
 interface InterruptWatch {
-  /** Rejects with `WorkflowInterruptedError` on the first signal observed. */
+  /** Rejects with `WorkflowInterruptedError` on the first signal observed — the interruption, when the body is still running; a signal arriving during a completed run's teardown is absorbed the same way and changes nothing (the result already printed stands). */
   promise: Promise<never>;
   /** Throws that same error if a signal has already been observed — the gate before work that must not start once the run is declared interrupted. */
   throwIfInterrupted: () => void;
@@ -994,7 +994,9 @@ interface InterruptWatch {
  * SIGKILL, which no handler can absorb and the sentinel never promised.
  */
 function watchWorkflowInterrupts(): InterruptWatch {
-  const signals: readonly InterruptSignal[] = ["SIGINT", "SIGTERM"];
+  // The exit-code table is the one enumeration of handled signals: a
+  // signal that joins it is armed here with no further change.
+  const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS) as InterruptSignal[];
   const handlers = new Map<InterruptSignal, () => void>();
   let observed: InterruptSignal | null = null;
 

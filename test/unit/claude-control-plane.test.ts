@@ -15,6 +15,7 @@ import {
   valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
+import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
 test("dispatch streams a multi-megabyte prompt byte-exactly instead of placing it on argv", async () => {
@@ -151,13 +152,14 @@ test("the run's own environment-layer settings are withheld from every claude ch
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-run-scoped-env-"));
   try {
     const envPath = path.join(dir, "observed-env.json");
+    const settingsCopyPath = path.join(dir, "settings-copy.json");
     const stubPath = path.join(dir, "claude-stub.mjs");
     const sessionId = "00000000-0000-4000-8000-000000000013";
     const name = "run-scoped-env-probe";
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { writeFile } from "node:fs/promises";
+        import { copyFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
         if (args[0] === "--bg") {
           await writeFile(${JSON.stringify(envPath)}, JSON.stringify({
@@ -165,8 +167,10 @@ test("the run's own environment-layer settings are withheld from every claude ch
             record: process.env.ENSEMBLE_RUN_RECORD ?? null,
             statusDir: process.env.ENSEMBLE_STATUS_DIR ?? null,
             concurrency: process.env.ENSEMBLE_CONCURRENCY_CLAUDE ?? null,
+            holdScope: process.env.ENSEMBLE_HOLD_SCOPE ?? null,
             inherited: process.env.ENSEMBLE_TEST_INHERITED ?? null
           }));
+          await copyFile(args[args.indexOf("--settings") + 1], ${JSON.stringify(settingsCopyPath)});
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
@@ -186,7 +190,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     await chmod(stubPath, 0o755);
 
     const saved = Object.fromEntries(
-      ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_RUN_RECORD", "ENSEMBLE_STATUS_DIR", "ENSEMBLE_CONCURRENCY_CLAUDE", "ENSEMBLE_TEST_INHERITED"].map(
+      ["ENSEMBLE_RUN_RECORD_DIR", "ENSEMBLE_RUN_RECORD", "ENSEMBLE_STATUS_DIR", "ENSEMBLE_CONCURRENCY_CLAUDE", "ENSEMBLE_HOLD_SCOPE", "ENSEMBLE_TEST_INHERITED"].map(
         (key) => [key, process.env[key]]
       )
     );
@@ -194,6 +198,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     process.env.ENSEMBLE_RUN_RECORD = "on";
     process.env.ENSEMBLE_STATUS_DIR = path.join(dir, "relocated-status");
     process.env.ENSEMBLE_CONCURRENCY_CLAUDE = "3";
+    process.env.ENSEMBLE_HOLD_SCOPE = "lead-session-42";
     process.env.ENSEMBLE_TEST_INHERITED = "still-here";
     try {
       const controlPlane = new ClaudeCliControlPlane({
@@ -214,7 +219,18 @@ test("the run's own environment-layer settings are withheld from every claude ch
       record: null,
       statusDir: path.join(dir, "declared-status"),
       concurrency: null,
+      holdScope: null,
       inherited: "still-here"
+    });
+    // The hold scope's contract is inheritance by every nested invocation,
+    // so it reaches the worker session by the settings file instead —
+    // beneath the machine's declarations, above nothing else.
+    assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+      env: {
+        ENSEMBLE_HOLD_SCOPE: "lead-session-42",
+        ENSEMBLE_STATUS_DIR: path.join(dir, "declared-status"),
+        [WORKER_MARKER_VARIABLE]: name
+      }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -226,9 +242,10 @@ test("the first dispatch sweeps settings directories whose owning launcher is pr
   // per-dispatch settings directory outlives it. Each directory carries the
   // launcher's owner evidence beside the settings file; the next control
   // plane's first dispatch removes the ones whose owner is provably gone,
-  // under the run manifest's own judgement — a live owner's directory and
-  // an unrelated directory are left exactly as found, and one with no owner
-  // record predates owner recording and goes.
+  // under the run manifest's own judgement — a live owner's directory, an
+  // unrelated directory, and one with no readable owner record (a
+  // concurrent launcher between its mkdtemp and its owner write looks
+  // exactly like that) are left exactly as found.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-settings-sweep-"));
   const tempRoot = path.join(dir, "tmp");
   const proc = path.join(dir, "proc");
@@ -291,10 +308,10 @@ test("the first dispatch sweeps settings directories whose owning launcher is pr
       assert.ok(ownDir, "this dispatch's own directory exists");
       assert.deepEqual(
         survivors.filter((entry) => entry !== ownDir),
-        [path.basename(liveOwner), path.basename(foreignHost), path.basename(unrelated)].sort(),
-        "provably-dead and legacy directories go; live, foreign-host and unrelated ones stay"
+        [path.basename(liveOwner), path.basename(foreignHost), path.basename(noOwner), path.basename(unrelated)].sort(),
+        "provably-dead directories go; live, foreign-host, ownerless and unrelated ones stay"
       );
-      for (const gone of [deadOwner, reusedPid, noOwner]) {
+      for (const gone of [deadOwner, reusedPid]) {
         await assert.rejects(access(gone), gone);
       }
       // This dispatch's own directory carries the evidence a later sweep judges by.
@@ -1014,13 +1031,6 @@ test("a dispatch the daemon accepted but never registered is a registration time
   }
 });
 
-/** A fake `/proc/<pid>/stat` whose comm carries a space, so the parser's last-close-paren split is what the fixture exercises. */
-async function writeProcStat(procDir: string, pid: number, startTicks: string): Promise<void> {
-  const statDir = path.join(procDir, String(pid));
-  await mkdir(statDir, { recursive: true });
-  const before = ["S", "1", "1", "1", "0", "-1", "4194560", "0", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1"];
-  await writeFile(path.join(statDir, "stat"), `${pid} (fa ke) ${before.join(" ")} ${startTicks} 0 0\n`);
-}
 
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {

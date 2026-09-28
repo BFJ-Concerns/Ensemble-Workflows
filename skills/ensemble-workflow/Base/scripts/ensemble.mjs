@@ -17315,24 +17315,23 @@ var ClaudeCliControlPlane = class {
    * and the file itself is 0o600.
    */
   async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
+    const inheritedHoldScope = process.env[HOLD_SCOPE_ENV];
     const env = {
+      ...inheritedHoldScope !== void 0 && inheritedHoldScope.trim().length > 0 ? { [HOLD_SCOPE_ENV]: inheritedHoldScope } : {},
       ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
     };
     const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
+    const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
+`;
     const dir = await mkdtemp(path10.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
+      await writeFile5(path10.join(dir, OWNER_FILENAME), owner, { mode: 384 });
       await writeFile5(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
-      await writeFile5(
-        path10.join(dir, OWNER_FILENAME),
-        `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
-`,
-        { mode: 384 }
-      );
     } catch (error) {
       await this.#removeSettingsDir(dir);
       throw error;
@@ -17347,8 +17346,13 @@ var ClaudeCliControlPlane = class {
    * provably gone — a launcher that died by SIGKILL or crashed never reached
    * `stop()`. Judgement is the run manifest's: same-host, evidence-only,
    * conservative on every unjudgeable case (a live owner, another host, no
-   * readable proc filesystem), and a directory with no owner record at all
-   * predates owner recording and is judged abandoned under that reason. An
+   * readable proc filesystem). A directory with no readable owner record is
+   * unjudgeable too and is left alone — unlike the manifest, whose owner
+   * block is written atomically inside the artefact judged, a sidecar can
+   * be observed before it lands, and a concurrent launcher between its
+   * mkdtemp and its owner write must never lose a live directory. (The
+   * directories launchers left before owner recording existed are
+   * therefore not swept; they are the operator's to remove.) An
    * orphaned session the daemon is still serving loses its declared
    * variables when its file goes — an accepted cost: no launcher will ever
    * collect that session, and checking the roster here would itself start
@@ -17365,8 +17369,8 @@ var ClaudeCliControlPlane = class {
       }
       const dir = path10.join(root, entry.name);
       try {
-        const owner = await readFile5(path10.join(dir, OWNER_FILENAME), "utf8").then((text) => JSON.parse(text)).catch(() => null);
-        if (await judgeOwnerGone(owner, this.#procDir, host) !== null) {
+        const owner = JSON.parse(await readFile5(path10.join(dir, OWNER_FILENAME), "utf8"));
+        if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
       } catch {
@@ -30192,7 +30196,8 @@ async function runEnsembleCli(argv, options = {}) {
   let finalRecord = null;
   let terminalError = null;
   const sentinel = new CompletionSentinel();
-  let interrupt = null;
+  const interrupt = watchWorkflowInterrupts();
+  void interrupt.promise.catch(() => void 0);
   const reportSentinelError = (error) => {
     stderr.write(`[sentinel] ${formatError2(error)}
 `);
@@ -30221,8 +30226,6 @@ async function runEnsembleCli(argv, options = {}) {
         reportSentinelError
       );
       if (sentinelPath !== null) {
-        interrupt = watchWorkflowInterrupts();
-        void interrupt.promise.catch(() => void 0);
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends
 `);
       }
@@ -30386,8 +30389,6 @@ async function runEnsembleCli(argv, options = {}) {
         }
       }
     };
-    interrupt ??= watchWorkflowInterrupts();
-    void interrupt.promise.catch(() => void 0);
     interrupt.throwIfInterrupted();
     const { result } = await Promise.race([
       runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
@@ -30463,7 +30464,7 @@ async function runEnsembleCli(argv, options = {}) {
           manifest: manifestAttestation(runRecordWriter, recordingEnabled)
         });
       } finally {
-        interrupt?.dispose();
+        interrupt.dispose();
       }
     }
   }
@@ -30616,7 +30617,7 @@ var WorkflowInterruptedError = class extends Error {
 };
 var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
 function watchWorkflowInterrupts() {
-  const signals = ["SIGINT", "SIGTERM"];
+  const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS);
   const handlers = /* @__PURE__ */ new Map();
   let observed = null;
   const promise = new Promise((_resolve, reject) => {

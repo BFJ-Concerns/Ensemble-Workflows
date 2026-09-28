@@ -445,7 +445,7 @@ JSON Schema or `null`), `options` (max attempts, timeout), `resolved_cwd`,
 `isolation`, `worktree` (branch, base commit, tip commit, changed, removed — or
 `null`), `strip` (requested names and resolved enforcement routes),
 `raw_output`, `validated_output`, `parse_route` (`"direct"`,
-`"object-fallback"`, `"array-fallback"`, or `null`), `decode_failure`,
+`"object-fallback"`, `"array-fallback"`, `"scalar-line"`, or `null`), `decode_failure`,
 `usage` (summary or `"unavailable"` with reason), `queued_ms`, `execution_ms`.
 For `raw_output`, `null` means no output was produced; `""` means the worker
 answered with empty text. The same meaning applies to attempt records.
@@ -818,7 +818,7 @@ only `lost` declares this reason), or
 distinguish an empty archive from engine silence without changing the array's
 shape.
 Successful schema agents record `parse_route` as `direct`,
-`object-fallback`, or `array-fallback`; it remains `null` until a valid value is
+`object-fallback`, `array-fallback`, or `scalar-line`; it remains `null` until a valid value is
 selected.
 
 Registered opencode model keys (the complete set; also addressable by
@@ -932,6 +932,10 @@ rejection itself is unchanged, invoking no engine.
   On Claude and opencode the schema rides the prompt, and the worker is asked
   for a conforming JSON value while being allowed to surround it with prose or
   markdown fences — that tolerance is the specified behaviour, not a leniency.
+  A candidate value is the whole reply, any balanced `{…}` or `[…]` region in
+  it, or a line holding nothing but one JSON scalar (`null`, `false`, `0`,
+  `""` on its own line, fenced or not); a scalar mentioned mid-sentence is
+  prose, not a candidate.
   Where a response offers more than one candidate value, the **last** one that
   validates against the schema is the answer; a response with no validating
   candidate fails as above.

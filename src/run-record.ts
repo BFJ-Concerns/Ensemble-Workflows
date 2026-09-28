@@ -53,7 +53,7 @@ type RunStatus =
   | "interrupted"
   | "abandoned";
 type AgentStatus = "in-progress" | "complete" | "failed" | "timed-out" | "interrupted" | "abandoned";
-type ParseRoute = "direct" | "object-fallback" | "array-fallback";
+type ParseRoute = "direct" | "object-fallback" | "array-fallback" | "scalar-line";
 
 export interface CliFlagsRecord {
   budget?: Record<string, number | null>;

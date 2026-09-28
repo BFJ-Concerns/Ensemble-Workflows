@@ -51,7 +51,14 @@ function compilerFor(schema: JsonSchema): SchemaCompiler {
 
 export interface ParsedJson {
   value: unknown;
-  source: "direct" | "object-fallback" | "array-fallback";
+  /**
+   * How the candidate was found: the whole text parsed (`direct`), a
+   * balanced `{…}` or `[…]` region inside prose (`object-fallback`,
+   * `array-fallback`), or a line holding nothing but one JSON scalar
+   * (`scalar-line`) — the shape a worker answering `null`, `false`, `0` or
+   * `""` inside a markdown fence or beneath a sentence of prose produces.
+   */
+  source: "direct" | "object-fallback" | "array-fallback" | "scalar-line";
 }
 
 export interface ValidationResult {
@@ -335,6 +342,14 @@ function tryParse(source: string): { ok: true; value: unknown } | { ok: false } 
   }
 }
 
+/**
+ * Every JSON value the text offers as a candidate answer, in document order.
+ * Structures come from the balanced-region scan; scalars come from lines
+ * that hold nothing but one JSON scalar. The two never overlap: a line
+ * inside a candidate structure is that structure's interior, not a
+ * candidate of its own, so a pretty-printed array's `"a"` line cannot be
+ * read as a string answer beside the array it belongs to.
+ */
 function parseJsonCandidates(source: string): ParsedJson[] {
   const trimmed = source.trim();
   if (trimmed.length === 0) {
@@ -346,7 +361,7 @@ function parseJsonCandidates(source: string): ParsedJson[] {
     return [{ value: direct.value, source: "direct" }];
   }
 
-  const candidates: ParsedJson[] = [];
+  const structures: PositionedCandidate[] = [];
   const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
     const open = trimmed[index];
@@ -360,9 +375,11 @@ function parseJsonCandidates(source: string): ParsedJson[] {
     const alreadyClassified = region.parsed !== undefined;
     const parsed = parseRegion(trimmed, region);
     if (parsed.ok) {
-      candidates.push({
+      structures.push({
         value: parsed.value,
-        source: open === "{" ? "object-fallback" : "array-fallback"
+        source: open === "{" ? "object-fallback" : "array-fallback",
+        start: region.start,
+        end: region.end
       });
       // A valid outer value already contains every nested value. Preserve the
       // settled non-overlapping candidate rule by skipping its interior.
@@ -374,7 +391,69 @@ function parseJsonCandidates(source: string): ParsedJson[] {
       classifyDescendants(trimmed, region);
     }
   }
+
+  const candidates = [...structures, ...scalarLineCandidates(trimmed, structures)];
+  candidates.sort((left, right) => left.start - right.start);
+  return candidates.map(({ value, source }) => ({ value, source }));
+}
+
+interface PositionedCandidate extends ParsedJson {
+  start: number;
+  end: number;
+}
+
+/** The characters a JSON scalar literal can begin with: a string, a number, `true`, `false`, `null`. */
+const SCALAR_OPENERS = new Set(['"', "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "t", "f", "n"]);
+
+/**
+ * Scalar candidates: each line whose whole content (ignoring surrounding
+ * whitespace) parses as one JSON scalar. A worker told it may surround its
+ * value with prose or a markdown fence puts a scalar answer on a line of
+ * its own — inside the fence, or beneath the sentence — and that line is
+ * the candidate. A scalar mentioned mid-sentence is not one: the same
+ * last-valid rule that picks the answer would otherwise let trailing
+ * commentary ("…rather than 0") outvote the fenced value above it. Lines
+ * inside an already-found structure belong to it and are skipped. The
+ * scan is one pass of index reads plus a slice per scalar-shaped line, so
+ * hostile input costs no more than the region scan already does.
+ */
+function scalarLineCandidates(trimmed: string, structures: readonly PositionedCandidate[]): PositionedCandidate[] {
+  const candidates: PositionedCandidate[] = [];
+  let structureIndex = 0;
+  let lineStart = 0;
+  while (lineStart < trimmed.length) {
+    let lineEnd = lineStart;
+    while (lineEnd < trimmed.length && trimmed[lineEnd] !== "\n") {
+      lineEnd += 1;
+    }
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && isJsonWhitespace(trimmed[contentStart] as string)) {
+      contentStart += 1;
+    }
+    // Structures are non-overlapping and in document order, so one cursor
+    // over them answers "is this line inside a structure" in a single pass.
+    while (structureIndex < structures.length && (structures[structureIndex] as PositionedCandidate).end < contentStart) {
+      structureIndex += 1;
+    }
+    const enclosing = structures[structureIndex];
+    const insideStructure = enclosing !== undefined && enclosing.start <= contentStart && contentStart <= enclosing.end;
+    if (!insideStructure && contentStart < lineEnd && SCALAR_OPENERS.has(trimmed[contentStart] as string)) {
+      let contentEnd = lineEnd;
+      while (contentEnd > contentStart && isJsonWhitespace(trimmed[contentEnd - 1] as string)) {
+        contentEnd -= 1;
+      }
+      const parsed = tryParse(trimmed.slice(contentStart, contentEnd));
+      if (parsed.ok && (parsed.value === null || typeof parsed.value !== "object")) {
+        candidates.push({ value: parsed.value, source: "scalar-line", start: contentStart, end: contentEnd - 1 });
+      }
+    }
+    lineStart = lineEnd + 1;
+  }
   return candidates;
+}
+
+function isJsonWhitespace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\r";
 }
 
 type ParseResult = { ok: true; value: unknown } | { ok: false };

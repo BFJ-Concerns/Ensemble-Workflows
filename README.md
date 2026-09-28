@@ -606,7 +606,9 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `"retained"`, `"lost"`, or `null` when the engine does not report capture
   state. An observed `"lost"` capture is the only route to
   `"session-client-capture-gap"` when no transcript was archived.
-- `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`, or `null`.
+- `parse_route`: `"direct"`, `"object-fallback"`, `"array-fallback"`,
+  `"scalar-line"` (a line holding nothing but one JSON scalar — the shape a
+  fenced or prose-wrapped `null`, `false`, `0`, or `""` takes), or `null`.
 - `decode_failure`: `{ byte_length, line_prefix }` or `null`.
 - `raw_output`: final raw model text, or the latest raw failed output;
   `null` means no output was produced, while `""` means the worker answered

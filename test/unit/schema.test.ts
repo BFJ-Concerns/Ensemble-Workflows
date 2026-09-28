@@ -4,6 +4,8 @@ import test from "node:test";
 import { assertCompilableSchema, normaliseForCodexOutputSchema, parseJsonFromText, selectLastValidJsonFromText, validateJsonSchema } from "../../src/schema.js";
 import { CyclicAgentSchemaError, InvalidAgentSchemaError } from "../../src/errors.js";
 
+import type { JsonSchema } from "../../src/types.js";
+
 const nestedSchema = {
   type: "object",
   required: ["status", "details"],
@@ -130,6 +132,59 @@ test("schema-aware selection reports the route of the last validating candidate"
       value: ["accepted"],
       source: "array-fallback"
     }
+  });
+});
+
+test("a schema-valid scalar on a line of its own is a candidate, fenced or beneath prose", () => {
+  // The parser accepts schema-valid scalars on their own lines inside
+  // markdown fences or surrounding prose; these fixtures put the scalar on
+  // its own line either way. Every falsy scalar must survive both wrappers,
+  // since `null` is the value a legitimate "nothing found" answer takes.
+  const scalars: Array<[string, unknown, JsonSchema]> = [
+    ["null", null, { type: "null" }],
+    ["false", false, { type: "boolean" }],
+    ["0", 0, { type: "integer" }],
+    ['""', "", { type: "string" }]
+  ];
+  for (const [literal, value, scalarSchema] of scalars) {
+    const fenced = `\`\`\`json\n${literal}\n\`\`\``;
+    const prose = `Here is the value you asked for, unchanged:\n\n${literal}\n\nThat JSON value is exactly \`${literal}\`, as required.`;
+    for (const text of [fenced, prose]) {
+      assert.deepEqual(
+        selectLastValidJsonFromText(text, scalarSchema),
+        { kind: "valid", parsed: { value, source: "scalar-line" } },
+        text
+      );
+    }
+  }
+});
+
+test("a scalar mentioned mid-sentence is prose, not a candidate", () => {
+  // Trailing commentary routinely names other values ("…rather than 0");
+  // under the last-valid rule an inline token would outvote the answer
+  // above it, so only a line holding nothing but the scalar counts.
+  assert.deepEqual(selectLastValidJsonFromText("```json\n1\n```\n\nI chose 1 rather than 0.", { type: "integer" }), {
+    kind: "valid",
+    parsed: { value: 1, source: "scalar-line" }
+  });
+  assert.deepEqual(selectLastValidJsonFromText("The count is 3 across 2 files.", { type: "integer" }), {
+    kind: "invalid-json"
+  });
+});
+
+test("a line inside a candidate structure belongs to it and is not a scalar candidate", () => {
+  // A pretty-printed array's `"a"` line is the array's interior: reading it
+  // as a string answer would hand a script a fragment of a value the worker
+  // never offered on its own.
+  assert.deepEqual(selectLastValidJsonFromText('[\n  "a"\n]', { type: "string" }), {
+    kind: "schema-validation",
+    validation: { ok: false, value: ["a"], errors: [{ ...(validateJsonSchema(["a"], { type: "string" }).errors ?? [])[0] }] }
+  });
+  // Outside a structure the document order still decides: a scalar line
+  // after an object is the later candidate.
+  assert.deepEqual(selectLastValidJsonFromText('{"answer":"v"}\nnull', { anyOf: [answerSchema, { type: "null" }] }), {
+    kind: "valid",
+    parsed: { value: null, source: "scalar-line" }
   });
 });
 

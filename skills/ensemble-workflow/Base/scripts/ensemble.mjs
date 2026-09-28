@@ -20685,7 +20685,7 @@ function parseJsonCandidates(source) {
   if (direct.ok) {
     return [{ value: direct.value, source: "direct" }];
   }
-  const candidates = [];
+  const structures = [];
   const regions = indexBalancedJsonRegions(trimmed);
   for (let index = 0; index < trimmed.length; index += 1) {
     const open = trimmed[index];
@@ -20699,16 +20699,56 @@ function parseJsonCandidates(source) {
     const alreadyClassified = region.parsed !== void 0;
     const parsed = parseRegion(trimmed, region);
     if (parsed.ok) {
-      candidates.push({
+      structures.push({
         value: parsed.value,
-        source: open === "{" ? "object-fallback" : "array-fallback"
+        source: open === "{" ? "object-fallback" : "array-fallback",
+        start: region.start,
+        end: region.end
       });
       index = region.end;
     } else if (!alreadyClassified) {
       classifyDescendants(trimmed, region);
     }
   }
+  const candidates = [...structures, ...scalarLineCandidates(trimmed, structures)];
+  candidates.sort((left, right) => left.start - right.start);
+  return candidates.map(({ value, source: source2 }) => ({ value, source: source2 }));
+}
+var SCALAR_OPENERS = /* @__PURE__ */ new Set(['"', "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "t", "f", "n"]);
+function scalarLineCandidates(trimmed, structures) {
+  const candidates = [];
+  let structureIndex = 0;
+  let lineStart = 0;
+  while (lineStart < trimmed.length) {
+    let lineEnd = lineStart;
+    while (lineEnd < trimmed.length && trimmed[lineEnd] !== "\n") {
+      lineEnd += 1;
+    }
+    let contentStart = lineStart;
+    while (contentStart < lineEnd && isJsonWhitespace(trimmed[contentStart])) {
+      contentStart += 1;
+    }
+    while (structureIndex < structures.length && structures[structureIndex].end < contentStart) {
+      structureIndex += 1;
+    }
+    const enclosing = structures[structureIndex];
+    const insideStructure = enclosing !== void 0 && enclosing.start <= contentStart && contentStart <= enclosing.end;
+    if (!insideStructure && contentStart < lineEnd && SCALAR_OPENERS.has(trimmed[contentStart])) {
+      let contentEnd = lineEnd;
+      while (contentEnd > contentStart && isJsonWhitespace(trimmed[contentEnd - 1])) {
+        contentEnd -= 1;
+      }
+      const parsed = tryParse(trimmed.slice(contentStart, contentEnd));
+      if (parsed.ok && (parsed.value === null || typeof parsed.value !== "object")) {
+        candidates.push({ value: parsed.value, source: "scalar-line", start: contentStart, end: contentEnd - 1 });
+      }
+    }
+    lineStart = lineEnd + 1;
+  }
   return candidates;
+}
+function isJsonWhitespace(char) {
+  return char === " " || char === "	" || char === "\r";
 }
 function indexBalancedJsonRegions(source) {
   const starts = {

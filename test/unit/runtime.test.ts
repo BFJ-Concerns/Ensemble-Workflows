@@ -40,6 +40,7 @@ import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOp
 import type {
   AgentOptions,
   EngineName,
+  JsonSchema,
   RuntimeTransport,
   ThreadStartOptions,
   TurnResult,
@@ -550,8 +551,8 @@ test("a non-boolean identity value is rejected before any worker spawns", async 
 });
 
 test("an effort outside the canonical vocabulary is rejected before any worker spawns", async () => {
-  // Harness-owned domain: the judgement runs at
-  // agent(), spending nothing — the engine-judged alternative was measured
+  // Harness-owned domain: the judgement runs
+  // at agent(), spending nothing — the engine-judged alternative was measured
   // rejecting only after a live thread was paid for.
   const transport = new FakeTransport([]);
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
@@ -769,6 +770,51 @@ test("schema agents label empty output as empty-output, not invalid-json", async
   assert.equal(transport.turns.length, 3);
   assert.match(transport.turns[1]?.prompt ?? "", /A previous attempt failed \(empty-output\)/);
   assert.match(transport.turns[2]?.prompt ?? "", /A previous attempt failed \(empty-output\)/);
+});
+
+test("a schema-valid scalar answered inside a fence or beneath prose completes the attempt", async () => {
+  // A Claude or opencode worker rides the schema on the prompt and may
+  // wrap its value in a fence or a sentence — that is the specified
+  // behaviour. The value handed back cannot discriminate (a
+  // `null` answer is `null` either way): the record must show one
+  // `complete` attempt, no `invalid-json` failure, and the route it took.
+  const cases: Array<[string, unknown, JsonSchema]> = [
+    ["```json\nnull\n```", null, { type: "null" }],
+    ["Here is the value, unchanged:\n\nfalse\n\nThat is the literal boolean `false`.", false, { type: "boolean" }],
+    ["```json\n0\n```\n\nThis value is the integer zero.", 0, { type: "integer" }],
+    ['Here is the required value:\n\n""\n\nThis is an empty JSON string.', "", { type: "string" }]
+  ];
+  for (const [text, value, scalarSchema] of cases) {
+    const transport = new FakeTransport([turn(text)]);
+    const runtime = new EnsembleRuntime({
+      transport,
+      concurrencyCaps: { codex: 1 },
+      defaultTurnTimeoutMs: 1_000,
+      defaultMaxAttempts: 2
+    });
+    const records: RuntimeAgentRecord[] = [];
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    const result = (await runtime.agent("return the value", { engine: "codex", schema: scalarSchema, identity: true })) as {
+      output: unknown;
+      failure: unknown;
+    };
+
+    assert.deepEqual({ output: result.output, failure: result.failure }, { output: value, failure: null }, text);
+    assert.equal(transport.turns.length, 1, `no retry may be spent on a valid answer: ${text}`);
+    const settled = records.at(-1);
+    assert.equal(settled?.status, "complete", text);
+    assert.equal(settled?.parseRoute, "scalar-line", text);
+    assert.deepEqual(
+      settled?.attempts.map((attempt) => ({ status: attempt.status, failure: attempt.failure })),
+      [{ status: "complete", failure: null }],
+      text
+    );
+  }
 });
 
 test("Codex invalid_json_schema becomes a distinguishing schema-subset error", async () => {
@@ -2083,7 +2129,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
 test("terminal timeout and shutdown errors retain their agent statuses with two transition writes", async () => {
   // A turn deadline is the worker's own failure and resolves as a value; a
-  // shutdown is the run ending and still throws, at the spawn boundary.
+  // shutdown is the run ending and still throws (the spawn boundary).
   for (const [error, expected, resolution] of [
     [new TurnTimeoutError("turn timed out", { kind: "turn", timeoutMs: 1_000, threadId: "thread-1" }), "timed-out", "value"],
     [new EngineShutdownError("codex"), "interrupted", "throw"]
@@ -2813,9 +2859,9 @@ test("a non-Error rejection cannot shed an identified leg's discrimination", asy
 });
 
 test("an identified operational failure inside parallel resolves its envelope, never bare null", async () => {
-  // An identified operational failure resolves to an envelope carrying
-  // the call's identity and failure account. parallel() preserves that
-  // value; the unidentified sibling resolves to bare null.
+  // agent() attaches the call's declared identity to the operational
+  // failure it throws, and the combinator's collapse resolves the
+  // envelope. An unidentified sibling still collapses to bare null.
   const engine: EngineAdapter = {
     name: "claude",
     concurrency: 2,
@@ -3761,7 +3807,7 @@ test("a refused Claude dispatch propagates through parallel(), failing the run r
 });
 
 // ---------------------------------------------------------------------------
-// The pre-spawn boundary on Codex: a substrate that never started (or is
+// The pre-spawn refusal on Codex: a substrate that never started (or is
 // already gone) when a thread is asked for is a substrate refusal, not a
 // spent attempt.
 // ---------------------------------------------------------------------------

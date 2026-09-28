@@ -1003,7 +1003,9 @@ test("a dispatch the daemon accepted but never registered is a registration time
         // never the pre-spawn refusal.
         assert.ok(error instanceof ClaudeRegistrationTimeoutError);
         assert.ok(!(error instanceof ClaudeDispatchError));
-        assert.match(error.message, new RegExp(`'unregistered-probe' in ${dir.replaceAll(".", "\\\\.")} did not register within 50ms`));
+        // The whole line, compared as text: a path is not a pattern, and a
+        // temp root with a dot in it must not change what the test proves.
+        assert.equal(error.message, `dispatched session 'unregistered-probe' in ${dir} did not register within 50ms`);
         return true;
       }
     );

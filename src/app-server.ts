@@ -98,6 +98,8 @@ const DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1_000;
  * closed its pipe still fails promptly.
  */
 const STDOUT_CLOSE_EXIT_GRACE_MS = 50;
+/** Let a dying app-server supply its exit status and final stderr before a broken stdin settles the transport. */
+const STDIN_CLOSE_EXIT_GRACE_MS = 500;
 /**
  * Codex can announce terminal systemError immediately before its separate
  * diagnostic-bearing error notification. Retain the turn just long enough to
@@ -250,6 +252,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #stderrTail: string[] = [];
   #exitStatus: WorkerExitStatus | null = null;
   #hasExited = false;
+  #stdinFailureGrace: NodeJS.Timeout | undefined;
+  #terminalError: AppServerExitedError | undefined;
+  #writeFailureWaiters = new Set<(error: AppServerExitedError) => void>();
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
 
   private constructor(options: CodexAppServerTransportOptions) {
@@ -273,6 +278,12 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
     this.#wireReader();
     this.#wireStderr();
+    this.#process.stdin.on("error", () => {
+      // Writable.write reports a closed pipe both here and through its
+      // callback. Observe the event, but let process exit carry the reason
+      // if this is a dying substrate rather than a live server closing stdin.
+      this.#scheduleStdinFailure();
+    });
     this.#process.once("exit", (code, signal) => {
       // The observed exit is evidence: retained so every turn this death
       // terminalises carries how the process died, not only that it did.
@@ -496,25 +507,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   async close(): Promise<void> {
-    if (this.#hasExited) {
-      return;
+    if (!this.#hasExited) {
+      this.#failAll(new AppServerExitedError("codex app-server closed"));
     }
-
-    this.#hasExited = true;
-    for (const pending of this.#pending.values()) {
-      clearTimeout(pending.timeout);
-      pending.reject(new AppServerExitedError("codex app-server closed"));
-    }
-    this.#pending.clear();
     this.#threadIdentity.clear();
-    // One error instance per turn: the partial-text carrier is per-worker
-    // state, so a shared instance would smear one turn's text across all.
-    for (const [threadId, turn] of [...this.#turns]) {
-      this.#rejectTurn(threadId, turn, new AppServerExitedError("codex app-server closed"));
-    }
-    this.#turns.clear();
     this.#transcripts.clear();
 
+    // A failed pipe can terminalise the transport while its child is still
+    // alive. Closing the transport must still reap that child.
+    if (this.#exitStatus !== null || this.#process.pid === undefined) {
+      return;
+    }
     this.#process.stdin.end();
     this.#process.kill("SIGTERM");
     await new Promise<void>((resolve) => {
@@ -578,7 +581,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
   }
 
   #sendNotification(method: string, params: JsonObject): void {
-    void this.#writeLine(JSON.stringify({ method, params }));
+    void this.#writeLine(JSON.stringify({ method, params })).catch(() => {
+      // #writeLine has already failed every pending request and turn. This
+      // notification has no response to await or caller to reject.
+    });
   }
 
   /** Sends a request through stdin without retaining or awaiting its response. */
@@ -590,13 +596,24 @@ export class CodexAppServerTransport implements RuntimeTransport {
 
   async #writeLine(line: string): Promise<void> {
     if (this.#hasExited) {
-      throw new AppServerExitedError("codex app-server is not running");
+      const failure = new AppServerExitedError(this.#terminalError?.message ?? "codex app-server is not running");
+      if (this.#exitStatus !== null) {
+        attachWorkerExitStatus(failure, this.#exitStatus);
+      }
+      throw failure;
     }
     const framedLine = line.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     await new Promise<void>((resolve, reject) => {
       this.#process.stdin.write(`${framedLine}\n`, (error) => {
         if (error !== null && error !== undefined) {
-          reject(error);
+          // Keep this write pending until exit (or the bounded grace) has
+          // chosen the terminal cause. The stream's error event is separate.
+          this.#scheduleStdinFailure();
+          if (this.#terminalError !== undefined) {
+            reject(this.#terminalError);
+          } else {
+            this.#writeFailureWaiters.add(reject);
+          }
           return;
         }
         resolve();
@@ -1259,7 +1276,20 @@ export class CodexAppServerTransport implements RuntimeTransport {
           reason: "Ensemble workers run with approvalPolicy never"
         }
       })
-    );
+    ).catch(() => {
+      // Best-effort response to a server request; transport failure already
+      // settles the affected worker through #failAll.
+    });
+  }
+
+  #scheduleStdinFailure(): void {
+    if (this.#hasExited || this.#stdinFailureGrace !== undefined) {
+      return;
+    }
+    this.#stdinFailureGrace = setTimeout(() => {
+      this.#failAll(new AppServerExitedError("codex app-server stdin closed unexpectedly"));
+    }, STDIN_CLOSE_EXIT_GRACE_MS);
+    this.#stdinFailureGrace.unref();
   }
 
   #failAll(error: Error): void {
@@ -1267,9 +1297,21 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
     this.#hasExited = true;
+    if (this.#stdinFailureGrace !== undefined) {
+      clearTimeout(this.#stdinFailureGrace);
+      this.#stdinFailureGrace = undefined;
+    }
 
     const stderr = this.#stderrTail.length > 0 ? `\nRecent stderr:\n${this.#stderrTail.join("\n")}` : "";
     const wrapped = new AppServerExitedError(`${error.message}${stderr}`);
+    this.#terminalError = wrapped;
+    if (this.#exitStatus !== null) {
+      attachWorkerExitStatus(wrapped, this.#exitStatus);
+    }
+    for (const reject of this.#writeFailureWaiters) {
+      reject(wrapped);
+    }
+    this.#writeFailureWaiters.clear();
 
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timeout);

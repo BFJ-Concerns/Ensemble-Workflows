@@ -16095,6 +16095,12 @@ var RunRecordWriter = class _RunRecordWriter {
           message: attempt.appServerDiagnostic.message,
           payload: attempt.appServerDiagnostic.payload
         },
+        background_waits: attempt.backgroundWaits.map((wait) => ({
+          task_id: wait.taskId,
+          description: wait.description,
+          observed_at: wait.observedAt,
+          ended_at: wait.endedAt
+        })),
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,
@@ -17842,6 +17848,101 @@ function usageSince(entries, fromIndex = 0) {
     totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }
+var BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+var TASK_NOTIFICATION = /<task-notification>[\s\S]*?<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/g;
+var TASK_STILL_RUNNING = "running";
+function outstandingBackgroundTasks(entries, fromIndex = 0) {
+  const toolCalls = /* @__PURE__ */ new Map();
+  const outstanding = /* @__PURE__ */ new Map();
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      for (const call of toolUseBlocks(entry.message?.content)) {
+        toolCalls.set(call.id, call.description);
+      }
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      for (const pattern of BACKGROUND_TASK_STARTS) {
+        const started = pattern.exec(result.text);
+        if (started?.[1] !== void 0) {
+          outstanding.set(started[1], { id: started[1], description: toolCalls.get(result.toolUseId) ?? "background task" });
+        }
+      }
+    }
+    for (const text of entryTexts(entry)) {
+      for (const notice of text.matchAll(TASK_NOTIFICATION)) {
+        if (notice[1] !== void 0 && notice[2]?.trim() !== TASK_STILL_RUNNING) {
+          outstanding.delete(notice[1]);
+        }
+      }
+    }
+  }
+  return [...outstanding.values()];
+}
+function toolUseBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const calls = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_use" || typeof record.id !== "string") {
+      continue;
+    }
+    const input = asRecord(record.input);
+    const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
+    calls.push({ id: record.id, description });
+  }
+  return calls;
+}
+function toolResultBlocks(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const results = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
+      continue;
+    }
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+  }
+  return results;
+}
+function entryTexts(entry) {
+  const texts = [];
+  if (typeof entry.content === "string") {
+    texts.push(entry.content);
+  }
+  const content = entry.message?.content;
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      const record = asRecord(block);
+      if (record?.type === "text" && typeof record.text === "string") {
+        texts.push(record.text);
+      }
+    }
+  }
+  return texts;
+}
+function blockText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content.map((block) => {
+    const record = asRecord(block);
+    return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+  }).join("\n");
+}
 function parseLine(line) {
   try {
     const parsed = JSON.parse(line);
@@ -17932,6 +18033,8 @@ var ClaudeEngineInvocation = class {
   #controlPlane;
   #onEvent;
   #reportedUsage = null;
+  /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
+  #waits = [];
   #multiTurn;
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
   #turnPrompt;
@@ -17999,6 +18102,7 @@ var ClaudeEngineInvocation = class {
   async #runAttempt(context) {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#waits = [];
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
@@ -18006,13 +18110,13 @@ var ClaudeEngineInvocation = class {
         const handle = this.#handle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
+        return await this.#sendTurnInSession(handle, fromIndex, context);
       }
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
         const handle = this.#handle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
         this.#requireValve(false);
@@ -18020,7 +18124,7 @@ var ClaudeEngineInvocation = class {
       if (this.#handle !== null) {
         await this.#teardown();
       }
-      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
+      return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
       const preparedInterruption = error instanceof EngineShutdownError && failedTurnResultOf(error) !== null;
       const evidence = error instanceof Error && !preparedInterruption ? await this.#tryFailureEvidence(fromIndex) : null;
@@ -18054,7 +18158,7 @@ var ClaudeEngineInvocation = class {
     })();
     await this.#closePromise;
   }
-  async #dispatchAndCollect(previousFailure, onLiveEvidence) {
+  async #dispatchAndCollect(previousFailure, observers) {
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
       prompt: this.#buildDispatchPrompt(previousFailure),
@@ -18079,18 +18183,18 @@ var ClaudeEngineInvocation = class {
       await this.#teardown();
       throw error;
     }
-    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, 0, observers);
     return this.#buildResult(handle, transcript, 0);
   }
   /** Deliver a follow-up turn's prompt into the held session and collect its reply. */
-  async #sendTurnInSession(handle, fromIndex, onLiveEvidence) {
+  async #sendTurnInSession(handle, fromIndex, observers) {
     const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
     await this.#awaitReceipt(handle, fromIndex);
     this.#turnDelivered = true;
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
   /**
@@ -18105,13 +18209,13 @@ var ClaudeEngineInvocation = class {
       );
     }
   }
-  async #correctInSession(handle, previousFailure, fromIndex, onLiveEvidence) {
+  async #correctInSession(handle, previousFailure, fromIndex, observers) {
     const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
     await this.#awaitReceipt(handle, fromIndex);
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
@@ -18155,12 +18259,23 @@ var ClaudeEngineInvocation = class {
    *   rides the failure (the shared catch attaches it), and the bounded
    *   retry re-asks.
    *
+   * A turn that ends while a background task the session started is still
+   * outstanding (`outstandingBackgroundTasks`) is an interim message, not
+   * the answer: Claude Code backgrounds a long command or a Monitor, lets
+   * the model end its turn, and re-invokes it when the task ends. The wait
+   * continues for the reply that follows the wake, reported through
+   * `onWaiting` and recorded on the result, and it is bounded by the call's
+   * deadline and nothing else — the daemon's idle roster is expected while
+   * the session waits for its own notification, so the settled window does
+   * not count against it. A task that never wakes the session times the
+   * attempt out under the ordinary retry rule.
+   *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
    * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
    * live worker.
    */
-  async #runToCompletion(handle, fromIndex, onLiveEvidence) {
+  async #runToCompletion(handle, fromIndex, observers) {
     const deadline = this.#options.timeoutMs === void 0 ? Infinity : Date.now() + this.#options.timeoutMs;
     const firstLifeDeadline = Date.now() + this.#firstLifeTimeoutMs;
     let sawLife = fromIndex > 0;
@@ -18168,20 +18283,32 @@ var ClaudeEngineInvocation = class {
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let waitingOn = null;
     for (; ; ) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle);
+      let awaitingTask = false;
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
-            onLiveEvidence?.();
+            observers.onLiveEvidence?.();
           } catch {
           }
         }
-        if (turnComplete(transcript.entries, fromIndex)) {
+        const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
+        const current2 = this.#noteWaits(outstanding);
+        awaitingTask = current2 !== null;
+        if ((current2?.taskId ?? null) !== waitingOn) {
+          waitingOn = current2?.taskId ?? null;
+          try {
+            observers.onWaiting?.(current2);
+          } catch {
+          }
+        }
+        if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
           return transcript;
         }
       }
@@ -18215,7 +18342,7 @@ var ClaudeEngineInvocation = class {
         await this.#awaitReceipt(handle, mark);
         continue;
       }
-      if (sawLife && (status.state === "done" || status.status === "idle")) {
+      if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
         settledPolls += 1;
         if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
           throw new ClaudeCollectionError(
@@ -18230,6 +18357,28 @@ var ClaudeEngineInvocation = class {
       }
       await this.#pollDelay();
     }
+  }
+  /**
+   * Reconciles the attempt's wait ledger with the tasks currently
+   * outstanding: a newly observed task opens a wait, a task no longer
+   * outstanding closes its wait. Returns what the worker is waiting on now
+   * (the earliest still-open wait), or null.
+   */
+  #noteWaits(outstanding) {
+    const now = /* @__PURE__ */ new Date();
+    const open = new Set(outstanding.map((task) => task.id));
+    for (const wait of this.#waits) {
+      if (wait.endedAt === null && !open.has(wait.taskId)) {
+        wait.endedAt = now.toISOString();
+      }
+    }
+    for (const task of outstanding) {
+      if (!this.#waits.some((wait) => wait.taskId === task.id && wait.endedAt === null)) {
+        this.#waits.push({ taskId: task.id, description: task.description, observedAt: now.toISOString(), endedAt: null });
+      }
+    }
+    const current2 = this.#waits.find((wait) => wait.endedAt === null);
+    return current2 === void 0 ? null : { kind: "background-task", taskId: current2.taskId, description: current2.description, sinceMs: Date.parse(current2.observedAt) };
   }
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
   #pollDelay() {
@@ -18257,6 +18406,7 @@ var ClaudeEngineInvocation = class {
       text,
       ...resolvedModel !== null ? { resolvedModel } : {},
       ...resolvedEffort !== null ? { resolvedEffort } : {},
+      ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -18312,7 +18462,8 @@ var ClaudeEngineInvocation = class {
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
-      apiError: apiErrorSince(transcript.entries, fromIndex)
+      apiError: apiErrorSince(transcript.entries, fromIndex),
+      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
   }
   /** The failed turn's spend, as the same event shape the success path emits. */
@@ -18448,10 +18599,12 @@ function failedTurnResult(error, evidence, usageEvent) {
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;
   const resolvedEffort = evidence?.resolvedEffort ?? null;
+  const backgroundWaits = evidence?.backgroundWaits ?? [];
   return {
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
     ...resolvedEffort !== null ? { resolvedEffort } : {},
+    ...backgroundWaits.length > 0 ? { backgroundWaits } : {},
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -18599,7 +18752,8 @@ var RunProgress = class {
       state: "queued",
       attempt: 1,
       startedAt: null,
-      firstEvidenceAt: null
+      firstEvidenceAt: null,
+      waitingOn: null
     });
     this.#counters(input.engine).queued += 1;
     this.#touch();
@@ -18627,6 +18781,7 @@ var RunProgress = class {
     record.state = "queued";
     record.startedAt = null;
     record.firstEvidenceAt = null;
+    record.waitingOn = null;
     this.#counters(engine).queued += 1;
     this.#touch();
   }
@@ -18656,13 +18811,27 @@ var RunProgress = class {
     record.firstEvidenceAt = this.#now();
     this.#touch();
   }
-  /** Updates a running worker's attempt number (retry / in-session correction). */
+  /**
+   * Records what a live worker is waiting on — a background task its
+   * session started — or that it no longer is (`null`). Last write wins:
+   * the engine reports each change as it observes it.
+   */
+  noteAgentWaiting(id, wait) {
+    const record = this.#live.get(id);
+    if (record === void 0 || record.waitingOn === null && wait === null) {
+      return;
+    }
+    record.waitingOn = wait;
+    this.#touch();
+  }
+  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
   noteAttempt(id, attempt) {
     const record = this.#live.get(id);
     if (record === void 0 || record.attempt === attempt) {
       return;
     }
     record.attempt = attempt;
+    record.waitingOn = null;
     this.#touch();
   }
   /** Retires a worker, tallying it as done or failed and freeing its slot. */
@@ -18765,7 +18934,8 @@ var RunProgress = class {
       state: record.state,
       attempt: record.attempt,
       startedAtMs: record.startedAt,
-      firstEvidenceAtMs: record.firstEvidenceAt
+      firstEvidenceAtMs: record.firstEvidenceAt,
+      waitingOn: record.waitingOn
     }));
   }
   #counters(engine) {
@@ -22675,6 +22845,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         const result = await invocation.runAttempt({
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
@@ -22738,6 +22909,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         const result = await invocation.runAttempt({
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
@@ -23113,7 +23285,8 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
-    diagnostics: result?.diagnostics ?? {}
+    diagnostics: result?.diagnostics ?? {},
+    backgroundWaits: result?.backgroundWaits ?? []
   };
 }
 function recordTurnMetadata(record, result) {

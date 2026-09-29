@@ -224,17 +224,47 @@ function toolUse(id: string, name: string, input: Record<string, unknown>): unkn
   return { type: "tool_use", id, name, input };
 }
 
-// The wake Claude Code enqueues when a task ends: a bookkeeping row with the
-// block at top level, then a user turn carrying the same block as its content.
-function taskNotification(taskId: string, status: string): string[] {
-  const block = `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>${status}</status>\n<summary>Background command "sleep" ${status}</summary>\n</task-notification>`;
+// A task's notification block as Claude Code composes it: a backgrounded
+// command's carries a `<status>`; a Monitor's carries an `<event>` and no
+// status (rows measured 2026-09-29, Claude Code 2.1.285).
+function commandNotification(taskId: string, status: string): string {
+  return `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>${status}</status>\n<summary>Background command "sleep" ${status}</summary>\n</task-notification>`;
+}
+
+function monitorNotification(taskId: string, event: string): string {
+  return `<task-notification>\n<task-id>${taskId}</task-id>\n<summary>Monitor event: "background task completion"</summary>\n<event>${event}</event>\n</task-notification>`;
+}
+
+// The rows a notification occupies. Claude Code enqueues the block the moment
+// the task ends — a `queue-operation` row, bookkeeping about the queue — and
+// delivers it once the model can receive it: as a `user` row when the session
+// is idle (after a `dequeue` row), or absorbed into a turn already in flight
+// as a `queued_command` attachment (the queue row then `remove`d).
+function enqueued(block: string): string {
+  return JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block });
+}
+
+function deliveredIdle(block: string): string[] {
   return [
-    JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
+    JSON.stringify({ type: "queue-operation", operation: "dequeue" }),
     JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } })
   ];
 }
 
-test("outstandingBackgroundTasks names a backgrounded command from its start until a non-running notification ends it", () => {
+function absorbedMidTurn(block: string): string[] {
+  return [
+    JSON.stringify({ type: "queue-operation", operation: "remove", content: block, reason: "absorbed_mid_turn" }),
+    JSON.stringify({ type: "attachment", attachment: { type: "queued_command", prompt: block, commandMode: "task-notification" } })
+  ];
+}
+
+// The wake as a session that was idle receives it: enqueued, then delivered.
+function taskNotification(taskId: string, status: string): string[] {
+  const block = commandNotification(taskId, status);
+  return [enqueued(block), ...deliveredIdle(block)];
+}
+
+test("outstandingBackgroundTasks names a backgrounded command from its start until a delivered notification reports it ended", () => {
   const started = [
     assistant([toolUse("toolu_bg", "Bash", { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true })], { stop: "tool_use" }),
     toolResult("toolu_bg", "Command running in background with ID: bya9z1l44. Output is being written to: /tmp/x.output. You will be notified when it completes."),
@@ -246,17 +276,19 @@ test("outstandingBackgroundTasks names a backgrounded command from its start unt
   assert.equal(turnComplete(entries), true);
   assert.deepEqual(outstandingBackgroundTasks(entries), [{ id: "bya9z1l44", description: "Wait 45 seconds in background" }]);
 
-  // A Monitor event is a `running` notification: the task is still outstanding.
-  const running = parseTranscriptText([...started, ...taskNotification("bya9z1l44", "running")].join("\n"));
-  assert.equal(outstandingBackgroundTasks(running).length, 1);
+  // A status outside the ended set — `running`, or `blocked` from Claude
+  // Code's own alternation — leaves the task outstanding even once answered.
+  for (const status of ["running", "blocked"]) {
+    const held = parseTranscriptText([...started, ...taskNotification("bya9z1l44", status), assistant([textBlock("still going")])].join("\n"));
+    assert.equal(outstandingBackgroundTasks(held).length, 1, status);
+  }
 
   // The notification rows land seconds before the model's reply: a turn
   // read in that window still ends on the interim message, so the task
   // stays outstanding until an assistant entry follows the notification.
   const notifiedOnly = parseTranscriptText([...started, ...taskNotification("bya9z1l44", "completed")].join("\n"));
   assert.equal(outstandingBackgroundTasks(notifiedOnly).length, 1, "notified but not yet answered");
-  // The ending notification, in either of its two rows, closes the wait
-  // once the reply lands.
+  // A delivered ending closes the wait once the reply lands.
   for (const status of ["completed", "failed", "killed", "stopped"]) {
     const ended = parseTranscriptText([...started, ...taskNotification("bya9z1l44", status), assistant([textBlock("done")])].join("\n"));
     assert.deepEqual(outstandingBackgroundTasks(ended), [], status);
@@ -264,6 +296,62 @@ test("outstandingBackgroundTasks names a backgrounded command from its start unt
   // A notification for a task this turn never started is not this turn's.
   const foreign = parseTranscriptText([...started, ...taskNotification("someoneelse", "completed"), assistant([textBlock("still waiting")])].join("\n"));
   assert.equal(outstandingBackgroundTasks(foreign).length, 1);
+});
+
+test("outstandingBackgroundTasks holds a task whose ending is enqueued but not delivered: the interim reply after the enqueue row is not the answer", () => {
+  // Measured 2026-09-29 (a command that exited in ~2 s): the tool result at
+  // 15:57:36.225, the enqueue row at 15:57:36.259, the interim reply at
+  // 15:57:39.311 — and no delivery, because the wait closed on the enqueue
+  // row and the session was stopped with the interim text as the answer.
+  const block = commandNotification("blfzk0hh4", "completed");
+  const enqueuedBeforeInterim = [
+    assistant([toolUse("toolu_short", "Bash", { command: "node spawn-nested.mjs", description: "Run spawn-nested.mjs script in background", run_in_background: true })], { stop: "tool_use" }),
+    toolResult("toolu_short", "Command running in background with ID: blfzk0hh4. Output is being written to: /tmp/x.output."),
+    enqueued(block),
+    assistant([textBlock("The script is now running in the background (task ID: `blfzk0hh4`). You will be notified when it completes.")])
+  ];
+  const interim = parseTranscriptText(enqueuedBeforeInterim.join("\n"));
+  assert.equal(turnComplete(interim), true);
+  assert.deepEqual(outstandingBackgroundTasks(interim).map((task) => task.id), ["blfzk0hh4"], "enqueued is not delivered");
+
+  // Delivered once the session is idle, then answered: the wait closes.
+  const deliveredLater = parseTranscriptText([...enqueuedBeforeInterim, ...deliveredIdle(block), assistant([textBlock("done: exit 0")])].join("\n"));
+  assert.deepEqual(outstandingBackgroundTasks(deliveredLater), []);
+
+  // Absorbed into a turn already in flight — the attachment row is the
+  // delivery — and answered by that turn's reply: the wait closes too.
+  const absorbed = parseTranscriptText([...enqueuedBeforeInterim, ...absorbedMidTurn(block), assistant([textBlock("done: exit 0")])].join("\n"));
+  assert.deepEqual(outstandingBackgroundTasks(absorbed), []);
+  // The attachment alone, unanswered, is the notified-but-unanswered window.
+  assert.equal(outstandingBackgroundTasks(parseTranscriptText([...enqueuedBeforeInterim, ...absorbedMidTurn(block)].join("\n"))).length, 1);
+});
+
+test("outstandingBackgroundTasks keeps a Monitor outstanding through its events and ends it at the Monitor's own notice", () => {
+  // Measured 2026-09-29: a Monitor on a background task's output file. Its
+  // event (the watched output, then `[exited with code 0]` from the task
+  // file) carries no status and is not the Monitor ending; its expiry notice
+  // a minute later is.
+  const started = [
+    assistant([toolUse("toolu_mon", "Monitor", { command: "tail -f /tmp/x.output", description: "background task completion" })], { stop: "tool_use" }),
+    toolResult("toolu_mon", "Monitor started (task b7zb0kfnb, expires in 1m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch)."),
+    assistant([textBlock("Waiting for the background task to complete...")])
+  ];
+  const event = monitorNotification("b7zb0kfnb", "BG-19-8bdca0417a34\n[exited with code 0]");
+  const afterEvent = parseTranscriptText([...started, ...absorbedMidTurn(event), assistant([textBlock("Nonce: BG-19-8bdca0417a34")])].join("\n"));
+  assert.deepEqual(outstandingBackgroundTasks(afterEvent).map((task) => task.id), ["b7zb0kfnb"], "an event is the Monitor still running");
+
+  // Each notice Claude Code itself writes into the event slot ends the watch.
+  for (const notice of [
+    "[Monitor expired after 1m with 1 event delivered. Re-arm it if you still need the watch.]",
+    "[Monitor expired after 5m with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]",
+    "[Monitor timed out — re-arm if needed.]",
+    "[Monitor stopped — too much output (40 events suppressed over 12s). Restart with a more selective filter.]"
+  ]) {
+    const ended = parseTranscriptText(
+      [...started, ...absorbedMidTurn(event), assistant([textBlock("Nonce: BG-19-8bdca0417a34")]), ...deliveredIdle(monitorNotification("b7zb0kfnb", notice)), assistant([textBlock("Task is complete.")])].join("\n")
+    );
+    assert.deepEqual(outstandingBackgroundTasks(ended), [], notice);
+  }
 });
 
 test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {

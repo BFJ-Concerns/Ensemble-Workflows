@@ -20,11 +20,13 @@ export interface TranscriptEntry {
   type?: string;
   message?: TranscriptMessage;
   /**
-   * Top-level content on Claude Code's own bookkeeping rows: a
-   * `queue-operation` row carries the `<task-notification>` block it
-   * enqueued for the model. Read by `outstandingBackgroundTasks`.
+   * Claude Code's record of a queued prompt absorbed into a turn already
+   * in flight (`attachment.type === "queued_command"`, the prompt in
+   * `attachment.prompt`): a task notification that lands mid-turn reaches
+   * the model this way rather than as a `user` row. Read by
+   * `outstandingBackgroundTasks`.
    */
-  content?: unknown;
+  attachment?: unknown;
   /**
    * The effort level Claude Code served this entry at — a top-level field
    * on every assistant entry since Claude Code 2.1.283 (measured
@@ -322,38 +324,60 @@ export interface BackgroundTask {
 
 /** The tool results by which Claude Code reports a task it backgrounded (measured 2026-09-28, Claude Code 2.1.283). */
 const BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
-/** The notification block by which Claude Code wakes the model when a task ends; its id and status are read inside the block only. */
+/** The notification block by which Claude Code wakes the model about a task; its id, status, and event are read inside the block only. */
 const TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 const TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
 const TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
-/** The one status that means the task has not ended (a Monitor event). */
-const TASK_STILL_RUNNING = "running";
+const TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
+/**
+ * The statuses by which a backgrounded command's notification reports the
+ * task ended: Claude Code 2.1.285's own alternation is
+ * `completed|failed|killed|blocked`, and the operator's transcripts add
+ * `stopped` (measured 2026-09-29). An allow-list, so a status it does not
+ * name — `running` (a Monitor event), `blocked`, or one a later build adds —
+ * holds the wait: the call's deadline then ends it, never an interim reply
+ * promoted to the answer.
+ */
+const TASK_ENDED_STATUSES = new Set(["completed", "failed", "killed", "stopped"]);
+/**
+ * A Monitor's notifications carry no `<status>`: each event, and the
+ * Monitor's own ending, arrives with `<summary>` and `<event>` alone. The
+ * ending is the tool's own notice in the event slot — `[Monitor expired
+ * after …]`, `[Monitor timed out …]`, `[Monitor stopped — too much output
+ * …]`, the three notices Claude Code 2.1.285 writes (measured from its
+ * binary and the operator's transcripts, 2026-09-29). Any other event is the
+ * watched source's own output: the Monitor is still running.
+ */
+const MONITOR_OWN_NOTICE = /^\s*\[Monitor /;
 
 /**
  * The background tasks the session started at or after `fromIndex` whose
- * ending has not yet reached it — the evidence that a turn ending in
+ * ending has not yet reached the model — the evidence that a turn ending in
  * `end_turn` is an interim message, not the answer.
  *
  * Claude Code backgrounds a long command (`run_in_background`) or a Monitor
  * and lets the model end its turn; the tool result names the task
  * (`Command running in background with ID: <id>`, `Monitor started (task
- * <id>`). When the task ends, Claude Code enqueues a `<task-notification>`
- * block naming the `<task-id>` and a `<status>` — `completed`, `failed`,
- * `killed`, `stopped` — and re-invokes the model, whose next turn is the
- * one to collect. A `running` status is a Monitor event, not an ending. A
- * task is outstanding from its start until a non-running notification
- * names it **and an assistant entry follows the notification**: the
- * notification rows land seconds before the model's reply, and a turn read
- * in that window still ends on the interim message. The description is the tool call's own (`description`, else
- * a bounded `command`, else the tool name), matched to the result by
- * `tool_use_id` — and only a call that backgrounds work (Bash with
- * `run_in_background`, Monitor) can start one: a worker reading a file that
- * quotes the phrase has started nothing.
+ * <id>`), and only a call that backgrounds work can start one — a worker
+ * reading a file that quotes the phrase has started nothing. When the task
+ * ends, Claude Code notifies the model with a `<task-notification>` block
+ * naming the `<task-id>`, and the model's next turn is the one to collect.
+ * The block is written twice — enqueued the moment the task ends, then
+ * delivered once the model can receive it — and only the delivery counts
+ * (`deliveredNotifications`): a task that ends while the model is composing
+ * its interim reply is enqueued before that reply and delivered after it,
+ * so a wait closed on the enqueue row takes the interim reply as the answer.
+ * A task is outstanding from its start until a delivered notification
+ * reports it ended (`notificationEnded`) **and an assistant entry follows
+ * the delivery**: the delivery lands seconds before the model's reply, and
+ * a turn read in that window still ends on the interim message. The
+ * description is the tool call's own (`description`, else a bounded
+ * `command`, else the tool name), matched to the result by `tool_use_id`.
  */
 export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex = 0): BackgroundTask[] {
   const toolCalls = new Map<string, { description: string; backgrounds: boolean }>();
   const outstanding = new Map<string, BackgroundTask>();
-  // Tasks whose ending has been notified but not yet answered: they leave
+  // Tasks whose ending has been delivered but not yet answered: they leave
   // the outstanding set at the next assistant entry, the model's reply.
   const notified = new Set<string>();
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
@@ -386,13 +410,9 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
         }
       }
     }
-    for (const text of entryTexts(entry)) {
-      for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
-        const id = TASK_NOTIFICATION_ID.exec(block[1] ?? "")?.[1];
-        const status = TASK_NOTIFICATION_STATUS.exec(block[1] ?? "")?.[1]?.trim();
-        if (id !== undefined && outstanding.has(id) && status !== undefined && status !== TASK_STILL_RUNNING) {
-          notified.add(id);
-        }
+    for (const notification of deliveredNotifications(entry)) {
+      if (notification.ended && outstanding.has(notification.id)) {
+        notified.add(notification.id);
       }
     }
   }
@@ -445,21 +465,60 @@ function toolResultBlocks(content: unknown): Array<{ toolUseId: string; text: st
   return results;
 }
 
-/** Every text an entry carries: a message's string or text blocks, and a bookkeeping row's top-level content. */
-function entryTexts(entry: TranscriptEntry): string[] {
-  const texts: string[] = [];
-  if (typeof entry.content === "string") {
-    texts.push(entry.content);
+/**
+ * The task notifications this row delivered to the model, each with whether
+ * it reports its task ended. A delivery is a `user` row carrying the block
+ * (the session was idle when the task ended) or an `attachment` row of type
+ * `queued_command` carrying it as its prompt (the notification was absorbed
+ * into a turn already in flight; Claude Code marks the matching queue row
+ * `remove`, `reason: "absorbed_mid_turn"`). A `queue-operation` row is
+ * bookkeeping about the queue, never a delivery, whatever block it carries.
+ */
+function deliveredNotifications(entry: TranscriptEntry): Array<{ id: string; ended: boolean }> {
+  let texts: string[];
+  if (entry.type === "user") {
+    texts = messageTexts(entry.message?.content);
+  } else if (entry.type === "attachment") {
+    const attachment = asRecord(entry.attachment);
+    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
+  } else {
+    return [];
   }
-  const content = entry.message?.content;
-  if (typeof content === "string") {
-    texts.push(content);
-  } else if (Array.isArray(content)) {
-    for (const block of content) {
-      const record = asRecord(block);
-      if (record?.type === "text" && typeof record.text === "string") {
-        texts.push(record.text);
+  const notifications: Array<{ id: string; ended: boolean }> = [];
+  for (const text of texts) {
+    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+      const body = block[1] ?? "";
+      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
+      if (id !== undefined) {
+        notifications.push({ id, ended: notificationEnded(body) });
       }
+    }
+  }
+  return notifications;
+}
+
+/** Whether a notification reports its task ended: by status for a command, by the Monitor's own notice for a Monitor. */
+function notificationEnded(body: string): boolean {
+  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
+  if (status !== undefined) {
+    return TASK_ENDED_STATUSES.has(status);
+  }
+  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
+}
+
+/** Every text a message carries: its string content, or its text blocks. */
+function messageTexts(content: unknown): string[] {
+  if (typeof content === "string") {
+    return [content];
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const texts: string[] = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      texts.push(record.text);
     }
   }
   return texts;

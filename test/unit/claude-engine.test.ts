@@ -1527,52 +1527,113 @@ test("usage is charged once per API call, however many rows a call spans, and su
  * message — the shape Claude Code persists — then is woken by the task's
  * notification on a later poll and gives its real answer.
  */
+/** A task's notification rows as Claude Code writes them (measured 2026-09-29, Claude Code 2.1.285). */
+const backgroundTaskRows = {
+  commandNotification: (taskId: string, toolUseId: string, description: string): string =>
+    `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>completed</status>\n<summary>Background command "${description}" completed (exit code 0)</summary>\n</task-notification>`,
+  monitorNotification: (taskId: string, event: string): string =>
+    `<task-notification>\n<task-id>${taskId}</task-id>\n<summary>Monitor event: "background task completion"</summary>\n<event>${event}</event>\n</task-notification>`,
+  /** The moment the task ends: bookkeeping about the queue, not a delivery. */
+  enqueued: (block: string): string => JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
+  /** Delivered to an idle session as its next user turn. */
+  deliveredIdle: (block: string): string[] => [
+    JSON.stringify({ type: "queue-operation", operation: "dequeue" }),
+    JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } })
+  ],
+  /** Delivered into a turn already in flight, as an attachment. */
+  absorbedMidTurn: (block: string): string[] => [
+    JSON.stringify({ type: "queue-operation", operation: "remove", content: block, reason: "absorbed_mid_turn" }),
+    JSON.stringify({ type: "attachment", attachment: { type: "queued_command", prompt: block, commandMode: "task-notification" } })
+  ]
+};
+
+/**
+ * A session that backgrounds work and ends its turn on an interim message,
+ * in the three shapes measured live. `slow`: the task ends long after the
+ * interim turn, its notification enqueued and delivered together at
+ * `wakeAtPoll`. `short`: the task ends within the interim turn, so its
+ * notification is *enqueued before the interim reply* and delivered only at
+ * `wakeAtPoll`. `monitor`: a Monitor armed on the command's output — at
+ * `wakeAtPoll` the command's notification is delivered, the Monitor's event
+ * is absorbed into the reply's turn, and the model replies with the nonce;
+ * the Monitor's expiry notice is delivered three polls later and answered
+ * two after that. In every shape the model's reply lands two polls after a
+ * delivery, never in the same write, as it does live.
+ */
 class BackgroundTaskControlPlane implements ClaudeControlPlane {
   pollCount = 0;
   readonly snapshots: Array<{ poll: number; waitingOn: unknown }> = [];
   #path: string;
   #present = false;
   #wakeAtPoll: number | null;
+  #shape: "slow" | "short" | "monitor";
   #observe: (() => unknown) | undefined;
 
-  /** The wake's notification rows land at `wakeAtPoll`; the model's reply two polls later, as it does live. */
-  constructor(dir: string, options: { wakeAtPoll: number | null; observe?: () => unknown }) {
+  constructor(dir: string, options: { wakeAtPoll: number | null; shape?: "slow" | "short" | "monitor"; observe?: () => unknown }) {
     this.#path = path.join(dir, "background-task.jsonl");
     this.#wakeAtPoll = options.wakeAtPoll;
+    this.#shape = options.shape ?? "slow";
     this.#observe = options.observe;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
     const call = { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
-    await writeFile(
-      this.#path,
-      [
-        JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
-        JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } }),
-        assistantLine({ text: "The sleep is running in the background. I'll reply once it finishes.", output: 15 })
-      ].join("\n") + "\n"
-    );
+    const rows = [
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
+      JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } })
+    ];
+    if (this.#shape === "short") {
+      rows.push(backgroundTaskRows.enqueued(this.#commandBlock()));
+    }
+    if (this.#shape === "monitor") {
+      const monitor = { type: "tool_use", id: "toolu_mon", name: "Monitor", input: { command: "tail -f /tmp/bya9z1l44.output", description: "background task completion" } };
+      rows.push(
+        JSON.stringify({ type: "assistant", message: { role: "assistant", content: [monitor], stop_reason: "tool_use" } }),
+        JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_mon", content: "Monitor started (task b7zb0kfnb, expires in 1m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch)." }] } })
+      );
+    }
+    rows.push(assistantLine({ text: "The sleep is running in the background. I'll reply once it finishes.", output: 15 }));
+    await writeFile(this.#path, rows.join("\n") + "\n");
     return { id: "background-1", sessionId: "background", name: options.name, cwd: options.cwd };
+  }
+
+  #commandBlock(): string {
+    return backgroundTaskRows.commandNotification("bya9z1l44", "toolu_bg", "Wait 45 seconds in background");
   }
 
   async poll(): Promise<ClaudeSessionStatus> {
     this.pollCount += 1;
     this.snapshots.push({ poll: this.pollCount, waitingOn: this.#observe?.() });
-    if (this.#wakeAtPoll !== null && this.pollCount === this.#wakeAtPoll) {
-      const block = "<task-notification>\n<task-id>bya9z1l44</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Wait 45 seconds in background\" completed (exit code 0)</summary>\n</task-notification>";
-      await appendFile(
-        this.#path,
-        [
-          JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
-          JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } })
-        ].join("\n") + "\n"
-      );
-    }
-    if (this.#wakeAtPoll !== null && this.pollCount === this.#wakeAtPoll + 2) {
-      // The model's reply to the wake — the answer — lands after the
-      // notification rows, never in the same write.
-      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', output: 4 })}\n`);
+    const wake = this.#wakeAtPoll;
+    if (wake !== null) {
+      const rows: string[] = [];
+      if (this.pollCount === wake) {
+        if (this.#shape === "slow") {
+          rows.push(backgroundTaskRows.enqueued(this.#commandBlock()));
+        }
+        rows.push(...backgroundTaskRows.deliveredIdle(this.#commandBlock()));
+        if (this.#shape === "monitor") {
+          const event = backgroundTaskRows.monitorNotification("b7zb0kfnb", "NONCE-8bdca0417a34\n[exited with code 0]");
+          rows.push(backgroundTaskRows.enqueued(event), ...backgroundTaskRows.absorbedMidTurn(event));
+        }
+      }
+      if (this.pollCount === wake + 2) {
+        // The model's reply to the wake — the answer, unless a Monitor is
+        // still watching — lands after the notification rows, never in the
+        // same write.
+        rows.push(assistantLine({ text: this.#shape === "monitor" ? '{"ok":false}' : '{"ok":true}', output: 4 }));
+      }
+      if (this.#shape === "monitor" && this.pollCount === wake + 5) {
+        const expiry = backgroundTaskRows.monitorNotification("b7zb0kfnb", "[Monitor expired after 1m with 1 event delivered. Re-arm it if you still need the watch.]");
+        rows.push(backgroundTaskRows.enqueued(expiry), ...backgroundTaskRows.deliveredIdle(expiry));
+      }
+      if (this.#shape === "monitor" && this.pollCount === wake + 7) {
+        rows.push(assistantLine({ text: '{"ok":true}', output: 4 }));
+      }
+      if (rows.length > 0) {
+        await appendFile(this.#path, rows.join("\n") + "\n");
+      }
     }
     // The daemon reports the session idle the whole time it waits for its
     // own notification — the same roster shape a settled-but-unproven
@@ -1630,6 +1691,78 @@ test("a turn ending while a background task is outstanding is not collected; the
       assert.equal(waits[0]?.taskId, "bya9z1l44");
       assert.equal(waits[0]?.description, "Wait 45 seconds in background");
       assert.ok(waits[0]?.endedAt !== null, "the wait closed when the notification landed");
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a task that ends within the interim turn is still held for the reply after its delivery, never collected on the enqueue row", async () => {
+  // The short-task shape (measured 2026-09-29: 3 of 24 short tasks answered
+  // with interim text at the previous landing): the ending is enqueued
+  // before the interim reply and delivered only once the session is idle.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-short-task-"));
+  try {
+    let runtime: EnsembleRuntime | null = null;
+    const controlPlane = new BackgroundTaskControlPlane(dir, {
+      shape: "short",
+      wakeAtPoll: 12,
+      observe: () => runtime?.progress.snapshot().agents[0]?.waitingOn ?? "no live agent"
+    });
+    runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("run then answer", { engine: "claude", schema: okSchema }), { ok: true });
+      assert.ok(controlPlane.pollCount >= 14, `collected before the reply that follows the delivery, after ${controlPlane.pollCount} polls`);
+      // With the ending already enqueued, the wait still shows until the
+      // delivery is answered.
+      const during = controlPlane.snapshots.find((snapshot) => snapshot.poll === 6)?.waitingOn as { taskId?: string } | null;
+      assert.equal(during?.taskId, "bya9z1l44");
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "complete");
+      assert.equal(record?.rawOutput, '{"ok":true}');
+      const waits = record?.attempts[0]?.backgroundWaits ?? [];
+      assert.equal(waits.length, 1);
+      assert.ok(waits[0]?.endedAt !== null, "the wait closed at the reply after the delivery");
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Monitor's event keeps its wait open; its own expiry notice closes it, and the reply after that is the answer", async () => {
+  // The Monitor shape (measured 2026-09-29: the wait never closed and the
+  // call never settled at the previous landing): the command's wake is
+  // answered with the nonce while the Monitor still watches, and the
+  // answer is the reply after the Monitor's own notice.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-monitor-task-"));
+  try {
+    let runtime: EnsembleRuntime | null = null;
+    const controlPlane = new BackgroundTaskControlPlane(dir, {
+      shape: "monitor",
+      wakeAtPoll: 8,
+      observe: () => runtime?.progress.snapshot().agents[0]?.waitingOn ?? "no live agent"
+    });
+    runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("run, watch, answer", { engine: "claude", schema: okSchema }), { ok: true });
+      assert.ok(controlPlane.pollCount >= 15, `collected before the reply that follows the Monitor's notice, after ${controlPlane.pollCount} polls`);
+      // Before the wake the earliest open wait — the command's — shows;
+      // once the command is answered the Monitor's wait is what remains.
+      const before = controlPlane.snapshots.find((snapshot) => snapshot.poll === 4)?.waitingOn as { taskId?: string } | null;
+      assert.equal(before?.taskId, "bya9z1l44");
+      const between = controlPlane.snapshots.find((snapshot) => snapshot.poll === 12)?.waitingOn as { taskId?: string; description?: string } | null;
+      assert.equal(between?.taskId, "b7zb0kfnb");
+      assert.equal(between?.description, "background task completion");
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "complete");
+      assert.equal(record?.rawOutput, '{"ok":true}', "the reply after the command's wake is not the answer while the Monitor watches");
+      const waits = record?.attempts[0]?.backgroundWaits ?? [];
+      assert.deepEqual(waits.map((wait) => wait.taskId), ["bya9z1l44", "b7zb0kfnb"]);
+      assert.ok(waits.every((wait) => wait.endedAt !== null), "both waits closed");
     } finally {
       await runtime.close();
     }

@@ -1025,10 +1025,16 @@ rejection itself is unchanged, invoking no engine.
   the schema shape, never a throw.
 - **A Claude worker's answer is its final reply, never an interim one.**
   Claude Code backgrounds a long command (`run_in_background`) or a Monitor
-  and lets the model end its turn with a "waiting" message, then re-invokes
-  it when the task ends. A turn that ends while such a task is outstanding
-  is not collected: the harness keeps waiting for the reply that follows
-  the wake, the live status shows the worker `waitingOn` the task, and the
+  and lets the model end its turn with a "waiting" message, then delivers
+  the task's notification and re-invokes it. A turn that ends while such a
+  task is outstanding is not collected: the harness keeps waiting for the
+  reply that follows the *delivered* notification — Claude Code enqueues a
+  notification the moment a task ends and delivers it only once the model
+  can receive it, so a task that ends within seconds is enqueued before the
+  interim reply and answered after it — and a Monitor stays outstanding
+  through its events until the Monitor's own notice (expired, timed out, or
+  stopped) is delivered and answered. The live status shows the worker
+  `waitingOn` the task, and the
   attempt records the wait in `background_waits`. The wait is bounded by
   the call's own `timeoutMs` and nothing else — a task that never wakes the
   session times the attempt out, and the call fails as a value under the

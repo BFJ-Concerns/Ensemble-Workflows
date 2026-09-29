@@ -56,7 +56,7 @@ import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, Tu
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but the witness cannot isolate it from
+ * messaging. `Agent` was also absent, but that witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -148,7 +148,7 @@ export function claudeCacheTtlToMs(value: string): number | null {
  * its transcripts report serving, 2026-09-27); `max` is native but outside
  * the canonical set, so nothing maps to it, and `minimal` is the one
  * canonical level the CLI lacks. The CLI silently
- * accepts an unknown `--effort` value and runs at its default (witnessed
+ * accepts an unknown `--effort` value and runs at its default (observed
  * 2026-08-30: `--effort definitely-invalid` reached a healthy worker at
  * exit 0), so conversion is the only loud boundary: nothing non-native may
  * reach the CLI. What the run record reports as `resolved_effort` is not
@@ -750,39 +750,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   }
 
   /**
-   * Feed best-effort transcript-derived usage through the same event shape Codex
-   * emits. The adapter registration labels it as Claude before the runtime records
+   * Feed transcript-derived usage through the same event shape Codex emits.
+   * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    *
-   * The derived total is not monotonic: the input side is a snapshot of the
-   * running context, and compaction shrinks it, so a step that generated new
-   * output can still carry a *smaller* total than the step before. Growth is
-   * therefore judged per component, and the reported delta's own total is the
-   * sum of the components that grew — reporting nothing whenever the total
-   * fell would drop that output for good, since the high-water mark would not
-   * advance either and no later report would ever re-carry it. The high-water
-   * mark advances per component for the same reason.
+   * `usageSince` counts each API call once and sums every figure across the
+   * turn's calls, so the derived total only grows as the transcript grows;
+   * the delta reported here is the plain difference from the last report,
+   * and the archived event's `total` is the same figure the agent record's
+   * usage summarises — budget and archive read one arithmetic.
    */
   #reportUsage(handle: ClaudeSessionHandle, entries: TranscriptEntry[], fromIndex: number): void {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
-    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
-    if (grown === 0) {
-      // A pure composition shift inside the cached total (reads becoming
-      // writes after a context rebuild) grows nothing the budget charges.
-      // Advance the mark anyway, or the shifted creation share would ride
-      // the next genuine delta as spend the run never made.
-      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    if (last.totalTokens === 0) {
       return;
     }
-    if (last.cacheCreationInputTokens !== undefined && last.cacheCreationInputTokens > last.cachedInputTokens) {
-      // The creation figure is a split of the combined cached delta; a share
-      // beyond the whole is composition shift, not spend — clamping keeps
-      // read + creation reconcilable against the reported cached total.
-      last.cacheCreationInputTokens = last.cachedInputTokens;
-    }
-    last.totalTokens = grown;
-    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    this.#reportedUsage = total;
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
@@ -962,32 +946,6 @@ interface FailureEvidence {
   apiError: TranscriptApiError | null;
 }
 
-/**
- * The per-component maximum of two derived totals — the subtraction base for
- * the next delta. Taking the maximum rather than the newer snapshot keeps a
- * shrunken input side from re-charging context the run has already paid for.
- */
-function highWaterUsage(previous: TokenUsageBreakdown | null, total: TokenUsageBreakdown): TokenUsageBreakdown {
-  if (previous === null) {
-    return total;
-  }
-  const cacheCreationInputTokens =
-    total.cacheCreationInputTokens === undefined && previous.cacheCreationInputTokens === undefined
-      ? undefined
-      : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
-  const reasoningOutputTokens =
-    total.reasoningOutputTokens === undefined && previous.reasoningOutputTokens === undefined
-      ? undefined
-      : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
-  return {
-    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
-    ...(cacheCreationInputTokens === undefined ? {} : { cacheCreationInputTokens }),
-    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
-    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
-    ...(reasoningOutputTokens === undefined ? {} : { reasoningOutputTokens }),
-    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
-  };
-}
 
 function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {
   if (error instanceof ClaudeFirstLifeTimeoutError) {

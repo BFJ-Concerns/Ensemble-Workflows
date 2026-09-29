@@ -20,7 +20,7 @@ import { ClaudeTranscriptError } from "../../src/errors.js";
 // `stop` defaults to a terminal turn (end_turn); pass "tool_use" for mid-turn.
 function assistant(
   blocks: unknown[],
-  options: { usage?: Record<string, number>; stop?: string; model?: string; effort?: string } = {}
+  options: { id?: string; usage?: Record<string, number>; stop?: string; model?: string; effort?: string } = {}
 ): string {
   return JSON.stringify({
     type: "assistant",
@@ -28,6 +28,8 @@ function assistant(
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
     message: {
       role: "assistant",
+      // The API message id: rows of one call share it (see usageSince).
+      ...(options.id !== undefined ? { id: options.id } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       content: blocks,
       stop_reason: options.stop ?? "end_turn",
@@ -134,13 +136,15 @@ test("effortSince returns the latest served effort in range, or null when no ent
   assert.equal(effortSince([]), null);
 });
 
-test("usageSince sums output tokens and snapshots the final input side", () => {
+test("usageSince counts every figure once per API call and sums across the turn's calls", () => {
   const entries = parseTranscriptText(
     [
       assistant([textBlock("a")], {
+        id: "msg_call_a",
         usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 5, cache_creation_input_tokens: 0 }
       }),
       assistant([textBlock("b")], {
+        id: "msg_call_b",
         usage: { input_tokens: 220, output_tokens: 30, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }
       })
     ].join("\n")
@@ -148,16 +152,65 @@ test("usageSince sums output tokens and snapshots the final input side", () => {
 
   const usage = usageSince(entries);
 
-  // output is additive (10 + 30); input/cached are the final message's snapshot
-  // (220 input; 7 + 3 cached), charged once rather than summed across steps.
+  // Each call is billed its own context, so the input and cache sides sum
+  // across calls exactly as output does: a two-call tool turn pays two
+  // contexts, never only the final one.
   assert.equal(usage.outputTokens, 40);
-  assert.equal(usage.inputTokens, 220);
-  assert.equal(usage.cachedInputTokens, 10);
+  assert.equal(usage.inputTokens, 320);
+  assert.equal(usage.cachedInputTokens, 15);
   // The creation share travels beside the combined figure, so a consumer can
-  // tell input served from cache (7) from cache being written (3).
+  // tell input served from cache (12) from cache being written (3).
   assert.equal(usage.cacheCreationInputTokens, 3);
   assert.equal("reasoningOutputTokens" in usage, false);
-  assert.equal(usage.totalTokens, 220 + 10 + 40);
+  assert.equal(usage.totalTokens, 320 + 15 + 40);
+});
+
+test("usageSince counts one API call written across several transcript rows once", () => {
+  // Claude Code writes a call's thinking, text, and tool_use blocks as
+  // separate rows, each repeating the call's whole usage: three rows, one
+  // message id, one charge.
+  const usage = { input_tokens: 10, output_tokens: 280, cache_read_input_tokens: 25_629, cache_creation_input_tokens: 18_359 };
+  const entries = parseTranscriptText(
+    [
+      assistant([{ type: "thinking", thinking: "…" }], { id: "msg_one_call", usage, stop: "tool_use" }),
+      assistant([textBlock("looking")], { id: "msg_one_call", usage, stop: "tool_use" }),
+      assistant([{ type: "tool_use", id: "toolu_1", name: "Bash", input: {} }], { id: "msg_one_call", usage, stop: "tool_use" }),
+      // Rows without an id (an older build) are one call each.
+      assistant([textBlock("done")], { usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+    ].join("\n")
+  );
+
+  const counted = usageSince(entries);
+
+  assert.equal(counted.outputTokens, 282);
+  assert.equal(counted.inputTokens, 11);
+  assert.equal(counted.cachedInputTokens, 25_629 + 18_359);
+  assert.equal(counted.cacheCreationInputTokens, 18_359);
+  assert.equal(counted.totalTokens, 11 + 25_629 + 18_359 + 282);
+});
+
+test("usageSince never re-counts a message id an earlier turn already counted", () => {
+  // A held session's later turn reads from its high-water mark; a row past
+  // the mark that repeats an earlier turn's message id is that earlier call
+  // again, not new spend.
+  const first = { input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const second = { input_tokens: 70, output_tokens: 9, cache_read_input_tokens: 4, cache_creation_input_tokens: 0 };
+  const entries = parseTranscriptText(
+    [
+      assistant([textBlock("turn one")], { id: "msg_turn_one", usage: first }),
+      assistant([textBlock("turn one again")], { id: "msg_turn_one", usage: first }),
+      assistant([textBlock("turn two")], { id: "msg_turn_two", usage: second })
+    ].join("\n")
+  );
+
+  const later = usageSince(entries, 1);
+
+  assert.equal(later.outputTokens, 9);
+  assert.equal(later.inputTokens, 70);
+  assert.equal(later.cachedInputTokens, 4);
+  assert.equal(later.totalTokens, 83);
+  // The whole session, read from the start, still counts each call once.
+  assert.equal(usageSince(entries).totalTokens, 55 + 83);
 });
 
 test("turnComplete is true only when the latest assistant message has settled", () => {

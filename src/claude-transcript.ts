@@ -52,6 +52,13 @@ export interface TranscriptFile {
 
 interface TranscriptMessage {
   role?: string;
+  /**
+   * The API message id (`msg_…`). Claude Code writes one API call's reply
+   * as several transcript rows — a `thinking` row, a `text` row, a
+   * `tool_use` row — each carrying the whole message's `usage`, so the id
+   * is what identifies one call across its rows. Read by `usageSince`.
+   */
+  id?: unknown;
   model?: unknown;
   content?: unknown;
   usage?: unknown;
@@ -224,25 +231,42 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
 }
 
 /**
- * Best-effort per-turn token usage, summed over the assistant messages at or
- * after `fromIndex`. `output_tokens` is additive across messages (genuinely new
- * generation, no double-count) and is the dominant, exactly-correct signal; the
- * input side is taken as the final message's snapshot (the representative
- * context size, charged once) rather than summed, which would multiply-count the
- * context carried into every step. Claude does not report a separate reasoning
- * measurement, so the optional field stays absent and thinking rides
- * `outputTokens`. Documented as best-effort: what Claude tokens
- * should mean against a subscription allowance is not yet settled.
- * Returns all-zero when no assistant usage is present.
+ * The turn's token usage, counted once per API call over the assistant
+ * entries at or after `fromIndex`.
+ *
+ * Claude Code persists one API call's reply as several rows — a `thinking`
+ * row, a `text` row, a `tool_use` row — and every row repeats the call's
+ * full `usage` (measured 2026-09-28 on Claude Code 2.1.283: three rows,
+ * one `message.id`, identical usage on each). A row is therefore not a
+ * call: the rows sharing a `message.id` are one call, counted once. Every
+ * figure is then summed across the turn's distinct calls — output, and the
+ * input and cache sides alike — because each call is billed its own input
+ * (a two-call tool turn pays two contexts, not the last one). Rows with no
+ * id (an older build) count as one call each.
+ *
+ * A `message.id` already seen before `fromIndex` belongs to an earlier turn
+ * of the same session and is never counted again, so a held session's later
+ * turn attributes only the calls it made. Claude does not report a separate
+ * reasoning measurement, so the optional field stays absent and thinking
+ * rides `outputTokens`. Returns all-zero when no assistant usage is present.
  */
 export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsageBreakdown {
+  const start = Math.max(0, fromIndex);
+  const counted = new Set<string>();
+  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
+    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : undefined;
+    if (typeof id === "string") {
+      counted.add(id);
+    }
+  }
+
+  let inputTokens = 0;
   let outputTokens = 0;
-  let lastInput = 0;
-  let lastCacheRead = 0;
-  let lastCacheCreation = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
   let sawUsage = false;
 
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+  for (let index = start; index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry === undefined || entry.type !== "assistant") {
       continue;
@@ -251,13 +275,18 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     if (usage === null) {
       continue;
     }
+    const id = entry.message?.id;
+    if (typeof id === "string") {
+      if (counted.has(id)) {
+        continue;
+      }
+      counted.add(id);
+    }
     sawUsage = true;
+    inputTokens += numeric(usage.input_tokens);
     outputTokens += numeric(usage.output_tokens);
-    // Overwrite (not accumulate) the input side: each step's input restates the
-    // running context, so the final message's snapshot is the right charge-once value.
-    lastInput = numeric(usage.input_tokens);
-    lastCacheRead = numeric(usage.cache_read_input_tokens);
-    lastCacheCreation = numeric(usage.cache_creation_input_tokens);
+    cacheRead += numeric(usage.cache_read_input_tokens);
+    cacheCreation += numeric(usage.cache_creation_input_tokens);
   }
 
   if (!sawUsage) {
@@ -269,13 +298,13 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
   // carried beside the combined figure: `cachedInputTokens` stays the sum
   // (the budget's admission arithmetic is unchanged), and
   // `cacheCreationInputTokens` says how much of it was writes.
-  const lastCached = lastCacheRead + lastCacheCreation;
+  const cachedInputTokens = cacheRead + cacheCreation;
   return {
-    cachedInputTokens: lastCached,
-    cacheCreationInputTokens: lastCacheCreation,
-    inputTokens: lastInput,
+    cachedInputTokens,
+    cacheCreationInputTokens: cacheCreation,
+    inputTokens,
     outputTokens,
-    totalTokens: lastInput + lastCached + outputTokens
+    totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }
 

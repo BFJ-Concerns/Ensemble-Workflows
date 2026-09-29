@@ -52,7 +52,17 @@ interface ScriptedTurn {
    * overrides it (a flag the CLI ran at another level); `null` omits the
    * field, as a Claude Code build older than 2.1.283 would.
    */
-  assistant?: { text?: string; stop?: string | null; output?: number; input?: number; cached?: number; model?: string; effort?: string | null };
+  assistant?: {
+    text?: string;
+    stop?: string | null;
+    /** The API message id; rows sharing one are one call to the usage reader. */
+    id?: string;
+    output?: number;
+    input?: number;
+    cached?: number;
+    model?: string;
+    effort?: string | null;
+  };
 }
 
 class FakeControlPlane implements ClaudeControlPlane {
@@ -226,6 +236,7 @@ function assistantLine(
     ...(effort !== null ? { effort } : {}),
     message: {
       role: "assistant",
+      ...(assistant.id !== undefined ? { id: assistant.id } : {}),
       ...(assistant.model !== undefined ? { model: assistant.model } : {}),
       content,
       // `null` is a deliberate script value — a finished answer observed in a
@@ -1411,62 +1422,41 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
 });
 
 /**
- * A turn whose second step reports a *smaller* input snapshot than its first —
- * what compaction does to a running context — while genuinely generating more
- * output.
+ * A turn of two API calls, the first written across three rows (thinking,
+ * text, tool_use) that each repeat the call's usage — the shape Claude Code
+ * persists — arriving over successive polls.
  */
-class CompactingControlPlane implements ClaudeControlPlane {
+class SplitRowsControlPlane implements ClaudeControlPlane {
   pollCount = 0;
   #path: string;
   #present = false;
-  #recoveredSnapshot: boolean;
 
-  constructor(dir: string, options: { recoveredSnapshot?: boolean } = {}) {
-    this.#path = path.join(dir, "compacting.jsonl");
-    this.#recoveredSnapshot = options.recoveredSnapshot ?? false;
+  constructor(dir: string) {
+    this.#path = path.join(dir, "split-rows.jsonl");
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
     this.#present = true;
-    // The recovery journey carries a cache component so compaction and
-    // rebuild exercise every side of the per-component high-water mark.
+    const firstCall = { id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 };
     await writeFile(
       this.#path,
-      `${assistantLine({ text: "thinking", stop: "tool_use", input: 100, output: 10, ...(this.#recoveredSnapshot ? { cached: 50 } : {}) })}\n`
+      `${assistantLine({ ...firstCall })}\n${assistantLine({ ...firstCall, text: "looking" })}\n`
     );
-    return { id: "compacting-1", sessionId: "compacting", name: options.name, cwd: options.cwd };
+    return { id: "split-rows-1", sessionId: "split-rows", name: options.name, cwd: options.cwd };
   }
 
   async poll(): Promise<ClaudeSessionStatus> {
     this.pollCount += 1;
     if (this.pollCount === 2) {
-      // Compacted: the input snapshot falls from 100 to 40 (and any cache
-      // reads vanish with the discarded context), while 7 further output
-      // tokens are generated in the same step. Completion is detected from
-      // the transcript, so the recovery journey keeps this step mid-turn to
-      // survive to its later entries.
+      // The first call's third row lands (no new spend), then the second
+      // call: a smaller context than the first, its own charge.
       await appendFile(
         this.#path,
-        this.#recoveredSnapshot
-          ? `${assistantLine({ text: "compacted, continuing", stop: "tool_use", input: 40, output: 7 })}\n`
-          : `${assistantLine({ text: '{"ok":true}', input: 40, output: 7 })}\n`
+        `${assistantLine({ id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 })}\n` +
+          `${assistantLine({ id: "msg_second_call", text: '{"ok":true}', input: 40, output: 7, cached: 30 })}\n`
       );
     }
-    if (this.#recoveredSnapshot && this.pollCount === 3) {
-      // The context is rebuilt after compaction: the input snapshot returns
-      // to its pre-compaction size and the cached share reappears as cache
-      // *creation* instead of reads — a composition shift with no growth.
-      // Still mid-turn, so the turn survives to generate real output after
-      // the shift.
-      await appendFile(this.#path, `${assistantLine({ text: "rebuilt the context, resuming", stop: "tool_use", input: 100, output: 0, creation: 50 })}\n`);
-    }
-    if (this.#recoveredSnapshot && this.pollCount === 4) {
-      // Genuine new output after the shift: only this step's 3 tokens are
-      // spend; the shifted creation share must not ride along.
-      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', input: 100, output: 3, creation: 50 })}\n`);
-    }
-    const settled = this.pollCount >= (this.#recoveredSnapshot ? 4 : 2);
-    return { status: settled ? "idle" : "busy", state: "working", present: this.#present };
+    return { status: this.pollCount >= 2 ? "idle" : "busy", state: "working", present: this.#present };
   }
 
   async transcriptPath(): Promise<string | null> {
@@ -1486,67 +1476,41 @@ class CompactingControlPlane implements ClaudeControlPlane {
   }
 }
 
-test("output generated after a compacted input snapshot is still reported", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-compaction-"));
+test("usage is charged once per API call, however many rows a call spans, and summed across the turn's calls", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-split-rows-"));
   try {
-    const controlPlane = new CompactingControlPlane(dir);
+    const controlPlane = new SplitRowsControlPlane(dir);
     const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
     try {
       assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
-      // First step: 100 input + 10 output. Second step: the input snapshot
-      // fell to 40, so the derived total fell too — but 7 output tokens were
-      // genuinely produced, and a report suppressed on the fallen total
-      // would drop them for good (the high-water mark never advances to
-      // re-carry them later).
+      // First call: 100 input + 70 cached (50 read + 20 created) + 10 output
+      // = 180, seen on two rows at dispatch and a third on the next poll —
+      // charged once. Second call: 40 + 30 + 7 = 77, its own context billed
+      // beside the first's, not in place of it.
+      assert.equal(runtime.budget.spent("claude"), 180 + 77);
       const deltas = runtime.budget.events.map((entry) => entry.event.last);
-      assert.equal(runtime.budget.spent("claude"), 117);
-      const second = deltas.at(-1);
-      assert.equal(second?.outputTokens, 7);
-      // The input side clamps rather than charging the run for a context it
-      // has already paid for.
-      assert.equal(second?.inputTokens, 0);
-      assert.equal(second?.totalTokens, 7);
-    } finally {
-      await runtime.close();
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("snapshots recovering after compaction re-charge no input or cache component", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-compaction-recovery-"));
-  try {
-    const controlPlane = new CompactingControlPlane(dir, { recoveredSnapshot: true });
-    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
-    try {
-      assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
-      // 100 input + 50 cached + 10 output, then 7 and 3 output tokens of
-      // genuine growth. The subtraction base is a per-component high-water
-      // mark: input held at 100 and cached at 50 through the compacted
-      // step, so the rebuilt context re-charges neither — a base saved
-      // from the shrunken snapshot would re-charge 60 input and 50 cached
-      // tokens here.
-      const deltas = runtime.budget.events.map((entry) => entry.event.last);
-      assert.equal(runtime.budget.spent("claude"), 170);
-      assert.equal(deltas.length, 3);
-      // The rebuild's composition shift (reads becoming creation) is not
-      // growth: it emits no event of its own and must not ride the next
-      // genuine delta.
-      const third = deltas.at(-1);
-      assert.equal(third?.outputTokens, 3);
-      assert.equal(third?.inputTokens, 0);
-      assert.equal(third?.cachedInputTokens, 0);
-      // The creation split travels only on the raw payload (the budget
-      // vocabulary drops it), so coherence — creation share never beyond
-      // the combined cached delta — is asserted there.
-      for (const entry of runtime.budget.events) {
-        const rawLast = (
-          entry.event.raw as { tokenUsage?: { last?: { cachedInputTokens?: number; cacheCreationInputTokens?: number } } }
-        ).tokenUsage?.last;
-        assert.ok(rawLast !== undefined);
-        assert.ok((rawLast.cacheCreationInputTokens ?? 0) <= (rawLast.cachedInputTokens ?? 0));
-      }
+      assert.equal(deltas.length, 2, "the repeated row emits no event of its own");
+      assert.deepEqual(
+        deltas.map((delta) => [delta.inputTokens, delta.cachedInputTokens, delta.outputTokens, delta.totalTokens]),
+        [
+          [100, 70, 10, 180],
+          [40, 30, 7, 77]
+        ]
+      );
+      // The archived event's total is the turn's usage as the record will
+      // summarise it — the same arithmetic on both surfaces. The creation
+      // split travels on the raw payload only (the budget vocabulary drops
+      // it), so it is read there.
+      const finalRaw = (
+        runtime.budget.events.at(-1)?.event.raw as { tokenUsage: { total: Record<string, number> } }
+      ).tokenUsage.total;
+      assert.deepEqual(finalRaw, {
+        cachedInputTokens: 100,
+        cacheCreationInputTokens: 20,
+        inputTokens: 140,
+        outputTokens: 17,
+        totalTokens: 257
+      });
     } finally {
       await runtime.close();
     }

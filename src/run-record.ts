@@ -15,6 +15,7 @@ import type {
   TokenUsageEvent
 } from "./types.js";
 import { DIGEST_RECIPE, canonicalJson, compareCodeUnits, sha256 } from "./canonical-document.js";
+import { RunRecordStartError } from "./errors.js";
 import { harnessVersion } from "./harness-version.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
@@ -606,6 +607,14 @@ export class RunRecordWriter {
   }
 
   static async start(options: RunRecordStartOptions): Promise<RunRecordWriter> {
+    try {
+      return await RunRecordWriter.#open(options);
+    } catch (error) {
+      throw new RunRecordStartError(options.storeDir, error);
+    }
+  }
+
+  static async #open(options: RunRecordStartOptions): Promise<RunRecordWriter> {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);

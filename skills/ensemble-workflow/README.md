@@ -173,7 +173,13 @@ without starting the body — nothing of the script's own follows the
 `Interrupted (…)` hand-off line on stderr. A signal arriving only after the
 body has returned, during the launcher's teardown, is absorbed the same way
 and changes nothing: the result already printed stands and the run ends
-`complete`. A direct agent (either shape) that
+`complete`. The body runs in the launcher's own process, so a `process.exit`
+it calls — directly, or from a timer or callback it left running — is
+intercepted rather than obeyed: the run ends as `failed` (the script
+returned no result) with the envelope, record and sentinel above, `error.kind`
+`WorkflowProcessExitError` naming the requested code, and exit 1; an
+exception nothing in the body caught ends the run the same way as
+`WorkflowUncaughtExceptionError`. A direct agent (either shape) that
 exhausts its attempts also exits 1 with this envelope rather than printing
 bare `null` — with no script to receive the value, the collapsed worker is
 the run's failure. If the schema accepts JSON `null` and the worker
@@ -916,8 +922,17 @@ engine's own account records that failure as `failure` and
 **Completion sentinel.** At startup the CLI prints, on stderr, the path of a
 sentinel file (`completion-sentinel.json`, under the run's own directory in
 the durable-record store) that the launcher process itself writes when the
-run ends. It is written on every terminal transition the launcher can
-handle — success, failure, timeout, interruption, salvage — carrying
+run ends. The path is announced only once its directory exists: a store the
+launcher cannot create (a regular file where the store should be, a read-only
+parent) yields one `[sentinel] no sentinel will be written for this run — …`
+line naming the cause where the path would have been, so a supervisor never
+arms on a path that cannot be written; the run then fails to start its
+record with a one-line `the durable run record could not start under …`
+diagnosis. Where the directory exists but the record still cannot start, the
+sentinel is written with `manifest: { unavailable: "recording-start-failed" }`.
+It is written on every terminal transition the launcher can
+handle — success, failure, timeout, interruption, salvage, a body's
+`process.exit`, an uncaught exception — carrying
 `outcome`, `exit_code`, `ended_at`, `error` (the `{ kind, message }` that
 ended the run, or `null`), and `workers` (`{ done, failed, cut_short,
 unsettled }`, or `null` when the launcher never got far enough to count any).

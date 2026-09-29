@@ -14244,6 +14244,16 @@ function formatAgentOptionValue(value) {
     }
   }
 }
+var RunRecordStartError = class extends EnsembleError {
+  constructor(storeDir, cause) {
+    super(
+      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause }
+    );
+    this.storeDir = storeDir;
+  }
+  storeDir;
+};
 function describeError(error) {
   if (error instanceof Error) {
     return { kind: error.name, message: error.message };
@@ -15764,6 +15774,13 @@ var RunRecordWriter = class _RunRecordWriter {
     return next;
   }
   static async start(options) {
+    try {
+      return await _RunRecordWriter.#open(options);
+    } catch (error) {
+      throw new RunRecordStartError(options.storeDir, error);
+    }
+  }
+  static async #open(options) {
     const namespace = await deriveNamespace(options.cwd);
     const runId = `${namespace.id}:${options.runUuid}`;
     const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
@@ -16536,19 +16553,26 @@ var CompletionSentinel = class {
   #path = null;
   #written = false;
   /**
-   * Derives and returns the sentinel path. Called before workers spawn so
-   * the announcement precedes any work; returns null (and reports) when the
-   * store path cannot be derived.
+   * Derives the sentinel path, creates its directory, and returns the path.
+   * Called before workers spawn so the announcement precedes any work. The
+   * directory is created here, not at the terminal write: a path is
+   * announced only once it can be written, so a supervisor never arms on a
+   * path under a store the launcher cannot create (a regular file where the
+   * store should be, a read-only parent). Returns null — and reports why,
+   * in one line — when the store cannot be derived or created; the run then
+   * has no sentinel and says so where the path would have been.
    */
   async prepare(options, onError) {
+    let runDir;
     try {
-      const runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      this.#path = path7.join(runDir, SENTINEL_FILENAME);
-      return this.#path;
+      runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
+      await mkdir3(runDir, { recursive: true });
     } catch (error) {
-      onError(error);
+      onError(new SentinelUnavailableError(`no sentinel will be written for this run \u2014 cannot create ${sentinelDirectory(options, error)}: ${causeMessage(error)}`, { cause: error }));
       return null;
     }
+    this.#path = path7.join(runDir, SENTINEL_FILENAME);
+    return this.#path;
   }
   /**
    * Writes the terminal sentinel (atomic temp-then-rename). First write
@@ -16599,10 +16623,23 @@ var CompletionSentinel = class {
         throw error;
       }
     } catch (error) {
-      onError(error);
+      onError(new SentinelUnavailableError(`the sentinel could not be written at ${this.#path}: ${causeMessage(error)}`, { cause: error }));
     }
   }
 };
+var SentinelUnavailableError = class extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+};
+function causeMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function sentinelDirectory(options, error) {
+  const named = error.path;
+  return typeof named === "string" ? named : options.storeDir;
+}
 
 // src/operator-diagnosis.ts
 function presentTerminalError(error, context) {
@@ -16624,6 +16661,12 @@ function diagnose(error, context) {
   }
   if (isWorkflowTimeout(error)) {
     return [`${error.message} \u2014 partial result on stdout${recordSuffix(context)}`];
+  }
+  if (isScriptProcessEnding(error)) {
+    return [`${error.message} \u2014 partial result on stdout${recordSuffix(context)}`];
+  }
+  if (error instanceof RunRecordStartError) {
+    return [error.message];
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
     const lines = [error.message];
@@ -16726,6 +16769,9 @@ function boundedEvidence(text, limit = 400) {
 }
 function isInterrupt(error) {
   return error instanceof Error && error.name === "WorkflowInterruptedError" && typeof error.signal === "string";
+}
+function isScriptProcessEnding(error) {
+  return error instanceof Error && (error.name === "WorkflowProcessExitError" || error.name === "WorkflowUncaughtExceptionError");
 }
 function isWorkflowTimeout(error) {
   return error instanceof Error && error.name === "WorkflowTimeoutError";
@@ -17237,6 +17283,8 @@ var ClaudeCliControlPlane = class {
   #valveCounter = 0;
   #env;
   #workerEnv;
+  /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
+  #holdScope;
   /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
   #launchEnv;
   /** Per-session settings directories, removed when the session stops. */
@@ -17247,6 +17295,7 @@ var ClaudeCliControlPlane = class {
     this.#claudeBin = options.claudeBin ?? "claude";
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
+    this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
     this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
     this.#env = { ...withoutRunScopedVariables(process.env), ...this.#launchEnv };
     this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
@@ -17315,9 +17364,8 @@ var ClaudeCliControlPlane = class {
    * and the file itself is 0o600.
    */
   async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
-    const inheritedHoldScope = process.env[HOLD_SCOPE_ENV];
     const env = {
-      ...inheritedHoldScope !== void 0 && inheritedHoldScope.trim().length > 0 ? { [HOLD_SCOPE_ENV]: inheritedHoldScope } : {},
+      ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
       ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName
@@ -17747,12 +17795,20 @@ function turnComplete(entries, fromIndex = 0) {
   return false;
 }
 function usageSince(entries, fromIndex = 0) {
+  const start = Math.max(0, fromIndex);
+  const counted = /* @__PURE__ */ new Set();
+  for (let index = 0; index < Math.min(start, entries.length); index += 1) {
+    const id = entries[index]?.type === "assistant" ? entries[index]?.message?.id : void 0;
+    if (typeof id === "string") {
+      counted.add(id);
+    }
+  }
+  let inputTokens = 0;
   let outputTokens = 0;
-  let lastInput = 0;
-  let lastCacheRead = 0;
-  let lastCacheCreation = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
   let sawUsage = false;
-  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+  for (let index = start; index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry === void 0 || entry.type !== "assistant") {
       continue;
@@ -17761,22 +17817,29 @@ function usageSince(entries, fromIndex = 0) {
     if (usage2 === null) {
       continue;
     }
+    const id = entry.message?.id;
+    if (typeof id === "string") {
+      if (counted.has(id)) {
+        continue;
+      }
+      counted.add(id);
+    }
     sawUsage = true;
+    inputTokens += numeric(usage2.input_tokens);
     outputTokens += numeric(usage2.output_tokens);
-    lastInput = numeric(usage2.input_tokens);
-    lastCacheRead = numeric(usage2.cache_read_input_tokens);
-    lastCacheCreation = numeric(usage2.cache_creation_input_tokens);
+    cacheRead += numeric(usage2.cache_read_input_tokens);
+    cacheCreation += numeric(usage2.cache_creation_input_tokens);
   }
   if (!sawUsage) {
     return zeroUsage();
   }
-  const lastCached = lastCacheRead + lastCacheCreation;
+  const cachedInputTokens = cacheRead + cacheCreation;
   return {
-    cachedInputTokens: lastCached,
-    cacheCreationInputTokens: lastCacheCreation,
-    inputTokens: lastInput,
+    cachedInputTokens,
+    cacheCreationInputTokens: cacheCreation,
+    inputTokens,
     outputTokens,
-    totalTokens: lastInput + lastCached + outputTokens
+    totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }
 function parseLine(line) {
@@ -18270,32 +18333,23 @@ var ClaudeEngineInvocation = class {
     }
   }
   /**
-   * Feed best-effort transcript-derived usage through the same event shape Codex
-   * emits. The adapter registration labels it as Claude before the runtime records
+   * Feed transcript-derived usage through the same event shape Codex emits.
+   * The adapter registration labels it as Claude before the runtime records
    * it, so budget accounting never has to infer engine from the payload.
    *
-   * The derived total is not monotonic: the input side is a snapshot of the
-   * running context, and compaction shrinks it, so a step that generated new
-   * output can still carry a *smaller* total than the step before. Growth is
-   * therefore judged per component, and the reported delta's own total is the
-   * sum of the components that grew — reporting nothing whenever the total
-   * fell would drop that output for good, since the high-water mark would not
-   * advance either and no later report would ever re-carry it. The high-water
-   * mark advances per component for the same reason.
+   * `usageSince` counts each API call once and sums every figure across the
+   * turn's calls, so the derived total only grows as the transcript grows;
+   * the delta reported here is the plain difference from the last report,
+   * and the archived event's `total` is the same figure the agent record's
+   * usage summarises — budget and archive read one arithmetic.
    */
   #reportUsage(handle, entries, fromIndex) {
     const total = usageSince(entries, fromIndex);
     const last = subtractUsage(total, this.#reportedUsage);
-    const grown = last.cachedInputTokens + last.inputTokens + last.outputTokens;
-    if (grown === 0) {
-      this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    if (last.totalTokens === 0) {
       return;
     }
-    if (last.cacheCreationInputTokens !== void 0 && last.cacheCreationInputTokens > last.cachedInputTokens) {
-      last.cacheCreationInputTokens = last.cachedInputTokens;
-    }
-    last.totalTokens = grown;
-    this.#reportedUsage = highWaterUsage(this.#reportedUsage, total);
+    this.#reportedUsage = total;
     const event = this.#usageEvent(handle, last, total);
     if (event === null) {
       return;
@@ -18420,21 +18474,6 @@ function failedTurnResult(error, evidence, usageEvent) {
         }
       ]
     }
-  };
-}
-function highWaterUsage(previous, total) {
-  if (previous === null) {
-    return total;
-  }
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 && previous.cacheCreationInputTokens === void 0 ? void 0 : Math.max(total.cacheCreationInputTokens ?? 0, previous.cacheCreationInputTokens ?? 0);
-  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 && previous.reasoningOutputTokens === void 0 ? void 0 : Math.max(total.reasoningOutputTokens ?? 0, previous.reasoningOutputTokens ?? 0);
-  return {
-    cachedInputTokens: Math.max(total.cachedInputTokens, previous.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(total.inputTokens, previous.inputTokens),
-    outputTokens: Math.max(total.outputTokens, previous.outputTokens),
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens: Math.max(total.totalTokens, previous.totalTokens)
   };
 }
 function claudeAttemptFailure(error) {
@@ -21308,7 +21347,10 @@ async function createDefaultEngineRegistry(options) {
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
-      ...options.workerEnvironment?.claude !== void 0 ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) } : {},
+      controlPlane: new ClaudeCliControlPlane({
+        ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
+        ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {}
+      }),
       ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.
@@ -21558,9 +21600,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
   static async create(options = {}) {
     let runtime = null;
     const cwd = options.cwd ?? process.cwd();
+    const holdScope = resolveHoldScope(options.holdScope, process.env);
     const engines = await createDefaultEngineRegistry({
       cwd,
       codexBin: options.codexBin ?? "codex",
+      holdScope,
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
@@ -30196,10 +30240,10 @@ async function runEnsembleCli(argv, options = {}) {
   let finalRecord = null;
   let terminalError = null;
   const sentinel = new CompletionSentinel();
-  const interrupt = watchWorkflowInterrupts();
-  void interrupt.promise.catch(() => void 0);
+  const ending = watchRunEndings();
+  void ending.promise.catch(() => void 0);
   const reportSentinelError = (error) => {
-    stderr.write(`[sentinel] ${formatError2(error)}
+    stderr.write(`[sentinel] ${error instanceof Error ? error.message : String(error)}
 `);
   };
   let exitCode = 1;
@@ -30389,10 +30433,10 @@ async function runEnsembleCli(argv, options = {}) {
         }
       }
     };
-    interrupt.throwIfInterrupted();
+    ending.throwIfEnded();
     const { result } = await Promise.race([
       runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
-      interrupt.promise
+      ending.promise
     ]);
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
@@ -30464,7 +30508,7 @@ async function runEnsembleCli(argv, options = {}) {
           manifest: manifestAttestation(runRecordWriter, recordingEnabled)
         });
       } finally {
-        interrupt.dispose();
+        ending.dispose();
       }
     }
   }
@@ -30615,29 +30659,62 @@ var WorkflowInterruptedError = class extends Error {
     return 128 + INTERRUPT_SIGNAL_NUMBERS[this.signal];
   }
 };
+var WorkflowProcessExitError = class extends Error {
+  constructor(requestedCode) {
+    super(
+      `Workflow script called process.exit(${requestedCode === null ? "" : String(requestedCode)}); a script ends its run by returning a result, so the run is recorded as failed`
+    );
+    this.requestedCode = requestedCode;
+    this.name = new.target.name;
+  }
+  requestedCode;
+};
+var WorkflowUncaughtExceptionError = class extends Error {
+  constructor(cause) {
+    super(`Uncaught exception in the workflow script: ${cause instanceof Error ? cause.message : String(cause)}`, {
+      cause
+    });
+    this.name = new.target.name;
+  }
+};
 var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
-function watchWorkflowInterrupts() {
+function watchRunEndings() {
   const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS);
   const handlers = /* @__PURE__ */ new Map();
+  const originalExit = process.exit;
   let observed = null;
-  const promise = new Promise((_resolve, reject) => {
-    for (const signal of signals) {
-      const handler = () => {
-        if (observed !== null) {
-          return;
-        }
-        observed = signal;
-        reject(new WorkflowInterruptedError(signal));
-      };
-      handlers.set(signal, handler);
-      process.on(signal, handler);
-    }
+  let reject = () => void 0;
+  const promise = new Promise((_resolve, rejectRun) => {
+    reject = rejectRun;
   });
+  const end = (error) => {
+    if (observed !== null) {
+      return;
+    }
+    observed = error;
+    reject(error);
+  };
+  for (const signal of signals) {
+    const handler = () => end(new WorkflowInterruptedError(signal));
+    handlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+  const intercepted = ((code) => {
+    const requested = typeof code === "number" ? code : typeof code === "string" ? Number.parseInt(code, 10) : null;
+    const error = new WorkflowProcessExitError(Number.isNaN(requested) ? null : requested);
+    end(error);
+    throw error;
+  });
+  process.exit = intercepted;
+  const onUncaught = (error) => {
+    end(error instanceof WorkflowProcessExitError ? error : new WorkflowUncaughtExceptionError(error));
+  };
+  process.on("uncaughtException", onUncaught);
   return {
     promise,
-    throwIfInterrupted: () => {
+    throwIfEnded: () => {
       if (observed !== null) {
-        throw new WorkflowInterruptedError(observed);
+        throw observed;
       }
     },
     dispose: () => {
@@ -30645,6 +30722,10 @@ function watchWorkflowInterrupts() {
         process.off(signal, handler);
       }
       handlers.clear();
+      process.off("uncaughtException", onUncaught);
+      if (process.exit === intercepted) {
+        process.exit = originalExit;
+      }
     }
   };
 }

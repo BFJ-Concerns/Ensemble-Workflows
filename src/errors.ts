@@ -761,6 +761,21 @@ function formatAgentOptionValue(value: unknown): string {
 }
 
 /**
+ * The durable run record could not start: its directory could not be
+ * created or its opening artefacts could not be written. An operational
+ * failure of the run (recording was enabled, so the run has no archive),
+ * rendered cause-first in one line; the filesystem error rides `cause`.
+ */
+export class RunRecordStartError extends EnsembleError {
+  constructor(readonly storeDir: string, cause: unknown) {
+    super(
+      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause }
+    );
+  }
+}
+
+/**
  * An error described for a durable record: the class name as a
  * discriminating kind, plus the message. The kind is what lets a consumer
  * holding only the archive tell a script bug from an unknown-engine typo

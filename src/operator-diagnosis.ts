@@ -5,6 +5,7 @@ import {
   EngineShutdownError,
   HoldTimeoutError,
   PreSpawnAuthorError,
+  RunRecordStartError,
   TurnTimeoutError,
   agentIdentityOf,
   appServerDiagnosticOf,
@@ -65,6 +66,16 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
   }
   if (isWorkflowTimeout(error)) {
     return [`${error.message} — partial result on stdout${recordSuffix(context)}`];
+  }
+  if (isScriptProcessEnding(error)) {
+    // The body ended the launcher's own process — `process.exit`, or an
+    // exception nothing in the script caught — and the run is settled as a
+    // failure with the ordinary envelope, record, and sentinel. The message
+    // already names which; the stack behind it points into the launcher.
+    return [`${error.message} — partial result on stdout${recordSuffix(context)}`];
+  }
+  if (error instanceof RunRecordStartError) {
+    return [error.message];
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
     // The archive holds precise per-attempt failures and the worker's own
@@ -245,6 +256,15 @@ function isInterrupt(error: unknown): error is Error & { signal: string } {
     error instanceof Error &&
     error.name === "WorkflowInterruptedError" &&
     typeof (error as { signal?: unknown }).signal === "string"
+  );
+}
+
+function isScriptProcessEnding(error: unknown): error is Error {
+  // Both classes live with the CLI's run-ending watch; structural for the
+  // same cycle-avoidance reason as the interrupt match.
+  return (
+    error instanceof Error &&
+    (error.name === "WorkflowProcessExitError" || error.name === "WorkflowUncaughtExceptionError")
   );
 }
 

@@ -333,13 +333,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // process can handle, even when recording is off.
   const sentinel = new CompletionSentinel();
   // Armed for the whole accepted run: from here to the sentinel write every
-  // ending is a run ending with envelope, record and sentinel, so a signal
+  // ending is a run ending with envelope, record and sentinel. A signal
   // during runtime creation or archive setup is observed and honoured at
-  // the pre-body gate rather than handed to Node's default.
-  const interrupt = watchWorkflowInterrupts();
-  void interrupt.promise.catch(() => undefined);
+  // the pre-body gate rather than handed to Node's default; a body's
+  // `process.exit`, or an exception nothing in the body caught, is
+  // intercepted the same way instead of ending this process unaccounted.
+  const ending = watchRunEndings();
+  void ending.promise.catch(() => undefined);
+  // The sentinel's reports are one-line causes (`SentinelUnavailableError`
+  // carries the message whole): a supervision aid that cannot be written
+  // names the reason where its path would have been, never a stack.
   const reportSentinelError = (error: unknown): void => {
-    stderr.write(`[sentinel] ${formatError(error)}\n`);
+    stderr.write(`[sentinel] ${error instanceof Error ? error.message : String(error)}\n`);
   };
   // The exit code is settled by the body below but returned after teardown:
   // a teardown that fails after a clean body must be able to degrade it
@@ -567,10 +572,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // declared the run interrupted: the body does not start, so nothing of
     // the script's own can print after the hand-off line the catch below
     // writes.
-    interrupt.throwIfInterrupted();
+    ending.throwIfEnded();
     const { result } = await Promise.race([
       runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
-      interrupt.promise
+      ending.promise
     ]);
     // Under identity the resolution is an envelope, so the collapse
     // signal is the envelope's output — an exhausted identified worker
@@ -697,7 +702,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       } finally {
         // The run's terminal work is done: the handlers come off so a
         // library caller's process keeps its own signal behaviour.
-        interrupt.dispose();
+        ending.dispose();
       }
     }
   }
@@ -972,53 +977,111 @@ class WorkflowInterruptedError extends Error {
   }
 }
 
+/**
+ * The workflow body called `process.exit`. The body runs in the launcher's
+ * own process, so the call is intercepted and settled as a run ending — a
+ * failed one, since the script returned nothing — rather than ending the
+ * process with the record unsealed and no sentinel. The requested code is
+ * named; the run's own exit code is the failure's.
+ */
+class WorkflowProcessExitError extends Error {
+  constructor(readonly requestedCode: number | null) {
+    super(
+      `Workflow script called process.exit(${requestedCode === null ? "" : String(requestedCode)}); ` +
+        "a script ends its run by returning a result, so the run is recorded as failed"
+    );
+    this.name = new.target.name;
+  }
+}
+
+/**
+ * An exception reached the process with nothing in the body to catch it —
+ * a throw inside a timer or event callback the script left running. Node's
+ * default would end the process there; during a run it is a run ending.
+ */
+class WorkflowUncaughtExceptionError extends Error {
+  constructor(cause: unknown) {
+    super(`Uncaught exception in the workflow script: ${cause instanceof Error ? cause.message : String(cause)}`, {
+      cause
+    });
+    this.name = new.target.name;
+  }
+}
+
 const INTERRUPT_SIGNAL_NUMBERS: Record<InterruptSignal, number> = { SIGINT: 2, SIGTERM: 15 };
 
-interface InterruptWatch {
-  /** Rejects with `WorkflowInterruptedError` on the first signal observed — the interruption, when the body is still running; a signal arriving during a completed run's teardown is absorbed the same way and changes nothing (the result already printed stands). */
+interface RunEndingWatch {
+  /** Rejects with the ending on the first one observed — the run's ending, when the body is still running; one arriving during a completed run's teardown is absorbed the same way and changes nothing (the result already printed stands). */
   promise: Promise<never>;
-  /** Throws that same error if a signal has already been observed — the gate before work that must not start once the run is declared interrupted. */
-  throwIfInterrupted: () => void;
-  /** Releases the handlers: only once the launcher's terminal work is done, never on the way there. */
+  /** Throws that same ending if one has already been observed — the gate before work that must not start once the run is declared ended. */
+  throwIfEnded: () => void;
+  /** Releases the handlers and restores `process.exit`: only once the launcher's terminal work is done, never on the way there. */
   dispose: () => void;
 }
 
 /**
- * Arms SIGINT and SIGTERM for the life of the run. The first signal
- * declares the run interrupted; every later one is absorbed — the
- * handlers stay installed through the handled shutdown, so an impatient
- * second Ctrl-C cannot hand the process to the signal's default and kill
- * it with the envelope printed but the record unsealed and the sentinel
- * unwritten. A run the launcher has declared interrupted ends exactly
- * once, fully accounted; the operator who needs it dead sooner has
- * SIGKILL, which no handler can absorb and the sentinel never promised.
+ * Arms the run's endings for the life of the run: SIGINT and SIGTERM, a
+ * `process.exit` call from the body, and an exception nothing in the body
+ * caught. The first observed declares the run ended; every later one is
+ * absorbed — the handlers stay installed through the handled shutdown, so an
+ * impatient second Ctrl-C, or an exit the body calls from a lingering
+ * callback, cannot hand the process to Node's default and kill it with the
+ * envelope printed but the record unsealed and the sentinel unwritten. A run
+ * the launcher has declared ended ends exactly once, fully accounted; the
+ * operator who needs it dead sooner has SIGKILL, which no handler can absorb
+ * and the sentinel never promised.
+ *
+ * `process.exit` is replaced for the window, never merely observed: the
+ * body runs in this process, so the only way to make its exit a handled
+ * ending is to keep the process alive at the call. The replacement records
+ * the ending and throws, so the caller's own stack unwinds as an exit would
+ * have ended it; a throw from a detached callback reaches the
+ * `uncaughtException` handler armed beside it, which recognises the ending
+ * it already recorded. Any other uncaught exception in the window is a run
+ * ending of its own kind.
  */
-function watchWorkflowInterrupts(): InterruptWatch {
+function watchRunEndings(): RunEndingWatch {
   // The exit-code table is the one enumeration of handled signals: a
   // signal that joins it is armed here with no further change.
   const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS) as InterruptSignal[];
   const handlers = new Map<InterruptSignal, () => void>();
-  let observed: InterruptSignal | null = null;
+  const originalExit = process.exit;
+  let observed: Error | null = null;
+  let reject: (error: Error) => void = () => undefined;
 
-  const promise = new Promise<never>((_resolve, reject) => {
-    for (const signal of signals) {
-      const handler = () => {
-        if (observed !== null) {
-          return;
-        }
-        observed = signal;
-        reject(new WorkflowInterruptedError(signal));
-      };
-      handlers.set(signal, handler);
-      process.on(signal, handler);
-    }
+  const promise = new Promise<never>((_resolve, rejectRun) => {
+    reject = rejectRun;
   });
+  const end = (error: Error): void => {
+    if (observed !== null) {
+      return;
+    }
+    observed = error;
+    reject(error);
+  };
+
+  for (const signal of signals) {
+    const handler = () => end(new WorkflowInterruptedError(signal));
+    handlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+  const intercepted = ((code?: number | string | null): never => {
+    const requested = typeof code === "number" ? code : typeof code === "string" ? Number.parseInt(code, 10) : null;
+    const error = new WorkflowProcessExitError(Number.isNaN(requested) ? null : requested);
+    end(error);
+    throw error;
+  }) as typeof process.exit;
+  process.exit = intercepted;
+  const onUncaught = (error: unknown): void => {
+    end(error instanceof WorkflowProcessExitError ? error : new WorkflowUncaughtExceptionError(error));
+  };
+  process.on("uncaughtException", onUncaught);
 
   return {
     promise,
-    throwIfInterrupted: () => {
+    throwIfEnded: () => {
       if (observed !== null) {
-        throw new WorkflowInterruptedError(observed);
+        throw observed;
       }
     },
     dispose: () => {
@@ -1026,6 +1089,10 @@ function watchWorkflowInterrupts(): InterruptWatch {
         process.off(signal, handler);
       }
       handlers.clear();
+      process.off("uncaughtException", onUncaught);
+      if (process.exit === intercepted) {
+        process.exit = originalExit;
+      }
     }
   };
 }

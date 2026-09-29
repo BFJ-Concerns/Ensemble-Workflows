@@ -2357,6 +2357,66 @@ test("built CLI settles a live turn when its thread enters systemError and retri
   }
 });
 
+test("a body's process.exit — direct or from a lingering callback — leaves a sentinel, a sealed record, and exit 1", { timeout: 30_000 }, async () => {
+  // The sentinel on every ending the launcher can handle. The body runs
+  // in the launcher's process, so an exit it calls is intercepted and the
+  // run settled as a failure; from a detached callback the interception's
+  // throw arrives as an uncaught exception, which the same watch absorbs.
+  // Driven through the built bundle from outside, the record relocated, so
+  // both surfaces are read exactly as a supervisor and the reaper read them.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-process-exit-estate-"));
+  try {
+    const cases = [
+      { name: "direct", body: `process.exit(0);\nreturn "unreached";\n` },
+      {
+        name: "callback",
+        body: `setTimeout(() => process.exit(0), 20);\nawait new Promise((resolve) => setTimeout(resolve, 10_000));\nreturn "unreached";\n`
+      }
+    ] as const;
+    for (const ending of cases) {
+      const recordStore = path.join(directory, `${ending.name}-records`);
+      const script = path.join(directory, `${ending.name}.js`);
+      await writeFile(script, `export const meta = { name: "process-exit-${ending.name}" };\n${ending.body}`);
+      const started = Date.now();
+      const result = await runNode(
+        [bundledCliPath, script],
+        { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore, ENSEMBLE_STATUS: "0" },
+        20_000
+      );
+      assert.ok(Date.now() - started < 8_000, `${ending.name}: the run must end at the exit, not at the body's own timer`);
+      assert.equal(result.code, 1, `${ending.name}: ${result.stderr}`);
+      const envelope = assertSalvageEnvelope(result.stdout, "failed");
+      assert.equal(envelope.error.kind, "WorkflowProcessExitError", ending.name);
+      const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+      assert.ok(announced, `${ending.name}: ${result.stderr}`);
+      const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+        outcome: string;
+        exit_code: number;
+        error: { kind: string } | null;
+        manifest: { sha256?: string };
+      };
+      assert.equal(sentinel.outcome, "failed", ending.name);
+      assert.equal(sentinel.exit_code, 1, ending.name);
+      assert.equal(sentinel.error?.kind, "WorkflowProcessExitError", ending.name);
+      const manifest = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")) as {
+        status: string;
+        ended_at: string | null;
+        result: { exit_code: number | null };
+        error: { kind: string } | null;
+        integrity: { manifest_sha256: string };
+      };
+      assert.equal(manifest.status, "failed", ending.name);
+      assert.equal(manifest.result.exit_code, 1, ending.name);
+      assert.equal(manifest.error?.kind, "WorkflowProcessExitError", ending.name);
+      assert.ok(manifest.ended_at !== null, `${ending.name}: the record is sealed before the process exits`);
+      assert.equal(sentinel.manifest.sha256, manifest.integrity.manifest_sha256, ending.name);
+      assert.equal(result.stderr.split("\n").filter((line) => /^\s+at /.test(line)).length, 0, `${ending.name}:\n${result.stderr}`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the launcher exits once its terminal work is done, whatever the script body left pending", { timeout: 30_000 }, async () => {
   // The body is ordinary Node, so a timer it forgets would hold the event
   // loop open for its whole duration. Both endings — a clean return and a

@@ -84,19 +84,26 @@ export class CompletionSentinel {
   #written = false;
 
   /**
-   * Derives and returns the sentinel path. Called before workers spawn so
-   * the announcement precedes any work; returns null (and reports) when the
-   * store path cannot be derived.
+   * Derives the sentinel path, creates its directory, and returns the path.
+   * Called before workers spawn so the announcement precedes any work. The
+   * directory is created here, not at the terminal write: a path is
+   * announced only once it can be written, so a supervisor never arms on a
+   * path under a store the launcher cannot create (a regular file where the
+   * store should be, a read-only parent). Returns null — and reports why,
+   * in one line — when the store cannot be derived or created; the run then
+   * has no sentinel and says so where the path would have been.
    */
   async prepare(options: CompletionSentinelOptions, onError: (error: unknown) => void): Promise<string | null> {
+    let runDir: string;
     try {
-      const runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
-      this.#path = path.join(runDir, SENTINEL_FILENAME);
-      return this.#path;
+      runDir = await resolveRunDirectory(options.storeDir, options.cwd, options.runUuid);
+      await mkdir(runDir, { recursive: true });
     } catch (error) {
-      onError(error);
+      onError(new SentinelUnavailableError(`no sentinel will be written for this run — cannot create ${sentinelDirectory(options, error)}: ${causeMessage(error)}`, { cause: error }));
       return null;
     }
+    this.#path = path.join(runDir, SENTINEL_FILENAME);
+    return this.#path;
   }
 
   /**
@@ -155,8 +162,31 @@ export class CompletionSentinel {
         throw error;
       }
     } catch (error) {
-      onError(error);
+      onError(new SentinelUnavailableError(`the sentinel could not be written at ${this.#path}: ${causeMessage(error)}`, { cause: error }));
     }
   }
+}
+
+/**
+ * A sentinel the launcher could not prepare or write. Reported, never
+ * thrown past the sentinel: the message is the whole operator surface (one
+ * line, cause named), and the filesystem error rides `cause` for a reader
+ * who wants the code.
+ */
+export class SentinelUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+}
+
+function causeMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The directory the sentinel would have lived in, as far as it could be named. */
+function sentinelDirectory(options: CompletionSentinelOptions, error: unknown): string {
+  const named = (error as { path?: unknown }).path;
+  return typeof named === "string" ? named : options.storeDir;
 }
 

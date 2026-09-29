@@ -353,10 +353,21 @@ test("the sentinel identifies an archive that failed to start while recording wa
     assert.equal(exitCode, 1);
     assert.ok(sentinelPath);
     const sentinel = JSON.parse(await readFile(sentinelPath, "utf8")) as {
+      outcome: string;
       manifest: { unavailable?: string };
+      error: { kind: string; message: string } | null;
     };
     assert.deepEqual(sentinel.manifest, { unavailable: "recording-start-failed" });
+    assert.equal(sentinel.outcome, "failed");
+    assert.equal(sentinel.error?.kind, "RunRecordStartError");
     await assert.rejects(access(path.join(path.dirname(sentinelPath), "manifest.json")));
+    // The operator reads one cause-first line, never a stack into the bundle.
+    const lines = stderr.text().split("\n");
+    assert.ok(
+      lines.some((line) => line.startsWith("the durable run record could not start under ")),
+      `expected a one-line record-start diagnosis, got:\n${stderr.text()}`
+    );
+    assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -406,10 +417,12 @@ test("the sentinel carries each terminal outcome the launcher can handle", async
   }
 });
 
-test("a failed sentinel write reports on stderr and never fails the run", async () => {
+test("a store the launcher cannot create announces no sentinel path and names the cause in one line", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-sentinel-unwritable-"));
   // A file where the store directory should be makes every mkdir under it
-  // fail — the sentinel must degrade to a report, not an exit-code change.
+  // fail. A supervisor arms on the announced path, so no path may be
+  // announced that cannot be written: the launcher says instead, in one
+  // line, that this run has no sentinel and why.
   const runRecordDir = path.join(directory, "store-blocker");
   await writeFile(runRecordDir, "not a directory");
   const script = path.join(directory, "workflow.js");
@@ -423,25 +436,90 @@ test("a failed sentinel write reports on stderr and never fails the run", async 
 
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
-  const exitCode = await runEnsembleCli([script], {
-    cwd: directory,
-    stdout,
-    stderr,
-    runRecordDir,
-    createRuntime: async () => fakeRuntime()
-  });
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => fakeRuntime()
+    });
 
-  // The unwritable store already fails the run through the record writer
-  // (existing behaviour); what this pins is the sentinel half — its write
-  // failure surfaces as a [sentinel] stderr report, never as a crash or a
-  // different exit path.
-  assert.equal(exitCode, 1);
-  const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
-  assert.ok(announced, "the path is announced before the store proves unwritable");
-  await assert.rejects(access(announced[1]!), "no sentinel can exist under the blocked store");
-  // A [sentinel] line beyond the announcement is the degraded write report.
-  const sentinelLines = stderr.text().split("\n").filter((line) => line.startsWith("[sentinel]"));
-  assert.ok(sentinelLines.length >= 2, `expected a sentinel write-failure report, got: ${stderr.text()}`);
+    // The unwritable store fails the run through the record writer: exit 1,
+    // the failure envelope, and a one-line cause.
+    assert.equal(exitCode, 1);
+    const lines = stderr.text().split("\n");
+    const sentinelLines = lines.filter((line) => line.startsWith("[sentinel]"));
+    assert.equal(sentinelLines.length, 1, `expected exactly one sentinel line, got:\n${stderr.text()}`);
+    assert.match(sentinelLines[0]!, /^\[sentinel\] no sentinel will be written for this run — cannot create \S.*: ENOTDIR/);
+    assert.doesNotMatch(stderr.text(), /\[sentinel\] will write /, "no path may be announced under a store that cannot be created");
+    assert.ok(lines.some((line) => line.startsWith("the durable run record could not start under ")), stderr.text());
+    assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string } };
+    assert.equal(envelope.partial, true);
+    assert.equal(envelope.reason, "failed");
+    assert.equal(envelope.error.kind, "RunRecordStartError");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a workflow body's process.exit is a handled failed ending with envelope, sealed record, and sentinel", async () => {
+  // The body runs in the launcher's own process, so `process.exit` would
+  // end it with the record in-progress and no sentinel — the two artefacts
+  // a supervisor and the reaper read. The call is intercepted and
+  // settled as the run's failure: the script returned nothing.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-process-exit-"));
+  const runRecordDir = path.join(directory, "records");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "process-exit" };\nprocess.exit(0);\nreturn "unreached";`);
+  const stdout = new CaptureStream();
+  const stderr = new CaptureStream();
+  const exitBefore = process.exit;
+  try {
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir,
+      createRuntime: async () => fakeRuntime()
+    });
+
+    assert.equal(exitCode, 1, "an exit the script requested is not a success the run recorded");
+    assert.equal(process.exit, exitBefore, "the interception is released with the run");
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string; message: string } };
+    assert.equal(envelope.partial, true);
+    assert.equal(envelope.reason, "failed");
+    assert.equal(envelope.error.kind, "WorkflowProcessExitError");
+    assert.match(envelope.error.message, /process\.exit\(0\)/);
+    const announced = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, stderr.text());
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+      outcome: string;
+      exit_code: number;
+      error: { kind: string } | null;
+    };
+    assert.equal(sentinel.outcome, "failed");
+    assert.equal(sentinel.exit_code, 1);
+    assert.equal(sentinel.error?.kind, "WorkflowProcessExitError");
+    const manifest = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")) as {
+      status: string;
+      ended_at: string | null;
+      exit_code: number;
+    };
+    assert.equal(manifest.status, "failed");
+    assert.ok(manifest.ended_at !== null, "the record is sealed, never left in-progress for the reaper");
+    // One cause-first line for the operator; the stack that would point
+    // into the launcher stays off stderr.
+    assert.ok(
+      stderr.text().split("\n").some((line) => line.startsWith("Workflow script called process.exit(0);")),
+      stderr.text()
+    );
+    assert.equal(stderr.text().split("\n").filter((line) => /^\s+at /.test(line)).length, 0, stderr.text());
+  } finally {
+    process.exit = exitBefore;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("CLI prints result JSON to stdout and logs to stderr", async () => {

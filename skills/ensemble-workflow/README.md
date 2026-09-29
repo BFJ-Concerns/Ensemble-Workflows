@@ -182,12 +182,21 @@ that catches the interception's throw keeps running into a closing runtime,
 its later calls failing on shutdown and its return value discarded — the
 ending stands); an exception nothing caught while the run was live ends the
 run the same way as `WorkflowUncaughtExceptionError` (the message names the
-exception, whether the script's or the launcher's). After the body has
-returned, a late `process.exit` is ignored with one `[teardown]` line and
-the run's own exit code stands, while a late uncaught exception is the run
-failing to end cleanly: the result already printed stands, but the
-sentinel and the exit code report `failed` (and the record too, unless the
-exception landed during its own seal, which the sentinel then outranks). A direct agent (either shape) that
+exception, whether the script's or the launcher's). The body is settled the
+moment its own promise settles, so an ending that fires after `return` — a
+zero-delay timer armed just before it included — is late: a late
+`process.exit` is ignored with one `[teardown]` line saying the run's result
+stands, and the run's own exit code stands with it, while a late uncaught
+exception is the run failing to end cleanly: the result already printed
+stands, but the sentinel and the exit code report `failed` (and the record
+too, unless the exception landed during its own seal, which the sentinel
+then outranks). A body that returns while a worker it started is still in
+flight has ended its run on its own account: the launcher tears that worker
+down — its record reads `interrupted` with a `run-interrupted` cause, the
+sentinel counts it `cut_short` — and prints one `[teardown]` line per such
+worker saying the script returned without awaiting it; the teardown's
+rejection of the call nobody awaited is the launcher's own, never an
+uncaught exception failing a complete run. A direct agent (either shape) that
 exhausts its attempts also exits 1 with this envelope rather than printing
 bare `null` — with no script to receive the value, the collapsed worker is
 the run's failure. If the schema accepts JSON `null` and the worker

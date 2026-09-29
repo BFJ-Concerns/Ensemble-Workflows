@@ -2260,6 +2260,39 @@ test("the shutdown tally is fixed at the moment the run ended, not at the moment
   assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
 });
 
+test("a call the run's close cuts short raises no unhandled rejection when nothing awaits it, and is named by identity", async () => {
+  // A script that returns with the call in flight is not listening. The
+  // leg's promise still rejects with the run's own ending — a caller that
+  // does await it sees that — but close() has marked it handled first, so
+  // Node never raises the rejection as an uncaught exception against a run
+  // that ended cleanly. The tally's cut-short bucket is available by
+  // identity for the launcher to name.
+  const transport = new ClosingTransport(new EngineShutdownError("codex"));
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    runtime.agent("hang until the run ends", { engine: "codex", label: "straggler" });
+    await transport.started;
+    await runtime.close("interrupted");
+    // Unhandled rejections are reported after the microtask queue drains.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, []);
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
+  assert.deepEqual(runtime.cutShortLegs(), [{ id: 1, label: "straggler" }]);
+});
+
 test("a leg that settles on its own account during teardown is tallied by its record", async () => {
   // The close-time classification decides teardown's actions, but the
   // tally follows the records: a worker whose turn completes while

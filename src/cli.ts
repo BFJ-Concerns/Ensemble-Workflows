@@ -554,6 +554,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
       },
+      // From the body's own settlement an ending is late: a signal or a
+      // lingering callback's exit changes nothing, and an uncaught
+      // exception is a failure of the run to end cleanly (judged in the
+      // finally). Marked by the runner in the body promise's continuation,
+      // ahead of its own awaits, so a zero-delay timer armed before
+      // `return` is already late when it fires.
+      onBodySettled: () => ending.settleBody(),
       onWorkflowInvocation: async (invocation: { scriptPath: string; source: string; args: unknown }) => {
         try {
           // Nesting is one level, so every recorded child's parent is the
@@ -577,10 +584,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
       ending.promise
     ]);
-    // From here an ending is late: the body has settled, so a signal or a
-    // lingering callback's exit changes nothing, and an uncaught exception
-    // is a failure of the run to end cleanly (judged in the finally).
-    ending.settleBody();
     // Under identity the resolution is an envelope, so the collapse
     // signal is the envelope's output — an exhausted identified worker
     // must still fail the run, not print `{output: null}` at exit 0.
@@ -632,6 +635,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // escaping past a `complete` sentinel that has already promised a clean
     // end. Surfacing only: nothing is retried.
     let teardownError: { kind: string; message: string } | null = null;
+    const judgeLateEnding = lateEndingJudge(ending, stderr);
     try {
       try {
         // The interrupt watch stays armed through everything below: a
@@ -653,6 +657,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
           );
+          if (terminalStatus === "complete") {
+            reportLegsCutShortAtReturn(runtime, stderr);
+          }
         }
       } catch (error) {
         teardownError = describeError(error);
@@ -661,7 +668,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
-      teardownError ??= lateEndingFailure(ending, stderr);
+      teardownError ??= judgeLateEnding();
       // The seal runs even when worker teardown failed: close() rejects by
       // design when a cancellation cause must surface, and skipping the seal
       // for it would strand the archive in-progress — unattestable by the
@@ -692,7 +699,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // An uncaught exception that landed during the seal is judged here,
       // after the archive: the sentinel and the exit code still say the run
       // did not end cleanly, even where the manifest sealed before it.
-      teardownError ??= lateEndingFailure(ending, stderr);
+      teardownError ??= judgeLateEnding();
       // A teardown failure degrades whatever the body earned: the outcome
       // the sentinel publishes and the code the process exits with both say
       // the run did not end cleanly. The reason rides the existing `error`
@@ -1042,22 +1049,54 @@ interface RunEndingWatch {
 }
 
 /**
- * Judges a late ending for the terminal path: an uncaught exception after
- * the body settled is reported and returned as the teardown failure; a late
- * `process.exit` is reported as ignored (the run's own exit code stands);
- * a late signal is silent — the README documents it as absorbed. Null when
- * there is nothing to degrade.
+ * The judge of a late ending for the terminal path, asked twice — after the
+ * worker teardown and again after the archive's seal, so an exception that
+ * lands mid-seal is still judged — and reporting each ending once. An
+ * uncaught exception after the body settled is reported and returned as the
+ * teardown failure; a late `process.exit` is reported as ignored, in a line
+ * that says what stands (the result) rather than borrowing the in-window
+ * message's consequence; a late signal is silent — the README documents it
+ * as absorbed. Null when there is nothing to degrade.
  */
-function lateEndingFailure(ending: RunEndingWatch, stderr: Writable): { kind: string; message: string } | null {
-  const late = ending.lateEnding;
-  if (late instanceof WorkflowUncaughtExceptionError) {
-    stderr.write(`[teardown] the run failed to end cleanly: ${late.message}\n`);
-    return describeError(late);
+function lateEndingJudge(ending: RunEndingWatch, stderr: Writable): () => { kind: string; message: string } | null {
+  let reported: Error | null = null;
+  return () => {
+    const late = ending.lateEnding;
+    if (late === null) {
+      return null;
+    }
+    const unreported = late !== reported;
+    reported = late;
+    if (late instanceof WorkflowUncaughtExceptionError) {
+      if (unreported) {
+        stderr.write(`[teardown] the run failed to end cleanly: ${late.message}\n`);
+      }
+      return describeError(late);
+    }
+    if (unreported && late instanceof WorkflowProcessExitError) {
+      const code = late.requestedCode === null ? "" : String(late.requestedCode);
+      stderr.write(`[teardown] a process.exit(${code}) after the script returned was ignored; the run's result stands\n`);
+    }
+    return null;
+  };
+}
+
+/**
+ * One line per worker the run's end cut short after the body returned: the
+ * script started the call and returned without awaiting it, so the launcher
+ * tore the worker down — its record reads `interrupted` with a
+ * `run-interrupted` cause, the sentinel counts it `cut_short` — and its
+ * answer is lost. The line makes the slip visible without punishing it: the
+ * run is complete on the body's own account.
+ */
+function reportLegsCutShortAtReturn(runtime: EnsembleRuntime, stderr: Writable): void {
+  // Injected test runtimes may not carry the accessor; read it defensively,
+  // as `workerOutcomes` reads the tally.
+  const legs = (runtime as { cutShortLegs?: () => readonly { id: number; label: string | null }[] }).cutShortLegs?.() ?? [];
+  for (const leg of legs) {
+    const label = leg.label === null ? "" : ` (${leg.label})`;
+    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: cut short, its answer lost — await the call to keep it\n`);
   }
-  if (late instanceof WorkflowProcessExitError) {
-    stderr.write(`[teardown] ignored after the result was printed: ${late.message}\n`);
-  }
-  return null;
 }
 
 /**

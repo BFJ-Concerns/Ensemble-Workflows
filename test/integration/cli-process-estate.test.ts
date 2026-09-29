@@ -2358,12 +2358,13 @@ test("built CLI settles a live turn when its thread enters systemError and retri
 });
 
 test("a body's process.exit — direct or from a lingering callback — leaves a sentinel, a sealed record, and exit 1", { timeout: 30_000 }, async () => {
-  // The sentinel on every ending the launcher can handle. The body runs
-  // in the launcher's process, so an exit it calls is intercepted and the
-  // run settled as a failure; from a detached callback the interception's
-  // throw arrives as an uncaught exception, which the same watch absorbs.
-  // Driven through the built bundle from outside, the record relocated, so
-  // both surfaces are read exactly as a supervisor and the reaper read them.
+  // The sentinel is written on every ending the launcher can handle. The
+  // body runs in the launcher's process, so an exit it calls is intercepted
+  // and the run settled as a failure; from a detached callback the
+  // interception's throw arrives as an uncaught exception, which the same
+  // watch absorbs. Driven through the built bundle from outside, the record
+  // relocated, so both surfaces are read exactly as a supervisor and the
+  // reaper read them.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-process-exit-estate-"));
   try {
     const cases = [
@@ -2417,20 +2418,22 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
   }
 });
 
-test("an ending that lands after the body settled is absorbed for process.exit and degrades the run for an uncaught exception", { timeout: 30_000 }, async () => {
-  // The body has returned and its result is printed; a lingering callback
-  // then ends the process. A late `process.exit` changes nothing (the run's
-  // own code stands, one line says it was ignored); a late uncaught
-  // exception is the run failing to end cleanly — the sentinel and the exit
-  // code say so, never `complete` published over it. The callback is armed
-  // on the result reaching stdout — the one observable moment after which
-  // the body has settled — so it lands during teardown deterministically
-  // rather than racing the runner's own settlement on a timer.
+test("an ending that lands after the body settled is absorbed for process.exit and degrades the run for an uncaught exception", { timeout: 60_000 }, async () => {
+  // The body has returned; a lingering callback then ends the process. A
+  // late `process.exit` changes nothing (the run's own code stands, one
+  // line says it was ignored); a late uncaught exception is the run failing
+  // to end cleanly — the sentinel and the exit code say so, never
+  // `complete` published over it. Two moments are driven for each: a
+  // callback armed on the result reaching stdout — deterministically
+  // during teardown — and a zero-delay timer armed before `return`, which
+  // fires while the runner is still settling the body's return (the
+  // earliest a late ending can land).
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-late-ending-estate-"));
   const afterResultPrinted = (callback: string): string =>
     `const write = process.stdout.write.bind(process.stdout);\n` +
     `process.stdout.write = (chunk, ...rest) => { const written = write(chunk, ...rest); if (String(chunk).includes('"returned"')) setImmediate(() => { ${callback} }); return written; };\n` +
     `return "returned";\n`;
+  const zeroDelayBeforeReturn = (callback: string): string => `setTimeout(() => { ${callback} }, 0);\nreturn "returned";\n`;
   try {
     const cases = [
       {
@@ -2439,11 +2442,27 @@ test("an ending that lands after the body settled is absorbed for process.exit a
         code: 0,
         outcome: "complete",
         errorKind: null as string | null,
-        line: /^\[teardown\] ignored after the result was printed: Workflow script called process\.exit\(0\)/m
+        line: /^\[teardown\] a process\.exit\(0\) after the script returned was ignored; the run's result stands$/m
       },
       {
         name: "late-throw",
         body: afterResultPrinted('throw new Error("late callback");'),
+        code: 1,
+        outcome: "failed",
+        errorKind: "WorkflowUncaughtExceptionError" as string | null,
+        line: /^\[teardown\] the run failed to end cleanly: Uncaught exception ended the run: late callback$/m
+      },
+      {
+        name: "zero-delay-exit",
+        body: zeroDelayBeforeReturn("process.exit(7);"),
+        code: 0,
+        outcome: "complete",
+        errorKind: null as string | null,
+        line: /^\[teardown\] a process\.exit\(7\) after the script returned was ignored; the run's result stands$/m
+      },
+      {
+        name: "zero-delay-throw",
+        body: zeroDelayBeforeReturn('throw new Error("late callback");'),
         code: 1,
         outcome: "failed",
         errorKind: "WorkflowUncaughtExceptionError" as string | null,
@@ -2461,7 +2480,9 @@ test("an ending that lands after the body settled is absorbed for process.exit a
       );
       assert.equal(result.code, ending.code, `${ending.name}: ${result.stderr}`);
       assert.equal(result.stdout, `"returned"\n`, `${ending.name}: the result already printed stands`);
-      assert.match(result.stderr, ending.line, `${ending.name}: ${result.stderr}`);
+      // Reported once, though the late ending is judged twice (after the
+      // worker teardown and after the archive's seal).
+      assert.equal(result.stderr.split("\n").filter((line) => ending.line.test(line)).length, 1, `${ending.name}: ${result.stderr}`);
       const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
       assert.ok(announced, `${ending.name}: ${result.stderr}`);
       const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
@@ -2492,6 +2513,73 @@ test("an ending that lands after the body settled is absorbed for process.exit a
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a body that returns with a worker in flight ends complete on its own account: the worker is cut short and named once, every surface agreeing", { timeout: 30_000 }, async () => {
+  // The script starts a worker and returns without awaiting it. The
+  // launcher tears the worker's substrate down — the call's promise rejects
+  // with the run's own ending, which nothing is awaiting — and that
+  // rejection is the launcher's own teardown, never an uncaught exception
+  // ending the run as failed. Driven through the built bundle against a
+  // Codex app-server whose turn never completes, the record relocated, and
+  // read as a supervisor reads it: exit code, stdout, stderr, sentinel,
+  // manifest, and the worker's own record tell one story.
+  const fixture = await createProcessFixture("return-with-worker-in-flight");
+  const recordStore = path.join(path.dirname(fixture.script), "records");
+  try {
+    await writeFile(
+      fixture.script,
+      `export const meta = { name: "return-with-worker-in-flight" };\nagent("hang", { engine: "codex", label: "straggler", maxAttempts: 1 });\nreturn "returned";\n`
+    );
+    const result = await fixture.runWithEnv({
+      ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+      ENSEMBLE_RUN_RECORD: "1",
+      ENSEMBLE_RUN_RECORD_DIR: recordStore,
+      ENSEMBLE_STATUS: "0"
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, `"returned"\n`);
+    assert.deepEqual(
+      result.stderr.split("\n").filter((line) => line.startsWith("[teardown]")),
+      ["[teardown] the script returned without awaiting agent 1 (straggler): cut short, its answer lost — await the call to keep it"],
+      result.stderr
+    );
+    const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, result.stderr);
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+      outcome: string;
+      exit_code: number;
+      error: unknown;
+      workers: { done: number; failed: number; cut_short: number; unsettled: number } | null;
+    };
+    assert.equal(sentinel.outcome, "complete");
+    assert.equal(sentinel.exit_code, 0);
+    assert.equal(sentinel.error, null);
+    assert.deepEqual(sentinel.workers, { done: 0, failed: 0, cut_short: 1, unsettled: 0 });
+    const archive = path.dirname(announced[1]!);
+    const manifest = JSON.parse(await readFile(path.join(archive, "manifest.json"), "utf8")) as {
+      status: string;
+      result: { exit_code: number | null };
+      error: unknown;
+    };
+    assert.equal(manifest.status, "complete");
+    assert.equal(manifest.result.exit_code, 0);
+    assert.equal(manifest.error, null);
+    const resultRecord = JSON.parse(await readFile(path.join(archive, "result.json"), "utf8")) as {
+      status: string;
+      exit_code: number;
+      value: unknown;
+    };
+    assert.deepEqual({ status: resultRecord.status, exit_code: resultRecord.exit_code, value: resultRecord.value }, { status: "complete", exit_code: 0, value: "returned" });
+    const worker = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8")) as {
+      status: string;
+      termination_cause: { kind: string } | null;
+    };
+    assert.equal(worker.status, "interrupted");
+    assert.equal(worker.termination_cause?.kind, "run-interrupted");
+  } finally {
+    await fixture.cleanup();
   }
 });
 

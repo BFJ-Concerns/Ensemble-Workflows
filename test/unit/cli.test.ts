@@ -3722,7 +3722,7 @@ test("the sentinel's worker tally counts a run's successes as its own observatio
   assert.deepEqual(sentinel.workers, { done: 2, failed: 0, cut_short: 0, unsettled: 0 });
 });
 
-test("a successful run's torn-down workers are interrupted by the run ending, never failed", async () => {
+test("a body that returns with a worker in flight ends complete: the worker is interrupted, never failed, and named once on stderr", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-clean-teardown-"));
   const runRecordDir = path.join(directory, "records");
   const script = path.join(directory, "workflow.js");
@@ -3735,8 +3735,7 @@ test("a successful run's torn-down workers are interrupted by the run ending, ne
     script,
     `
       export const meta = { name: "clean-body-teardown" };
-      const inflight = agent("hang", { engine: "codex", label: "straggler" });
-      inflight.catch(() => null);
+      agent("hang", { engine: "codex", label: "straggler" });
       await agent("done-fast", { engine: "codex", label: "alpha" });
       return "ok";
     `
@@ -3756,6 +3755,15 @@ test("a successful run's torn-down workers are interrupted by the run ending, ne
   assert.equal(exitCode, 0, stderr.text());
   // The straggler really was live at teardown: the engine cancelled it.
   assert.equal(engine.cancelCount, 1, "the in-flight worker must have been cancelled by the run ending");
+  // The call the script never awaited rejected with the run's own ending
+  // during teardown; nothing was listening, and that rejection is the
+  // launcher's own, never an uncaught exception failing a run that ended
+  // cleanly. The slip is visible instead: one line naming the worker.
+  const cutShortLines = stderr.text().split("\n").filter((line) => line.startsWith("[teardown] the script returned without awaiting"));
+  assert.deepEqual(cutShortLines, [
+    "[teardown] the script returned without awaiting agent 1 (straggler): cut short, its answer lost — await the call to keep it"
+  ]);
+  assert.doesNotMatch(stderr.text(), /failed to end cleanly/);
 
   const archive = announcedRunRecord(stderr.text()).archive_path;
   const records: Array<{

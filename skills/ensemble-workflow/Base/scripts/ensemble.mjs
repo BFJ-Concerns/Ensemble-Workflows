@@ -17852,7 +17852,9 @@ var BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-
 var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
 var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
-var TASK_STILL_RUNNING = "running";
+var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
+var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
+var MONITOR_OWN_NOTICE = /^\s*\[Monitor /;
 function outstandingBackgroundTasks(entries, fromIndex = 0) {
   const toolCalls = /* @__PURE__ */ new Map();
   const outstanding = /* @__PURE__ */ new Map();
@@ -17884,13 +17886,9 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
         }
       }
     }
-    for (const text of entryTexts(entry)) {
-      for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
-        const id = TASK_NOTIFICATION_ID.exec(block[1] ?? "")?.[1];
-        const status = TASK_NOTIFICATION_STATUS.exec(block[1] ?? "")?.[1]?.trim();
-        if (id !== void 0 && outstanding.has(id) && status !== void 0 && status !== TASK_STILL_RUNNING) {
-          notified.add(id);
-        }
+    for (const notification of deliveredNotifications(entry)) {
+      if (notification.ended && outstanding.has(notification.id)) {
+        notified.add(notification.id);
       }
     }
   }
@@ -17931,20 +17929,47 @@ function toolResultBlocks(content) {
   }
   return results;
 }
-function entryTexts(entry) {
-  const texts = [];
-  if (typeof entry.content === "string") {
-    texts.push(entry.content);
+function deliveredNotifications(entry) {
+  let texts;
+  if (entry.type === "user") {
+    texts = messageTexts(entry.message?.content);
+  } else if (entry.type === "attachment") {
+    const attachment = asRecord(entry.attachment);
+    texts = attachment?.type === "queued_command" && typeof attachment.prompt === "string" ? [attachment.prompt] : [];
+  } else {
+    return [];
   }
-  const content = entry.message?.content;
-  if (typeof content === "string") {
-    texts.push(content);
-  } else if (Array.isArray(content)) {
-    for (const block of content) {
-      const record = asRecord(block);
-      if (record?.type === "text" && typeof record.text === "string") {
-        texts.push(record.text);
+  const notifications = [];
+  for (const text of texts) {
+    for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+      const body = block[1] ?? "";
+      const id = TASK_NOTIFICATION_ID.exec(body)?.[1];
+      if (id !== void 0) {
+        notifications.push({ id, ended: notificationEnded(body) });
       }
+    }
+  }
+  return notifications;
+}
+function notificationEnded(body) {
+  const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
+  if (status !== void 0) {
+    return TASK_ENDED_STATUSES.has(status);
+  }
+  return MONITOR_OWN_NOTICE.test(TASK_NOTIFICATION_EVENT.exec(body)?.[1] ?? "");
+}
+function messageTexts(content) {
+  if (typeof content === "string") {
+    return [content];
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const texts = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type === "text" && typeof record.text === "string") {
+      texts.push(record.text);
     }
   }
   return texts;
@@ -21716,6 +21741,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // the settlement barrier, so it is determinate without racing whichever
   // straggler lands first, and it never disagrees with the archive.
   #shutdownTally = null;
+  #cutShortLegs = [];
   /** The first close() call's run, latched so later calls join it. */
   #closeRun = null;
   #closed = false;
@@ -21890,7 +21916,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
   handleTransportEvent(event) {
     this.handleEngineEvent("codex", event);
   }
-  async agent(prompt, options = {}) {
+  agent(prompt, options = {}) {
+    const call = { outward: null };
+    call.outward = this.#agentCall(prompt, options, call);
+    return call.outward;
+  }
+  async #agentCall(prompt, options, call) {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
@@ -21928,13 +21959,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
-    this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+    const unsettled = { record: agentRecord, stage: "dispatching", call };
+    this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
       await this.#recordAgentSafely(agentRecord);
-      const unsettled = this.#unsettledAgentRecords.get(agentId);
-      if (unsettled !== void 0) {
-        unsettled.stage = "admitting";
-      }
+      unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
@@ -22600,6 +22629,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
   shutdownTally() {
     return this.#shutdownTally;
   }
+  /**
+   * The legs the tally counts `cutShort`, by identity: each one's record
+   * carries the run's shutdown status and the `run-<status>` cause. Empty
+   * before close(). The launcher names them on stderr after a body that
+   * returned with them in flight.
+   */
+  cutShortLegs() {
+    return this.#cutShortLegs;
+  }
   close(status = "interrupted") {
     this.#closeRun ??= this.#closeOnce(status);
     return this.#closeRun;
@@ -22610,6 +22648,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
       ([, { record }]) => record.status === "in-progress"
     );
+    for (const [, leg] of inFlight) {
+      void leg.call?.outward?.catch(() => void 0);
+    }
     const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
     const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
     const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
@@ -22640,16 +22681,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
     let cutShort = 0;
+    const cutShortLegs = [];
     for (const [, { record }] of closing) {
       if (record.status === "complete") {
         done += 1;
       } else if (record.terminationCause?.kind === `run-${status}`) {
         cutShort += 1;
+        cutShortLegs.push({ id: record.id, label: record.label });
       } else {
         failed += 1;
       }
     }
     this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
+    this.#cutShortLegs = cutShortLegs;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];
     }
@@ -29547,9 +29591,20 @@ async function runWorkflowScript(options) {
     require: createRequire(resolvedFilename)
   };
   const resultPromise = run(bindings);
+  const noteBodySettled = () => {
+    if (workflowDepth === 0) {
+      options.onBodySettled?.();
+    }
+  };
   const resultSettlement = resultPromise.then(
-    (value) => ({ status: "fulfilled", value }),
-    (error) => ({ status: "rejected", error })
+    (value) => {
+      noteBodySettled();
+      return { status: "fulfilled", value };
+    },
+    (error) => {
+      noteBodySettled();
+      return { status: "rejected", error };
+    }
   );
   await options.onMeta?.(declaredMeta);
   const settlement = await withTimeout(resultSettlement, options.timeoutMs);
@@ -30620,6 +30675,13 @@ async function runEnsembleCli(argv, options = {}) {
         progress?.setWorkflow(workflowName(meta));
         await runRecordWriter?.noteMeta(meta);
       },
+      // From the body's own settlement an ending is late: a signal or a
+      // lingering callback's exit changes nothing, and an uncaught
+      // exception is a failure of the run to end cleanly (judged in the
+      // finally). Marked by the runner in the body promise's continuation,
+      // ahead of its own awaits, so a zero-delay timer armed before
+      // `return` is already late when it fires.
+      onBodySettled: () => ending.settleBody(),
       onWorkflowInvocation: async (invocation2) => {
         try {
           await runRecordWriter?.recordWorkflowInvocation({ ...invocation2, parentOrdinal: 0 });
@@ -30634,7 +30696,6 @@ async function runEnsembleCli(argv, options = {}) {
       runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
       ending.promise
     ]);
-    ending.settleBody();
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
       throw new SingleAgentFailedError();
@@ -30661,6 +30722,7 @@ async function runEnsembleCli(argv, options = {}) {
     exitCode = finalRecord.exitCode;
   } finally {
     let teardownError = null;
+    const judgeLateEnding = lateEndingJudge(ending, stderr);
     try {
       try {
         progress?.finish();
@@ -30672,13 +30734,16 @@ async function runEnsembleCli(argv, options = {}) {
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
           );
+          if (terminalStatus === "complete") {
+            reportLegsCutShortAtReturn(runtime, stderr);
+          }
         }
       } catch (error) {
         teardownError = describeError(error);
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
-      teardownError ??= lateEndingFailure(ending, stderr);
+      teardownError ??= judgeLateEnding();
       try {
         if (runRecordWriter !== null) {
           await runRecordWriter.finish({
@@ -30694,7 +30759,7 @@ async function runEnsembleCli(argv, options = {}) {
       }
     } finally {
       const settled = finalRecord ?? { status: "failed", exitCode: 1 };
-      teardownError ??= lateEndingFailure(ending, stderr);
+      teardownError ??= judgeLateEnding();
       const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
       exitCode = terminal.exitCode;
       try {
@@ -30877,18 +30942,37 @@ var WorkflowUncaughtExceptionError = class extends Error {
   }
 };
 var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
-function lateEndingFailure(ending, stderr) {
-  const late = ending.lateEnding;
-  if (late instanceof WorkflowUncaughtExceptionError) {
-    stderr.write(`[teardown] the run failed to end cleanly: ${late.message}
+function lateEndingJudge(ending, stderr) {
+  let reported = null;
+  return () => {
+    const late = ending.lateEnding;
+    if (late === null) {
+      return null;
+    }
+    const unreported = late !== reported;
+    reported = late;
+    if (late instanceof WorkflowUncaughtExceptionError) {
+      if (unreported) {
+        stderr.write(`[teardown] the run failed to end cleanly: ${late.message}
 `);
-    return describeError(late);
-  }
-  if (late instanceof WorkflowProcessExitError) {
-    stderr.write(`[teardown] ignored after the result was printed: ${late.message}
+      }
+      return describeError(late);
+    }
+    if (unreported && late instanceof WorkflowProcessExitError) {
+      const code = late.requestedCode === null ? "" : String(late.requestedCode);
+      stderr.write(`[teardown] a process.exit(${code}) after the script returned was ignored; the run's result stands
+`);
+    }
+    return null;
+  };
+}
+function reportLegsCutShortAtReturn(runtime, stderr) {
+  const legs = runtime.cutShortLegs?.() ?? [];
+  for (const leg of legs) {
+    const label = leg.label === null ? "" : ` (${leg.label})`;
+    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: cut short, its answer lost \u2014 await the call to keep it
 `);
   }
-  return null;
 }
 function watchRunEndings() {
   const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS);

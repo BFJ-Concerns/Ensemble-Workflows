@@ -157,6 +157,16 @@ export interface RunWorkflowScriptOptions {
   /** Called with the parsed `meta` as soon as the script evaluates, before its body resolves. */
   onMeta?: (meta: unknown) => void | Promise<void>;
   /**
+   * Called the moment the root body's own promise settles — fulfilled or
+   * rejected — ahead of the runner's settlement work (the return value's
+   * normalisation and serialisability check) and of any I/O the runner
+   * awaits. The launcher marks the body settled here: an ending that fires
+   * after this point, a zero-delay timer the body armed before `return`
+   * included, is late — the returned result stands. Called for the root
+   * body only; a composed child's return is a value inside its parent.
+   */
+  onBodySettled?: () => void;
+  /**
    * Called once per composed-child invocation, before the child runs, with
    * the resolved script path, its source, and its arguments. The supplied
    * callback owns its own failure handling — recording is observability, so
@@ -290,9 +300,24 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // The body starts here: its synchronous prefix runs inside this call, and
   // everything after its first await settles through the returned promise.
   const resultPromise = run(bindings);
+  // The body's settlement is noted in the body promise's own continuation —
+  // the first microtask after it settles — never after an await the runner
+  // itself takes: a timer the body armed before `return` fires on the
+  // macrotask queue, after this continuation and before any I/O completes.
+  const noteBodySettled = (): void => {
+    if (workflowDepth === 0) {
+      options.onBodySettled?.();
+    }
+  };
   const resultSettlement = resultPromise.then(
-    (value) => ({ status: "fulfilled" as const, value }),
-    (error: unknown) => ({ status: "rejected" as const, error })
+    (value) => {
+      noteBodySettled();
+      return { status: "fulfilled" as const, value };
+    },
+    (error: unknown) => {
+      noteBodySettled();
+      return { status: "rejected" as const, error };
+    }
   );
   // Meta is known the moment the script evaluates — surface it before awaiting
   // the body so a live status view can name the run from the start.

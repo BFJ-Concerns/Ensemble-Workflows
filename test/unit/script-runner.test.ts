@@ -106,6 +106,47 @@ test("runs a script with hooks as globals and captures its return value", async 
   assert.deepEqual(logs, ["[phase] fan out", "left:right"]);
 });
 
+test("onBodySettled fires in the body promise's own continuation, before a zero-delay timer armed ahead of `return`", async () => {
+  // The launcher marks the body settled here. A timer the body arms before
+  // returning fires on the macrotask queue: after the body promise's
+  // continuation, and before any await the runner takes on its own account
+  // completes (`onMeta` is invoked synchronously ahead of that
+  // continuation; its await is where the timer would otherwise land) — so
+  // what the timer does is late, and the returned result stands. Called for
+  // the root body only.
+  const order: string[] = [];
+  const timerFired = new Promise<void>((resolve) => {
+    (globalThis as { noteTimer?: () => void }).noteTimer = () => {
+      order.push("timer");
+      resolve();
+    };
+  });
+  try {
+    const result = await runWorkflowScript({
+      filename: "settled.js",
+      runtime,
+      log: () => {},
+      onMeta: async () => {
+        order.push("meta");
+        // An await on I/O between the body's return and the runner's
+        // settlement: the timer fires during it.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+      onBodySettled: () => order.push("settled"),
+      source: `
+        export const meta = { name: "settled" };
+        setTimeout(() => globalThis.noteTimer(), 0);
+        return "returned";
+      `
+    });
+    await timerFired;
+    assert.equal(result.result, "returned");
+    assert.deepEqual(order, ["meta", "settled", "timer"]);
+  } finally {
+    delete (globalThis as { noteTimer?: () => void }).noteTimer;
+  }
+});
+
 test("exposes worktrees as a workflow-visible side channel", async () => {
   const worktreeRuntime: WorkflowRuntime = {
     ...runtime,

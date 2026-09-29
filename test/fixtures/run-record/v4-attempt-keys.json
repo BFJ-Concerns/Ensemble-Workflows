@@ -1,6 +1,7 @@
 [
   "app_server_diagnostic",
   "attempt",
+  "background_waits",
   "chain_decision",
   "classification",
   "diagnostics",

@@ -1932,6 +1932,7 @@ export class EnsembleRuntime {
         const result = await invocation.runAttempt({
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
@@ -2015,6 +2016,7 @@ export class EnsembleRuntime {
         const result = await invocation.runAttempt({
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
+          onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
@@ -2499,6 +2501,7 @@ function attemptRecord(
     | "diagnostics"
     | "resolvedModel"
     | "resolvedEffort"
+    | "backgroundWaits"
   >> | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
@@ -2533,7 +2536,8 @@ function attemptRecord(
     firstDeltaMs: result?.firstDeltaMs ?? null,
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
-    diagnostics: result?.diagnostics ?? {}
+    diagnostics: result?.diagnostics ?? {},
+    backgroundWaits: result?.backgroundWaits ?? []
   };
 }
 

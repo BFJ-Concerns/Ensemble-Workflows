@@ -1519,6 +1519,137 @@ test("usage is charged once per API call, however many rows a call spans, and su
   }
 });
 
+/**
+ * A worker that backgrounds its command and ends its turn with an interim
+ * message — the shape Claude Code persists — then is woken by the task's
+ * notification on a later poll and gives its real answer.
+ */
+class BackgroundTaskControlPlane implements ClaudeControlPlane {
+  pollCount = 0;
+  readonly snapshots: Array<{ poll: number; waitingOn: unknown }> = [];
+  #path: string;
+  #present = false;
+  #wakeAtPoll: number | null;
+  #observe: (() => unknown) | undefined;
+
+  constructor(dir: string, options: { wakeAtPoll: number | null; observe?: () => unknown }) {
+    this.#path = path.join(dir, "background-task.jsonl");
+    this.#wakeAtPoll = options.wakeAtPoll;
+    this.#observe = options.observe;
+  }
+
+  async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
+    this.#present = true;
+    const call = { type: "tool_use", id: "toolu_bg", name: "Bash", input: { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true } };
+    await writeFile(
+      this.#path,
+      [
+        JSON.stringify({ type: "assistant", message: { role: "assistant", content: [call], stop_reason: "tool_use" } }),
+        JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Command running in background with ID: bya9z1l44. You will be notified when it completes." }] } }),
+        assistantLine({ text: "The sleep is running in the background. I'll reply once it finishes.", output: 15 })
+      ].join("\n") + "\n"
+    );
+    return { id: "background-1", sessionId: "background", name: options.name, cwd: options.cwd };
+  }
+
+  async poll(): Promise<ClaudeSessionStatus> {
+    this.pollCount += 1;
+    this.snapshots.push({ poll: this.pollCount, waitingOn: this.#observe?.() });
+    if (this.#wakeAtPoll !== null && this.pollCount === this.#wakeAtPoll) {
+      const block = "<task-notification>\n<task-id>bya9z1l44</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Wait 45 seconds in background\" completed (exit code 0)</summary>\n</task-notification>";
+      await appendFile(
+        this.#path,
+        [
+          JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
+          JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } }),
+          assistantLine({ text: '{"ok":true}', output: 4 })
+        ].join("\n") + "\n"
+      );
+    }
+    // The daemon reports the session idle the whole time it waits for its
+    // own notification — the same roster shape a settled-but-unproven
+    // session shows, which must not be judged a collection failure here.
+    return { status: "idle", state: "working", present: this.#present };
+  }
+
+  async transcriptPath(): Promise<string | null> {
+    return this.#present ? this.#path : null;
+  }
+
+  async steer(): Promise<ValveDelivery> {
+    return { delivered: false, reason: "fake valve refused" };
+  }
+
+  async stop(): Promise<void> {
+    this.#present = false;
+  }
+
+  async tmuxAvailable(): Promise<boolean> {
+    return true;
+  }
+}
+
+test("a turn ending while a background task is outstanding is not collected; the reply after the task's wake is the answer", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-background-task-"));
+  try {
+    let runtime: EnsembleRuntime | null = null;
+    // The wake lands well past SETTLED_CONFIRMATION_POLLS: an idle daemon
+    // beside an outstanding task is the session waiting, not a collection
+    // failure.
+    const controlPlane = new BackgroundTaskControlPlane(dir, {
+      wakeAtPoll: 12,
+      observe: () => runtime?.progress.snapshot().agents[0]?.waitingOn ?? "no live agent"
+    });
+    runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.deepEqual(await runtime.agent("sleep then answer", { engine: "claude", schema: okSchema }), { ok: true });
+      assert.ok(controlPlane.pollCount >= 12, `collected before the wake, after ${controlPlane.pollCount} polls`);
+      // The live status showed the wait while it lasted, naming the task in
+      // Claude Code's own words, and cleared once the task ended.
+      const during = controlPlane.snapshots.find((snapshot) => snapshot.poll === 6)?.waitingOn as { kind: string; taskId: string; description: string; sinceMs: number };
+      assert.equal(during.kind, "background-task");
+      assert.equal(during.taskId, "bya9z1l44");
+      assert.equal(during.description, "Wait 45 seconds in background");
+      assert.equal(typeof during.sinceMs, "number");
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "complete");
+      assert.equal(record?.rawOutput, '{"ok":true}');
+      const waits = record?.attempts[0]?.backgroundWaits ?? [];
+      assert.equal(waits.length, 1);
+      assert.equal(waits[0]?.taskId, "bya9z1l44");
+      assert.equal(waits[0]?.description, "Wait 45 seconds in background");
+      assert.ok(waits[0]?.endedAt !== null, "the wait closed when the notification landed");
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a background task that never wakes the session times the attempt out, with the open wait recorded and the interim text never the answer", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-background-task-timeout-"));
+  try {
+    const controlPlane = new BackgroundTaskControlPlane(dir, { wakeAtPoll: null });
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1, turnTimeoutMs: 150 });
+    try {
+      assert.equal(await runtime.agent("sleep then answer", { engine: "claude", schema: okSchema }), null);
+      const record = runtime.lastAgentRecord();
+      assert.equal(record?.status, "timed-out");
+      const attempt = record?.attempts[0];
+      assert.equal(attempt?.failure?.kind, "claude-poll-timeout");
+      assert.equal(attempt?.validatedOutput, null, "the interim message is never promoted to the answer");
+      assert.equal(attempt?.backgroundWaits.length, 1);
+      assert.equal(attempt?.backgroundWaits[0]?.taskId, "bya9z1l44");
+      assert.equal(attempt?.backgroundWaits[0]?.endedAt, null, "an open wait names the task that never woke the session");
+    } finally {
+      await runtime.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 /** The archived transcript's own entries, as a cold consumer would parse them. */
 function parseTranscript(content: string): TranscriptEntry[] {
   return content

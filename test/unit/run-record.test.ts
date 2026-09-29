@@ -1167,6 +1167,7 @@ function agentRecord(
         chainDecision: null,
         observedFailure: null,
         workerExit: null,
+      backgroundWaits: [],
         appServerDiagnostic: null,
         rawOutput: "ok",
         validatedOutput: "ok",

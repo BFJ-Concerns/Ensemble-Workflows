@@ -1,4 +1,4 @@
-import type { EngineName } from "./types.js";
+import type { AgentWaitSnapshot, EngineName } from "./types.js";
 
 // Live agents are bounded in the serialised snapshot so a thousand-wide fan-out
 // doesn't produce a thousand-entry file on every change. Running agents are
@@ -33,6 +33,14 @@ export interface LiveAgentSnapshot {
   startedAtMs: number | null;
   /** Epoch ms of the first observed sign of worker output; null until the engine reports one. */
   firstEvidenceAtMs: number | null;
+  /**
+   * What the worker is waiting on, when the harness is waiting with it: a
+   * background task its session started (a long command, a Monitor) whose
+   * wake has not yet landed. Null while the worker is thinking or its
+   * engine has no such notion. The distinction a supervisor needs between a
+   * stuck background task and a worker still generating.
+   */
+  waitingOn: AgentWaitSnapshot | null;
 }
 
 export interface EngineProgressSnapshot {
@@ -98,6 +106,7 @@ interface AgentRecord {
   attempt: number;
   startedAt: number | null;
   firstEvidenceAt: number | null;
+  waitingOn: AgentWaitSnapshot | null;
 }
 
 interface EngineCounters {
@@ -198,7 +207,8 @@ export class RunProgress {
       state: "queued",
       attempt: 1,
       startedAt: null,
-      firstEvidenceAt: null
+      firstEvidenceAt: null,
+      waitingOn: null
     });
     this.#counters(input.engine).queued += 1;
     this.#touch();
@@ -227,6 +237,7 @@ export class RunProgress {
     record.state = "queued";
     record.startedAt = null;
     record.firstEvidenceAt = null;
+    record.waitingOn = null;
     this.#counters(engine).queued += 1;
     this.#touch();
   }
@@ -259,13 +270,28 @@ export class RunProgress {
     this.#touch();
   }
 
-  /** Updates a running worker's attempt number (retry / in-session correction). */
+  /**
+   * Records what a live worker is waiting on — a background task its
+   * session started — or that it no longer is (`null`). Last write wins:
+   * the engine reports each change as it observes it.
+   */
+  noteAgentWaiting(id: number, wait: AgentWaitSnapshot | null): void {
+    const record = this.#live.get(id);
+    if (record === undefined || (record.waitingOn === null && wait === null)) {
+      return;
+    }
+    record.waitingOn = wait;
+    this.#touch();
+  }
+
+  /** Updates a running worker's attempt number (retry / in-session correction); a fresh attempt waits on nothing yet. */
   noteAttempt(id: number, attempt: number): void {
     const record = this.#live.get(id);
     if (record === undefined || record.attempt === attempt) {
       return;
     }
     record.attempt = attempt;
+    record.waitingOn = null;
     this.#touch();
   }
 
@@ -378,7 +404,8 @@ export class RunProgress {
       state: record.state,
       attempt: record.attempt,
       startedAtMs: record.startedAt,
-      firstEvidenceAtMs: record.firstEvidenceAt
+      firstEvidenceAtMs: record.firstEvidenceAt,
+      waitingOn: record.waitingOn
     }));
   }
 

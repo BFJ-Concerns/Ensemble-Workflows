@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   effortSince,
   finalAssistantText,
+  outstandingBackgroundTasks,
   parseTranscriptText,
   readTranscript,
   resolvedModelSince,
@@ -211,6 +212,79 @@ test("usageSince never re-counts a message id an earlier turn already counted", 
   assert.equal(later.totalTokens, 83);
   // The whole session, read from the start, still counts each call once.
   assert.equal(usageSince(entries).totalTokens, 55 + 83);
+});
+
+// A tool result row as Claude Code persists it: a user entry whose content
+// is a tool_result block naming the call it answers.
+function toolResult(toolUseId: string, text: string): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: text }] } });
+}
+
+function toolUse(id: string, name: string, input: Record<string, unknown>): unknown {
+  return { type: "tool_use", id, name, input };
+}
+
+// The wake Claude Code enqueues when a task ends: a bookkeeping row with the
+// block at top level, then a user turn carrying the same block as its content.
+function taskNotification(taskId: string, status: string): string[] {
+  const block = `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>${status}</status>\n<summary>Background command "sleep" ${status}</summary>\n</task-notification>`;
+  return [
+    JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
+    JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } })
+  ];
+}
+
+test("outstandingBackgroundTasks names a backgrounded command from its start until a non-running notification ends it", () => {
+  const started = [
+    assistant([toolUse("toolu_bg", "Bash", { command: "sleep 45", description: "Wait 45 seconds in background", run_in_background: true })], { stop: "tool_use" }),
+    toolResult("toolu_bg", "Command running in background with ID: bya9z1l44. Output is being written to: /tmp/x.output. You will be notified when it completes."),
+    assistant([textBlock("Waiting for the sleep to finish.")])
+  ];
+  const entries = parseTranscriptText(started.join("\n"));
+  // The turn reads complete, and yet the task is outstanding: this is the
+  // interim message, and the description is Claude Code's own.
+  assert.equal(turnComplete(entries), true);
+  assert.deepEqual(outstandingBackgroundTasks(entries), [{ id: "bya9z1l44", description: "Wait 45 seconds in background" }]);
+
+  // A Monitor event is a `running` notification: the task is still outstanding.
+  const running = parseTranscriptText([...started, ...taskNotification("bya9z1l44", "running")].join("\n"));
+  assert.equal(outstandingBackgroundTasks(running).length, 1);
+
+  // The ending notification, in either of its two rows, closes the wait.
+  for (const status of ["completed", "failed", "killed", "stopped"]) {
+    const ended = parseTranscriptText([...started, ...taskNotification("bya9z1l44", status), assistant([textBlock("done")])].join("\n"));
+    assert.deepEqual(outstandingBackgroundTasks(ended), [], status);
+  }
+});
+
+test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {
+  const earlier = [
+    assistant([toolUse("toolu_old", "Bash", { command: "make", run_in_background: true })], { stop: "tool_use" }),
+    toolResult("toolu_old", "Command running in background with ID: oldtask1."),
+    assistant([textBlock("earlier turn")])
+  ];
+  const later = [
+    assistant([toolUse("toolu_mon", "Monitor", { command: "tail -f log", description: "errors in deploy.log" })], { stop: "tool_use" }),
+    toolResult("toolu_mon", "Monitor started (task mon00001, expires in 5m unless the source ends first)."),
+    assistant([toolUse("toolu_cmd", "Bash", { command: "npm run build --long", run_in_background: true })], { stop: "tool_use" }),
+    toolResult("toolu_cmd", "Command running in background with ID: cmd00002."),
+    assistant([textBlock("waiting on both")])
+  ];
+  const entries = parseTranscriptText([...earlier, ...later].join("\n"));
+
+  // From the start, every task the session ever started is outstanding.
+  assert.deepEqual(
+    outstandingBackgroundTasks(entries).map((task) => task.id),
+    ["oldtask1", "mon00001", "cmd00002"]
+  );
+  // From the later turn's mark, the earlier turn's task is not this turn's wait.
+  const thisTurn = outstandingBackgroundTasks(entries, earlier.length);
+  assert.deepEqual(thisTurn, [
+    { id: "mon00001", description: "errors in deploy.log" },
+    { id: "cmd00002", description: "npm run build --long" }
+  ]);
+  // No tasks, no waits.
+  assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText(assistant([textBlock("plain answer")]))), []);
 });
 
 test("turnComplete is true only when the latest assistant message has settled", () => {

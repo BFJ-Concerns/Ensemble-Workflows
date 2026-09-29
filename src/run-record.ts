@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import type {
+  BackgroundTaskWait,
   EngineName,
   EngineTranscriptArtifact,
   FallbackTarget,
@@ -184,6 +185,13 @@ export interface RuntimeAgentAttemptRecord {
   tokenUsageEvents: TokenUsageEvent[];
   transcripts: EngineTranscriptArtifact[];
   diagnostics?: JsonObject;
+  /**
+   * The background tasks this attempt's worker started and the harness
+   * waited on, in the order observed; empty where none was, or the engine
+   * has no such notion. A wait with `endedAt: null` is one the attempt's
+   * own ending cut short — the task never woke the session in time.
+   */
+  backgroundWaits: BackgroundTaskWait[];
 }
 
 /** Bounded evidence emitted when the Codex transport cannot decode an inbound frame. */
@@ -982,6 +990,12 @@ export class RunRecordWriter {
                 message: attempt.appServerDiagnostic.message,
                 payload: attempt.appServerDiagnostic.payload
               },
+        background_waits: attempt.backgroundWaits.map((wait) => ({
+          task_id: wait.taskId,
+          description: wait.description,
+          observed_at: wait.observedAt,
+          ended_at: wait.endedAt
+        })),
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,

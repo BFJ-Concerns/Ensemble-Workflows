@@ -244,7 +244,13 @@ JSON object with these fields:
   the supported reading is: a leg running long with **no** evidence at all
   has never produced output and is suspect; a leg with evidence has
   produced output at least once. The fields do not distinguish a leg
-  streaming now from one that stalled after its first output.
+  streaming now from one that stalled after its first output. `waitingOn`
+  says what the worker is waiting on when the harness is waiting with it:
+  `null`, or an object whose kind is background-task with the task's id,
+  Claude Code's description of it, and the epoch-millisecond stamp the wait
+  was first observed — a Claude worker backgrounded a long command or a
+  Monitor and the harness is holding for the reply that follows its wake,
+  so a stuck task is distinguishable from a worker still generating.
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (bounded to 500 characters;
   the hold file carries the full text), string-array `verdicts`, and numeric
@@ -311,7 +317,8 @@ Example:
       "state": "running",
       "attempt": 1,
       "startedAtMs": 1766491209000,
-      "firstEvidenceAtMs": 1766491211200
+      "firstEvidenceAtMs": 1766491211200,
+      "waitingOn": null
     }
   ],
   "holds": [],
@@ -644,7 +651,11 @@ Agent records live at `agents/<zero-padded-id>/agent.json`:
   `resolved_model` (including the observed model of a held worker on later
   turns), `resolved_effort`, `failure` (`{ kind, message }` or
   `null`), `classification`, `chain_decision`, `observed_failure`, `diagnostics`,
-  `app_server_diagnostic`, `token_usage_events`, `worker_exit`. Where the
+  `app_server_diagnostic`, `token_usage_events`, `worker_exit`,
+  `background_waits` (the background tasks the worker started and the
+  harness waited on — `{ task_id, description, observed_at, ended_at }`
+  each, `ended_at` null where the attempt ended before the task woke the
+  session; empty for engines with no such notion). Where the
   run's own settlement ended the turn, the attempt's `failure` names that
   settlement and `observed_failure` keeps the transport symptom the turn saw
   (a closed app-server, an aborted poll); `observed_failure` is `null` when

@@ -285,10 +285,42 @@ export interface EngineTranscriptArtifact {
   sessionId?: string;
 }
 
+/**
+ * A background task a Claude worker started during a turn, and the wait it
+ * cost: Claude Code backgrounds a long command (or a Monitor) and lets the
+ * model end its turn with an interim message, then re-invokes it when the
+ * task ends. The turn is not settled while such a task is outstanding.
+ */
+export interface BackgroundTaskWait {
+  /** Claude Code's own task id, as its tool result and notification name it. */
+  taskId: string;
+  /** Claude Code's description of the task (the tool call's own description, else its command or name). */
+  description: string;
+  /** When the harness first observed the task outstanding (ISO 8601). */
+  observedAt: string;
+  /** When its ending notification was observed, or null where the attempt ended first. */
+  endedAt: string | null;
+}
+
+/** What a live agent is waiting on right now, as the status snapshot shows it. */
+export interface AgentWaitSnapshot {
+  kind: "background-task";
+  taskId: string;
+  description: string;
+  /** Epoch ms the wait was first observed. */
+  sinceMs: number;
+}
+
 export interface TurnResult {
   text: string;
   resolvedModel?: string;
   resolvedEffort?: string;
+  /**
+   * The background tasks this turn waited on, in the order observed. Only
+   * engines whose sessions can background work report it; omission means
+   * the engine has no such observation.
+   */
+  backgroundWaits?: BackgroundTaskWait[];
   itemText?: string;
   deltaText: string;
   durationMs: number | null;

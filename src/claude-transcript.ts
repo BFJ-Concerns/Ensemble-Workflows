@@ -20,6 +20,12 @@ export interface TranscriptEntry {
   type?: string;
   message?: TranscriptMessage;
   /**
+   * Top-level content on Claude Code's own bookkeeping rows: a
+   * `queue-operation` row carries the `<task-notification>` block it
+   * enqueued for the model. Read by `outstandingBackgroundTasks`.
+   */
+  content?: unknown;
+  /**
    * The effort level Claude Code served this entry at — a top-level field
    * on every assistant entry since Claude Code 2.1.283 (measured
    * 2026-09-27; absent on older builds). Read by `effortSince`.
@@ -306,6 +312,143 @@ export function usageSince(entries: TranscriptEntry[], fromIndex = 0): TokenUsag
     outputTokens,
     totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
+}
+
+/** A background task a session started, as its tool result and notification name it. */
+export interface BackgroundTask {
+  id: string;
+  description: string;
+}
+
+/** The tool results by which Claude Code reports a task it backgrounded (measured 2026-09-28, Claude Code 2.1.283). */
+const BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+/** The notification block by which Claude Code wakes the model when a task ends, and the one status that means it has not. */
+const TASK_NOTIFICATION = /<task-notification>[\s\S]*?<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/g;
+const TASK_STILL_RUNNING = "running";
+
+/**
+ * The background tasks the session started at or after `fromIndex` whose
+ * ending has not yet reached it — the evidence that a turn ending in
+ * `end_turn` is an interim message, not the answer.
+ *
+ * Claude Code backgrounds a long command (`run_in_background`) or a Monitor
+ * and lets the model end its turn; the tool result names the task
+ * (`Command running in background with ID: <id>`, `Monitor started (task
+ * <id>`). When the task ends, Claude Code enqueues a `<task-notification>`
+ * block naming the `<task-id>` and a `<status>` — `completed`, `failed`,
+ * `killed`, `stopped` — and re-invokes the model, whose next turn is the
+ * one to collect. A `running` status is a Monitor event, not an ending. A
+ * task is outstanding from its start until a non-running notification
+ * names it. The description is the tool call's own (`description`, else
+ * a bounded `command`, else the tool name), matched to the result by
+ * `tool_use_id`.
+ */
+export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex = 0): BackgroundTask[] {
+  const toolCalls = new Map<string, string>();
+  const outstanding = new Map<string, BackgroundTask>();
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      for (const call of toolUseBlocks(entry.message?.content)) {
+        toolCalls.set(call.id, call.description);
+      }
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      for (const pattern of BACKGROUND_TASK_STARTS) {
+        const started = pattern.exec(result.text);
+        if (started?.[1] !== undefined) {
+          outstanding.set(started[1], { id: started[1], description: toolCalls.get(result.toolUseId) ?? "background task" });
+        }
+      }
+    }
+    for (const text of entryTexts(entry)) {
+      for (const notice of text.matchAll(TASK_NOTIFICATION)) {
+        if (notice[1] !== undefined && notice[2]?.trim() !== TASK_STILL_RUNNING) {
+          outstanding.delete(notice[1]);
+        }
+      }
+    }
+  }
+  return [...outstanding.values()];
+}
+
+function toolUseBlocks(content: unknown): Array<{ id: string; description: string }> {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const calls: Array<{ id: string; description: string }> = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_use" || typeof record.id !== "string") {
+      continue;
+    }
+    const input = asRecord(record.input);
+    const description =
+      typeof input?.description === "string" && input.description.length > 0
+        ? input.description
+        : typeof input?.command === "string" && input.command.length > 0
+          ? input.command.slice(0, 200)
+          : typeof record.name === "string"
+            ? record.name
+            : "background task";
+    calls.push({ id: record.id, description });
+  }
+  return calls;
+}
+
+function toolResultBlocks(content: unknown): Array<{ toolUseId: string; text: string }> {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const results: Array<{ toolUseId: string; text: string }> = [];
+  for (const block of content) {
+    const record = asRecord(block);
+    if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
+      continue;
+    }
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+  }
+  return results;
+}
+
+/** Every text an entry carries: a message's string or text blocks, and a bookkeeping row's top-level content. */
+function entryTexts(entry: TranscriptEntry): string[] {
+  const texts: string[] = [];
+  if (typeof entry.content === "string") {
+    texts.push(entry.content);
+  }
+  const content = entry.message?.content;
+  if (typeof content === "string") {
+    texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      const record = asRecord(block);
+      if (record?.type === "text" && typeof record.text === "string") {
+        texts.push(record.text);
+      }
+    }
+  }
+  return texts;
+}
+
+/** A tool result's content: a string, or text blocks joined. */
+function blockText(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((block) => {
+      const record = asRecord(block);
+      return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+    })
+    .join("\n");
 }
 
 function parseLine(line: string): TranscriptEntry | null {

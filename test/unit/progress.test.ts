@@ -256,6 +256,26 @@ test("the live agent list is bounded and lists running agents before queued ones
   assert.ok(snapshot.agents.every((agent) => agent.state === "running"));
 });
 
+test("what a worker is waiting on rides the live agent snapshot, last report winning, cleared on a fresh attempt", () => {
+  const progress = progressAt(() => 5_000);
+  const id = progress.queueAgent({ engine: "claude", label: null, phase: null });
+  progress.startAgent(id);
+  assert.equal(progress.snapshot().agents[0]?.waitingOn, null);
+
+  const wait = { kind: "background-task" as const, taskId: "bya9z1l44", description: "Wait 45 seconds in background", sinceMs: 4_900 };
+  progress.noteAgentWaiting(id, wait);
+  assert.deepEqual(progress.snapshot().agents[0]?.waitingOn, wait);
+
+  // The task ended: the engine reports nothing outstanding.
+  progress.noteAgentWaiting(id, null);
+  assert.equal(progress.snapshot().agents[0]?.waitingOn, null);
+
+  // A retry is a fresh dispatch: whatever the last attempt waited on is gone.
+  progress.noteAgentWaiting(id, wait);
+  progress.noteAttempt(id, 2);
+  assert.equal(progress.snapshot().agents[0]?.waitingOn, null);
+});
+
 test("liveness stamps ride the live agent snapshot, earliest evidence winning", () => {
   let clock = 1_000;
   const progress = progressAt(() => (clock += 1));

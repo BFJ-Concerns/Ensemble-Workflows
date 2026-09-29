@@ -31,6 +31,7 @@ import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
 import type {
+  AgentWaitSnapshot,
   EngineName,
   EngineConcurrencyCaps,
   EngineWorkerEnvironment,
@@ -101,6 +102,13 @@ export interface EngineAttemptContext {
    * earliest observation, so callers need no dedup of their own.
    */
   onLiveEvidence?: () => void;
+  /**
+   * Called whenever what the worker is waiting on changes: a background
+   * task the session started and is not yet woken for (`wait`), or nothing
+   * (`null`) once it ends. Observability for the live status only — the
+   * durable account rides the result's `backgroundWaits`.
+   */
+  onWaiting?: (wait: AgentWaitSnapshot | null) => void;
 }
 
 export interface EngineAttemptResult extends TurnResult {

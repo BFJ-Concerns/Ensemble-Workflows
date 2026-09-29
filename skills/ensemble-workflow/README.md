@@ -379,7 +379,12 @@ are:
   string `engine`, `state` (`"queued"` or `"running"`), nullable string `label`
   and `phase`, and two liveness stamps (`startedAtMs`, `firstEvidenceAtMs`) as
   Unix epoch milliseconds or `null`. `firstEvidenceAtMs` is earliest-wins: a
-  worker with no evidence stamp has never produced output.
+  worker with no evidence stamp has never produced output. `waitingOn` is
+  `null`, or an object (kind background-task, the task's id, Claude Code's
+  description of it, and the epoch-millisecond stamp the wait began) while
+  the harness holds a Claude worker for the reply that follows a background
+  task it started — the cue that separates a stuck task from a worker still
+  thinking.
 - `holds`: array of open decision holds, empty when the run is not waiting.
   Each object has string `id`, string `content` (bounded to 500 characters;
   the hold file carries the full text), string-array `verdicts`, and numeric
@@ -515,7 +520,10 @@ harness's decision after it: `advanced`, `retried-in-place`, `exhausted`, or
 `chain-not-consulted` — see the fallback-chain bullet under Failure
 semantics; `null` on a complete attempt, without a chain, or when the run's
 own ending cut the attempt short), `diagnostics`, `app_server_diagnostic`, `token_usage_events` (engine-native
-per-attempt events), `worker_exit`. The `cost_rollup` books each attempt
+per-attempt events), `worker_exit`, `background_waits` (each `{ task_id,
+description, observed_at, ended_at }` for a background task the worker
+started and the harness waited on; `ended_at` null where the attempt ended
+before the task woke the session; empty otherwise). The `cost_rollup` books each attempt
 under its own `target.engine` and served model, so a chained agent's spend
 lands where it was spent.
 
@@ -1004,6 +1012,16 @@ rejection itself is unchanged, invoking no engine.
 - **Without `schema`**: returns the worker's final text (trimmed, non-empty),
   or **`null`** after `maxAttempts` failed attempts — the same collapse as
   the schema shape, never a throw.
+- **A Claude worker's answer is its final reply, never an interim one.**
+  Claude Code backgrounds a long command (`run_in_background`) or a Monitor
+  and lets the model end its turn with a "waiting" message, then re-invokes
+  it when the task ends. A turn that ends while such a task is outstanding
+  is not collected: the harness keeps waiting for the reply that follows
+  the wake, the live status shows the worker `waitingOn` the task, and the
+  attempt records the wait in `background_waits`. The wait is bounded by
+  the call's own `timeoutMs` and nothing else — a task that never wakes the
+  session times the attempt out, and the call fails as a value under the
+  ordinary retry rule, never with the interim text as its answer.
 - **Once a worker has spawned, every failure is a value**, on both
   shapes alike: bad output exhausting the bound, an availability refusal no
   chain entry answers, a transport error mid-attempt, a turn deadline, a

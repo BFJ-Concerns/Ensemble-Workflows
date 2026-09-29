@@ -22,6 +22,7 @@ import {
   effortSince,
   endsInSyntheticReply,
   finalAssistantText,
+  outstandingBackgroundTasks,
   readTranscriptFile,
   resolvedModelSince,
   turnComplete,
@@ -44,7 +45,9 @@ import type {
   EngineWorkerSession
 } from "./engines.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
+import type {
+  AgentWaitSnapshot,
+  BackgroundTaskWait, JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
@@ -229,6 +232,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   #controlPlane: ClaudeControlPlane;
   #onEvent: ((event: RuntimeEvent) => void) | undefined;
   #reportedUsage: TokenUsageBreakdown | null = null;
+  /** The background tasks this attempt's turn waited on, in the order observed; reset per attempt. */
+  #waits: BackgroundTaskWait[] = [];
 
   #multiTurn: boolean;
   /** The current turn's prompt: the constructor's for a one-shot call, `beginTurn`'s thereafter. */
@@ -306,6 +311,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runAttempt(context: EngineAttemptContext): Promise<EngineAttemptResult> {
     this.#assertOpen();
     this.#reportedUsage = null;
+    this.#waits = [];
     let fromIndex = 0;
     try {
       const previousFailure = context.previousFailure;
@@ -319,14 +325,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         const handle = this.#handle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
-        return await this.#sendTurnInSession(handle, fromIndex, context.onLiveEvidence);
+        return await this.#sendTurnInSession(handle, fromIndex, context);
       }
 
       const correcting = previousFailure !== undefined && this.#handle !== null;
       if (correcting && (await this.#controlPlane.tmuxAvailable())) {
         const handle = this.#handle as ClaudeSessionHandle;
         fromIndex = (await this.#readTranscript(handle)).entries.length;
-        return await this.#correctInSession(handle, previousFailure, fromIndex, context.onLiveEvidence);
+        return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
         // No valve, no degraded redispatch: a fresh session answering a held
@@ -340,7 +346,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       if (this.#handle !== null) {
         await this.#teardown();
       }
-      return await this.#dispatchAndCollect(previousFailure, context.onLiveEvidence);
+      return await this.#dispatchAndCollect(previousFailure, context);
     } catch (error) {
       // One best-effort read of what the engine already holds, before any
       // teardown, serving every evidence the failed turn can still carry:
@@ -398,7 +404,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
   async #dispatchAndCollect(
     previousFailure: PreviousAttemptFailure | undefined,
-    onLiveEvidence: (() => void) | undefined
+    observers: AttemptObservers
   ): Promise<TurnResult> {
     const denyRules = permissionDenyRulesFor(this.#options.strip);
     const handle = await this.#controlPlane.dispatch({
@@ -431,7 +437,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       throw error;
     }
 
-    const transcript = await this.#runToCompletion(handle, 0, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, 0, observers);
     return this.#buildResult(handle, transcript, 0);
   }
 
@@ -439,7 +445,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #sendTurnInSession(
     handle: ClaudeSessionHandle,
     fromIndex: number,
-    onLiveEvidence: (() => void) | undefined
+    observers: AttemptObservers
   ): Promise<TurnResult> {
     const delivery = await this.#controlPlane.steer(handle, this.#buildTurnMessage());
     if (!delivery.delivered) {
@@ -448,7 +454,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
 
     await this.#awaitReceipt(handle, fromIndex);
     this.#turnDelivered = true;
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
@@ -469,7 +475,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     handle: ClaudeSessionHandle,
     previousFailure: PreviousAttemptFailure,
     fromIndex: number,
-    onLiveEvidence: (() => void) | undefined
+    observers: AttemptObservers
   ): Promise<TurnResult> {
     const delivery = await this.#controlPlane.steer(handle, this.#correctionMessage(previousFailure));
     if (!delivery.delivered) {
@@ -477,7 +483,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     }
 
     await this.#awaitReceipt(handle, fromIndex);
-    const transcript = await this.#runToCompletion(handle, fromIndex, onLiveEvidence);
+    const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
 
@@ -523,6 +529,17 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    *   rides the failure (the shared catch attaches it), and the bounded
    *   retry re-asks.
    *
+   * A turn that ends while a background task the session started is still
+   * outstanding (`outstandingBackgroundTasks`) is an interim message, not
+   * the answer: Claude Code backgrounds a long command or a Monitor, lets
+   * the model end its turn, and re-invokes it when the task ends. The wait
+   * continues for the reply that follows the wake, reported through
+   * `onWaiting` and recorded on the result, and it is bounded by the call's
+   * deadline and nothing else — the daemon's idle roster is expected while
+   * the session waits for its own notification, so the settled window does
+   * not count against it. A task that never wakes the session times the
+   * attempt out under the ordinary retry rule.
+   *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
    * `MAX_CONSECUTIVE_ABSENCES`, so a parking/respawning blip does not kill a
@@ -531,7 +548,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
   async #runToCompletion(
     handle: ClaudeSessionHandle,
     fromIndex: number,
-    onLiveEvidence: (() => void) | undefined
+    observers: AttemptObservers
   ): Promise<TranscriptFile> {
     // No timeoutMs → no poll deadline; wait indefinitely for the worker to settle.
     const deadline = this.#options.timeoutMs === undefined ? Infinity : Date.now() + this.#options.timeoutMs;
@@ -543,10 +560,12 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     let absences = 0;
     let settledPolls = 0;
     let evidenceReported = false;
+    let waitingOn: string | null = null;
 
     for (;;) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle);
+      let awaitingTask = false;
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);
@@ -559,12 +578,23 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
         if (!evidenceReported && hasAssistantEntrySince(transcript.entries, fromIndex)) {
           evidenceReported = true;
           try {
-            onLiveEvidence?.();
+            observers.onLiveEvidence?.();
           } catch {
             // Liveness reporting must never take the turn down with it.
           }
         }
-        if (turnComplete(transcript.entries, fromIndex)) {
+        const outstanding = outstandingBackgroundTasks(transcript.entries, fromIndex);
+        const current = this.#noteWaits(outstanding);
+        awaitingTask = current !== null;
+        if ((current?.taskId ?? null) !== waitingOn) {
+          waitingOn = current?.taskId ?? null;
+          try {
+            observers.onWaiting?.(current);
+          } catch {
+            // Same contract as liveness: reporting never affects the turn.
+          }
+        }
+        if (turnComplete(transcript.entries, fromIndex) && !awaitingTask) {
           return transcript;
         }
       }
@@ -610,7 +640,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       // "busy" both reset the window rather than feed it. A worker with no
       // transcript at all is the first-life guard's diagnosis, not this
       // one's — collection presumes there is something to collect from.
-      if (sawLife && (status.state === "done" || status.status === "idle")) {
+      if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
         settledPolls += 1;
         if (settledPolls >= SETTLED_CONFIRMATION_POLLS) {
           throw new ClaudeCollectionError(
@@ -626,6 +656,31 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       }
       await this.#pollDelay();
     }
+  }
+
+  /**
+   * Reconciles the attempt's wait ledger with the tasks currently
+   * outstanding: a newly observed task opens a wait, a task no longer
+   * outstanding closes its wait. Returns what the worker is waiting on now
+   * (the earliest still-open wait), or null.
+   */
+  #noteWaits(outstanding: readonly { id: string; description: string }[]): AgentWaitSnapshot | null {
+    const now = new Date();
+    const open = new Set(outstanding.map((task) => task.id));
+    for (const wait of this.#waits) {
+      if (wait.endedAt === null && !open.has(wait.taskId)) {
+        wait.endedAt = now.toISOString();
+      }
+    }
+    for (const task of outstanding) {
+      if (!this.#waits.some((wait) => wait.taskId === task.id && wait.endedAt === null)) {
+        this.#waits.push({ taskId: task.id, description: task.description, observedAt: now.toISOString(), endedAt: null });
+      }
+    }
+    const current = this.#waits.find((wait) => wait.endedAt === null);
+    return current === undefined
+      ? null
+      : { kind: "background-task", taskId: current.taskId, description: current.description, sinceMs: Date.parse(current.observedAt) };
   }
 
   /** A poll gap that ends early — by rejecting — the moment close() aborts. */
@@ -664,6 +719,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       text,
       ...(resolvedModel !== null ? { resolvedModel } : {}),
       ...(resolvedEffort !== null ? { resolvedEffort } : {}),
+      ...(this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {}),
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -722,7 +778,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
-      apiError: apiErrorSince(transcript.entries, fromIndex)
+      apiError: apiErrorSince(transcript.entries, fromIndex),
+      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
     };
   }
 
@@ -904,10 +961,12 @@ function failedTurnResult(
   const text = partialWorkerTextOf(error) ?? "";
   const resolvedModel = evidence?.resolvedModel ?? null;
   const resolvedEffort = evidence?.resolvedEffort ?? null;
+  const backgroundWaits = evidence?.backgroundWaits ?? [];
   return {
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
     ...(resolvedEffort !== null ? { resolvedEffort } : {}),
+    ...(backgroundWaits.length > 0 ? { backgroundWaits } : {}),
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -944,7 +1003,12 @@ interface FailureEvidence {
   usage: TokenUsageBreakdown;
   /** The API refusal the synthetic reply annotated, when it did; evidence for classifying the failure. */
   apiError: TranscriptApiError | null;
+  /** The background tasks the dying attempt waited on — an open wait names the task that never woke it. */
+  backgroundWaits: BackgroundTaskWait[];
 }
+
+/** The per-attempt observers the runtime hands an attempt (`EngineAttemptContext`'s callbacks). */
+type AttemptObservers = Pick<EngineAttemptContext, "onLiveEvidence" | "onWaiting">;
 
 
 function claudeAttemptFailure(error: ClaudeWorkerError): EngineAttemptFailure {

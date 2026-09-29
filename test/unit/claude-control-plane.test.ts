@@ -237,6 +237,87 @@ test("the run's own environment-layer settings are withheld from every claude ch
   }
 });
 
+test("the settings file carries the run's resolved hold scope: an explicit scope outranks the inherited variable, and none resolves from the environment", async () => {
+  // The hold scope's contract is inheritance by every nested invocation,
+  // and `resolveHoldScope` gives the `--hold-scope` flag (or `holdScope`
+  // option) precedence over `ENSEMBLE_HOLD_SCOPE`. The control plane is
+  // handed that resolved value; it must never re-read the variable itself,
+  // because a scope the launcher took from the flag exists nowhere in the
+  // environment — the settings file would then carry the wrong scope, or
+  // none, and a lead listing its own scope would never see the worker's
+  // nested holds.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-hold-scope-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-000000000014";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { copyFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          const name = args[args.indexOf("--name") + 1];
+          await copyFile(args[args.indexOf("--settings") + 1], ${JSON.stringify(dir)} + "/settings-" + name + ".json");
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          // The stub registers whichever dispatch asked last: one session
+          // name per control plane below, so each dispatch finds its own.
+          const name = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+          process.stdout.write(JSON.stringify([{
+            id: "hold-scope-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name,
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const savedScope = process.env.ENSEMBLE_HOLD_SCOPE;
+    const savedRoster = process.env.ENSEMBLE_TEST_ROSTER_NAME;
+    process.env.ENSEMBLE_HOLD_SCOPE = "lead-session-42";
+    const settingsFor = async (name: string, holdScope: string | null | undefined): Promise<Record<string, unknown>> => {
+      process.env.ENSEMBLE_TEST_ROSTER_NAME = name;
+      const controlPlane = new ClaudeCliControlPlane({
+        claudeBin: stubPath,
+        projectsDir: dir,
+        dispatchTimeoutMs: 1_000,
+        ...(holdScope !== undefined ? { holdScope } : {})
+      });
+      await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+      return (JSON.parse(await readFile(path.join(dir, `settings-${name}.json`), "utf8")) as { env: Record<string, unknown> }).env;
+    };
+    try {
+      // Explicit wins: the flag's scope, not the variable's, reaches the session.
+      assert.deepEqual(await settingsFor("explicit-scope", "flag-scope-7"), {
+        ENSEMBLE_HOLD_SCOPE: "flag-scope-7",
+        [WORKER_MARKER_VARIABLE]: "explicit-scope"
+      });
+      // No explicit input: the control plane resolves as a bare invocation would.
+      assert.deepEqual(await settingsFor("inherited-scope", undefined), {
+        ENSEMBLE_HOLD_SCOPE: "lead-session-42",
+        [WORKER_MARKER_VARIABLE]: "inherited-scope"
+      });
+      // The shared scope, resolved by the caller: nothing is delivered, even
+      // though this process's own variable names a scope.
+      assert.deepEqual(await settingsFor("shared-scope", null), {
+        [WORKER_MARKER_VARIABLE]: "shared-scope"
+      });
+    } finally {
+      restoreEnv("ENSEMBLE_HOLD_SCOPE", savedScope);
+      restoreEnv("ENSEMBLE_TEST_ROSTER_NAME", savedRoster);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the first dispatch sweeps settings directories whose owning launcher is provably gone and keeps every other", async () => {
   // A launcher killed by SIGKILL or crashed never reaches stop(), so its
   // per-dispatch settings directory outlives it. Each directory carries the

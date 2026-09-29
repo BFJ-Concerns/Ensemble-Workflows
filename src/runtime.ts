@@ -516,9 +516,15 @@ export class EnsembleRuntime {
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
+    // Resolved once, here, for both consumers: the runtime's own hold
+    // manager and the Claude control plane that delivers the scope to
+    // worker sessions. Resolving it again inside the control plane would
+    // read the environment alone and lose the explicit option's precedence.
+    const holdScope = resolveHoldScope(options.holdScope, process.env);
     const engines = await createDefaultEngineRegistry({
       cwd,
       codexBin: options.codexBin ?? "codex",
+      holdScope,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }

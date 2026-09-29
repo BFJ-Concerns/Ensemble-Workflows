@@ -704,6 +704,12 @@ export interface CreateDefaultEngineRegistryOptions {
   clientVersion: string;
   concurrencyCaps?: EngineConcurrencyCaps;
   workerEnvironment?: EngineWorkerEnvironment;
+  /**
+   * The run's resolved hold scope (null for the shared scope), handed to the
+   * Claude control plane for delivery to every worker session. Omitted, the
+   * control plane resolves the scope its own environment names.
+   */
+  holdScope?: string | null;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
@@ -737,9 +743,10 @@ export async function createDefaultEngineRegistry(
     }),
     new ClaudeEngineAdapter({
       cwd: options.cwd,
-      ...(options.workerEnvironment?.claude !== undefined
-        ? { controlPlane: new ClaudeCliControlPlane({ workerEnv: options.workerEnvironment.claude }) }
-        : {}),
+      controlPlane: new ClaudeCliControlPlane({
+        ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
+        ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {})
+      }),
       ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
       // Claude deliberately emits the same usage event shape as Codex. Keep the
       // adapter sink labelled so accounting never has to infer engine from payload.

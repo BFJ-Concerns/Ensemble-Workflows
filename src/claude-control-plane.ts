@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { withoutRunScopedVariables } from "./ambient-settings.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js";
-import { HOLD_SCOPE_ENV } from "./holds.js";
+import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
 
@@ -169,6 +169,20 @@ export interface ClaudeCliControlPlaneOptions {
    * running when it reads it.
    */
   workerEnv?: Record<string, string>;
+  /**
+   * The run's hold scope as the runtime resolved it (`resolveHoldScope`:
+   * the `--hold-scope` flag or `holdScope` option outranking the inherited
+   * `ENSEMBLE_HOLD_SCOPE`), delivered to every worker session by the
+   * settings file — the contract is inheritance by every nested invocation,
+   * and the session is served by a daemon process inheritance cannot reach.
+   * `null` is the shared scope (nothing delivered). Omitted, the control
+   * plane resolves the scope its own process would run under — the same
+   * function, with no explicit input — so a control plane built outside a
+   * runtime behaves as a bare invocation does. The control plane never
+   * resolves precedence itself: a caller that has an explicit scope passes
+   * the resolved value, or the flag's precedence is silently lost here.
+   */
+  holdScope?: string | null;
   /** Defaults to `~/.claude/projects`. */
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
@@ -208,6 +222,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveCounter = 0;
   #env: NodeJS.ProcessEnv;
   #workerEnv: Record<string, string>;
+  /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
+  #holdScope: string | null;
   /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
   #launchEnv: Record<string, string>;
   /** Per-session settings directories, removed when the session stops. */
@@ -223,6 +239,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // declared map is also kept separately: the tmux valve needs it as
     // explicit -e flags (see steer()).
     this.#workerEnv = options.workerEnv ?? {};
+    this.#holdScope = options.holdScope === undefined ? resolveHoldScope(undefined, process.env) : options.holdScope;
     // The sandboxed-workspace declaration is harness bookkeeping and lands
     // last, above any machine declaration of the same name: every `claude`
     // this control plane launches must see it, or dispatch fails on trust.
@@ -347,11 +364,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // withheld from control-plane children like every run-level setting —
     // the daemon must not carry it — so it reaches the worker session by
     // the one route that does: this file, below the machine's declarations.
-    const inheritedHoldScope = process.env[HOLD_SCOPE_ENV];
+    // The value written is the run's *resolved* scope (the constructor
+    // option), never a fresh read of this process's variable: a scope the
+    // launcher took from `--hold-scope` exists nowhere in the environment.
     const env = {
-      ...(inheritedHoldScope !== undefined && inheritedHoldScope.trim().length > 0
-        ? { [HOLD_SCOPE_ENV]: inheritedHoldScope }
-        : {}),
+      ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
       ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
       [WORKER_MARKER_VARIABLE]: dispatchName

@@ -2281,16 +2281,30 @@ test("a call the run's close cuts short raises no unhandled rejection when nothi
   try {
     runtime.agent("hang until the run ends", { engine: "codex", label: "straggler" });
     await transport.started;
+    // Two more calls the script abandons at the edges close() must cover:
+    // one whose dispatch-time record write is still landing when the run
+    // ends (started in the same tick as the return), and one still inside
+    // its per-call cwd check, before it has registered a leg at all.
+    runtime.agent("queued behind the straggler", { engine: "codex", label: "late-starter" });
+    runtime.agent("checking its cwd", { engine: "codex", label: "cwd-checker", cwd: process.cwd() });
     await runtime.close("interrupted");
     // Unhandled rejections are reported after the microtask queue drains.
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let tick = 0; tick < 4; tick += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }
   assert.deepEqual(unhandled, []);
-  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 0 });
-  assert.deepEqual(runtime.cutShortLegs(), [{ id: 1, label: "straggler" }]);
+  // The late starter's dispatch record was still landing at close, so it is
+  // abandoned and counted unsettled, named beside the cut-short straggler;
+  // the cwd-checker registered only after the run closed and is outside the
+  // tally, its rejection handled all the same.
+  assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 1, unsettled: 1 });
+  assert.deepEqual(runtime.unfinishedLegs(), [
+    { id: 2, label: "late-starter", disposition: "abandoned" },
+    { id: 1, label: "straggler", disposition: "cut-short" }
+  ]);
 });
 
 test("a leg that settles on its own account during teardown is tallied by its record", async () => {

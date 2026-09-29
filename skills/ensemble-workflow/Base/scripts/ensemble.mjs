@@ -17854,7 +17854,7 @@ var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
 var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
 var TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
 var TASK_ENDED_STATUSES = /* @__PURE__ */ new Set(["completed", "failed", "killed", "stopped"]);
-var MONITOR_OWN_NOTICE = /^\s*\[Monitor /;
+var MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
 function outstandingBackgroundTasks(entries, fromIndex = 0) {
   const toolCalls = /* @__PURE__ */ new Map();
   const outstanding = /* @__PURE__ */ new Map();
@@ -21741,7 +21741,21 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // the settlement barrier, so it is determinate without racing whichever
   // straggler lands first, and it never disagrees with the archive.
   #shutdownTally = null;
-  #cutShortLegs = [];
+  #unfinishedLegs = [];
+  /**
+   * Every `agent()` call from creation to settlement. close() marks each
+   * one's promise handled before any teardown: a leg the run's own ending
+   * cuts short rejects with that ending, and a script that returned without
+   * awaiting the call is not listening — the rejection is the launcher's
+   * teardown reaching an abandoned call, never an exception for the
+   * launcher to report. A caller still awaiting the leg sees the rejection
+   * exactly as before. After close every rejection of an abandoned call is
+   * silent by design — the leg's record and the tally carry its settlement,
+   * the launcher's process does not. A session turn needs no entry:
+   * `sendTurn`'s own bookkeeping already attaches a handler to each turn's
+   * promise.
+   */
+  #openCalls = /* @__PURE__ */ new Set();
   /** The first close() call's run, latched so later calls join it. */
   #closeRun = null;
   #closed = false;
@@ -21918,10 +21932,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   agent(prompt, options = {}) {
     const call = { outward: null };
-    call.outward = this.#agentCall(prompt, options, call);
+    this.#openCalls.add(call);
+    call.outward = this.#agentCall(prompt, options).finally(() => {
+      this.#openCalls.delete(call);
+    });
     return call.outward;
   }
-  async #agentCall(prompt, options, call) {
+  async #agentCall(prompt, options) {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
@@ -21959,7 +21976,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
-    const unsettled = { record: agentRecord, stage: "dispatching", call };
+    const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
       await this.#recordAgentSafely(agentRecord);
@@ -22150,13 +22167,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
-      this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+      const unsettled = { record: agentRecord, stage: "dispatching" };
+      this.#unsettledAgentRecords.set(agentId, unsettled);
       try {
         await this.#recordAgentSafely(agentRecord);
-        const unsettled = this.#unsettledAgentRecords.get(agentId);
-        if (unsettled !== void 0) {
-          unsettled.stage = "admitting";
-        }
+        unsettled.stage = "admitting";
         try {
           const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
           const output = await this.#runChained(
@@ -22630,13 +22645,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#shutdownTally;
   }
   /**
-   * The legs the tally counts `cutShort`, by identity: each one's record
-   * carries the run's shutdown status and the `run-<status>` cause. Empty
-   * before close(). The launcher names them on stderr after a body that
-   * returned with them in flight.
+   * The legs the run's ending left unfinished, by identity and disposition:
+   * `cut-short` legs are the tally's `cutShort` bucket (torn down with a
+   * `run-<status>` cause on the record); `abandoned` legs are its
+   * `unsettled` bucket (the run ended before their dispatch record landed).
+   * Empty before close(). The launcher names each on stderr after a body
+   * that returned with it in flight.
    */
-  cutShortLegs() {
-    return this.#cutShortLegs;
+  unfinishedLegs() {
+    return this.#unfinishedLegs;
   }
   close(status = "interrupted") {
     this.#closeRun ??= this.#closeOnce(status);
@@ -22645,12 +22662,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
   async #closeOnce(status) {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
+    for (const call of this.#openCalls) {
+      void call.outward?.catch(() => void 0);
+    }
     const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
       ([, { record }]) => record.status === "in-progress"
     );
-    for (const [, leg] of inFlight) {
-      void leg.call?.outward?.catch(() => void 0);
-    }
     const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
     const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
     const settlementBarrier = Promise.all(closing.map(([agentId]) => this.#settledSignal(agentId)));
@@ -22681,19 +22698,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
     let cutShort = 0;
-    const cutShortLegs = [];
+    const unfinished = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
     for (const [, { record }] of closing) {
       if (record.status === "complete") {
         done += 1;
       } else if (record.terminationCause?.kind === `run-${status}`) {
         cutShort += 1;
-        cutShortLegs.push({ id: record.id, label: record.label });
+        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
       } else {
         failed += 1;
       }
     }
     this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
-    this.#cutShortLegs = cutShortLegs;
+    this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];
     }
@@ -30692,10 +30709,16 @@ async function runEnsembleCli(argv, options = {}) {
       }
     };
     ending.throwIfEnded();
-    const { result } = await Promise.race([
-      runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
-      ending.promise
-    ]);
+    let raced;
+    try {
+      raced = await Promise.race([
+        runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
+        ending.promise
+      ]);
+    } finally {
+      ending.settleBody();
+    }
+    const { result } = raced;
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
       throw new SingleAgentFailedError();
@@ -30735,7 +30758,7 @@ async function runEnsembleCli(argv, options = {}) {
             terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
           );
           if (terminalStatus === "complete") {
-            reportLegsCutShortAtReturn(runtime, stderr);
+            reportLegsUnfinishedAtReturn(runtime, stderr);
           }
         }
       } catch (error) {
@@ -30966,13 +30989,17 @@ function lateEndingJudge(ending, stderr) {
     return null;
   };
 }
-function reportLegsCutShortAtReturn(runtime, stderr) {
-  const legs = runtime.cutShortLegs?.() ?? [];
+function reportLegsUnfinishedAtReturn(runtime, stderr) {
+  const legs = runtime.unfinishedLegs?.() ?? [];
   for (const leg of legs) {
     const label = leg.label === null ? "" : ` (${leg.label})`;
-    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: cut short, its answer lost \u2014 await the call to keep it
+    const fate = leg.disposition === "cut-short" ? "cut short" : "abandoned before its dispatch record landed";
+    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: ${fate}, its answer lost \u2014 await the call to keep it
 `);
   }
+}
+function lateEndingRank(error) {
+  return error instanceof WorkflowUncaughtExceptionError ? 2 : error instanceof WorkflowProcessExitError ? 1 : 0;
 }
 function watchRunEndings() {
   const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS);
@@ -30987,7 +31014,9 @@ function watchRunEndings() {
   });
   const end = (error) => {
     if (bodySettled) {
-      lateEnding ??= error;
+      if (lateEnding === null || lateEndingRank(error) > lateEndingRank(lateEnding)) {
+        lateEnding = error;
+      }
       return;
     }
     if (observed !== null) {

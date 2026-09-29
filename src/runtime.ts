@@ -238,24 +238,15 @@ function optionsForTarget<T extends { engine?: EngineName; model?: string; effor
 interface UnsettledAgentRecord {
   record: RuntimeAgentRecord;
   stage: "dispatching" | "admitting";
-  /**
-   * The call this leg belongs to, once `agent()` has the promise the
-   * script holds. close() marks that promise handled before any teardown:
-   * a leg the run's own ending cuts short rejects with that ending, and a
-   * script that returned without awaiting the call is not listening — the
-   * rejection is the launcher's teardown reaching an abandoned call, never
-   * an exception for the launcher to report. A caller still awaiting the
-   * leg sees the rejection exactly as before. A session turn needs no entry
-   * here: `sendTurn`'s own bookkeeping already attaches a handler to each
-   * turn's promise.
-   */
-  call?: AgentCall;
 }
 
 /**
  * The promise `agent()` hands the script — the exact object, so marking it
  * handled reaches what the script holds. Null until the call is created:
- * `agent()` starts the leg's async settlement and only then has the promise.
+ * `agent()` starts the leg's async settlement and only then has the
+ * promise. Open from creation to settlement in `#openCalls`, which covers
+ * the window before the leg registers (a per-call `cwd` check awaits before
+ * registration) as well as after.
  */
 interface AgentCall {
   outward: Promise<unknown> | null;
@@ -282,6 +273,13 @@ export interface ShutdownTally {
   cutShort: number;
   /** The records close() abandons: dispatched, with no outcome ever observed. */
   unsettled: number;
+}
+
+/** One leg the run's ending left unfinished, as `unfinishedLegs()` reports it. */
+export interface UnfinishedLeg {
+  id: number;
+  label: string | null;
+  disposition: "cut-short" | "abandoned";
 }
 
 type AgentExecutionCompletion =
@@ -432,7 +430,21 @@ export class EnsembleRuntime {
   // the settlement barrier, so it is determinate without racing whichever
   // straggler lands first, and it never disagrees with the archive.
   #shutdownTally: ShutdownTally | null = null;
-  #cutShortLegs: readonly { id: number; label: string | null }[] = [];
+  #unfinishedLegs: readonly UnfinishedLeg[] = [];
+  /**
+   * Every `agent()` call from creation to settlement. close() marks each
+   * one's promise handled before any teardown: a leg the run's own ending
+   * cuts short rejects with that ending, and a script that returned without
+   * awaiting the call is not listening — the rejection is the launcher's
+   * teardown reaching an abandoned call, never an exception for the
+   * launcher to report. A caller still awaiting the leg sees the rejection
+   * exactly as before. After close every rejection of an abandoned call is
+   * silent by design — the leg's record and the tally carry its settlement,
+   * the launcher's process does not. A session turn needs no entry:
+   * `sendTurn`'s own bookkeeping already attaches a handler to each turn's
+   * promise.
+   */
+  #openCalls = new Set<AgentCall>();
   /** The first close() call's run, latched so later calls join it. */
   #closeRun: Promise<void> | null = null;
   #closed = false;
@@ -683,11 +695,14 @@ export class EnsembleRuntime {
     // async wrapper would hand the script a different promise from the one
     // the entry records.
     const call: AgentCall = { outward: null };
-    call.outward = this.#agentCall(prompt, options, call);
+    this.#openCalls.add(call);
+    call.outward = this.#agentCall(prompt, options).finally(() => {
+      this.#openCalls.delete(call);
+    });
     return call.outward;
   }
 
-  async #agentCall(prompt: string, options: Partial<AgentOptions>, call: AgentCall): Promise<string | unknown | null> {
+  async #agentCall(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
     if (this.#closed) {
       throw new Error("EnsembleRuntime is closed");
     }
@@ -758,7 +773,7 @@ export class EnsembleRuntime {
       });
     }
     const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
-    const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching", call };
+    const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     // Dispatch-time record: persisted in-progress before the engine is
     // called, so a worker that dies uncleanly still leaves evidence it was
@@ -982,13 +997,11 @@ export class EnsembleRuntime {
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
-      this.#unsettledAgentRecords.set(agentId, { record: agentRecord, stage: "dispatching" });
+      const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
+      this.#unsettledAgentRecords.set(agentId, unsettled);
       try {
         await this.#recordAgentSafely(agentRecord);
-        const unsettled = this.#unsettledAgentRecords.get(agentId);
-        if (unsettled !== undefined) {
-          unsettled.stage = "admitting";
-        }
+        unsettled.stage = "admitting";
         try {
           // The engine-cap/ceiling slot spans this turn alone — from here to
           // its settlement — never the session's idle life: an idle held
@@ -1622,13 +1635,15 @@ export class EnsembleRuntime {
   }
 
   /**
-   * The legs the tally counts `cutShort`, by identity: each one's record
-   * carries the run's shutdown status and the `run-<status>` cause. Empty
-   * before close(). The launcher names them on stderr after a body that
-   * returned with them in flight.
+   * The legs the run's ending left unfinished, by identity and disposition:
+   * `cut-short` legs are the tally's `cutShort` bucket (torn down with a
+   * `run-<status>` cause on the record); `abandoned` legs are its
+   * `unsettled` bucket (the run ended before their dispatch record landed).
+   * Empty before close(). The launcher names each on stderr after a body
+   * that returned with it in flight.
    */
-  cutShortLegs(): readonly { id: number; label: string | null }[] {
-    return this.#cutShortLegs;
+  unfinishedLegs(): readonly UnfinishedLeg[] {
+    return this.#unfinishedLegs;
   }
 
   close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
@@ -1643,19 +1658,7 @@ export class EnsembleRuntime {
   async #closeOnce(status: "failed" | "timed-out" | "interrupted"): Promise<void> {
     this.#shutdownAgentStatus = status;
     this.#closed = true;
-    // The in-flight legs are classified here, before the first await, and
-    // the classification decides what teardown *does*: a leg whose
-    // dispatch-time record write is still in flight has no outcome to
-    // observe and is abandoned, while a leg past dispatch — queued at
-    // admission or on the wire — is settled by teardown. The tally is not
-    // taken from this classification: it is derived after teardown from
-    // what each leg's record actually says, so a leg that settles on its
-    // own account while teardown runs is counted as its record reads
-    // (done, or failed) rather than as cut short.
-    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
-      ([, { record }]) => record.status === "in-progress"
-    );
-    // Teardown rejects each of these legs' promises with the run's own
+    // Teardown rejects every open call's promise with the run's own
     // settlement. A script that returned without awaiting a call is not
     // listening, and Node would raise the unhandled rejection as an
     // uncaught exception — ending, as a failure, a run that has ended
@@ -1663,9 +1666,23 @@ export class EnsembleRuntime {
     // stays the launcher's own; a caller still awaiting the leg is
     // unaffected. Every settlement teardown produces is then read from the
     // records below, not from what escaped.
-    for (const [, leg] of inFlight) {
-      void leg.call?.outward?.catch(() => undefined);
+    for (const call of this.#openCalls) {
+      void call.outward?.catch(() => undefined);
     }
+    // The in-flight legs are classified here, before the first await, and
+    // the classification decides what teardown *does*: a leg whose
+    // dispatch-time record write is still in flight — a call started in the
+    // same tick as the body's return, say — has no outcome to observe and
+    // is abandoned (a writer that never completes is exactly this shape, so
+    // the write is never awaited here), while a leg past dispatch — queued
+    // at admission or on the wire — is settled by teardown. The tally is not
+    // taken from this classification: it is derived after teardown from
+    // what each leg's record actually says, so a leg that settles on its
+    // own account while teardown runs is counted as its record reads
+    // (done, or failed) rather than as cut short.
+    const inFlight = [...this.#unsettledAgentRecords.entries()].filter(
+      ([, { record }]) => record.status === "in-progress"
+    );
     const abandoning = inFlight.filter(([, { stage }]) => stage === "dispatching").map(([, { record }]) => record);
     const closing = inFlight.filter(([, { stage }]) => stage === "admitting");
     // Armed before any teardown so no settlement can slip between the
@@ -1717,19 +1734,19 @@ export class EnsembleRuntime {
     let done = totalsAtClose.done;
     let failed = totalsAtClose.failed;
     let cutShort = 0;
-    const cutShortLegs: Array<{ id: number; label: string | null }> = [];
+    const unfinished: UnfinishedLeg[] = abandoning.map((record) => ({ id: record.id, label: record.label, disposition: "abandoned" }));
     for (const [, { record }] of closing) {
       if (record.status === "complete") {
         done += 1;
       } else if (record.terminationCause?.kind === `run-${status}`) {
         cutShort += 1;
-        cutShortLegs.push({ id: record.id, label: record.label });
+        unfinished.push({ id: record.id, label: record.label, disposition: "cut-short" });
       } else {
         failed += 1;
       }
     }
     this.#shutdownTally = { done, failed, cutShort, unsettled: abandoning.length };
-    this.#cutShortLegs = cutShortLegs;
+    this.#unfinishedLegs = unfinished;
     if (teardownFailures.length === 1) {
       throw teardownFailures[0];
     }

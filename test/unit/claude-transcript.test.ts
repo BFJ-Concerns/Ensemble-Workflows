@@ -318,12 +318,18 @@ test("outstandingBackgroundTasks holds a task whose ending is enqueued but not d
   const deliveredLater = parseTranscriptText([...enqueuedBeforeInterim, ...deliveredIdle(block), assistant([textBlock("done: exit 0")])].join("\n"));
   assert.deepEqual(outstandingBackgroundTasks(deliveredLater), []);
 
-  // Absorbed into a turn already in flight — the attachment row is the
-  // delivery — and answered by that turn's reply: the wait closes too.
-  const absorbed = parseTranscriptText([...enqueuedBeforeInterim, ...absorbedMidTurn(block), assistant([textBlock("done: exit 0")])].join("\n"));
+  // Absorbed into a turn already in flight — the turn's own tool rows are
+  // written first, then the attachment row (the delivery), then the reply
+  // that answers it (the measured order): the wait closes at that reply.
+  const absorbingTurn = [
+    assistant([toolUse("toolu_read", "Read", { file_path: "/tmp/x.output" })], { stop: "tool_use" }),
+    toolResult("toolu_read", "1\tdone\n2\t[exited with code 0]"),
+    ...absorbedMidTurn(block)
+  ];
+  const absorbed = parseTranscriptText([...enqueuedBeforeInterim, ...absorbingTurn, assistant([textBlock("done: exit 0")])].join("\n"));
   assert.deepEqual(outstandingBackgroundTasks(absorbed), []);
   // The attachment alone, unanswered, is the notified-but-unanswered window.
-  assert.equal(outstandingBackgroundTasks(parseTranscriptText([...enqueuedBeforeInterim, ...absorbedMidTurn(block)].join("\n"))).length, 1);
+  assert.equal(outstandingBackgroundTasks(parseTranscriptText([...enqueuedBeforeInterim, ...absorbingTurn].join("\n"))).length, 1);
 });
 
 test("outstandingBackgroundTasks keeps a Monitor outstanding through its events and ends it at the Monitor's own notice", () => {
@@ -339,19 +345,31 @@ test("outstandingBackgroundTasks keeps a Monitor outstanding through its events 
   const event = monitorNotification("b7zb0kfnb", "BG-19-8bdca0417a34\n[exited with code 0]");
   const afterEvent = parseTranscriptText([...started, ...absorbedMidTurn(event), assistant([textBlock("Nonce: BG-19-8bdca0417a34")])].join("\n"));
   assert.deepEqual(outstandingBackgroundTasks(afterEvent).map((task) => task.id), ["b7zb0kfnb"], "an event is the Monitor still running");
+  // Watched output that merely opens with the word is the source's, not a notice.
+  const lookalike = monitorNotification("b7zb0kfnb", "[Monitor: build ok]\n[Monitor stage 2 starting]");
+  const afterLookalike = parseTranscriptText([...started, ...deliveredIdle(lookalike), assistant([textBlock("still watching")])].join("\n"));
+  assert.equal(outstandingBackgroundTasks(afterLookalike).length, 1, "a lookalike event does not end the Monitor");
 
   // Each notice Claude Code itself writes into the event slot ends the watch.
   for (const notice of [
     "[Monitor expired after 1m with 1 event delivered. Re-arm it if you still need the watch.]",
     "[Monitor expired after 5m with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]",
     "[Monitor timed out — re-arm if needed.]",
-    "[Monitor stopped — too much output (40 events suppressed over 12s). Restart with a more selective filter.]"
+    "[Monitor stopped — too much output (40 events suppressed over 12s). Restart with a more selective filter.]",
+    "[Monitor stopped]"
   ]) {
     const ended = parseTranscriptText(
       [...started, ...absorbedMidTurn(event), assistant([textBlock("Nonce: BG-19-8bdca0417a34")]), ...deliveredIdle(monitorNotification("b7zb0kfnb", notice)), assistant([textBlock("Task is complete.")])].join("\n")
     );
     assert.deepEqual(outstandingBackgroundTasks(ended), [], notice);
   }
+
+  // A Monitor whose watched source ends is reported like a command: a
+  // status-bearing notification (Claude Code 2.1.285's own shape), which
+  // the status branch ends.
+  const sourceEnded = `<task-notification>\n<task-id>b7zb0kfnb</task-id>\n<status>completed</status>\n<summary>Monitor "background task completion" stream ended</summary>\n</task-notification>`;
+  const endedBySource = parseTranscriptText([...started, ...deliveredIdle(sourceEnded), assistant([textBlock("The watch ended with the source.")])].join("\n"));
+  assert.deepEqual(outstandingBackgroundTasks(endedBySource), []);
 });
 
 test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {

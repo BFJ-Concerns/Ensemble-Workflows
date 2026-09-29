@@ -340,15 +340,20 @@ const TASK_NOTIFICATION_EVENT = /<event>([\s\S]*?)<\/event>/;
  */
 const TASK_ENDED_STATUSES = new Set(["completed", "failed", "killed", "stopped"]);
 /**
- * A Monitor's notifications carry no `<status>`: each event, and the
- * Monitor's own ending, arrives with `<summary>` and `<event>` alone. The
- * ending is the tool's own notice in the event slot — `[Monitor expired
- * after …]`, `[Monitor timed out …]`, `[Monitor stopped — too much output
- * …]`, the three notices Claude Code 2.1.285 writes (measured from its
- * binary and the operator's transcripts, 2026-09-29). Any other event is the
- * watched source's own output: the Monitor is still running.
+ * A Monitor's events carry no `<status>` — each arrives with `<summary>`
+ * and `<event>` alone — and the Monitor ends two ways. Its watched source
+ * ending is reported like a command's: a status-bearing notification
+ * (`completed`, `failed`, `killed`; summary `Monitor "…" stream ended`),
+ * which the status branch of `notificationEnded` owns. Its own expiry,
+ * timeout, or stop is a notice in the event slot — `[Monitor expired after
+ * …]`, `[Monitor timed out …]`, `[Monitor stopped — too much output …]`
+ * or the bare `[Monitor stopped]` — the notices Claude Code 2.1.285 writes
+ * (measured from its binary and the operator's transcripts, 2026-09-29),
+ * matched by their opening words so watched output that merely begins with
+ * `[Monitor` is not taken for one. Any other event is the source's output:
+ * the Monitor is still running.
  */
-const MONITOR_OWN_NOTICE = /^\s*\[Monitor /;
+const MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/;
 
 /**
  * The background tasks the session started at or after `fromIndex` whose
@@ -497,7 +502,7 @@ function deliveredNotifications(entry: TranscriptEntry): Array<{ id: string; end
   return notifications;
 }
 
-/** Whether a notification reports its task ended: by status for a command, by the Monitor's own notice for a Monitor. */
+/** Whether a notification reports its task ended: by status where it carries one (a command; a Monitor whose source ended), else by the Monitor's own notice. */
 function notificationEnded(body: string): boolean {
   const status = TASK_NOTIFICATION_STATUS.exec(body)?.[1]?.trim();
   if (status !== undefined) {

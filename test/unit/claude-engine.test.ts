@@ -1555,7 +1555,8 @@ const backgroundTaskRows = {
  * notification is *enqueued before the interim reply* and delivered only at
  * `wakeAtPoll`. `monitor`: a Monitor armed on the command's output — at
  * `wakeAtPoll` the command's notification is delivered, the Monitor's event
- * is absorbed into the reply's turn, and the model replies with the nonce;
+ * is absorbed into the reply's turn after its tool rows, and the model
+ * replies with the nonce;
  * the Monitor's expiry notice is delivered three polls later and answered
  * two after that. In every shape the model's reply lands two polls after a
  * delivery, never in the same write, as it does live.
@@ -1614,8 +1615,17 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
         }
         rows.push(...backgroundTaskRows.deliveredIdle(this.#commandBlock()));
         if (this.#shape === "monitor") {
+          // The measured order: the model's turn after the command's wake
+          // reads the output file, and the Monitor's event is absorbed into
+          // that turn — its tool rows first, the attachment after them.
+          const read = { type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "/tmp/bya9z1l44.output" } };
           const event = backgroundTaskRows.monitorNotification("b7zb0kfnb", "NONCE-8bdca0417a34\n[exited with code 0]");
-          rows.push(backgroundTaskRows.enqueued(event), ...backgroundTaskRows.absorbedMidTurn(event));
+          rows.push(
+            backgroundTaskRows.enqueued(event),
+            JSON.stringify({ type: "assistant", message: { role: "assistant", content: [read], stop_reason: "tool_use" } }),
+            JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_read", content: "1\tNONCE-8bdca0417a34\n2\t[exited with code 0]" }] } }),
+            ...backgroundTaskRows.absorbedMidTurn(event)
+          );
         }
       }
       if (this.pollCount === wake + 2) {

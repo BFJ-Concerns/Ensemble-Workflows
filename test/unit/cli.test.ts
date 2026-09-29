@@ -3723,6 +3723,15 @@ test("the sentinel's worker tally counts a run's successes as its own observatio
 });
 
 test("a body that returns with a worker in flight ends complete: the worker is interrupted, never failed, and named once on stderr", async () => {
+  // Two orderings of the same slip: the bare call before an awaited one
+  // (its record written long before the return, its turn on the wire — cut
+  // short) and after it (its dispatch record still landing when the body
+  // returns — abandoned, counted unsettled). Both are named.
+  const orderings = [
+    { name: "bare-first", body: 'agent("hang", { engine: "codex", label: "straggler" });\n      await agent("done-fast", { engine: "codex", label: "alpha" });', id: 1, fate: "cut short", cancelled: 1, status: "interrupted", cause: "run-interrupted", workers: { done: 1, failed: 0, cut_short: 1, unsettled: 0 } },
+    { name: "bare-last", body: 'await agent("done-fast", { engine: "codex", label: "alpha" });\n      agent("hang", { engine: "codex", label: "straggler" });', id: 2, fate: "abandoned before its dispatch record landed", cancelled: 0, status: "abandoned", cause: null, workers: { done: 1, failed: 0, cut_short: 0, unsettled: 1 } }
+  ] as const;
+  for (const ordering of orderings) {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-clean-teardown-"));
   const runRecordDir = path.join(directory, "records");
   const script = path.join(directory, "workflow.js");
@@ -3735,8 +3744,7 @@ test("a body that returns with a worker in flight ends complete: the worker is i
     script,
     `
       export const meta = { name: "clean-body-teardown" };
-      agent("hang", { engine: "codex", label: "straggler" });
-      await agent("done-fast", { engine: "codex", label: "alpha" });
+      ${ordering.body}
       return "ok";
     `
   );
@@ -3752,16 +3760,16 @@ test("a body that returns with a worker in flight ends complete: the worker is i
     createRuntime: async () => fixedEngineRuntime(engine, 1)
   });
 
-  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(exitCode, 0, `${ordering.name}: ${stderr.text()}`);
   // The straggler really was live at teardown: the engine cancelled it.
-  assert.equal(engine.cancelCount, 1, "the in-flight worker must have been cancelled by the run ending");
+  assert.equal(engine.cancelCount, ordering.cancelled, `${ordering.name}: the run ending cancels a worker that reached the engine`);
   // The call the script never awaited rejected with the run's own ending
   // during teardown; nothing was listening, and that rejection is the
   // launcher's own, never an uncaught exception failing a run that ended
   // cleanly. The slip is visible instead: one line naming the worker.
   const cutShortLines = stderr.text().split("\n").filter((line) => line.startsWith("[teardown] the script returned without awaiting"));
   assert.deepEqual(cutShortLines, [
-    "[teardown] the script returned without awaiting agent 1 (straggler): cut short, its answer lost — await the call to keep it"
+    `[teardown] the script returned without awaiting agent ${ordering.id} (straggler): ${ordering.fate}, its answer lost — await the call to keep it`
   ]);
   assert.doesNotMatch(stderr.text(), /failed to end cleanly/);
 
@@ -3776,8 +3784,8 @@ test("a body that returns with a worker in flight ends complete: the worker is i
   }
   const straggler = records.find((record) => record.label === "straggler");
   assert.ok(straggler, `no record for the in-flight worker in ${JSON.stringify(records)}`);
-  assert.equal(straggler.status, "interrupted");
-  assert.equal(straggler.termination_cause?.kind, "run-interrupted");
+  assert.equal(straggler.status, ordering.status, ordering.name);
+  assert.equal(straggler.termination_cause?.kind ?? null, ordering.cause, ordering.name);
   assert.equal(records.find((record) => record.label === "alpha")?.status, "complete");
 
   const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
@@ -3792,7 +3800,8 @@ test("a body that returns with a worker in flight ends complete: the worker is i
   // teardown and carrying the `interrupted` record asserted above. Nothing
   // was abandoned, so nothing is `unsettled` — the sentinel's figures and
   // the archive's records say the same thing.
-  assert.deepEqual(sentinel.workers, { done: 1, failed: 0, cut_short: 1, unsettled: 0 });
+  assert.deepEqual(sentinel.workers, ordering.workers, ordering.name);
+  }
 });
 
 test("a teardown that fails after a clean body degrades the sentinel and the exit code", async () => {

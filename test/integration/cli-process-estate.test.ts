@@ -2467,6 +2467,16 @@ test("an ending that lands after the body settled is absorbed for process.exit a
         outcome: "failed",
         errorKind: "WorkflowUncaughtExceptionError" as string | null,
         line: /^\[teardown\] the run failed to end cleanly: Uncaught exception ended the run: late callback$/m
+      },
+      {
+        // An absorbed exit first, then the exception: the exception is the
+        // ending that counts.
+        name: "late-exit-then-throw",
+        body: afterResultPrinted('try { process.exit(0); } catch {} setImmediate(() => { throw new Error("late callback"); });'),
+        code: 1,
+        outcome: "failed",
+        errorKind: "WorkflowUncaughtExceptionError" as string | null,
+        line: /^\[teardown\] the run failed to end cleanly: Uncaught exception ended the run: late callback$/m
       }
     ] as const;
     for (const ending of cases) {
@@ -2483,6 +2493,12 @@ test("an ending that lands after the body settled is absorbed for process.exit a
       // Reported once, though the late ending is judged twice (after the
       // worker teardown and after the archive's seal).
       assert.equal(result.stderr.split("\n").filter((line) => ending.line.test(line)).length, 1, `${ending.name}: ${result.stderr}`);
+      // The exception outranks the exit that fired before it: the run fails
+      // to end cleanly, and the absorbed exit is not reported in its place
+      // (both land before the first judgement, so only the exception is).
+      if (ending.name === "late-exit-then-throw") {
+        assert.doesNotMatch(result.stderr, /after the script returned was ignored/, `${ending.name}: ${result.stderr}`);
+      }
       const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
       assert.ok(announced, `${ending.name}: ${result.stderr}`);
       const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
@@ -2505,12 +2521,52 @@ test("an ending that lands after the body settled is absorbed for process.exit a
       // cleanly. The result envelope and sentinel never disagree with
       // each other.
       assert.ok(
-        manifest.status === ending.outcome || (ending.name === "late-throw" && manifest.status === "complete"),
+        manifest.status === ending.outcome || (ending.errorKind === "WorkflowUncaughtExceptionError" && manifest.status === "complete"),
         `${ending.name}: manifest status ${manifest.status}`
       );
       assert.ok(manifest.ended_at !== null, `${ending.name}: the record is sealed`);
       assert.equal(result.stderr.split("\n").filter((line) => /^\s+at /.test(line)).length, 0, `${ending.name}:\n${result.stderr}`);
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an uncaught exception the body raises after the whole-workflow timeout is judged as a late ending, never dropped", { timeout: 30_000 }, async () => {
+  // The timeout ends the race while the body is still running; the body is
+  // settled at that moment too, so a callback it throws from during
+  // teardown is a failure to end cleanly on every surface — not an ending
+  // recorded against a race that had already settled.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-timed-out-late-ending-estate-"));
+  try {
+    const recordStore = path.join(directory, "records");
+    const script = path.join(directory, "timed-out-then-throw.js");
+    await writeFile(
+      script,
+      `export const meta = { name: "timed-out-then-throw" };\n` +
+        `const write = process.stdout.write.bind(process.stdout);\n` +
+        `process.stdout.write = (chunk, ...rest) => { const written = write(chunk, ...rest); if (String(chunk).includes('"timed-out"')) setImmediate(() => { throw new Error("late callback"); }); return written; };\n` +
+        `await new Promise((resolve) => setTimeout(resolve, 10_000));\n` +
+        `return "unreached";\n`
+    );
+    const result = await runNode(
+      [bundledCliPath, "--timeout=100", script],
+      { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore, ENSEMBLE_STATUS: "0" },
+      20_000
+    );
+    assert.equal(result.code, 1, result.stderr);
+    const envelope = JSON.parse(result.stdout) as { partial: boolean; reason: string };
+    assert.equal(envelope.reason, "timed-out");
+    assert.equal(
+      result.stderr.split("\n").filter((line) => /^\[teardown\] the run failed to end cleanly: Uncaught exception ended the run: late callback$/.test(line)).length,
+      1,
+      result.stderr
+    );
+    const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+    assert.ok(announced, result.stderr);
+    const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as { outcome: string; exit_code: number };
+    assert.equal(sentinel.outcome, "failed");
+    assert.equal(sentinel.exit_code, 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -2527,13 +2583,22 @@ test("a body that returns with a worker in flight ends complete on its own accou
   // manifest, and the worker's own record tell one story.
   const fixture = await createProcessFixture("return-with-worker-in-flight");
   const recordStore = path.join(path.dirname(fixture.script), "records");
+  // The worker must be on the wire when the body returns, not merely
+  // queued: the fixture writes a marker at turn start and the body waits
+  // for it before returning.
+  const turnStarted = path.join(path.dirname(fixture.script), "turn-started");
   try {
     await writeFile(
       fixture.script,
-      `export const meta = { name: "return-with-worker-in-flight" };\nagent("hang", { engine: "codex", label: "straggler", maxAttempts: 1 });\nreturn "returned";\n`
+      `export const meta = { name: "return-with-worker-in-flight" };\n` +
+        `const { existsSync } = require("node:fs");\n` +
+        `agent("hang", { engine: "codex", label: "straggler", maxAttempts: 1 });\n` +
+        `while (!existsSync(${JSON.stringify(turnStarted)})) await new Promise((resolve) => setTimeout(resolve, 20));\n` +
+        `return "returned";\n`
     );
     const result = await fixture.runWithEnv({
       ENSEMBLE_FAKE_CODEX_STALL_AFTER_TURN_START: "1",
+      ENSEMBLE_FAKE_CODEX_TURN_START_MARKER: turnStarted,
       ENSEMBLE_RUN_RECORD: "1",
       ENSEMBLE_RUN_RECORD_DIR: recordStore,
       ENSEMBLE_STATUS: "0"
@@ -2574,10 +2639,12 @@ test("a body that returns with a worker in flight ends complete on its own accou
     assert.deepEqual({ status: resultRecord.status, exit_code: resultRecord.exit_code, value: resultRecord.value }, { status: "complete", exit_code: 0, value: "returned" });
     const worker = JSON.parse(await readFile(path.join(archive, "agents", "000001", "agent.json"), "utf8")) as {
       status: string;
-      termination_cause: { kind: string } | null;
+      termination_cause: { kind: string; message: string } | null;
     };
     assert.equal(worker.status, "interrupted");
     assert.equal(worker.termination_cause?.kind, "run-interrupted");
+    // The turn was on the wire — the app-server's teardown is what reached it.
+    assert.equal(worker.termination_cause?.message, "the run ended (interrupted) while this worker's turn was in flight");
   } finally {
     await fixture.cleanup();
   }

@@ -22,7 +22,7 @@ import { harnessVersion } from "./harness-version.js";
 
 import type { AmbientSettings } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
-import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally } from "./runtime.js";
+import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
 import type { Readable, Writable } from "node:stream";
@@ -580,10 +580,21 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // the script's own can print after the hand-off line the catch below
     // writes.
     ending.throwIfEnded();
-    const { result } = await Promise.race([
-      runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
-      ending.promise
-    ]);
+    let raced: { result: unknown };
+    try {
+      raced = await Promise.race([
+        runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
+        ending.promise
+      ]);
+    } finally {
+      // The runner's callback settles the body on its own promise; this
+      // settles it when the race ends any other way — the whole-workflow
+      // timeout, a run ending that won the race — so an ending the still-
+      // running body raises during teardown is judged as late, never
+      // recorded against a race that has already settled and lost.
+      ending.settleBody();
+    }
+    const { result } = raced;
     // Under identity the resolution is an envelope, so the collapse
     // signal is the envelope's output — an exhausted identified worker
     // must still fail the run, not print `{output: null}` at exit 0.
@@ -658,7 +669,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
             terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
           );
           if (terminalStatus === "complete") {
-            reportLegsCutShortAtReturn(runtime, stderr);
+            reportLegsUnfinishedAtReturn(runtime, stderr);
           }
         }
       } catch (error) {
@@ -1038,10 +1049,13 @@ interface RunEndingWatch {
   /** Marks the body settled: every ending observed from now on is late (`lateEnding`), absorbed rather than rejected. */
   settleBody: () => void;
   /**
-   * The first ending observed after the body settled, or null. A signal or a
-   * lingering callback's `process.exit` is absorbed and changes nothing —
-   * the result already printed stands; an uncaught exception is the run
-   * failing to end cleanly, and the terminal path degrades the outcome.
+   * The most consequential ending observed after the body settled, or null.
+   * A signal or a lingering callback's `process.exit` is absorbed and
+   * changes nothing — the result already printed stands; an uncaught
+   * exception is the run failing to end cleanly, and the terminal path
+   * degrades the outcome. An exception replaces an earlier absorbed ending;
+   * an ending that lands during the sentinel's own write, after the last
+   * judgement, is outside every surface.
    */
   readonly lateEnding: Error | null;
   /** Releases the handlers and restores `process.exit`: only once the launcher's terminal work is done, never on the way there. */
@@ -1051,7 +1065,8 @@ interface RunEndingWatch {
 /**
  * The judge of a late ending for the terminal path, asked twice — after the
  * worker teardown and again after the archive's seal, so an exception that
- * lands mid-seal is still judged — and reporting each ending once. An
+ * lands mid-seal is still judged, an exception that replaced an already
+ * reported exit included — and reporting each ending once. An
  * uncaught exception after the body settled is reported and returned as the
  * teardown failure; a late `process.exit` is reported as ignored, in a line
  * that says what stands (the result) rather than borrowing the in-window
@@ -1082,20 +1097,23 @@ function lateEndingJudge(ending: RunEndingWatch, stderr: Writable): () => { kind
 }
 
 /**
- * One line per worker the run's end cut short after the body returned: the
- * script started the call and returned without awaiting it, so the launcher
- * tore the worker down — its record reads `interrupted` with a
- * `run-interrupted` cause, the sentinel counts it `cut_short` — and its
- * answer is lost. The line makes the slip visible without punishing it: the
- * run is complete on the body's own account.
+ * One line per worker the run's end left unfinished after the body
+ * returned: the script started the call and returned without awaiting it.
+ * A worker past dispatch was torn down — its record reads `interrupted`
+ * with a `run-interrupted` cause, the sentinel counts it `cut_short`; one
+ * whose dispatch record was still landing was abandoned — its record reads
+ * `abandoned`, the sentinel counts it `unsettled`. Either way its answer is
+ * lost. The line makes the slip visible without punishing it: the run is
+ * complete on the body's own account.
  */
-function reportLegsCutShortAtReturn(runtime: EnsembleRuntime, stderr: Writable): void {
+function reportLegsUnfinishedAtReturn(runtime: EnsembleRuntime, stderr: Writable): void {
   // Injected test runtimes may not carry the accessor; read it defensively,
   // as `workerOutcomes` reads the tally.
-  const legs = (runtime as { cutShortLegs?: () => readonly { id: number; label: string | null }[] }).cutShortLegs?.() ?? [];
+  const legs = (runtime as { unfinishedLegs?: () => readonly UnfinishedLeg[] }).unfinishedLegs?.() ?? [];
   for (const leg of legs) {
     const label = leg.label === null ? "" : ` (${leg.label})`;
-    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: cut short, its answer lost — await the call to keep it\n`);
+    const fate = leg.disposition === "cut-short" ? "cut short" : "abandoned before its dispatch record landed";
+    stderr.write(`[teardown] the script returned without awaiting agent ${leg.id}${label}: ${fate}, its answer lost — await the call to keep it\n`);
   }
 }
 
@@ -1122,6 +1140,11 @@ function reportLegsCutShortAtReturn(runtime: EnsembleRuntime, stderr: Writable):
  * recognises the ending it already recorded. Any other uncaught exception
  * in the window is a run ending of its own kind.
  */
+/** Late endings by consequence: a failure to end cleanly above an absorbed exit above an absorbed signal. */
+function lateEndingRank(error: Error): number {
+  return error instanceof WorkflowUncaughtExceptionError ? 2 : error instanceof WorkflowProcessExitError ? 1 : 0;
+}
+
 function watchRunEndings(): RunEndingWatch {
   // The exit-code table is the one enumeration of handled signals: a
   // signal that joins it is armed here with no further change.
@@ -1138,7 +1161,13 @@ function watchRunEndings(): RunEndingWatch {
   });
   const end = (error: Error): void => {
     if (bodySettled) {
-      lateEnding ??= error;
+      // The most consequential late ending is kept: an uncaught exception
+      // outranks an absorbed exit, which outranks an absorbed signal, so an
+      // exit that fired first cannot mask the exception the terminal path
+      // must judge.
+      if (lateEnding === null || lateEndingRank(error) > lateEndingRank(lateEnding)) {
+        lateEnding = error;
+      }
       return;
     }
     if (observed !== null) {

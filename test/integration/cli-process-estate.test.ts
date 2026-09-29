@@ -2417,6 +2417,84 @@ test("a body's process.exit — direct or from a lingering callback — leaves a
   }
 });
 
+test("an ending that lands after the body settled is absorbed for process.exit and degrades the run for an uncaught exception", { timeout: 30_000 }, async () => {
+  // The body has returned and its result is printed; a lingering callback
+  // then ends the process. A late `process.exit` changes nothing (the run's
+  // own code stands, one line says it was ignored); a late uncaught
+  // exception is the run failing to end cleanly — the sentinel and the exit
+  // code say so, never `complete` published over it. The callback is armed
+  // on the result reaching stdout — the one observable moment after which
+  // the body has settled — so it lands during teardown deterministically
+  // rather than racing the runner's own settlement on a timer.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-late-ending-estate-"));
+  const afterResultPrinted = (callback: string): string =>
+    `const write = process.stdout.write.bind(process.stdout);\n` +
+    `process.stdout.write = (chunk, ...rest) => { const written = write(chunk, ...rest); if (String(chunk).includes('"returned"')) setImmediate(() => { ${callback} }); return written; };\n` +
+    `return "returned";\n`;
+  try {
+    const cases = [
+      {
+        name: "late-exit",
+        body: afterResultPrinted("process.exit(0);"),
+        code: 0,
+        outcome: "complete",
+        errorKind: null as string | null,
+        line: /^\[teardown\] ignored after the result was printed: Workflow script called process\.exit\(0\)/m
+      },
+      {
+        name: "late-throw",
+        body: afterResultPrinted('throw new Error("late callback");'),
+        code: 1,
+        outcome: "failed",
+        errorKind: "WorkflowUncaughtExceptionError" as string | null,
+        line: /^\[teardown\] the run failed to end cleanly: Uncaught exception ended the run: late callback$/m
+      }
+    ] as const;
+    for (const ending of cases) {
+      const recordStore = path.join(directory, `${ending.name}-records`);
+      const script = path.join(directory, `${ending.name}.js`);
+      await writeFile(script, `export const meta = { name: "${ending.name}" };\n${ending.body}`);
+      const result = await runNode(
+        [bundledCliPath, script],
+        { ENSEMBLE_RUN_RECORD: "1", ENSEMBLE_RUN_RECORD_DIR: recordStore, ENSEMBLE_STATUS: "0" },
+        20_000
+      );
+      assert.equal(result.code, ending.code, `${ending.name}: ${result.stderr}`);
+      assert.equal(result.stdout, `"returned"\n`, `${ending.name}: the result already printed stands`);
+      assert.match(result.stderr, ending.line, `${ending.name}: ${result.stderr}`);
+      const announced = result.stderr.match(/\[sentinel\] will write (\S+) when the run ends/);
+      assert.ok(announced, `${ending.name}: ${result.stderr}`);
+      const sentinel = JSON.parse(await readFile(announced[1]!, "utf8")) as {
+        outcome: string;
+        exit_code: number;
+        error: { kind: string } | null;
+      };
+      assert.equal(sentinel.outcome, ending.outcome, ending.name);
+      assert.equal(sentinel.exit_code, ending.code, ending.name);
+      assert.equal(sentinel.error?.kind ?? null, ending.errorKind, ending.name);
+      const manifest = JSON.parse(await readFile(path.join(path.dirname(announced[1]!), "manifest.json"), "utf8")) as {
+        status: string;
+        ended_at: string | null;
+      };
+      // The callback lands during the worker teardown or during the
+      // archive's own seal (its git reads yield to the event loop); a
+      // late exception that lands mid-seal is judged after it, so the
+      // manifest may already read `complete` while the sentinel and the
+      // exit code — the supervisor's surfaces — say the run failed to end
+      // cleanly. The result envelope and sentinel never disagree with
+      // each other.
+      assert.ok(
+        manifest.status === ending.outcome || (ending.name === "late-throw" && manifest.status === "complete"),
+        `${ending.name}: manifest status ${manifest.status}`
+      );
+      assert.ok(manifest.ended_at !== null, `${ending.name}: the record is sealed`);
+      assert.equal(result.stderr.split("\n").filter((line) => /^\s+at /.test(line)).length, 0, `${ending.name}:\n${result.stderr}`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("the launcher exits once its terminal work is done, whatever the script body left pending", { timeout: 30_000 }, async () => {
   // The body is ordinary Node, so a timer it forgets would hold the event
   // loop open for its whole duration. Both endings — a clean return and a

@@ -59,7 +59,7 @@ import type {
  * present in the baseline). The agents deny set was witnessed 2026-08-30 on
  * Claude Code 2.1.251: `ListAgents` and `SendMessage` were absent at the
  * stripped worker, while the unstripped control demonstrated discovery and
- * messaging. `Agent` was also absent, but that witness cannot isolate it from
+ * messaging. `Agent` was also absent, but the witness cannot isolate it from
  * the machine-wide `Agent` deny. `Task` remains in the delivered deny set,
  * which the exact-set regression proves. Deny rules outrank every allow
  * layer and permission mode, so the operator's own settings cannot quietly
@@ -151,7 +151,7 @@ export function claudeCacheTtlToMs(value: string): number | null {
  * its transcripts report serving, 2026-09-27); `max` is native but outside
  * the canonical set, so nothing maps to it, and `minimal` is the one
  * canonical level the CLI lacks. The CLI silently
- * accepts an unknown `--effort` value and runs at its default (observed
+ * accepts an unknown `--effort` value and runs at its default (witnessed
  * 2026-08-30: `--effort definitely-invalid` reached a healthy worker at
  * exit 0), so conversion is the only loud boundary: nothing non-native may
  * reach the CLI. What the run record reports as `resolved_effort` is not
@@ -535,10 +535,11 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
    * the model end its turn, and re-invokes it when the task ends. The wait
    * continues for the reply that follows the wake, reported through
    * `onWaiting` and recorded on the result, and it is bounded by the call's
-   * deadline and nothing else — the daemon's idle roster is expected while
-   * the session waits for its own notification, so the settled window does
-   * not count against it. A task that never wakes the session times the
-   * attempt out under the ordinary retry rule.
+   * deadline — the daemon's idle roster is expected while the session waits
+   * for its own notification, so the settled window does not count against
+   * it; the session leaving the roster still ends the turn, as it ends any
+   * turn. A task that never wakes the session times the attempt out under
+   * the ordinary retry rule.
    *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
@@ -561,11 +562,14 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     let settledPolls = 0;
     let evidenceReported = false;
     let waitingOn: string | null = null;
+    // Read from the transcript, and held across a poll whose read failed: a
+    // transiently unreadable transcript must not turn a waiting session
+    // into a settled-but-unproven one for the collection error to catch.
+    let awaitingTask = false;
 
     for (;;) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle);
-      let awaitingTask = false;
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);

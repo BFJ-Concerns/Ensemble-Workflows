@@ -250,11 +250,20 @@ test("outstandingBackgroundTasks names a backgrounded command from its start unt
   const running = parseTranscriptText([...started, ...taskNotification("bya9z1l44", "running")].join("\n"));
   assert.equal(outstandingBackgroundTasks(running).length, 1);
 
-  // The ending notification, in either of its two rows, closes the wait.
+  // The notification rows land seconds before the model's reply: a turn
+  // read in that window still ends on the interim message, so the task
+  // stays outstanding until an assistant entry follows the notification.
+  const notifiedOnly = parseTranscriptText([...started, ...taskNotification("bya9z1l44", "completed")].join("\n"));
+  assert.equal(outstandingBackgroundTasks(notifiedOnly).length, 1, "notified but not yet answered");
+  // The ending notification, in either of its two rows, closes the wait
+  // once the reply lands.
   for (const status of ["completed", "failed", "killed", "stopped"]) {
     const ended = parseTranscriptText([...started, ...taskNotification("bya9z1l44", status), assistant([textBlock("done")])].join("\n"));
     assert.deepEqual(outstandingBackgroundTasks(ended), [], status);
   }
+  // A notification for a task this turn never started is not this turn's.
+  const foreign = parseTranscriptText([...started, ...taskNotification("someoneelse", "completed"), assistant([textBlock("still waiting")])].join("\n"));
+  assert.equal(outstandingBackgroundTasks(foreign).length, 1);
 });
 
 test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {
@@ -285,6 +294,24 @@ test("outstandingBackgroundTasks reads Monitor starts, falls back to the command
   ]);
   // No tasks, no waits.
   assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText(assistant([textBlock("plain answer")]))), []);
+});
+
+test("outstandingBackgroundTasks ignores the start phrase quoted by a call that backgrounds nothing", () => {
+  // A worker that reads a file quoting the phrase — this repository's own
+  // test suite, say — has started no task; only Bash with
+  // run_in_background, or a Monitor, can. (Found live: a `cat`
+  // of these tests held its own turn open.)
+  const quoted = "test fixture: Command running in background with ID: bya9z1l44. Monitor started (task mon00001, expires";
+  const entries = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_cat", "Bash", { command: "cat test/unit/claude-transcript.test.ts", description: "Read the transcript tests" })], { stop: "tool_use" }),
+      toolResult("toolu_cat", quoted),
+      assistant([toolUse("toolu_read", "Read", { file_path: "/x/claude-engine.test.ts" })], { stop: "tool_use" }),
+      toolResult("toolu_read", quoted),
+      assistant([textBlock("read both files")])
+    ].join("\n")
+  );
+  assert.deepEqual(outstandingBackgroundTasks(entries), []);
 });
 
 test("turnComplete is true only when the latest assistant message has settled", () => {

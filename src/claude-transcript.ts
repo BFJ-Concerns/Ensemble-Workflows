@@ -322,8 +322,11 @@ export interface BackgroundTask {
 
 /** The tool results by which Claude Code reports a task it backgrounded (measured 2026-09-28, Claude Code 2.1.283). */
 const BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
-/** The notification block by which Claude Code wakes the model when a task ends, and the one status that means it has not. */
-const TASK_NOTIFICATION = /<task-notification>[\s\S]*?<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/g;
+/** The notification block by which Claude Code wakes the model when a task ends; its id and status are read inside the block only. */
+const TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+const TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
+const TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
+/** The one status that means the task has not ended (a Monitor event). */
 const TASK_STILL_RUNNING = "running";
 
 /**
@@ -339,36 +342,56 @@ const TASK_STILL_RUNNING = "running";
  * `killed`, `stopped` — and re-invokes the model, whose next turn is the
  * one to collect. A `running` status is a Monitor event, not an ending. A
  * task is outstanding from its start until a non-running notification
- * names it. The description is the tool call's own (`description`, else
+ * names it **and an assistant entry follows the notification**: the
+ * notification rows land seconds before the model's reply, and a turn read
+ * in that window still ends on the interim message. The description is the tool call's own (`description`, else
  * a bounded `command`, else the tool name), matched to the result by
- * `tool_use_id`.
+ * `tool_use_id` — and only a call that backgrounds work (Bash with
+ * `run_in_background`, Monitor) can start one: a worker reading a file that
+ * quotes the phrase has started nothing.
  */
 export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex = 0): BackgroundTask[] {
-  const toolCalls = new Map<string, string>();
+  const toolCalls = new Map<string, { description: string; backgrounds: boolean }>();
   const outstanding = new Map<string, BackgroundTask>();
+  // Tasks whose ending has been notified but not yet answered: they leave
+  // the outstanding set at the next assistant entry, the model's reply.
+  const notified = new Set<string>();
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry === undefined) {
       continue;
     }
     if (entry.type === "assistant") {
+      for (const id of notified) {
+        outstanding.delete(id);
+      }
+      notified.clear();
       for (const call of toolUseBlocks(entry.message?.content)) {
-        toolCalls.set(call.id, call.description);
+        toolCalls.set(call.id, call);
       }
       continue;
     }
     for (const result of toolResultBlocks(entry.message?.content)) {
+      // Only a call that backgrounds work can start a task: a worker that
+      // reads a file quoting the start phrase (this repository's own tests
+      // do) has started nothing, and its `cat` must not hold the turn open.
+      const call = toolCalls.get(result.toolUseId);
+      if (call === undefined || !call.backgrounds) {
+        continue;
+      }
       for (const pattern of BACKGROUND_TASK_STARTS) {
         const started = pattern.exec(result.text);
         if (started?.[1] !== undefined) {
-          outstanding.set(started[1], { id: started[1], description: toolCalls.get(result.toolUseId) ?? "background task" });
+          outstanding.set(started[1], { id: started[1], description: call.description });
         }
       }
     }
     for (const text of entryTexts(entry)) {
-      for (const notice of text.matchAll(TASK_NOTIFICATION)) {
-        if (notice[1] !== undefined && notice[2]?.trim() !== TASK_STILL_RUNNING) {
-          outstanding.delete(notice[1]);
+      for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+        const id = TASK_NOTIFICATION_ID.exec(block[1] ?? "")?.[1];
+        const status = TASK_NOTIFICATION_STATUS.exec(block[1] ?? "")?.[1]?.trim();
+        if (id !== undefined && outstanding.has(id) && status !== undefined && status !== TASK_STILL_RUNNING) {
+          notified.add(id);
         }
       }
     }
@@ -376,17 +399,24 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
   return [...outstanding.values()];
 }
 
-function toolUseBlocks(content: unknown): Array<{ id: string; description: string }> {
+/** The tools whose call can background work: Bash with `run_in_background`, and Monitor always. */
+const BACKGROUNDING_TOOLS: Record<string, (input: Record<string, unknown> | null) => boolean> = {
+  Bash: (input) => input?.run_in_background === true,
+  Monitor: () => true
+};
+
+function toolUseBlocks(content: unknown): Array<{ id: string; description: string; backgrounds: boolean }> {
   if (!Array.isArray(content)) {
     return [];
   }
-  const calls: Array<{ id: string; description: string }> = [];
+  const calls: Array<{ id: string; description: string; backgrounds: boolean }> = [];
   for (const block of content) {
     const record = asRecord(block);
     if (record?.type !== "tool_use" || typeof record.id !== "string") {
       continue;
     }
     const input = asRecord(record.input);
+    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
     const description =
       typeof input?.description === "string" && input.description.length > 0
         ? input.description
@@ -395,7 +425,7 @@ function toolUseBlocks(content: unknown): Array<{ id: string; description: strin
           : typeof record.name === "string"
             ? record.name
             : "background task";
-    calls.push({ id: record.id, description });
+    calls.push({ id: record.id, description, backgrounds });
   }
   return calls;
 }

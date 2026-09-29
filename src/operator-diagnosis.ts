@@ -68,8 +68,9 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     return [`${error.message} — partial result on stdout${recordSuffix(context)}`];
   }
   if (isScriptProcessEnding(error)) {
-    // The body ended the launcher's own process — `process.exit`, or an
-    // exception nothing in the script caught — and the run is settled as a
+    // The run's own process was ended from inside the run window — a
+    // `process.exit` from the body, or an exception nothing caught (the
+    // script's, or the launcher's own) — and the run is settled as a
     // failure with the ordinary envelope, record, and sentinel. The message
     // already names which; the stack behind it points into the launcher.
     return [`${error.message} — partial result on stdout${recordSuffix(context)}`];

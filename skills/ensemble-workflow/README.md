@@ -177,9 +177,17 @@ and changes nothing: the result already printed stands and the run ends
 it calls — directly, or from a timer or callback it left running — is
 intercepted rather than obeyed: the run ends as `failed` (the script
 returned no result) with the envelope, record and sentinel above, `error.kind`
-`WorkflowProcessExitError` naming the requested code, and exit 1; an
-exception nothing in the body caught ends the run the same way as
-`WorkflowUncaughtExceptionError`. A direct agent (either shape) that
+`WorkflowProcessExitError` naming the requested code, and exit 1 (a body
+that catches the interception's throw keeps running into a closing runtime,
+its later calls failing on shutdown and its return value discarded — the
+ending stands); an exception nothing caught while the run was live ends the
+run the same way as `WorkflowUncaughtExceptionError` (the message names the
+exception, whether the script's or the launcher's). After the body has
+returned, a late `process.exit` is ignored with one `[teardown]` line and
+the run's own exit code stands, while a late uncaught exception is the run
+failing to end cleanly: the result already printed stands, but the
+sentinel and the exit code report `failed` (and the record too, unless the
+exception landed during its own seal, which the sentinel then outranks). A direct agent (either shape) that
 exhausts its attempts also exits 1 with this envelope rather than printing
 bare `null` — with no script to receive the value, the collapsed worker is
 the run's failure. If the schema accepts JSON `null` and the worker
@@ -934,9 +942,12 @@ run ends. The path is announced only once its directory exists: a store the
 launcher cannot create (a regular file where the store should be, a read-only
 parent) yields one `[sentinel] no sentinel will be written for this run — …`
 line naming the cause where the path would have been, so a supervisor never
-arms on a path that cannot be written; the run then fails to start its
+arms on a path that cannot be written (the directory's existence is what the
+announcement establishes; a later write failure is still reported as one
+`[sentinel]` line); with recording enabled the run then fails to start its
 record with a one-line `the durable run record could not start under …`
-diagnosis. Where the directory exists but the record still cannot start, the
+diagnosis, and with recording off it runs on without a sentinel. Where the
+directory exists but the record still cannot start, the
 sentinel is written with `manifest: { unavailable: "recording-start-failed" }`.
 It is written on every terminal transition the launcher can
 handle — success, failure, timeout, interruption, salvage, a body's

@@ -17849,40 +17849,57 @@ function usageSince(entries, fromIndex = 0) {
   };
 }
 var BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
-var TASK_NOTIFICATION = /<task-notification>[\s\S]*?<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/g;
+var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
+var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
 var TASK_STILL_RUNNING = "running";
 function outstandingBackgroundTasks(entries, fromIndex = 0) {
   const toolCalls = /* @__PURE__ */ new Map();
   const outstanding = /* @__PURE__ */ new Map();
+  const notified = /* @__PURE__ */ new Set();
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
     const entry = entries[index];
     if (entry === void 0) {
       continue;
     }
     if (entry.type === "assistant") {
+      for (const id of notified) {
+        outstanding.delete(id);
+      }
+      notified.clear();
       for (const call of toolUseBlocks(entry.message?.content)) {
-        toolCalls.set(call.id, call.description);
+        toolCalls.set(call.id, call);
       }
       continue;
     }
     for (const result of toolResultBlocks(entry.message?.content)) {
+      const call = toolCalls.get(result.toolUseId);
+      if (call === void 0 || !call.backgrounds) {
+        continue;
+      }
       for (const pattern of BACKGROUND_TASK_STARTS) {
         const started = pattern.exec(result.text);
         if (started?.[1] !== void 0) {
-          outstanding.set(started[1], { id: started[1], description: toolCalls.get(result.toolUseId) ?? "background task" });
+          outstanding.set(started[1], { id: started[1], description: call.description });
         }
       }
     }
     for (const text of entryTexts(entry)) {
-      for (const notice of text.matchAll(TASK_NOTIFICATION)) {
-        if (notice[1] !== void 0 && notice[2]?.trim() !== TASK_STILL_RUNNING) {
-          outstanding.delete(notice[1]);
+      for (const block of text.matchAll(TASK_NOTIFICATION_BLOCK)) {
+        const id = TASK_NOTIFICATION_ID.exec(block[1] ?? "")?.[1];
+        const status = TASK_NOTIFICATION_STATUS.exec(block[1] ?? "")?.[1]?.trim();
+        if (id !== void 0 && outstanding.has(id) && status !== void 0 && status !== TASK_STILL_RUNNING) {
+          notified.add(id);
         }
       }
     }
   }
   return [...outstanding.values()];
 }
+var BACKGROUNDING_TOOLS = {
+  Bash: (input) => input?.run_in_background === true,
+  Monitor: () => true
+};
 function toolUseBlocks(content) {
   if (!Array.isArray(content)) {
     return [];
@@ -17894,8 +17911,9 @@ function toolUseBlocks(content) {
       continue;
     }
     const input = asRecord(record.input);
+    const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
     const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
-    calls.push({ id: record.id, description });
+    calls.push({ id: record.id, description, backgrounds });
   }
   return calls;
 }
@@ -18265,10 +18283,11 @@ var ClaudeEngineInvocation = class {
    * the model end its turn, and re-invokes it when the task ends. The wait
    * continues for the reply that follows the wake, reported through
    * `onWaiting` and recorded on the result, and it is bounded by the call's
-   * deadline and nothing else — the daemon's idle roster is expected while
-   * the session waits for its own notification, so the settled window does
-   * not count against it. A task that never wakes the session times the
-   * attempt out under the ordinary retry rule.
+   * deadline — the daemon's idle roster is expected while the session waits
+   * for its own notification, so the settled window does not count against
+   * it; the session leaving the roster still ends the turn, as it ends any
+   * turn. A task that never wakes the session times the attempt out under
+   * the ordinary retry rule.
    *
    * `state: blocked` still drives bounded valve recovery, and a transient
    * roster-query failure reports `present: false` only after
@@ -18284,10 +18303,10 @@ var ClaudeEngineInvocation = class {
     let settledPolls = 0;
     let evidenceReported = false;
     let waitingOn = null;
+    let awaitingTask = false;
     for (; ; ) {
       this.#assertOpen();
       const transcript = await this.#tryReadTranscript(handle);
-      let awaitingTask = false;
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);
@@ -21729,9 +21748,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 36e5;
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
-    if (options.holdScope !== void 0 && options.holdScope.trim().length === 0) {
-      throw new HoldRejectedError("holdScope must be a non-empty string when given");
-    }
+    rejectBlankHoldScope(options.holdScope);
     this.#holdScope = resolveHoldScope(options.holdScope, process.env);
     this.#holdPollIntervalMs = options.holdPollIntervalMs;
     this.#holdsCwd = options.cwd ?? process.cwd();
@@ -21770,6 +21787,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   static async create(options = {}) {
     let runtime = null;
     const cwd = options.cwd ?? process.cwd();
+    rejectBlankHoldScope(options.holdScope);
     const holdScope = resolveHoldScope(options.holdScope, process.env);
     const engines = await createDefaultEngineRegistry({
       cwd,
@@ -23288,6 +23306,11 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     diagnostics: result?.diagnostics ?? {},
     backgroundWaits: result?.backgroundWaits ?? []
   };
+}
+function rejectBlankHoldScope(holdScope) {
+  if (holdScope !== void 0 && holdScope.trim().length === 0) {
+    throw new HoldRejectedError("holdScope must be a non-empty string when given");
+  }
 }
 function recordTurnMetadata(record, result) {
   if (result.resolvedModel !== void 0) {
@@ -30611,6 +30634,7 @@ async function runEnsembleCli(argv, options = {}) {
       runWorkflowScript(timeoutMs === void 0 ? runnerOptions : { ...runnerOptions, timeoutMs }),
       ending.promise
     ]);
+    ending.settleBody();
     const directAgentOutput = invocation.kind === "agent" && invocation.agentOptions.identity === true && result !== null ? result.output : result;
     if (invocation.kind === "agent" && directAgentOutput === null && !completedDirectAgentWithNull(runtime)) {
       throw new SingleAgentFailedError();
@@ -30654,6 +30678,7 @@ async function runEnsembleCli(argv, options = {}) {
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError2(error)}
 `);
       }
+      teardownError ??= lateEndingFailure(ending, stderr);
       try {
         if (runRecordWriter !== null) {
           await runRecordWriter.finish({
@@ -30669,6 +30694,7 @@ async function runEnsembleCli(argv, options = {}) {
       }
     } finally {
       const settled = finalRecord ?? { status: "failed", exitCode: 1 };
+      teardownError ??= lateEndingFailure(ending, stderr);
       const terminal = teardownError === null ? settled : { status: "failed", exitCode: 1 };
       exitCode = terminal.exitCode;
       try {
@@ -30844,23 +30870,42 @@ var WorkflowProcessExitError = class extends Error {
 };
 var WorkflowUncaughtExceptionError = class extends Error {
   constructor(cause) {
-    super(`Uncaught exception in the workflow script: ${cause instanceof Error ? cause.message : String(cause)}`, {
+    super(`Uncaught exception ended the run: ${cause instanceof Error ? cause.message : String(cause)}`, {
       cause
     });
     this.name = new.target.name;
   }
 };
 var INTERRUPT_SIGNAL_NUMBERS = { SIGINT: 2, SIGTERM: 15 };
+function lateEndingFailure(ending, stderr) {
+  const late = ending.lateEnding;
+  if (late instanceof WorkflowUncaughtExceptionError) {
+    stderr.write(`[teardown] the run failed to end cleanly: ${late.message}
+`);
+    return describeError(late);
+  }
+  if (late instanceof WorkflowProcessExitError) {
+    stderr.write(`[teardown] ignored after the result was printed: ${late.message}
+`);
+  }
+  return null;
+}
 function watchRunEndings() {
   const signals = Object.keys(INTERRUPT_SIGNAL_NUMBERS);
   const handlers = /* @__PURE__ */ new Map();
   const originalExit = process.exit;
   let observed = null;
+  let lateEnding = null;
+  let bodySettled = false;
   let reject = () => void 0;
   const promise = new Promise((_resolve, rejectRun) => {
     reject = rejectRun;
   });
   const end = (error) => {
+    if (bodySettled) {
+      lateEnding ??= error;
+      return;
+    }
     if (observed !== null) {
       return;
     }
@@ -30889,6 +30934,12 @@ function watchRunEndings() {
       if (observed !== null) {
         throw observed;
       }
+    },
+    settleBody: () => {
+      bodySettled = true;
+    },
+    get lateEnding() {
+      return lateEnding;
     },
     dispose: () => {
       for (const [signal, handler] of handlers) {

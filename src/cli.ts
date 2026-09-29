@@ -577,6 +577,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       runWorkflowScript(timeoutMs === undefined ? runnerOptions : { ...runnerOptions, timeoutMs }),
       ending.promise
     ]);
+    // From here an ending is late: the body has settled, so a signal or a
+    // lingering callback's exit changes nothing, and an uncaught exception
+    // is a failure of the run to end cleanly (judged in the finally).
+    ending.settleBody();
     // Under identity the resolution is an envelope, so the collapse
     // signal is the envelope's output — an exhausted identified worker
     // must still fail the run, not print `{output: null}` at exit 0.
@@ -657,6 +661,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // calls with a stack into the bundle.
         stderr.write(`[teardown] the run failed to end cleanly: ${presentOperationalError(error) ?? formatError(error)}\n`);
       }
+      teardownError ??= lateEndingFailure(ending, stderr);
       // The seal runs even when worker teardown failed: close() rejects by
       // design when a cancellation cause must surface, and skipping the seal
       // for it would strand the archive in-progress — unattestable by the
@@ -684,6 +689,10 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // interruption, salvage — and a missing finalRecord is itself a
       // failure outcome.
       const settled = finalRecord ?? { status: "failed" as const, exitCode: 1 };
+      // An uncaught exception that landed during the seal is judged here,
+      // after the archive: the sentinel and the exit code still say the run
+      // did not end cleanly, even where the manifest sealed before it.
+      teardownError ??= lateEndingFailure(ending, stderr);
       // A teardown failure degrades whatever the body earned: the outcome
       // the sentinel publishes and the code the process exits with both say
       // the run did not end cleanly. The reason rides the existing `error`
@@ -995,13 +1004,17 @@ class WorkflowProcessExitError extends Error {
 }
 
 /**
- * An exception reached the process with nothing in the body to catch it —
- * a throw inside a timer or event callback the script left running. Node's
- * default would end the process there; during a run it is a run ending.
+ * An exception reached the process with nothing to catch it while the run
+ * was live — most often a throw inside a timer or callback the script left
+ * running, but equally an unhandled rejection (Node raises it as an
+ * uncaught exception) or a fault in the launcher itself; the message names
+ * the exception, not its author. Node's default would end the process
+ * there, record unsealed and sentinel unwritten; during a run it is a run
+ * ending, and after the body has settled it is a failure to end cleanly.
  */
 class WorkflowUncaughtExceptionError extends Error {
   constructor(cause: unknown) {
-    super(`Uncaught exception in the workflow script: ${cause instanceof Error ? cause.message : String(cause)}`, {
+    super(`Uncaught exception ended the run: ${cause instanceof Error ? cause.message : String(cause)}`, {
       cause
     });
     this.name = new.target.name;
@@ -1011,12 +1024,40 @@ class WorkflowUncaughtExceptionError extends Error {
 const INTERRUPT_SIGNAL_NUMBERS: Record<InterruptSignal, number> = { SIGINT: 2, SIGTERM: 15 };
 
 interface RunEndingWatch {
-  /** Rejects with the ending on the first one observed — the run's ending, when the body is still running; one arriving during a completed run's teardown is absorbed the same way and changes nothing (the result already printed stands). */
+  /** Rejects with the ending on the first one observed while the body runs or is still to start — the run's ending. */
   promise: Promise<never>;
   /** Throws that same ending if one has already been observed — the gate before work that must not start once the run is declared ended. */
   throwIfEnded: () => void;
+  /** Marks the body settled: every ending observed from now on is late (`lateEnding`), absorbed rather than rejected. */
+  settleBody: () => void;
+  /**
+   * The first ending observed after the body settled, or null. A signal or a
+   * lingering callback's `process.exit` is absorbed and changes nothing —
+   * the result already printed stands; an uncaught exception is the run
+   * failing to end cleanly, and the terminal path degrades the outcome.
+   */
+  readonly lateEnding: Error | null;
   /** Releases the handlers and restores `process.exit`: only once the launcher's terminal work is done, never on the way there. */
   dispose: () => void;
+}
+
+/**
+ * Judges a late ending for the terminal path: an uncaught exception after
+ * the body settled is reported and returned as the teardown failure; a late
+ * `process.exit` is reported as ignored (the run's own exit code stands);
+ * a late signal is silent — the README documents it as absorbed. Null when
+ * there is nothing to degrade.
+ */
+function lateEndingFailure(ending: RunEndingWatch, stderr: Writable): { kind: string; message: string } | null {
+  const late = ending.lateEnding;
+  if (late instanceof WorkflowUncaughtExceptionError) {
+    stderr.write(`[teardown] the run failed to end cleanly: ${late.message}\n`);
+    return describeError(late);
+  }
+  if (late instanceof WorkflowProcessExitError) {
+    stderr.write(`[teardown] ignored after the result was printed: ${late.message}\n`);
+  }
+  return null;
 }
 
 /**
@@ -1034,11 +1075,13 @@ interface RunEndingWatch {
  * `process.exit` is replaced for the window, never merely observed: the
  * body runs in this process, so the only way to make its exit a handled
  * ending is to keep the process alive at the call. The replacement records
- * the ending and throws, so the caller's own stack unwinds as an exit would
- * have ended it; a throw from a detached callback reaches the
- * `uncaughtException` handler armed beside it, which recognises the ending
- * it already recorded. Any other uncaught exception in the window is a run
- * ending of its own kind.
+ * the ending and throws, so an uncaught call unwinds the caller's stack; a
+ * body that catches the throw keeps running into a runtime that is already
+ * closing — its later `agent()` calls fail on shutdown and its return value
+ * is discarded, because the ending stands. A throw from a detached
+ * callback reaches the `uncaughtException` handler armed beside it, which
+ * recognises the ending it already recorded. Any other uncaught exception
+ * in the window is a run ending of its own kind.
  */
 function watchRunEndings(): RunEndingWatch {
   // The exit-code table is the one enumeration of handled signals: a
@@ -1047,12 +1090,18 @@ function watchRunEndings(): RunEndingWatch {
   const handlers = new Map<InterruptSignal, () => void>();
   const originalExit = process.exit;
   let observed: Error | null = null;
+  let lateEnding: Error | null = null;
+  let bodySettled = false;
   let reject: (error: Error) => void = () => undefined;
 
   const promise = new Promise<never>((_resolve, rejectRun) => {
     reject = rejectRun;
   });
   const end = (error: Error): void => {
+    if (bodySettled) {
+      lateEnding ??= error;
+      return;
+    }
     if (observed !== null) {
       return;
     }
@@ -1083,6 +1132,12 @@ function watchRunEndings(): RunEndingWatch {
       if (observed !== null) {
         throw observed;
       }
+    },
+    settleBody: () => {
+      bodySettled = true;
+    },
+    get lateEnding() {
+      return lateEnding;
     },
     dispose: () => {
       for (const [signal, handler] of handlers) {

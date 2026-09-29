@@ -1448,15 +1448,18 @@ class SplitRowsControlPlane implements ClaudeControlPlane {
   async poll(): Promise<ClaudeSessionStatus> {
     this.pollCount += 1;
     if (this.pollCount === 2) {
-      // The first call's third row lands (no new spend), then the second
-      // call: a smaller context than the first, its own charge.
+      // The first call's third row lands alone — no new spend, and the
+      // next read must emit no event for it.
       await appendFile(
         this.#path,
-        `${assistantLine({ id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 })}\n` +
-          `${assistantLine({ id: "msg_second_call", text: '{"ok":true}', input: 40, output: 7, cached: 30 })}\n`
+        `${assistantLine({ id: "msg_first_call", stop: "tool_use", input: 100, output: 10, cached: 50, creation: 20 })}\n`
       );
     }
-    return { status: this.pollCount >= 2 ? "idle" : "busy", state: "working", present: this.#present };
+    if (this.pollCount === 3) {
+      // Then the second call: a smaller context than the first, its own charge.
+      await appendFile(this.#path, `${assistantLine({ id: "msg_second_call", text: '{"ok":true}', input: 40, output: 7, cached: 30 })}\n`);
+    }
+    return { status: this.pollCount >= 3 ? "idle" : "busy", state: "working", present: this.#present };
   }
 
   async transcriptPath(): Promise<string | null> {
@@ -1484,12 +1487,12 @@ test("usage is charged once per API call, however many rows a call spans, and su
     try {
       assert.deepEqual(await runtime.agent("decide", { engine: "claude", schema: okSchema }), { ok: true });
       // First call: 100 input + 70 cached (50 read + 20 created) + 10 output
-      // = 180, seen on two rows at dispatch and a third on the next poll —
-      // charged once. Second call: 40 + 30 + 7 = 77, its own context billed
-      // beside the first's, not in place of it.
+      // = 180, seen on two rows at dispatch and a third, alone, on the next
+      // poll — charged once. Second call: 40 + 30 + 7 = 77, its own context
+      // billed beside the first's, not in place of it.
       assert.equal(runtime.budget.spent("claude"), 180 + 77);
       const deltas = runtime.budget.events.map((entry) => entry.event.last);
-      assert.equal(deltas.length, 2, "the repeated row emits no event of its own");
+      assert.equal(deltas.length, 2, "the repeated row, read on its own poll, emits no event of its own");
       assert.deepEqual(
         deltas.map((delta) => [delta.inputTokens, delta.cachedInputTokens, delta.outputTokens, delta.totalTokens]),
         [
@@ -1532,6 +1535,7 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
   #wakeAtPoll: number | null;
   #observe: (() => unknown) | undefined;
 
+  /** The wake's notification rows land at `wakeAtPoll`; the model's reply two polls later, as it does live. */
   constructor(dir: string, options: { wakeAtPoll: number | null; observe?: () => unknown }) {
     this.#path = path.join(dir, "background-task.jsonl");
     this.#wakeAtPoll = options.wakeAtPoll;
@@ -1561,10 +1565,14 @@ class BackgroundTaskControlPlane implements ClaudeControlPlane {
         this.#path,
         [
           JSON.stringify({ type: "queue-operation", operation: "enqueue", content: block }),
-          JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } }),
-          assistantLine({ text: '{"ok":true}', output: 4 })
+          JSON.stringify({ type: "user", message: { role: "user", content: block }, origin: { kind: "task-notification" } })
         ].join("\n") + "\n"
       );
+    }
+    if (this.#wakeAtPoll !== null && this.pollCount === this.#wakeAtPoll + 2) {
+      // The model's reply to the wake — the answer — lands after the
+      // notification rows, never in the same write.
+      await appendFile(this.#path, `${assistantLine({ text: '{"ok":true}', output: 4 })}\n`);
     }
     // The daemon reports the session idle the whole time it waits for its
     // own notification — the same roster shape a settled-but-unproven
@@ -1603,7 +1611,10 @@ test("a turn ending while a background task is outstanding is not collected; the
     runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
     try {
       assert.deepEqual(await runtime.agent("sleep then answer", { engine: "claude", schema: okSchema }), { ok: true });
-      assert.ok(controlPlane.pollCount >= 12, `collected before the wake, after ${controlPlane.pollCount} polls`);
+      assert.ok(controlPlane.pollCount >= 14, `collected before the reply that follows the wake, after ${controlPlane.pollCount} polls`);
+      // Between the notification and the reply the wait still shows.
+      const notified = controlPlane.snapshots.find((snapshot) => snapshot.poll === 13)?.waitingOn as { taskId?: string } | null;
+      assert.equal(notified?.taskId, "bya9z1l44");
       // The live status showed the wait while it lasted, naming the task in
       // Claude Code's own words, and cleared once the task ended.
       const during = controlPlane.snapshots.find((snapshot) => snapshot.poll === 6)?.waitingOn as { kind: string; taskId: string; description: string; sinceMs: number };

@@ -467,11 +467,7 @@ export class EnsembleRuntime {
     this.#codexSessionStaleAfterMs = options.codexSessionStaleAfterMs ?? 3_600_000;
     this.#now = options.now ?? (() => Date.now());
     this.#holdsDir = options.holdsDir ?? defaultHoldsDirectory();
-    if (options.holdScope !== undefined && options.holdScope.trim().length === 0) {
-      // The scope is an opaque launcher-supplied key: explicitly blank is a
-      // mistake, not a request for the shared scope (omission is that).
-      throw new HoldRejectedError("holdScope must be a non-empty string when given");
-    }
+    rejectBlankHoldScope(options.holdScope);
     // Library option outranks the inherited environment variable; neither
     // lands the run's holds in the default shared scope.
     this.#holdScope = resolveHoldScope(options.holdScope, process.env);
@@ -516,10 +512,13 @@ export class EnsembleRuntime {
   static async create(options: RuntimeOptions = {}): Promise<EnsembleRuntime> {
     let runtime: EnsembleRuntime | null = null;
     const cwd = options.cwd ?? process.cwd();
-    // Resolved once, here, for both consumers: the runtime's own hold
-    // manager and the Claude control plane that delivers the scope to
-    // worker sessions. Resolving it again inside the control plane would
-    // read the environment alone and lose the explicit option's precedence.
+    // Judged before any engine substrate is built, and resolved here for
+    // the Claude control plane that delivers the scope to worker sessions
+    // (the constructor resolves the same option for its own hold manager —
+    // one function, `resolveHoldScope`, at the runtime boundary). Resolving
+    // inside the control plane would read the environment alone and lose
+    // the explicit option's precedence.
+    rejectBlankHoldScope(options.holdScope);
     const holdScope = resolveHoldScope(options.holdScope, process.env);
     const engines = await createDefaultEngineRegistry({
       cwd,
@@ -2539,6 +2538,13 @@ function attemptRecord(
     diagnostics: result?.diagnostics ?? {},
     backgroundWaits: result?.backgroundWaits ?? []
   };
+}
+
+/** An explicit hold scope must name a scope: blank is neither a scope nor a request for the shared one. */
+function rejectBlankHoldScope(holdScope: string | undefined): void {
+  if (holdScope !== undefined && holdScope.trim().length === 0) {
+    throw new HoldRejectedError("holdScope must be a non-empty string when given");
+  }
 }
 
 function recordTurnMetadata(record: RuntimeAgentRecord, result: TurnResult): void {

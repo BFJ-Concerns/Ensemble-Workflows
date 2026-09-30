@@ -662,11 +662,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           const terminalStatus = finalRecord?.status;
           // A run whose body returned cleanly did not fail, so the workers it
           // tears down here were interrupted by the run ending — not failed
-          // with a `run-failed` cause. The word is chosen here, the one site
-          // that already knows the body's outcome; `abandoned` stays the
-          // reaper's alone.
+          // with a `run-failed` cause — and their records say the body
+          // returned, not that the run was interrupted. The word and the
+          // occasion are chosen here, the one site that already knows the
+          // body's outcome; `abandoned` stays the reaper's alone.
           await runtime.close(
-            terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
+            terminalStatus === "complete" ? "body-returned" : "run-ended"
           );
           if (terminalStatus === "complete") {
             reportLegsUnfinishedAtReturn(runtime, stderr);
@@ -1102,8 +1104,10 @@ function lateEndingJudge(ending: RunEndingWatch, stderr: Writable): () => { kind
  * A worker past dispatch was torn down — its record reads `interrupted`
  * with a `run-interrupted` cause, the sentinel counts it `cut_short`; one
  * whose dispatch record was still landing was abandoned — its record reads
- * `abandoned`, the sentinel counts it `unsettled`. Either way its answer is
- * lost. The line makes the slip visible without punishing it: the run is
+ * `abandoned`, the sentinel counts it `unsettled`. Either record's cause
+ * message names the return (the runtime's `body-returned` close occasion),
+ * so the archive tells the same story as this line. Either way its answer
+ * is lost. The line makes the slip visible without punishing it: the run is
  * complete on the body's own account.
  */
 function reportLegsUnfinishedAtReturn(runtime: EnsembleRuntime, stderr: Writable): void {

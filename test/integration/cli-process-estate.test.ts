@@ -2643,8 +2643,10 @@ test("a body that returns with a worker in flight ends complete on its own accou
     };
     assert.equal(worker.status, "interrupted");
     assert.equal(worker.termination_cause?.kind, "run-interrupted");
-    // The turn was on the wire — the app-server's teardown is what reached it.
-    assert.equal(worker.termination_cause?.message, "the run ended (interrupted) while this worker's turn was in flight");
+    // The turn was on the wire — the app-server's teardown is what reached
+    // it — and the record names the return, agreeing with the `complete`
+    // manifest beside it.
+    assert.equal(worker.termination_cause?.message, "the script returned without awaiting this worker and the run completed; its turn was cut short in flight");
   } finally {
     await fixture.cleanup();
   }

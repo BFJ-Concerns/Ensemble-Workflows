@@ -2307,6 +2307,68 @@ test("a call the run's close cuts short raises no unhandled rejection when nothi
   ]);
 });
 
+test("a close names its occasion on every record it settles: the run ending, or the body returning without awaiting the leg", async () => {
+  // Three legs at the three stages close() settles — a turn on the wire, a
+  // leg queued behind it, and one whose dispatch record is still landing —
+  // closed once because the run ended and once because the body returned.
+  // The status and kind are the same either way (the launcher's word);
+  // the message is what a cold reader of the record sees, and after a body
+  // that returned it must not say the run was interrupted.
+  const wording = {
+    "run-ended": {
+      "in-flight": "the run ended (interrupted) while this worker's turn was in flight",
+      queued: "the run ended (interrupted) before this worker's queued turn was dispatched",
+      dispatching: "the run ended (interrupted) before this worker's dispatch record landed, so no outcome was observed"
+    },
+    "body-returned": {
+      "in-flight": "the script returned without awaiting this worker and the run completed; its turn was cut short in flight",
+      queued: "the script returned without awaiting this worker and the run completed; its queued turn was never dispatched",
+      dispatching: "the script returned without awaiting this worker and the run completed; its dispatch record was still landing, so no outcome was observed"
+    }
+  } as const;
+  for (const occasion of ["run-ended", "body-returned"] as const) {
+    const records: RuntimeAgentRecord[] = [];
+    const transport = new ClosingTransport(new AppServerExitedError("codex app-server closed"));
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+    runtime.setRunRecorder({
+      recordAgent: async (record) => {
+        records.push(structuredClone(record));
+      }
+    } as RunRecordWriter);
+
+    const onWire = runtime.agent("on the wire", { engine: "codex", label: "straggler" });
+    await transport.started;
+    const queued = runtime.agent("queued behind it", { engine: "codex", label: "queued" });
+    // Let the queued leg's dispatch record land so close() classifies it as
+    // queued; the next call's record is still landing at close.
+    await new Promise((resolve) => setImmediate(resolve));
+    const landing = runtime.agent("still landing", { engine: "codex", label: "late-starter" });
+    await runtime.close("interrupted", occasion);
+    await assert.rejects(onWire, AppServerExitedError);
+    await assert.rejects(queued, EngineShutdownError);
+    await landing.catch(() => undefined);
+
+    const settled = (id: number) => records.filter((record) => record.id === id).at(-1);
+    const straggler = settled(1);
+    assert.equal(straggler?.status, "interrupted", occasion);
+    assert.deepEqual(straggler?.terminationCause, { kind: "run-interrupted", message: wording[occasion]["in-flight"] }, occasion);
+    // The attempt reads the same account, its transport symptom beside it.
+    assert.deepEqual(straggler?.attempts.at(-1)?.failure, { kind: "run-interrupted", message: wording[occasion]["in-flight"] }, occasion);
+    assert.deepEqual(straggler?.attempts.at(-1)?.observedFailure, { kind: "AppServerExitedError", message: "codex app-server closed" }, occasion);
+    const queuedRecord = settled(2);
+    assert.equal(queuedRecord?.status, "interrupted", occasion);
+    assert.deepEqual(queuedRecord?.terminationCause, { kind: "run-interrupted", message: wording[occasion].queued }, occasion);
+    assert.deepEqual(queuedRecord?.attempts, [], occasion);
+    // The abandoned record has no attempt to carry an account, so the cause
+    // is the only place the record can say why it holds no outcome.
+    const abandoned = settled(3);
+    assert.equal(abandoned?.status, "abandoned", occasion);
+    assert.deepEqual(abandoned?.terminationCause, { kind: "run-interrupted", message: wording[occasion].dispatching }, occasion);
+    assert.deepEqual(abandoned?.attempts, [], occasion);
+    assert.deepEqual(runtime.shutdownTally(), { done: 0, failed: 0, cutShort: 2, unsettled: 1 }, occasion);
+  }
+});
+
 test("a leg that settles on its own account during teardown is tallied by its record", async () => {
   // The close-time classification decides teardown's actions, but the
   // tally follows the records: a worker whose turn completes while

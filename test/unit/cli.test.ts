@@ -3728,8 +3728,8 @@ test("a body that returns with a worker in flight ends complete: the worker is i
   // short) and after it (its dispatch record still landing when the body
   // returns — abandoned, counted unsettled). Both are named.
   const orderings = [
-    { name: "bare-first", body: 'agent("hang", { engine: "codex", label: "straggler" });\n      await agent("done-fast", { engine: "codex", label: "alpha" });', id: 1, fate: "cut short", cancelled: 1, status: "interrupted", cause: "run-interrupted", workers: { done: 1, failed: 0, cut_short: 1, unsettled: 0 } },
-    { name: "bare-last", body: 'await agent("done-fast", { engine: "codex", label: "alpha" });\n      agent("hang", { engine: "codex", label: "straggler" });', id: 2, fate: "abandoned before its dispatch record landed", cancelled: 0, status: "abandoned", cause: null, workers: { done: 1, failed: 0, cut_short: 0, unsettled: 1 } }
+    { name: "bare-first", body: 'agent("hang", { engine: "codex", label: "straggler" });\n      await agent("done-fast", { engine: "codex", label: "alpha" });', id: 1, fate: "cut short", cancelled: 1, status: "interrupted", cause: { kind: "run-interrupted", message: "the script returned without awaiting this worker and the run completed; its turn was cut short in flight" }, workers: { done: 1, failed: 0, cut_short: 1, unsettled: 0 } },
+    { name: "bare-last", body: 'await agent("done-fast", { engine: "codex", label: "alpha" });\n      agent("hang", { engine: "codex", label: "straggler" });', id: 2, fate: "abandoned before its dispatch record landed", cancelled: 0, status: "abandoned", cause: { kind: "run-interrupted", message: "the script returned without awaiting this worker and the run completed; its dispatch record was still landing, so no outcome was observed" }, workers: { done: 1, failed: 0, cut_short: 0, unsettled: 1 } }
   ] as const;
   for (const ordering of orderings) {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-clean-teardown-"));
@@ -3785,7 +3785,9 @@ test("a body that returns with a worker in flight ends complete: the worker is i
   const straggler = records.find((record) => record.label === "straggler");
   assert.ok(straggler, `no record for the in-flight worker in ${JSON.stringify(records)}`);
   assert.equal(straggler.status, ordering.status, ordering.name);
-  assert.equal(straggler.termination_cause?.kind ?? null, ordering.cause, ordering.name);
+  // The record read cold says the body returned, never that the run was
+  // interrupted: the manifest beside it reads `complete`.
+  assert.deepEqual(straggler.termination_cause, ordering.cause, ordering.name);
   assert.equal(records.find((record) => record.label === "alpha")?.status, "complete");
 
   const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];

@@ -275,6 +275,34 @@ export interface ShutdownTally {
   unsettled: number;
 }
 
+/**
+ * Why the run is closing. `run-ended`: the run itself ended — failed, timed
+ * out, or interrupted — and its in-flight legs are torn down with it.
+ * `body-returned`: the script body returned with legs still in flight, so
+ * the run completed on its own account and the legs are torn down because
+ * nothing awaited them. A leg keeps the `interrupted` status and
+ * `run-interrupted` cause either way; the cause's message names which, so
+ * the agent record read alone never says a completed run was interrupted.
+ */
+export type RunCloseOccasion = "run-ended" | "body-returned";
+
+/** How far a leg had got when the run's close settled it. */
+type CloseStage = "in-flight" | "queued" | "dispatching";
+
+/** The cause message's account of the leg, by how far it got, when the run itself ended. */
+const RUN_ENDED_LEG: Record<CloseStage, string> = {
+  "in-flight": "while this worker's turn was in flight",
+  queued: "before this worker's queued turn was dispatched",
+  dispatching: "before this worker's dispatch record landed, so no outcome was observed"
+};
+
+/** The same account when the body returned without awaiting the leg. */
+const BODY_RETURNED_LEG: Record<CloseStage, string> = {
+  "in-flight": "its turn was cut short in flight",
+  queued: "its queued turn was never dispatched",
+  dispatching: "its dispatch record was still landing, so no outcome was observed"
+};
+
 /** One leg the run's ending left unfinished, as `unfinishedLegs()` reports it. */
 export interface UnfinishedLeg {
   id: number;
@@ -425,6 +453,7 @@ export class EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = new Set<number>();
   #shutdownAgentStatus: "failed" | "timed-out" | "interrupted" = "interrupted";
+  #closeOccasion: RunCloseOccasion = "run-ended";
   // The worker tally close() publishes once teardown has settled every
   // classified leg — derived from the records' final dispositions behind
   // the settlement barrier, so it is determinate without racing whichever
@@ -1646,17 +1675,18 @@ export class EnsembleRuntime {
     return this.#unfinishedLegs;
   }
 
-  close(status: "failed" | "timed-out" | "interrupted" = "interrupted"): Promise<void> {
+  close(status: "failed" | "timed-out" | "interrupted" = "interrupted", occasion: RunCloseOccasion = "run-ended"): Promise<void> {
     // First close wins, whole: a second call must not re-run teardown or
     // rebuild the tally from post-teardown progress totals (which count
     // run-caused settlements as failures — exactly the
     // indistinguishability the record-derived tally exists to avoid).
-    this.#closeRun ??= this.#closeOnce(status);
+    this.#closeRun ??= this.#closeOnce(status, occasion);
     return this.#closeRun;
   }
 
-  async #closeOnce(status: "failed" | "timed-out" | "interrupted"): Promise<void> {
+  async #closeOnce(status: "failed" | "timed-out" | "interrupted", occasion: RunCloseOccasion): Promise<void> {
     this.#shutdownAgentStatus = status;
+    this.#closeOccasion = occasion;
     this.#closed = true;
     // Teardown rejects every open call's promise with the run's own
     // settlement. A script that returned without awaiting a call is not
@@ -1702,11 +1732,13 @@ export class EnsembleRuntime {
     await Promise.all(
       abandoning.map(async (record) => {
         // The harness knows only that this leg outlived the run. Keep the
-        // dispatch evidence and name that absence of an observed outcome.
+        // dispatch evidence and name that absence of an observed outcome —
+        // and why the run closed, since the record has no attempt to say.
         this.#abandonedAgentIds.add(record.id);
         // Keep the dispatch record's evidence (including its empty attempts)
         // and overwrite that one record through the normal writer path.
         record.status = "abandoned";
+        record.terminationCause = this.#closeCause("dispatching");
         await this.#recordAgentSafely(record);
       })
     );
@@ -1797,17 +1829,28 @@ export class EnsembleRuntime {
     // run's ending and not as the substrate refusing.
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
     if (error instanceof EngineShutdownError || (substrate instanceof AppServerExitedError && this.#closed)) {
-      return {
-        kind: `run-${this.#shutdownAgentStatus}`,
-        // A queued leg's turn never reached an engine; saying it was in
-        // flight would claim a dispatch that never happened.
-        message:
-          dispatch === "queued"
-            ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched`
-            : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
-      };
+      return this.#closeCause(dispatch);
     }
     return null;
+  }
+
+  /**
+   * The cause the run's close writes on a leg it settles: the kind carries
+   * the run's status, the message says how far the leg got — a queued leg's
+   * turn never reached an engine, so claiming it was in flight would claim
+   * a dispatch that never happened — and why the run is closing. After a
+   * body that returned, the message names the return and the completed
+   * run, never "the run ended", so a record read cold beside a `complete`
+   * manifest does not contradict it.
+   */
+  #closeCause(stage: CloseStage): TerminalErrorRecord {
+    return {
+      kind: `run-${this.#shutdownAgentStatus}`,
+      message:
+        this.#closeOccasion === "body-returned"
+          ? `the script returned without awaiting this worker and the run completed; ${BODY_RETURNED_LEG[stage]}`
+          : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
+    };
   }
 
   /**

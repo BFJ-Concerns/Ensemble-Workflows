@@ -17849,6 +17849,7 @@ function usageSince(entries, fromIndex = 0) {
   };
 }
 var BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
 var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
 var TASK_NOTIFICATION_STATUS = /<status>([^<]+)<\/status>/;
@@ -17876,13 +17877,18 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
     }
     for (const result of toolResultBlocks(entry.message?.content)) {
       const call = toolCalls.get(result.toolUseId);
-      if (call === void 0 || !call.backgrounds) {
-        continue;
+      if (call?.backgrounds === true) {
+        for (const pattern of BACKGROUND_TASK_STARTS) {
+          const started = pattern.exec(result.text);
+          if (started?.[1] !== void 0) {
+            outstanding.set(started[1], { id: started[1], description: call.description });
+          }
+        }
       }
-      for (const pattern of BACKGROUND_TASK_STARTS) {
-        const started = pattern.exec(result.text);
-        if (started?.[1] !== void 0) {
-          outstanding.set(started[1], { id: started[1], description: call.description });
+      if (call?.stops === true) {
+        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
+        if (stopped !== void 0 && outstanding.has(stopped)) {
+          notified.add(stopped);
         }
       }
     }
@@ -17898,6 +17904,7 @@ var BACKGROUNDING_TOOLS = {
   Bash: (input) => input?.run_in_background === true,
   Monitor: () => true
 };
+var STOPPING_TOOL = "TaskStop";
 function toolUseBlocks(content) {
   if (!Array.isArray(content)) {
     return [];
@@ -17910,8 +17917,9 @@ function toolUseBlocks(content) {
     }
     const input = asRecord(record.input);
     const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
+    const stops = record.name === STOPPING_TOOL;
     const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
-    calls.push({ id: record.id, description, backgrounds });
+    calls.push({ id: record.id, description, backgrounds, stops });
   }
   return calls;
 }
@@ -21650,6 +21658,16 @@ function optionsForTarget(options, target) {
     }
   });
 }
+var RUN_ENDED_LEG = {
+  "in-flight": "while this worker's turn was in flight",
+  queued: "before this worker's queued turn was dispatched",
+  dispatching: "before this worker's dispatch record landed, so no outcome was observed"
+};
+var BODY_RETURNED_LEG = {
+  "in-flight": "its turn was cut short in flight",
+  queued: "its queued turn was never dispatched",
+  dispatching: "its dispatch record was still landing, so no outcome was observed"
+};
 var WorkerSession = class {
   #state;
   #now;
@@ -21736,6 +21754,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   // late shutdown rejections must not overwrite it with an invented outcome.
   #abandonedAgentIds = /* @__PURE__ */ new Set();
   #shutdownAgentStatus = "interrupted";
+  #closeOccasion = "run-ended";
   // The worker tally close() publishes once teardown has settled every
   // classified leg — derived from the records' final dispositions behind
   // the settlement barrier, so it is determinate without racing whichever
@@ -22655,12 +22674,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
   unfinishedLegs() {
     return this.#unfinishedLegs;
   }
-  close(status = "interrupted") {
-    this.#closeRun ??= this.#closeOnce(status);
+  close(status = "interrupted", occasion = "run-ended") {
+    this.#closeRun ??= this.#closeOnce(status, occasion);
     return this.#closeRun;
   }
-  async #closeOnce(status) {
+  async #closeOnce(status, occasion) {
     this.#shutdownAgentStatus = status;
+    this.#closeOccasion = occasion;
     this.#closed = true;
     for (const call of this.#openCalls) {
       void call.outward?.catch(() => void 0);
@@ -22679,6 +22699,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       abandoning.map(async (record) => {
         this.#abandonedAgentIds.add(record.id);
         record.status = "abandoned";
+        record.terminationCause = this.#closeCause("dispatching");
         await this.#recordAgentSafely(record);
       })
     );
@@ -22755,14 +22776,24 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
     if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
-      return {
-        kind: `run-${this.#shutdownAgentStatus}`,
-        // A queued leg's turn never reached an engine; saying it was in
-        // flight would claim a dispatch that never happened.
-        message: dispatch === "queued" ? `the run ended (${this.#shutdownAgentStatus}) before this worker's queued turn was dispatched` : `the run ended (${this.#shutdownAgentStatus}) while this worker's turn was in flight`
-      };
+      return this.#closeCause(dispatch);
     }
     return null;
+  }
+  /**
+   * The cause the run's close writes on a leg it settles: the kind carries
+   * the run's status, the message says how far the leg got — a queued leg's
+   * turn never reached an engine, so claiming it was in flight would claim
+   * a dispatch that never happened — and why the run is closing. After a
+   * body that returned, the message names the return and the completed
+   * run, never "the run ended", so a record read cold beside a `complete`
+   * manifest does not contradict it.
+   */
+  #closeCause(stage) {
+    return {
+      kind: `run-${this.#shutdownAgentStatus}`,
+      message: this.#closeOccasion === "body-returned" ? `the script returned without awaiting this worker and the run completed; ${BODY_RETURNED_LEG[stage]}` : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
+    };
   }
   /**
    * Settles a record's terminal status *and* the cause that produced it, so
@@ -30755,7 +30786,8 @@ async function runEnsembleCli(argv, options = {}) {
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           await runtime.close(
-            terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
+            terminalStatus === "complete" ? "body-returned" : "run-ended"
           );
           if (terminalStatus === "complete") {
             reportLegsUnfinishedAtReturn(runtime, stderr);

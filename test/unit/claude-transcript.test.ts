@@ -258,6 +258,13 @@ function absorbedMidTurn(block: string): string[] {
   ];
 }
 
+// TaskStop's result as Claude Code writes it (measured 2026-09-30, Claude
+// Code 2.1.285): a JSON string whose message names the stopped task. No
+// notification follows for a stopped task; this result is its ending.
+function taskStopResult(taskId: string, command: string): string {
+  return JSON.stringify({ message: `Successfully stopped task: ${taskId} (${command})`, task_id: taskId, task_type: "local_bash", command });
+}
+
 // The wake as a session that was idle receives it: enqueued, then delivered.
 function taskNotification(taskId: string, status: string): string[] {
   const block = commandNotification(taskId, status);
@@ -370,6 +377,66 @@ test("outstandingBackgroundTasks keeps a Monitor outstanding through its events 
   const sourceEnded = `<task-notification>\n<task-id>b7zb0kfnb</task-id>\n<status>completed</status>\n<summary>Monitor "background task completion" stream ended</summary>\n</task-notification>`;
   const endedBySource = parseTranscriptText([...started, ...deliveredIdle(sourceEnded), assistant([textBlock("The watch ended with the source.")])].join("\n"));
   assert.deepEqual(outstandingBackgroundTasks(endedBySource), []);
+});
+
+test("outstandingBackgroundTasks ends a task at the TaskStop result that names it, a command or a Monitor alike, and the reply after the stop is the answer", () => {
+  // Measured 2026-09-30: a worker backgrounds `sleep 90`, arms a Monitor on
+  // it, stops the command with TaskStop after ~5 s, stops the Monitor too
+  // and arms a replacement, and answers once the replacement expires. Claude
+  // Code delivers no notification for either stopped task — at the previous
+  // landing both waits stayed open and the call ran to its timeout (5 of 5).
+  const started = [
+    assistant([toolUse("toolu_bg", "Bash", { command: "sleep 90; echo TS-MON-DONE", description: "background sleep task", run_in_background: true })], { stop: "tool_use" }),
+    toolResult("toolu_bg", "Command running in background with ID: bjnrwlxuj. Output is being written to: /tmp/x.output. You will be notified when it completes."),
+    assistant([toolUse("toolu_mon", "Monitor", { command: "sleep 5; echo 5s elapsed; while pgrep -f 'sleep 90'; do sleep 0.5; done", description: "background sleep task bjnrwlxuj" })], { stop: "tool_use" }),
+    toolResult("toolu_mon", "Monitor started (task bzq41zmuj, expires in 2m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch).")
+  ];
+  const stopCommand = [
+    assistant([toolUse("toolu_stop_bg", "TaskStop", { task_id: "bjnrwlxuj" })], { stop: "tool_use" }),
+    toolResult("toolu_stop_bg", taskStopResult("bjnrwlxuj", "sleep 90; echo TS-MON-DONE"))
+  ];
+  // The result alone is the ended-but-unanswered window, like a delivered
+  // notification: the task leaves at the next assistant entry.
+  assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText([...started, ...stopCommand].join("\n"))).map((task) => task.id), ["bjnrwlxuj", "bzq41zmuj"]);
+
+  // The measured continuation: the Monitor's event is enqueued, the model
+  // stops the Monitor (the command leaves the set at that row), arms a
+  // replacement, the event is absorbed into the turn, and the turn ends.
+  const event = monitorNotification("bzq41zmuj", "5s elapsed");
+  const stopMonitor = [
+    enqueued(event),
+    assistant([toolUse("toolu_stop_mon", "TaskStop", { task_id: "bzq41zmuj" })], { stop: "tool_use" }),
+    toolResult("toolu_stop_mon", taskStopResult("bzq41zmuj", "sleep 5; echo 5s elapsed; while pgrep -f 'sleep 90'; do sleep 0.5; done")),
+    assistant([toolUse("toolu_mon2", "Monitor", { command: "pgrep -f 'sleep 90' || echo gone", description: "background sleep task bjnrwlxuj stop" })], { stop: "tool_use" }),
+    toolResult("toolu_mon2", "Monitor started (task bpqvhfamh, expires in 1m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch)."),
+    ...absorbedMidTurn(event),
+    assistant([textBlock("Stopped the background sleep; waiting for the new monitor to confirm the process is gone.")])
+  ];
+  const interim = parseTranscriptText([...started, ...stopCommand, ...stopMonitor].join("\n"));
+  assert.equal(turnComplete(interim), true);
+  assert.deepEqual(outstandingBackgroundTasks(interim).map((task) => task.id), ["bpqvhfamh"], "only the replacement Monitor holds the turn");
+  // The replacement's own expiry notice, answered, is the end of the wait.
+  const expiry = monitorNotification("bpqvhfamh", "[Monitor expired after 1m with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]");
+  const answered = parseTranscriptText([...started, ...stopCommand, ...stopMonitor, ...deliveredIdle(expiry), assistant([textBlock("STOPPED")])].join("\n"));
+  assert.deepEqual(outstandingBackgroundTasks(answered), []);
+
+  // A stop the session did not make ends nothing: the success line quoted
+  // by another tool's result, or a TaskStop naming a task this turn never
+  // started, leaves both tasks outstanding.
+  const quoted = parseTranscriptText(
+    [...started, assistant([toolUse("toolu_cat", "Bash", { command: "cat notes.txt" })], { stop: "tool_use" }), toolResult("toolu_cat", taskStopResult("bjnrwlxuj", "sleep 90")), assistant([textBlock("read it")])].join("\n")
+  );
+  assert.equal(outstandingBackgroundTasks(quoted).length, 2, "a quoted success line is not a stop");
+  const foreign = parseTranscriptText(
+    [...started, assistant([toolUse("toolu_stop_x", "TaskStop", { task_id: "someoneelse" })], { stop: "tool_use" }), toolResult("toolu_stop_x", taskStopResult("someoneelse", "make")), assistant([textBlock("stopped the other one")])].join("\n")
+  );
+  assert.equal(outstandingBackgroundTasks(foreign).length, 2, "a foreign task's stop is not this turn's");
+  // A TaskStop result without the success message is an unmeasured shape
+  // (a refusal, an unknown id): the task holds, as an unmeasured status does.
+  const refused = parseTranscriptText(
+    [...started, assistant([toolUse("toolu_stop_no", "TaskStop", { task_id: "bjnrwlxuj" })], { stop: "tool_use" }), toolResult("toolu_stop_no", "Task bjnrwlxuj could not be stopped"), assistant([textBlock("it would not stop")])].join("\n")
+  );
+  assert.equal(outstandingBackgroundTasks(refused).length, 2, "an unmeasured TaskStop result holds the task");
 });
 
 test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {

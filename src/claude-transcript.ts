@@ -324,6 +324,17 @@ export interface BackgroundTask {
 
 /** The tool results by which Claude Code reports a task it backgrounded (measured 2026-09-28, Claude Code 2.1.283). */
 const BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+/**
+ * The tool result by which Claude Code reports a task the model stopped
+ * itself: `TaskStop`'s result is a JSON string whose `message` reads
+ * `Successfully stopped task: <id> (<command>)` beside a `task_id`
+ * (measured 2026-09-30, Claude Code 2.1.285, for a backgrounded command
+ * and for a Monitor alike). A stopped task gets no `<task-notification>`,
+ * so this result is the only account of its ending. A `TaskStop` result
+ * that does not carry the success message — a refusal, an unknown id — is
+ * an unmeasured shape and holds the task, as an unmeasured status does.
+ */
+const TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
 /** The notification block by which Claude Code wakes the model about a task; its id, status, and event are read inside the block only. */
 const TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 const TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
@@ -372,18 +383,23 @@ const MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/
  * (`deliveredNotifications`): a task that ends while the model is composing
  * its interim reply is enqueued before that reply and delivered after it,
  * so a wait closed on the enqueue row takes the interim reply as the answer.
- * A task is outstanding from its start until a delivered notification
- * reports it ended (`notificationEnded`) **and an assistant entry follows
- * the delivery**: the delivery lands seconds before the model's reply, and
- * a turn read in that window still ends on the interim message. The
- * description is the tool call's own (`description`, else a bounded
- * `command`, else the tool name), matched to the result by `tool_use_id`.
+ * A task the model stops itself with `TaskStop` is never notified: its
+ * ending is the successful `TaskStop` result naming it (`TASK_STOP_RESULT`),
+ * read only from a `TaskStop` call's own result. A task is outstanding from
+ * its start until a delivered notification reports it ended
+ * (`notificationEnded`) or its `TaskStop` result lands, **and an assistant
+ * entry follows**: the delivery lands seconds before the model's reply, and
+ * a turn read in that window still ends on the interim message; the reply
+ * after the stop is likewise the one to collect. The description is the
+ * tool call's own (`description`, else a bounded `command`, else the tool
+ * name), matched to the result by `tool_use_id`.
  */
 export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex = 0): BackgroundTask[] {
-  const toolCalls = new Map<string, { description: string; backgrounds: boolean }>();
+  const toolCalls = new Map<string, ToolCall>();
   const outstanding = new Map<string, BackgroundTask>();
-  // Tasks whose ending has been delivered but not yet answered: they leave
-  // the outstanding set at the next assistant entry, the model's reply.
+  // Tasks whose ending has reached the model — delivered, or reported by its
+  // own TaskStop — but is not yet answered: they leave the outstanding set
+  // at the next assistant entry, the model's reply.
   const notified = new Set<string>();
   for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
     const entry = entries[index];
@@ -405,13 +421,20 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
       // reads a file quoting the start phrase (this repository's own tests
       // do) has started nothing, and its `cat` must not hold the turn open.
       const call = toolCalls.get(result.toolUseId);
-      if (call === undefined || !call.backgrounds) {
-        continue;
+      if (call?.backgrounds === true) {
+        for (const pattern of BACKGROUND_TASK_STARTS) {
+          const started = pattern.exec(result.text);
+          if (started?.[1] !== undefined) {
+            outstanding.set(started[1], { id: started[1], description: call.description });
+          }
+        }
       }
-      for (const pattern of BACKGROUND_TASK_STARTS) {
-        const started = pattern.exec(result.text);
-        if (started?.[1] !== undefined) {
-          outstanding.set(started[1], { id: started[1], description: call.description });
+      // Likewise only TaskStop's own result ends a task: the success line
+      // quoted by any other tool's result — a `cat` of this file — ends nothing.
+      if (call?.stops === true) {
+        const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
+        if (stopped !== undefined && outstanding.has(stopped)) {
+          notified.add(stopped);
         }
       }
     }
@@ -429,12 +452,22 @@ const BACKGROUNDING_TOOLS: Record<string, (input: Record<string, unknown> | null
   Bash: (input) => input?.run_in_background === true,
   Monitor: () => true
 };
+/** The tool whose successful call ends a task the model started (`task_id` in its input, the id echoed in its result). */
+const STOPPING_TOOL = "TaskStop";
 
-function toolUseBlocks(content: unknown): Array<{ id: string; description: string; backgrounds: boolean }> {
+/** A tool call as the outstanding-task reader needs it: what it can start, what it can stop, and how to describe what it started. */
+interface ToolCall {
+  id: string;
+  description: string;
+  backgrounds: boolean;
+  stops: boolean;
+}
+
+function toolUseBlocks(content: unknown): ToolCall[] {
   if (!Array.isArray(content)) {
     return [];
   }
-  const calls: Array<{ id: string; description: string; backgrounds: boolean }> = [];
+  const calls: ToolCall[] = [];
   for (const block of content) {
     const record = asRecord(block);
     if (record?.type !== "tool_use" || typeof record.id !== "string") {
@@ -442,6 +475,7 @@ function toolUseBlocks(content: unknown): Array<{ id: string; description: strin
     }
     const input = asRecord(record.input);
     const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
+    const stops = record.name === STOPPING_TOOL;
     const description =
       typeof input?.description === "string" && input.description.length > 0
         ? input.description
@@ -450,7 +484,7 @@ function toolUseBlocks(content: unknown): Array<{ id: string; description: strin
           : typeof record.name === "string"
             ? record.name
             : "background task";
-    calls.push({ id: record.id, description, backgrounds });
+    calls.push({ id: record.id, description, backgrounds, stops });
   }
   return calls;
 }

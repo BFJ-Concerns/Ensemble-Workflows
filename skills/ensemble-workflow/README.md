@@ -197,8 +197,9 @@ down — its record reads `interrupted` with a `run-interrupted` cause, the
 sentinel counts it `cut_short` — and one whose dispatch record was still
 landing when the body returned is abandoned — its record reads `abandoned`,
 the sentinel counts it `unsettled`; both records' cause messages say the
-script returned without awaiting the worker and the run completed, so a
-record read on its own does not claim the run was interrupted; either way the launcher prints one
+script returned without awaiting the worker (never that the run ended, and
+never what the run's outcome was — the manifest says that), so a record
+read on its own does not claim the run was interrupted; either way the launcher prints one
 `[teardown]` line per such worker saying the script returned without
 awaiting it, and the teardown's rejection of the call nobody awaited is the
 launcher's own, never an uncaught exception failing a complete run (after
@@ -982,7 +983,8 @@ same thing the tally does — a `cut_short` worker's record names the run's own
 shutdown status (after a run whose script returned cleanly it reads
 `interrupted` with a `run-interrupted` cause whose message says the script
 returned without awaiting it, never `failed`), and an `unsettled` worker's
-record says exactly that, its cause naming why no outcome was observed. With recording disabled the
+record says exactly that, its cause — the same `run-interrupted` kind, since
+the same close settled it — naming why no outcome was observed. With recording disabled the
 sentinel is still written and its tally is the run's only worker-outcome
 surface — self-contained, with no per-worker records behind it. The counts are
 taken from the disposition the run's end decides for each worker, so a

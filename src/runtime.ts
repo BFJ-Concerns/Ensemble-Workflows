@@ -282,7 +282,10 @@ export interface ShutdownTally {
  * the run completed on its own account and the legs are torn down because
  * nothing awaited them. A leg keeps the `interrupted` status and
  * `run-interrupted` cause either way; the cause's message names which, so
- * the agent record read alone never says a completed run was interrupted.
+ * the agent record read alone never says a run that the body ended was
+ * interrupted. The message states the return, never the run's outcome —
+ * the manifest says that, and a teardown failure after the return can
+ * still seal it `failed`.
  */
 export type RunCloseOccasion = "run-ended" | "body-returned";
 
@@ -302,6 +305,7 @@ const BODY_RETURNED_LEG: Record<CloseStage, string> = {
   queued: "its queued turn was never dispatched",
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
+const BODY_RETURNED = "the script returned without awaiting this worker";
 
 /** One leg the run's ending left unfinished, as `unfinishedLegs()` reports it. */
 export interface UnfinishedLeg {
@@ -1839,16 +1843,17 @@ export class EnsembleRuntime {
    * the run's status, the message says how far the leg got — a queued leg's
    * turn never reached an engine, so claiming it was in flight would claim
    * a dispatch that never happened — and why the run is closing. After a
-   * body that returned, the message names the return and the completed
-   * run, never "the run ended", so a record read cold beside a `complete`
-   * manifest does not contradict it.
+   * body that returned, the message names the return, never "the run
+   * ended", so a record read cold beside a `complete` manifest does not
+   * contradict it; it does not claim the run completed, because the seal
+   * comes after this and a failed teardown can still end the run `failed`.
    */
   #closeCause(stage: CloseStage): TerminalErrorRecord {
     return {
       kind: `run-${this.#shutdownAgentStatus}`,
       message:
         this.#closeOccasion === "body-returned"
-          ? `the script returned without awaiting this worker and the run completed; ${BODY_RETURNED_LEG[stage]}`
+          ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}`
           : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
     };
   }

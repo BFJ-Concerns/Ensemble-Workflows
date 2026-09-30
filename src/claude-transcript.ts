@@ -223,8 +223,15 @@ export function effortSince(entries: TranscriptEntry[], fromIndex = 0): string |
  * `idle/working` indefinitely). The transcript is authoritative instead: a turn
  * is complete when the **last** assistant message at or after `fromIndex` carries
  * a terminal `stop_reason` (anything other than `tool_use`, which means "expecting
- * a tool result, still mid-turn"). Returns false when no assistant message has
- * landed yet, or the latest is awaiting a tool result.
+ * a tool result, still mid-turn") **and carries text**. Claude Code writes one
+ * API reply as several rows — a `thinking` row, then the `text` row — each
+ * stamped with the whole message's `stop_reason`, and the thinking row lands
+ * first (measured 2026-09-30: 1.8 s before its text row). A thinking-only
+ * `end_turn` row is therefore a reply still being written, not a finished
+ * turn: reading it as complete would collect whatever text-bearing message
+ * came before it — an interim message — as the answer. Returns false when no
+ * assistant message has landed yet, the latest is awaiting a tool result, or
+ * the latest is a terminal row whose text has not yet been written.
  */
 export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -233,7 +240,7 @@ export function turnComplete(entries: TranscriptEntry[], fromIndex = 0): boolean
       continue;
     }
     const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use";
+    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
   }
   return false;
 }
@@ -322,8 +329,24 @@ export interface BackgroundTask {
   description: string;
 }
 
-/** The tool results by which Claude Code reports a task it backgrounded (measured 2026-09-28, Claude Code 2.1.283). */
-const BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+/**
+ * The tool results by which Claude Code reports a task it backgrounded, each
+ * with the calls it can be read from. A `run_in_background` Bash call or a
+ * Monitor reports its task at start (measured 2026-09-28, Claude Code
+ * 2.1.283). A *foreground* Bash call that outlives Claude Code's 120 s tool
+ * timeout is moved to the background by Claude Code itself and reports that
+ * at the head of its result (measured 2026-09-30, 2.1.285: `Command did not
+ * complete within its 120s timeout and was moved to the background (ID:
+ * <id>). … You will be notified when it completes.`) — a task the model
+ * never asked for, so it is read from any Bash call, anchored at the start
+ * of the result so a Bash `cat` of a file quoting the phrase mid-output
+ * starts nothing.
+ */
+const BACKGROUND_TASK_STARTS: ReadonlyArray<{ pattern: RegExp; from: (call: ToolCall) => boolean }> = [
+  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
+];
 /**
  * The tool result by which Claude Code reports a task the model stopped
  * itself: `TaskStop`'s result is a JSON string whose `message` reads
@@ -371,11 +394,12 @@ const MONITOR_OWN_NOTICE = /^\s*\[Monitor (?:expired after|timed out|stopped)\b/
  * ending has not yet reached the model — the evidence that a turn ending in
  * `end_turn` is an interim message, not the answer.
  *
- * Claude Code backgrounds a long command (`run_in_background`) or a Monitor
+ * Claude Code backgrounds a long command (`run_in_background`), a Monitor,
+ * or — on its own — a foreground command that outlives its tool timeout,
  * and lets the model end its turn; the tool result names the task
- * (`Command running in background with ID: <id>`, `Monitor started (task
- * <id>`), and only a call that backgrounds work can start one — a worker
- * reading a file that quotes the phrase has started nothing. When the task
+ * (`BACKGROUND_TASK_STARTS`), and each start phrase is read only from the
+ * calls that can produce it — a worker reading a file that quotes the
+ * phrase has started nothing. When the task
  * ends, Claude Code notifies the model with a `<task-notification>` block
  * naming the `<task-id>`, and the model's next turn is the one to collect.
  * The block is written twice — enqueued the moment the task ends, then
@@ -421,17 +445,18 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
       // reads a file quoting the start phrase (this repository's own tests
       // do) has started nothing, and its `cat` must not hold the turn open.
       const call = toolCalls.get(result.toolUseId);
-      if (call?.backgrounds === true) {
-        for (const pattern of BACKGROUND_TASK_STARTS) {
-          const started = pattern.exec(result.text);
-          if (started?.[1] !== undefined) {
-            outstanding.set(started[1], { id: started[1], description: call.description });
-          }
+      if (call === undefined) {
+        continue;
+      }
+      for (const start of BACKGROUND_TASK_STARTS) {
+        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : undefined;
+        if (started !== undefined) {
+          outstanding.set(started, { id: started, description: call.description });
         }
       }
       // Likewise only TaskStop's own result ends a task: the success line
       // quoted by any other tool's result — a `cat` of this file — ends nothing.
-      if (call?.stops === true) {
+      if (call.stops) {
         const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
         if (stopped !== undefined && outstanding.has(stopped)) {
           notified.add(stopped);
@@ -455,9 +480,10 @@ const BACKGROUNDING_TOOLS: Record<string, (input: Record<string, unknown> | null
 /** The tool whose successful call ends a task the model started (`task_id` in its input, the id echoed in its result). */
 const STOPPING_TOOL = "TaskStop";
 
-/** A tool call as the outstanding-task reader needs it: what it can start, what it can stop, and how to describe what it started. */
+/** A tool call as the outstanding-task reader needs it: which tool, whether it asked to background work, whether it stops a task, and how to describe what it started. */
 interface ToolCall {
   id: string;
+  tool: string | null;
   description: string;
   backgrounds: boolean;
   stops: boolean;
@@ -484,7 +510,7 @@ function toolUseBlocks(content: unknown): ToolCall[] {
           : typeof record.name === "string"
             ? record.name
             : "background task";
-    calls.push({ id: record.id, description, backgrounds, stops });
+    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
   }
   return calls;
 }

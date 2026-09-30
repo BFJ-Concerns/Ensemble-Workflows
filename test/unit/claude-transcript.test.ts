@@ -439,6 +439,34 @@ test("outstandingBackgroundTasks ends a task at the TaskStop result that names i
   assert.equal(outstandingBackgroundTasks(refused).length, 2, "an unmeasured TaskStop result holds the task");
 });
 
+test("outstandingBackgroundTasks reads a foreground command Claude Code moved to the background at its timeout, from any Bash call, at the head of the result only", () => {
+  // Measured 2026-09-30 (Claude Code 2.1.285): a foreground `read -t 5 <
+  // /dev/zero` never returned; at the 120 s tool timeout Claude Code moved
+  // it to the background itself and said so at the head of the tool result.
+  // The model never asked to background it, so the run_in_background gate
+  // cannot see it — and its later TaskStop named a task nobody tracked.
+  const moved = "Command did not complete within its 120s timeout and was moved to the background (ID: bmzp3lg4v). Output is being written to: /tmp/x.output. You will be notified when it completes. If it is still running after 30m in the background, it will be stopped and you will be notified.";
+  const started = [
+    assistant([toolUse("toolu_fg", "Bash", { command: "read -t 5 < /dev/zero; echo waited", description: "Wait about five seconds" })], { stop: "tool_use" }),
+    toolResult("toolu_fg", moved),
+    assistant([textBlock("That wait hung and was moved to the background; I'll continue once it ends.")])
+  ];
+  assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText(started.join("\n"))), [{ id: "bmzp3lg4v", description: "Wait about five seconds" }]);
+  // Its TaskStop ends it like any other task's.
+  const stopped = [...started, assistant([toolUse("toolu_stop", "TaskStop", { task_id: "bmzp3lg4v" })], { stop: "tool_use" }), toolResult("toolu_stop", taskStopResult("bmzp3lg4v", "read -t 5 < /dev/zero; echo waited")), assistant([textBlock("Stopped it.")])];
+  assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText(stopped.join("\n"))), []);
+  // The phrase is Claude Code's own opening line: quoted mid-output by a
+  // Bash `cat`, or by a tool that runs no command, it starts nothing.
+  const quoted = [
+    assistant([toolUse("toolu_cat", "Bash", { command: "cat notes.txt" })], { stop: "tool_use" }),
+    toolResult("toolu_cat", `1\t${moved}`),
+    assistant([toolUse("toolu_read", "Read", { file_path: "/x/notes.txt" })], { stop: "tool_use" }),
+    toolResult("toolu_read", moved),
+    assistant([textBlock("read it")])
+  ];
+  assert.deepEqual(outstandingBackgroundTasks(parseTranscriptText(quoted.join("\n"))), []);
+});
+
 test("outstandingBackgroundTasks reads Monitor starts, falls back to the command or tool name, and honours fromIndex", () => {
   const earlier = [
     assistant([toolUse("toolu_old", "Bash", { command: "make", run_in_background: true })], { stop: "tool_use" }),
@@ -505,6 +533,27 @@ test("turnComplete is true only when the latest assistant message has settled", 
 
   // No assistant message yet → not complete.
   assert.equal(turnComplete([]), false);
+});
+
+test("turnComplete waits for the terminal row's text: a thinking-only end_turn row is a reply still being written", () => {
+  // Measured 2026-09-30 (Claude Code 2.1.285): one reply, two rows sharing
+  // a message id and its end_turn — the thinking row at 11:33:50.325, the
+  // text row at 11:33:52.147. Read between them, the last assistant row
+  // carries end_turn and no text, and the last text-bearing message is the
+  // interim "Waiting for the monitor's report." written before the wake.
+  const interim = [
+    assistant([textBlock("Waiting for the monitor's report.")]),
+    JSON.stringify({ type: "user", message: { role: "user", content: "<task-notification>…</task-notification>" } }),
+    assistant([{ type: "thinking", thinking: "", signature: "…" }], { id: "msg_reply", stop: "end_turn" })
+  ];
+  const betweenRows = parseTranscriptText(interim.join("\n"));
+  assert.equal(turnComplete(betweenRows), false, "the thinking row is not the finished turn");
+  assert.equal(finalAssistantText(betweenRows), "Waiting for the monitor's report.", "what a premature collection would have taken");
+  const textLanded = parseTranscriptText([...interim, assistant([textBlock("STOPPED")], { id: "msg_reply", stop: "end_turn" })].join("\n"));
+  assert.equal(turnComplete(textLanded), true);
+  assert.equal(finalAssistantText(textLanded), "STOPPED");
+  // A bare-string content is text too, as finalAssistantText reads it.
+  assert.equal(turnComplete(parseTranscriptText(JSON.stringify({ type: "assistant", message: { role: "assistant", content: "done", stop_reason: "end_turn" } }))), true);
 });
 
 test("turnComplete honours fromIndex: an old end_turn before the mark does not count", () => {

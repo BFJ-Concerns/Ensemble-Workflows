@@ -2321,9 +2321,9 @@ test("a close names its occasion on every record it settles: the run ending, or 
       dispatching: "the run ended (interrupted) before this worker's dispatch record landed, so no outcome was observed"
     },
     "body-returned": {
-      "in-flight": "the script returned without awaiting this worker and the run completed; its turn was cut short in flight",
-      queued: "the script returned without awaiting this worker and the run completed; its queued turn was never dispatched",
-      dispatching: "the script returned without awaiting this worker and the run completed; its dispatch record was still landing, so no outcome was observed"
+      "in-flight": "the script returned without awaiting this worker; its turn was cut short in flight",
+      queued: "the script returned without awaiting this worker; its queued turn was never dispatched",
+      dispatching: "the script returned without awaiting this worker; its dispatch record was still landing, so no outcome was observed"
     }
   } as const;
   for (const occasion of ["run-ended", "body-returned"] as const) {

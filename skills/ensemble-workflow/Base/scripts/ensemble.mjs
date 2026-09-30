@@ -17796,7 +17796,7 @@ function turnComplete(entries, fromIndex = 0) {
       continue;
     }
     const stopReason = entry.message?.stop_reason;
-    return typeof stopReason === "string" && stopReason !== "tool_use";
+    return typeof stopReason === "string" && stopReason !== "tool_use" && textFromContent(entry.message?.content) !== null;
   }
   return false;
 }
@@ -17848,7 +17848,11 @@ function usageSince(entries, fromIndex = 0) {
     totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }
-var BACKGROUND_TASK_STARTS = [/Command running in background with ID: ([A-Za-z0-9_-]+)/, /Monitor started \(task ([A-Za-z0-9_-]+)/];
+var BACKGROUND_TASK_STARTS = [
+  { pattern: /Command running in background with ID: ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /Monitor started \(task ([A-Za-z0-9_-]+)/, from: (call) => call.backgrounds },
+  { pattern: /^Command did not complete within its \S+ timeout and was moved to the background \(ID: ([A-Za-z0-9_-]+)\)/, from: (call) => call.tool === "Bash" }
+];
 var TASK_STOP_RESULT = /Successfully stopped task: ([A-Za-z0-9_-]+)/;
 var TASK_NOTIFICATION_BLOCK = /<task-notification>([\s\S]*?)<\/task-notification>/g;
 var TASK_NOTIFICATION_ID = /<task-id>([^<]+)<\/task-id>/;
@@ -17877,15 +17881,16 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
     }
     for (const result of toolResultBlocks(entry.message?.content)) {
       const call = toolCalls.get(result.toolUseId);
-      if (call?.backgrounds === true) {
-        for (const pattern of BACKGROUND_TASK_STARTS) {
-          const started = pattern.exec(result.text);
-          if (started?.[1] !== void 0) {
-            outstanding.set(started[1], { id: started[1], description: call.description });
-          }
+      if (call === void 0) {
+        continue;
+      }
+      for (const start of BACKGROUND_TASK_STARTS) {
+        const started = start.from(call) ? start.pattern.exec(result.text)?.[1] : void 0;
+        if (started !== void 0) {
+          outstanding.set(started, { id: started, description: call.description });
         }
       }
-      if (call?.stops === true) {
+      if (call.stops) {
         const stopped = TASK_STOP_RESULT.exec(result.text)?.[1];
         if (stopped !== void 0 && outstanding.has(stopped)) {
           notified.add(stopped);
@@ -17919,7 +17924,7 @@ function toolUseBlocks(content) {
     const backgrounds = typeof record.name === "string" && (BACKGROUNDING_TOOLS[record.name]?.(input) ?? false);
     const stops = record.name === STOPPING_TOOL;
     const description = typeof input?.description === "string" && input.description.length > 0 ? input.description : typeof input?.command === "string" && input.command.length > 0 ? input.command.slice(0, 200) : typeof record.name === "string" ? record.name : "background task";
-    calls.push({ id: record.id, description, backgrounds, stops });
+    calls.push({ id: record.id, tool: typeof record.name === "string" ? record.name : null, description, backgrounds, stops });
   }
   return calls;
 }
@@ -21668,6 +21673,7 @@ var BODY_RETURNED_LEG = {
   queued: "its queued turn was never dispatched",
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
+var BODY_RETURNED = "the script returned without awaiting this worker";
 var WorkerSession = class {
   #state;
   #now;
@@ -22785,14 +22791,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * the run's status, the message says how far the leg got — a queued leg's
    * turn never reached an engine, so claiming it was in flight would claim
    * a dispatch that never happened — and why the run is closing. After a
-   * body that returned, the message names the return and the completed
-   * run, never "the run ended", so a record read cold beside a `complete`
-   * manifest does not contradict it.
+   * body that returned, the message names the return, never "the run
+   * ended", so a record read cold beside a `complete` manifest does not
+   * contradict it; it does not claim the run completed, because the seal
+   * comes after this and a failed teardown can still end the run `failed`.
    */
   #closeCause(stage) {
     return {
       kind: `run-${this.#shutdownAgentStatus}`,
-      message: this.#closeOccasion === "body-returned" ? `the script returned without awaiting this worker and the run completed; ${BODY_RETURNED_LEG[stage]}` : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
+      message: this.#closeOccasion === "body-returned" ? `${BODY_RETURNED}; ${BODY_RETURNED_LEG[stage]}` : `the run ended (${this.#shutdownAgentStatus}) ${RUN_ENDED_LEG[stage]}`
     };
   }
   /**

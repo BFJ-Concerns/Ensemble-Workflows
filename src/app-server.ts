@@ -370,12 +370,16 @@ export class CodexAppServerTransport implements RuntimeTransport {
     const startedAt = Date.now();
     let previousNames: readonly string[] | undefined;
     let observedExpansion = false;
+    let unchangedSinceFirstSample = true;
     for (let attempt = 1; attempt <= MAX_SKILL_DISCOVERY_ATTEMPTS; attempt += 1) {
       const names = await this.#listSkillsOnce(cwd);
       if (observedExpansion && previousNames !== undefined && sameStrings(previousNames, names)) {
         return names;
       }
       if (previousNames !== undefined) {
+        if (!sameStrings(previousNames, names)) {
+          unchangedSinceFirstSample = false;
+        }
         if (strictlyContainsAll(names, previousNames)) {
           observedExpansion = true;
         } else if (!sameStrings(previousNames, names)) {
@@ -384,6 +388,14 @@ export class CodexAppServerTransport implements RuntimeTransport {
           // only a set still standing since its expansion may qualify.
           observedExpansion = false;
         }
+      }
+      if (unchangedSinceFirstSample && attempt === MAX_SKILL_DISCOVERY_ATTEMPTS) {
+        // Discovery already complete at the first call never grows. The
+        // measured cold race resolves within one sampling interval, so a set
+        // standing unchanged across every sample is complete, not cold; a
+        // cold set that repeats and then grows changes inside the window and
+        // never reaches here.
+        return names;
       }
       previousNames = names;
       if (Date.now() - startedAt >= this.#skillDiscoveryDeadlineMs) {
@@ -403,7 +415,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     throw new AppServerRequestError("skills/list", {
       code: "unstable_discovery",
       message:
-        `skill discovery did not observe a growing set followed by stability after ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
+        `skill discovery observed neither a growing set followed by stability nor one set unchanged across all ${MAX_SKILL_DISCOVERY_ATTEMPTS} calls`
     });
   }
 

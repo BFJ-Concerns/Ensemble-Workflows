@@ -2775,7 +2775,7 @@ test("a codex skills strip denies the stabilised discovery set; an unstripped ca
         skills: {
           route: "config",
           detail:
-            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+            "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
         }
       }
     });

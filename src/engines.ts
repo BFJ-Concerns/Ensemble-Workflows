@@ -297,15 +297,18 @@ export class CodexEngineAdapter implements EngineAdapter {
    *   against a real worker is what re-checks this judgement per release.
    * - `skills` strips through the same per-thread overlay, measured
    *   2026-08-30 on codex-cli 0.151.0: fresh `skills/list` calls must show a
-   *   growing filesystem-and-plugin set and then repeat it (sampled up to
+   *   growing filesystem-and-plugin set and then repeat it, or one set
+   *   unchanged across every sample — discovery complete at the first call,
+   *   observed 2026-10-05 on a fresh seeded CODEX_HOME (sampled up to
    *   10 times at 1000 ms spacing by default; the transport's discovery
    *   deadline, checked between samples, stops the loop once its elapsed
    *   budget is spent — each call itself is bounded by the request
-   *   timeout). This rejects a repeated cold state
-   *   rather than mistaking it for complete discovery; bundled skills are
+   *   timeout). The measured cold race resolved within one interval, so a
+   *   cold state that repeats and then grows inside the window is rejected
+   *   rather than mistaken for complete discovery; bundled skills are
    *   disabled and every accepted name gets an exact `skills.config` deny.
    *   Discovery has no protocol-level completion signal — the
-   *   grow-then-repeat heuristic is a measured judgement of one release's
+   *   acceptance heuristic is a measured judgement of one release's
    *   timing, so **re-verify it on every codex-cli upgrade**: a future
    *   multi-stage or slower-than-interval discovery would stabilise early
    *   and silently under-strip.
@@ -314,7 +317,7 @@ export class CodexEngineAdapter implements EngineAdapter {
     skills: {
       route: "config",
       detail:
-        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
+        "measured 2026-08-30 on codex-cli 0.151.0: thread/start disables bundled skills and denies every name only after app-server discovery grows then repeats, or stands unchanged across every sample, including plugin scope (up to 10 samples at 1000 ms spacing; re-verify per codex-cli upgrade)"
     },
     agents: {
       route: "config",

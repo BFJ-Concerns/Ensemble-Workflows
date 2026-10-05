@@ -1466,7 +1466,7 @@ test("Codex app-server fails closed when discovery contracts after an expansion"
       (error: unknown) =>
         error instanceof AppServerRequestError &&
         error.code === "unstable_discovery" &&
-        error.message.includes("after 10 calls")
+        error.message.includes("all 10 calls")
     );
     const requests = (await readFile(capturePath, "utf8"))
       .trim()
@@ -1480,10 +1480,45 @@ test("Codex app-server fails closed when discovery contracts after an expansion"
   }
 });
 
-test("Codex app-server fails closed after ten cold skill discoveries", async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-unstable-"));
+test("Codex app-server accepts a skill set unchanged from the first call across every sample", async () => {
+  // A box whose discovery is complete at once never shows growth; a set
+  // standing unchanged through the whole sampling window is complete.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-stable-"));
   const capturePath = path.join(directory, "requests.jsonl");
-  const codexBin = await fakeCodexTurnServer({ capturePath, skillResponses: [["repo-skill"]] });
+  const codexBin = await fakeCodexTurnServer({ capturePath, skillResponses: [["repo-skill", "imagegen"]] });
+  const transport = await CodexAppServerTransport.start({
+    cwd: process.cwd(),
+    codexBin,
+    requestTimeoutMs: 2_000,
+    startupHandshakeTimeoutMs: 2_000,
+    clientName: "ensemble-test",
+    clientVersion: "0.0.0",
+    skillDiscoveryStabilityIntervalMs: 0
+  });
+  try {
+    assert.deepEqual(await transport.listSkills("/fake/worker-cwd"), ["imagegen", "repo-skill"]);
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string })
+      .filter((request) => request.method === "skills/list");
+    // Acceptance waits out the full window rather than trusting an early repeat.
+    assert.equal(requests.length, 10);
+  } finally {
+    await transport.close();
+  }
+});
+
+test("Codex app-server fails closed when a repeated cold set grows at the last sample", async () => {
+  // Nine identical cold results followed by growth leave no repeat of the
+  // grown set and no unchanged window: neither acceptance holds.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-codex-skills-late-growth-"));
+  const capturePath = path.join(directory, "requests.jsonl");
+  const cold = ["repo-skill"];
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    skillResponses: [...Array.from({ length: 9 }, () => cold), ["plugin-management:plugin-management", "repo-skill"]]
+  });
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
     codexBin,
@@ -1499,7 +1534,7 @@ test("Codex app-server fails closed after ten cold skill discoveries", async () 
       (error: unknown) =>
         error instanceof AppServerRequestError &&
         error.code === "unstable_discovery" &&
-        error.message.includes("after 10 calls")
+        error.message.includes("all 10 calls")
     );
     const requests = (await readFile(capturePath, "utf8"))
       .trim()

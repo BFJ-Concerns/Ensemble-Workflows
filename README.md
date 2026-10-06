@@ -706,3 +706,8 @@ session export when available.
 The record contains only run and audit data. It does not score outputs, infer
 verifier relationships, or record evaluation concepts; those belong to the
 tools that consume it.
+
+## Licence
+
+Ensemble is licensed under the GNU Affero General Public License, version 3
+or (at your option) any later version. See [LICENSE](LICENSE).

@@ -14124,18 +14124,17 @@ var ClaudeWorkerDiagnosticError = class extends ClaudeWorkerError {
 };
 var OpenCodeModelRequiredError = class extends AgentOptionRejectedError {
   constructor(registered) {
-    super(
-      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    );
+    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registered)}`);
   }
 };
 var OpenCodeModelNotRegisteredError = class extends AgentOptionRejectedError {
   constructor(model, registered) {
-    super(
-      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    );
+    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registered)}`);
   }
 };
+function registeredOpenCodeModels(registered) {
+  return registered.length > 0 ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}` : "no opencode models are declared; declare them under opencode_models in the machine configuration ($XDG_CONFIG_HOME/ensemble/config.json)";
+}
 function renderDiagnostic(value) {
   try {
     return JSON.stringify(value) ?? "undefined";
@@ -14293,71 +14292,20 @@ function resolveStripEnforcement(engine, table, strip) {
 }
 
 // src/opencode-model-registry.ts
-var MODELS = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    },
-    variants: []
-  },
-  {
-    key: "qwen-3-8-27b",
-    providerModel: "local/Qwen3.8-27B",
-    displayName: "Qwen 3.8 27B",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  },
-  {
-    key: "qwen-3-8-27b-heretic-ara",
-    providerModel: "local/Qwen3.8-27B-heretic-ara",
-    displayName: "Qwen 3.8 27B heretic-ara",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  },
-  {
-    key: "muse-glimmer-30b",
-    providerModel: "local/Muse-Glimmer-30B",
-    displayName: "Muse Glimmer 30B",
-    provider: "local",
-    family: "muse-glimmer",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  }
-];
 var StaticOpenCodeModelRegistry = class {
   #models = /* @__PURE__ */ new Map();
   #names;
   constructor(models) {
     for (const model of models) {
-      this.#models.set(model.key, model);
-      this.#models.set(model.providerModel, model);
+      for (const name of /* @__PURE__ */ new Set([model.key, model.providerModel])) {
+        const claimed = this.#models.get(name);
+        if (claimed !== void 0) {
+          throw new Error(
+            `opencode model name ${JSON.stringify(name)} names both ${JSON.stringify(claimed.key)} and ${JSON.stringify(model.key)}`
+          );
+        }
+        this.#models.set(name, model);
+      }
     }
     this.#names = models.map((model) => model.key);
   }
@@ -14368,7 +14316,10 @@ var StaticOpenCodeModelRegistry = class {
     return [...this.#names];
   }
 };
-var defaultOpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+function createOpenCodeModelRegistry(models) {
+  return new StaticOpenCodeModelRegistry(models);
+}
+var defaultOpenCodeModelRegistry = createOpenCodeModelRegistry([]);
 
 // src/engine-option-validation.ts
 var MAX_TIMER_DELAY_MS = 2147483647;
@@ -15237,6 +15188,8 @@ var AmbientConfigError = class extends Error {
     this.name = new.target.name;
   }
 };
+var OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
+var OPENCODE_BILLING_MODES = ["pay-as-you-go", "self-hosted"];
 var ENGINES = ["codex", "claude", "opencode"];
 var DISABLED_VALUES = /* @__PURE__ */ new Set(["0", "off", "false", "no"]);
 var ENABLED_VALUES = /* @__PURE__ */ new Set(["1", "on", "true", "yes"]);
@@ -15273,7 +15226,8 @@ function resolveAmbientSettings(input) {
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd),
-    workerEnvironment: config?.worker_environment ?? {}
+    workerEnvironment: config?.worker_environment ?? {},
+    openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
 }
 function machineConfigPath(env) {
@@ -15301,7 +15255,7 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -15314,6 +15268,7 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
+  validateOpenCodeModels(parsed, configFile);
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -15369,6 +15324,65 @@ function validateWorkerEnvironment(root, configFile) {
       }
     }
   }
+}
+function validateOpenCodeModels(root, configFile) {
+  const section = root.opencode_models;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "opencode_models", "must be a JSON object of model keys to declarations");
+  }
+  for (const [key, declaration] of Object.entries(section)) {
+    validateOpenCodeModelDeclaration(key, declaration, configFile);
+  }
+  try {
+    createOpenCodeModelRegistry(openCodeModelEntries(section));
+  } catch (error) {
+    throw fileValueError(configFile, "opencode_models", errorMessage(error));
+  }
+}
+function validateOpenCodeModelDeclaration(key, declaration, configFile) {
+  if (key.trim().length === 0) {
+    throw fileValueError(configFile, "opencode_models", "model keys must be non-empty");
+  }
+  const qualified = `opencode_models.${key}`;
+  if (!isObject(declaration) || Array.isArray(declaration)) {
+    throw fileValueError(configFile, qualified, "must be a JSON object");
+  }
+  assertKnownKeys(declaration, OPENCODE_MODEL_DECLARATION_KEYS, configFile, qualified);
+  const { provider_model: providerModel, display_name: displayName, family, vision, billing, variants } = declaration;
+  if (typeof providerModel !== "string" || !/^[^/\s]+\/\S+$/.test(providerModel)) {
+    throw fileValueError(configFile, `${qualified}.provider_model`, 'must be a provider/model route, such as "openrouter/vendor/model"');
+  }
+  for (const [field, value] of [["display_name", displayName], ["family", family]]) {
+    if (value !== void 0 && (typeof value !== "string" || value.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.${field}`, "must be a non-empty string");
+    }
+  }
+  if (vision !== void 0 && typeof vision !== "boolean") {
+    throw fileValueError(configFile, `${qualified}.vision`, "must be a boolean");
+  }
+  if (billing !== void 0 && !OPENCODE_BILLING_MODES.includes(billing)) {
+    throw fileValueError(configFile, `${qualified}.billing`, `must be one of ${OPENCODE_BILLING_MODES.join(" | ")}`);
+  }
+  if (variants !== void 0) {
+    if (!Array.isArray(variants) || variants.some((variant) => typeof variant !== "string" || variant.trim().length === 0) || new Set(variants).size !== variants.length) {
+      throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+function openCodeModelEntries(section) {
+  return Object.entries(section ?? {}).map(([key, declaration]) => ({
+    key,
+    providerModel: declaration.provider_model,
+    displayName: declaration.display_name ?? key,
+    provider: declaration.provider_model.slice(0, declaration.provider_model.indexOf("/")),
+    ...declaration.family !== void 0 ? { family: declaration.family } : {},
+    capabilities: { vision: declaration.vision ?? false },
+    ...declaration.billing !== void 0 ? { billing: { mode: declaration.billing } } : {},
+    variants: declaration.variants ?? []
+  }));
 }
 function validateOptionalPositiveInteger(section, key, configFile, prefix = "") {
   const value = section[key];
@@ -21598,6 +21612,7 @@ async function createDefaultEngineRegistry(options) {
       ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
       ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
       ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+      ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
       onEvent: options.onOpenCodeEvent
     })
   ]);
@@ -21872,6 +21887,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
+      ...options.openCodeModels !== void 0 ? { openCodeModels: options.openCodeModels } : {},
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 12e4,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? harnessVersion(),
@@ -30571,6 +30587,7 @@ async function runEnsembleCli(argv, options = {}) {
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
+      ...ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;

@@ -1,4 +1,5 @@
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
 export type JsonSchema = JsonObject;
@@ -206,6 +207,13 @@ export interface RuntimeOptions {
    * reach another's workers.
    */
   workerEnvironment?: EngineWorkerEnvironment;
+  /**
+   * The models opencode workers may name (the config file's
+   * `opencode_models` section, or the library caller's own list). Omitted,
+   * the opencode engine has no models and every opencode call is refused
+   * before its worker spawns.
+   */
+  openCodeModels?: readonly OpenCodeModelRegistryEntry[];
   /**
    * Run-wide capability strip: united with every call's own `strip`
    * list before enforcement, so a run can restrict all its workers without

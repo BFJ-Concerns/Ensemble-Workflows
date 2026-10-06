@@ -19,6 +19,7 @@ test("caller identity has a named environment route without widening ambient set
       "agentCeiling",
       "concurrencyCaps",
       "configFile",
+      "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",
       "statusDir",
@@ -244,6 +245,99 @@ test("worker_environment fails loud on unknown engines and non-string values", a
 
   for (const entry of cases) {
     const fixture = await rawConfigFixture(entry.source);
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        entry.pattern
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("opencode_models declares the opencode catalogue from the config file alone", async () => {
+  const fixture = await configFixture({
+    schema_version: 1,
+    opencode_models: {
+      "hosted-model": {
+        provider_model: "router/vendor/hosted-model",
+        display_name: "Hosted Model",
+        family: "vendor",
+        vision: true,
+        billing: "pay-as-you-go",
+        variants: ["fast", "thorough"]
+      },
+      "bare-model": { provider_model: "local/Bare-Model" }
+    }
+  });
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: fixture.configHome },
+      cwd: fixture.cwd
+    });
+
+    assert.deepEqual(settings.openCodeModels, [
+      {
+        key: "hosted-model",
+        providerModel: "router/vendor/hosted-model",
+        displayName: "Hosted Model",
+        provider: "router",
+        family: "vendor",
+        capabilities: { vision: true },
+        billing: { mode: "pay-as-you-go" },
+        variants: ["fast", "thorough"]
+      },
+      // Only the route is required: the display name falls back to the key,
+      // and undeclared metadata stays absent rather than guessed.
+      {
+        key: "bare-model",
+        providerModel: "local/Bare-Model",
+        displayName: "bare-model",
+        provider: "local",
+        capabilities: { vision: false },
+        variants: []
+      }
+    ]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("an absent opencode_models section declares no opencode models", async () => {
+  const fixture = await configFixture({ schema_version: 1 });
+  try {
+    const settings = resolveAmbientSettings({
+      env: { XDG_CONFIG_HOME: fixture.configHome },
+      cwd: fixture.cwd
+    });
+    assert.deepEqual(settings.openCodeModels, []);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("opencode_models fails loud on malformed declarations", async () => {
+  const cases: Array<{ models: unknown; pattern: RegExp }> = [
+    { models: [], pattern: /opencode_models.*JSON object of model keys/ },
+    { models: { " ": { provider_model: "a/b" } }, pattern: /opencode_models.*model keys must be non-empty/ },
+    { models: { m: "a/b" }, pattern: /opencode_models\.m .*must be a JSON object/ },
+    { models: { m: {} }, pattern: /opencode_models\.m\.provider_model.*provider\/model route/ },
+    { models: { m: { provider_model: "no-provider" } }, pattern: /opencode_models\.m\.provider_model/ },
+    { models: { m: { provider_model: "/model" } }, pattern: /opencode_models\.m\.provider_model/ },
+    { models: { m: { provider_model: "a/b", tier: "x" } }, pattern: /Unknown machine configuration key opencode_models\.m\.tier/ },
+    { models: { m: { provider_model: "a/b", family: "" } }, pattern: /opencode_models\.m\.family.*non-empty string/ },
+    { models: { m: { provider_model: "a/b", vision: "yes" } }, pattern: /opencode_models\.m\.vision.*boolean/ },
+    { models: { m: { provider_model: "a/b", billing: "free" } }, pattern: /opencode_models\.m\.billing.*pay-as-you-go \| self-hosted/ },
+    { models: { m: { provider_model: "a/b", variants: ["x", "x"] } }, pattern: /opencode_models\.m\.variants.*distinct/ },
+    {
+      models: { first: { provider_model: "a/shared" }, second: { provider_model: "a/shared" } },
+      pattern: /opencode_models.*"a\/shared" names both "first" and "second"/
+    }
+  ];
+
+  for (const entry of cases) {
+    const fixture = await configFixture({ schema_version: 1, opencode_models: entry.models });
     try {
       assert.throws(
         () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),

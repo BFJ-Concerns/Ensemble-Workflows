@@ -1,13 +1,16 @@
 export interface OpenCodeModelRegistryEntry {
   key: string;
+  /** The `provider/model` route `opencode run --model` takes. */
   providerModel: string;
   displayName: string;
+  /** The route's provider segment: everything before the first `/`. */
   provider: string;
-  family: string;
+  /** Model family, for choosing a different family to cross-check another. */
+  family?: string;
   capabilities: {
     vision: boolean;
   };
-  billing: {
+  billing?: {
     mode: "pay-as-you-go" | "self-hosted";
   };
   /**
@@ -27,84 +30,24 @@ export interface OpenCodeModelRegistry {
   names(): string[];
 }
 
-// Every self-hosted (`local`) entry must name a model the self-hosted
-// router actually serves: `providerModel` is `local/` plus a
-// verbatim id from the router's `GET /v1/models` (source of truth: the
-// router's own configuration). The router swaps models
-// in and out over time, so re-survey before editing. Curate the standard
-// serving entries only — the router also exposes per-experiment variants
-// (`-Parallel8`, `-1GPU*`, quant-suffixed `*-GGUF` duplicates) that are not
-// stable routes. `capabilities.vision` mirrors whether the served entry's
-// modalities include image input.
-const MODELS: readonly OpenCodeModelRegistryEntry[] = [
-  {
-    key: "glm-5.2",
-    providerModel: "openrouter/z-ai/glm-5.2",
-    displayName: "GLM 5.2",
-    provider: "openrouter",
-    family: "glm",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "pay-as-you-go"
-    },
-    variants: []
-  },
-  {
-    key: "qwen-3-8-27b",
-    providerModel: "local/Qwen3.8-27B",
-    displayName: "Qwen 3.8 27B",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: false
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  },
-  {
-    key: "qwen-3-8-27b-heretic-ara",
-    providerModel: "local/Qwen3.8-27B-heretic-ara",
-    displayName: "Qwen 3.8 27B heretic-ara",
-    provider: "local",
-    family: "qwen",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  },
-  {
-    key: "muse-glimmer-30b",
-    providerModel: "local/Muse-Glimmer-30B",
-    displayName: "Muse Glimmer 30B",
-    provider: "local",
-    family: "muse-glimmer",
-    capabilities: {
-      vision: true
-    },
-    billing: {
-      mode: "self-hosted"
-    },
-    variants: []
-  }
-];
-
 class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
   #models = new Map<string, OpenCodeModelRegistryEntry>();
   #names: string[];
 
   constructor(models: readonly OpenCodeModelRegistryEntry[]) {
     for (const model of models) {
-      this.#models.set(model.key, model);
-      // Callers that carry provenance know models
-      // by the provider id the run record reports, so accept it as a key too.
-      this.#models.set(model.providerModel, model);
+      // Callers that carry provenance know models by the provider id the run
+      // record reports, so it resolves as well as the key. Either name
+      // resolving to two entries would make lookup order decide the model.
+      for (const name of new Set([model.key, model.providerModel])) {
+        const claimed = this.#models.get(name);
+        if (claimed !== undefined) {
+          throw new Error(
+            `opencode model name ${JSON.stringify(name)} names both ${JSON.stringify(claimed.key)} and ${JSON.stringify(model.key)}`
+          );
+        }
+        this.#models.set(name, model);
+      }
     }
     this.#names = models.map((model) => model.key);
   }
@@ -118,4 +61,19 @@ class StaticOpenCodeModelRegistry implements OpenCodeModelRegistry {
   }
 }
 
-export const defaultOpenCodeModelRegistry: OpenCodeModelRegistry = new StaticOpenCodeModelRegistry(MODELS);
+/**
+ * A registry over the given entries — the machine configuration's
+ * `opencode_models` section, resolved by `resolveAmbientSettings`, or a
+ * library caller's own list. Lookup accepts an entry's key or its
+ * `providerModel`; a name that would resolve to two entries throws.
+ */
+export function createOpenCodeModelRegistry(models: readonly OpenCodeModelRegistryEntry[]): OpenCodeModelRegistry {
+  return new StaticOpenCodeModelRegistry(models);
+}
+
+/**
+ * The registry an adapter dispatches against when none is configured. It is
+ * empty: the harness ships no model catalogue, so every opencode model is
+ * one the operator declared.
+ */
+export const defaultOpenCodeModelRegistry: OpenCodeModelRegistry = createOpenCodeModelRegistry([]);

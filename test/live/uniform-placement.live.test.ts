@@ -8,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { createRuntime } from "../../src/index.js";
+import { liveOpenCodeModel, machineOpenCodeModels } from "./live-models.js";
 
 import type { AgentOptions, EngineName } from "../../src/types.js";
 
@@ -24,6 +25,7 @@ test(
     const runtime = await createRuntime({
       cwd: process.cwd(),
       concurrencyCaps: { codex: 1, claude: 1, opencode: 1 },
+      openCodeModels: machineOpenCodeModels(),
       defaultTurnTimeoutMs: 420_000,
       defaultMaxAttempts: 1
     });
@@ -31,7 +33,7 @@ test(
     const engines: Array<{ name: EngineName; model?: string }> = [
       { name: "codex" },
       { name: "claude" },
-      { name: "opencode", model: "glm-5.2" }
+      ...(liveOpenCodeModel !== undefined ? [{ name: "opencode" as const, model: liveOpenCodeModel }] : [])
     ];
 
     try {
@@ -64,13 +66,14 @@ test(
     const runtime = await createRuntime({
       cwd: repo,
       concurrencyCaps: { codex: 1, claude: 1, opencode: 1 },
+      openCodeModels: machineOpenCodeModels(),
       defaultTurnTimeoutMs: 420_000,
       defaultMaxAttempts: 1
     });
     const engines: Array<{ name: EngineName; model?: string }> = [
       { name: "codex" },
       { name: "claude" },
-      { name: "opencode", model: "glm-5.2" }
+      ...(liveOpenCodeModel !== undefined ? [{ name: "opencode" as const, model: liveOpenCodeModel }] : [])
     ];
 
     try {

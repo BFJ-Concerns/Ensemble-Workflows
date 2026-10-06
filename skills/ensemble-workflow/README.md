@@ -2,9 +2,8 @@
 
 This directory ships one artefact: `Base/scripts/ensemble.mjs`, the
 self-contained launcher for the Ensemble CLI, built from `src/` by
-`npm run build:skill`. The skill that teaches workflow authoring and
-orchestration is maintained separately and is not mirrored here; this file
-covers only what the runtime itself does, derived from `src/`.
+`npm run build:skill`. This file covers only what the runtime itself does,
+derived from `src/`.
 
 All invocation paths below are relative to the repository root — the parent
 of `skills/`. A cold consumer given the bundle beside this file can resolve
@@ -259,6 +258,13 @@ The optional machine file uses schema version 1:
   "worker_environment": {
     "claude": { "ANTHROPIC_BASE_URL": "https://gateway.example" },
     "codex": { "OPENAI_BASE_URL": "https://codex-gateway.example" }
+  },
+  "opencode_models": {
+    "glm-5.2": {
+      "provider_model": "openrouter/z-ai/glm-5.2",
+      "family": "glm",
+      "billing": "pay-as-you-go"
+    }
   }
 }
 ```
@@ -300,6 +306,22 @@ data on `XDG_DATA_HOME` too, and a dispatch that starts the daemon under a
 relocated value was measured (2026-09-28) to leave the daemon carrying it
 for every later background session; the operator's `claude` launcher was
 found re-pointed into the relocated tree in the same incident.
+
+`opencode_models` declares the models opencode workers may name. It is the
+whole catalogue: the harness ships no models, so without this section every
+opencode call is refused before its worker spawns, with an error naming the
+section. Each key is the name an `agent()` call passes as `model`; a call may
+also name the entry by its route. Only `provider_model` is required: the
+`provider/model` route `opencode run --model` takes. The optional fields
+describe the entry for an author choosing between families: `display_name`
+(defaults to the key), `family`, `vision` (whether the model accepts image
+input; defaults to `false`), and `billing` (`pay-as-you-go` or
+`self-hosted`). `variants` lists the served variants the entry accepts as
+`effort`. With none declared, the default, any `effort` on that model throws
+before the worker spawns. Take variants from the provider's own listing:
+`opencode run` forwards an unknown variant without complaint. Like
+`worker_environment`, this section lives in the config file alone. A key or
+route that would name two entries is invalid.
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, unknown key, invalid value, unreadable file, or
@@ -826,7 +848,7 @@ the time to the first agent-message delta.
 
 | Option | codex | claude | opencode |
 |---|---|---|---|
-| `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**, from the curated registry; otherwise throws |
+| `model` | optional (unpinned resolves the ambient default; noted on stderr) | optional (unpinned warns on stderr) | **required**: a key or route declared in `opencode_models`; otherwise throws |
 | `effort` | canonical level `minimal \| low \| medium \| high \| xhigh`, validated pre-spawn; sent natively as the thread's effort, and the run record's `resolved_effort` is the server's confirmation of the level the thread runs at | same canonical level, clamped to the CLI's nearest native level (`minimal`→`low`; `xhigh` is native); the run record's `resolved_effort` is the level the CLI's own transcript reports serving, `null` when it reports none | exempt: must name one of the registry entry's served variants; otherwise throws pre-spawn |
 | `fallback` | ordered chain of `{ engine, model, effort? }` targets, Codex or Claude in any position, advanced by the harness on an availability failure (allowance, terminal overload, dead or unstartable substrate) — never on empty, unparseable, or off-schema output, which retries in place; a same-engine step keeps its cap slot, a cross-engine step releases it and re-admits on the next engine's cap and budget; `maxAttempts` counts answered attempts across the whole chain, a refusal costing none; every attempt's `target` and the `answered_by` entry land in the record | same | never a chain *entry* (throws pre-spawn); an opencode call may declare a chain of Codex/Claude targets |
 | `cwd` | worker working directory; defaults to the run cwd | same | same |
@@ -907,11 +929,9 @@ Successful schema agents record `parse_route` as `direct`,
 `object-fallback`, `array-fallback`, or `scalar-line`; it remains `null` until a valid value is
 selected.
 
-Registered opencode model keys (the complete set; also addressable by
-provider id): `glm-5.2` (OpenRouter), `qwen-3-8-27b`, `qwen-3-8-27b-heretic-ara`,
-`muse-glimmer-30b`. The last three are `local/…` entries served by the
-self-hosted router and track what it actually serves; the source
-repository's `src/opencode-model-registry.ts` carries the re-survey contract.
+opencode models are the ones the machine configuration declares in
+`opencode_models` (see [Ambient settings](#ambient-settings)); the harness
+ships none.
 
 Default concurrency caps: codex 12, claude 12, opencode 2.
 Calls beyond the cap queue per engine.

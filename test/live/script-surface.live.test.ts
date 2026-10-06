@@ -7,7 +7,10 @@ import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { liveCodexModel, liveOpenCodeModel } from "./live-models.js";
+
 const isLive = process.env.ENSEMBLE_LIVE === "1";
+const codexModelSkip = liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false;
 const liveOptions = { skip: !isLive };
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const execFileAsync = promisify(execFile);
@@ -81,7 +84,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
   assert.match(parsed.compiled.summary, /LIVE_WORKFLOW_OK/);
 });
 
-test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-open-domain-options-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_OPEN_DOMAIN_${randomUUID()}`;
@@ -95,7 +98,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
           description: "A current engine-owned model and unusual metadata still reach a real worker"
         };
 
-        const model = "gpt-5.6-terra";
+        const model = ${JSON.stringify(liveCodexModel)};
         const metadata = {
           effort: "high",
           label: "release candidate: Δ / unusual",
@@ -135,7 +138,7 @@ test("live built CLI runs a current Codex model with unusual open-domain metadat
   }
 });
 
-test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive, timeout: 240_000 }, async () => {
+test("live built CLI honours the maximum faithful per-turn timeout as a long deadline", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-large-turn-timeout-"));
   const script = path.join(directory, "workflow.js");
   const token = `LIVE_LARGE_TIMEOUT_${randomUUID()}`;
@@ -153,7 +156,7 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
           "Return exactly one JSON object with token ${token}.",
           {
             engine: "codex",
-            model: "gpt-5.6-terra",
+            model: ${JSON.stringify(liveCodexModel)},
             timeoutMs: 2147483647,
             maxAttempts: 1,
             schema: {
@@ -491,7 +494,7 @@ test("live CLI gives a real Codex worker unrestricted filesystem and network acc
 const placementScenarios = [
   { engine: "codex" },
   { engine: "claude" },
-  { engine: "opencode", model: "glm-5.2" }
+  ...(liveOpenCodeModel !== undefined ? [{ engine: "opencode", model: liveOpenCodeModel }] : [])
 ] as const;
 
 for (const scenario of placementScenarios) {
@@ -533,8 +536,7 @@ for (const scenario of placementScenarios) {
     // resolved_cwd — and from a side effect only a worker started in the
     // target directory could leave there: a relative-path copy of a receipt it
     // could learn nowhere else. The worker's reply is not asserted; how it
-    // words "done" is its own choice, and a live test asserts what the
-    // product determines, never the model's compliance.
+    // words "done" is its own choice.
     assert.equal(result.code, 0, result.stderr);
     const { agent } = await recordedAgent(recordStore, `per-call-cwd-${scenario.engine}`);
     assert.equal(agent.resolved_cwd, targetCwd);

@@ -559,20 +559,21 @@ export class ClaudeWorkerDiagnosticError extends ClaudeWorkerError {}
 
 export class OpenCodeModelRequiredError extends AgentOptionRejectedError {
   constructor(registered: readonly string[]) {
-    super(
-      `agent({ engine:'opencode' }) requires a model from the curated opencode registry; expected one of ${registered
-        .map((name) => JSON.stringify(name))
-        .join(", ")}`
-    );
+    super(`agent({ engine:'opencode' }) requires a model from the opencode registry; ${registeredOpenCodeModels(registered)}`);
   }
 }
 
 export class OpenCodeModelNotRegisteredError extends AgentOptionRejectedError {
   constructor(model: string, registered: readonly string[]) {
-    super(
-      `OpenCode model ${JSON.stringify(model)} is not registered; expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
-    );
+    super(`OpenCode model ${JSON.stringify(model)} is not registered; ${registeredOpenCodeModels(registered)}`);
   }
+}
+
+/** The registry's names, or — when it has none — where the operator declares them. */
+function registeredOpenCodeModels(registered: readonly string[]): string {
+  return registered.length > 0
+    ? `expected one of ${registered.map((name) => JSON.stringify(name)).join(", ")}`
+    : "no opencode models are declared; declare them under opencode_models in the machine configuration ($XDG_CONFIG_HOME/ensemble/config.json)";
 }
 
 function renderDiagnostic(value: unknown): string {

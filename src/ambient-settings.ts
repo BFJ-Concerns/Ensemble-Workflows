@@ -9,7 +9,9 @@ import {
 } from "./concurrency-defaults.js";
 
 import { HOLD_SCOPE_ENV } from "./holds.js";
+import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
+import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
 export const CONFIG_SCHEMA_VERSION = 1;
@@ -86,6 +88,13 @@ export interface AmbientSettings {
    * restate the problem the setting exists to solve.
    */
   workerEnvironment: EngineWorkerEnvironment;
+  /**
+   * The opencode models this machine declares (the config file's
+   * `opencode_models` section). This is the whole catalogue: the harness
+   * ships no models, so an opencode call can name only what is declared
+   * here. Config-file only, like `workerEnvironment`.
+   */
+  openCodeModels: OpenCodeModelRegistryEntry[];
 }
 
 export interface AmbientSettingFlags {
@@ -113,7 +122,22 @@ interface MachineConfig {
     dir?: string;
   };
   worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
+  opencode_models?: Record<string, OpenCodeModelDeclaration>;
 }
+
+type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
+
+interface OpenCodeModelDeclaration {
+  provider_model: string;
+  display_name?: string;
+  family?: string;
+  vision?: boolean;
+  billing?: OpenCodeBillingMode;
+  variants?: string[];
+}
+
+const OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
+const OPENCODE_BILLING_MODES: readonly OpenCodeBillingMode[] = ["pay-as-you-go", "self-hosted"];
 
 const ENGINES = ["codex", "claude", "opencode"] as const satisfies readonly EngineName[];
 const DISABLED_VALUES = new Set(["0", "off", "false", "no"]);
@@ -157,7 +181,8 @@ export function resolveAmbientSettings(input: {
     runRecordDir: resolveRunRecord(config, input.env),
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd),
-    workerEnvironment: config?.worker_environment ?? {}
+    workerEnvironment: config?.worker_environment ?? {},
+    openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
 }
 
@@ -202,7 +227,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
 
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -215,6 +240,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
+  validateOpenCodeModels(parsed, configFile);
   return parsed as unknown as MachineConfig;
 }
 
@@ -290,6 +316,82 @@ function validateWorkerEnvironment(root: Record<string, unknown>, configFile: st
       }
     }
   }
+}
+
+/**
+ * `opencode_models` maps each model key an author names to its declaration —
+ * an open set of keys, like `worker_environment`'s variable names, so it
+ * takes its own validator. Name collisions between entries are judged by the
+ * registry itself, the one place lookup happens.
+ */
+function validateOpenCodeModels(root: Record<string, unknown>, configFile: string): void {
+  const section = root.opencode_models;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "opencode_models", "must be a JSON object of model keys to declarations");
+  }
+  for (const [key, declaration] of Object.entries(section)) {
+    validateOpenCodeModelDeclaration(key, declaration, configFile);
+  }
+  try {
+    createOpenCodeModelRegistry(openCodeModelEntries(section as Record<string, OpenCodeModelDeclaration>));
+  } catch (error) {
+    throw fileValueError(configFile, "opencode_models", errorMessage(error));
+  }
+}
+
+function validateOpenCodeModelDeclaration(key: string, declaration: unknown, configFile: string): void {
+  if (key.trim().length === 0) {
+    throw fileValueError(configFile, "opencode_models", "model keys must be non-empty");
+  }
+  const qualified = `opencode_models.${key}`;
+  if (!isObject(declaration) || Array.isArray(declaration)) {
+    throw fileValueError(configFile, qualified, "must be a JSON object");
+  }
+  assertKnownKeys(declaration, OPENCODE_MODEL_DECLARATION_KEYS, configFile, qualified);
+  const { provider_model: providerModel, display_name: displayName, family, vision, billing, variants } = declaration;
+  // `opencode run --model` takes `provider/model`; the provider segment is
+  // also the entry's `provider`.
+  if (typeof providerModel !== "string" || !/^[^/\s]+\/\S+$/.test(providerModel)) {
+    throw fileValueError(configFile, `${qualified}.provider_model`, "must be a provider/model route, such as \"openrouter/vendor/model\"");
+  }
+  for (const [field, value] of [["display_name", displayName], ["family", family]] as const) {
+    if (value !== undefined && (typeof value !== "string" || value.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.${field}`, "must be a non-empty string");
+    }
+  }
+  if (vision !== undefined && typeof vision !== "boolean") {
+    throw fileValueError(configFile, `${qualified}.vision`, "must be a boolean");
+  }
+  if (billing !== undefined && !(OPENCODE_BILLING_MODES as readonly unknown[]).includes(billing)) {
+    throw fileValueError(configFile, `${qualified}.billing`, `must be one of ${OPENCODE_BILLING_MODES.join(" | ")}`);
+  }
+  if (variants !== undefined) {
+    if (
+      !Array.isArray(variants) ||
+      variants.some((variant) => typeof variant !== "string" || variant.trim().length === 0) ||
+      new Set(variants).size !== variants.length
+    ) {
+      throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+
+function openCodeModelEntries(
+  section: Record<string, OpenCodeModelDeclaration> | undefined
+): OpenCodeModelRegistryEntry[] {
+  return Object.entries(section ?? {}).map(([key, declaration]) => ({
+    key,
+    providerModel: declaration.provider_model,
+    displayName: declaration.display_name ?? key,
+    provider: declaration.provider_model.slice(0, declaration.provider_model.indexOf("/")),
+    ...(declaration.family !== undefined ? { family: declaration.family } : {}),
+    capabilities: { vision: declaration.vision ?? false },
+    ...(declaration.billing !== undefined ? { billing: { mode: declaration.billing } } : {}),
+    variants: declaration.variants ?? []
+  }));
 }
 
 function validateOptionalPositiveInteger(

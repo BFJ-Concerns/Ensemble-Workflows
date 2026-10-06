@@ -597,6 +597,7 @@ export class EnsembleRuntime {
         : {}),
       ...(options.firstOutputTimeoutMs !== undefined ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {}),
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
+      ...(options.openCodeModels !== undefined ? { openCodeModels: options.openCodeModels } : {}),
       startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs ?? 120_000,
       clientName: options.clientName ?? "ensemble-workflows",
       clientVersion: options.clientVersion ?? harnessVersion(),

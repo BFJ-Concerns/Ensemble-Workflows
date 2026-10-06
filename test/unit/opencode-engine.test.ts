@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import { OpenCodeCliRunner } from "../../src/opencode-engine.js";
+import { testOpenCodeModelRegistry, testOpenCodeModels } from "../fixtures/opencode/models.js";
 
 import { EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import {
@@ -109,7 +110,7 @@ class HangingOpenCodeRunner implements OpenCodeRunner {
 
 test("opencode adapter close aborts the active runner and awaits settlement", async () => {
   const runner = new HangingOpenCodeRunner();
-  const adapter = new OpenCodeEngineAdapter({ runner });
+  const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
   const invocation = adapter.createInvocation("keep working", { model: "glm-5.2" });
   const attempt = invocation.runAttempt({ attempt: 1 });
 
@@ -133,7 +134,7 @@ test("opencode run failure preserves stream text and the engine diagnostic in th
     exportResult: { status: "command-failed", exitCode: 7, signal: null, stderr: "export unavailable" }
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
   const writer = await RunRecordWriter.start({
@@ -183,7 +184,7 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "session gone" }
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
   const writer = await RunRecordWriter.start({
@@ -224,7 +225,7 @@ test("an opencode run failure consumes an attempt and the retry redispatches wit
     runResults: [{ exitCode: 7, stderr: "provider fell over" }]
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 2
   });
   const records: RuntimeAgentRecord[] = [];
@@ -305,6 +306,7 @@ setInterval(() => {}, 1000);
     );
     await chmod(bin, 0o755);
     const adapter = new OpenCodeEngineAdapter({
+      modelRegistry: testOpenCodeModelRegistry,
       cwd: directory,
       runner: new OpenCodeCliRunner(bin, { killGraceMs: 10 })
     });
@@ -335,16 +337,15 @@ async function waitForFile(filename: string): Promise<void> {
   }
 }
 
-test("opencode requires a registered curated model before spawning", () => {
+test("opencode requires a registered model before spawning", () => {
   const runner = new FakeOpenCodeRunner();
-  const adapter = new OpenCodeEngineAdapter({ runner });
+  const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
 
   assert.throws(
     () => adapter.createInvocation("missing", { timeoutMs: 1_000 }),
     (error: unknown) => {
       assert.ok(error instanceof OpenCodeModelRequiredError);
-      assert.match(error.message, /"glm-5\.2"/);
-      assert.match(error.message, /"qwen-3-8-27b"/);
+      assert.match(error.message, /expected one of "glm-5\.2", "local-model"$/);
       return true;
     }
   );
@@ -355,11 +356,45 @@ test("opencode requires a registered curated model before spawning", () => {
   assert.equal(runner.runs.length, 0);
 });
 
-test("opencode rejects an effort outside the registry entry's declared variants before spawning", () => {
+test("a created runtime dispatches opencode against the models it was given", async () => {
+  const declared = await EnsembleRuntime.create({ cwd: tmpdir(), openCodeModels: testOpenCodeModels });
+  const undeclared = await EnsembleRuntime.create({ cwd: tmpdir() });
+  try {
+    assert.deepEqual(declared.openCodeModelRegistry?.names(), ["glm-5.2", "local-model"]);
+    assert.deepEqual(undeclared.openCodeModelRegistry?.names(), []);
+  } finally {
+    await declared.close();
+    await undeclared.close();
+  }
+});
+
+test("an opencode adapter with no declared models names where to declare them", () => {
+  // The harness ships no catalogue: an unconfigured machine's refusal must
+  // point the operator at the config section, not list an empty set.
   const runner = new FakeOpenCodeRunner();
   const adapter = new OpenCodeEngineAdapter({ runner });
 
-  // Every curated entry currently declares no served variants, so any
+  for (const [options, ErrorClass] of [
+    [{}, OpenCodeModelRequiredError],
+    [{ model: "glm-5.2" }, OpenCodeModelNotRegisteredError]
+  ] as const) {
+    assert.throws(
+      () => adapter.createInvocation("unconfigured", options),
+      (error: unknown) => {
+        assert.ok(error instanceof ErrorClass);
+        assert.match(error.message, /no opencode models are declared; declare them under opencode_models in the machine configuration/);
+        return true;
+      }
+    );
+  }
+  assert.equal(runner.runs.length, 0);
+});
+
+test("opencode rejects an effort outside the registry entry's declared variants before spawning", () => {
+  const runner = new FakeOpenCodeRunner();
+  const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
+
+  // The test catalogue's entries declare no served variants, so any
   // effort request is out of domain and must be rejected, not forwarded
   // silently to a provider that would run the worker at exit 0.
   assert.throws(
@@ -407,10 +442,12 @@ test("a statically declared opencode effort outside the model's variants fails b
   // entry owns the domain; an effort defaulted without a model waits for
   // the call that names one.
   assert.throws(
-    () => validateEngineDefaults("opencode", { model: "glm-5.2", effort: "definitely-invalid" }),
+    () => validateEngineDefaults("opencode", { model: "glm-5.2", effort: "definitely-invalid" }, testOpenCodeModelRegistry),
     InvalidAgentOptionValueError
   );
-  assert.doesNotThrow(() => validateEngineDefaults("opencode", { effort: "unjudgeable-without-a-model" }));
+  assert.doesNotThrow(() =>
+    validateEngineDefaults("opencode", { effort: "unjudgeable-without-a-model" }, testOpenCodeModelRegistry)
+  );
 });
 
 test("opencode refuses unproven capability strips before the runner starts", async () => {
@@ -422,7 +459,7 @@ test("opencode refuses unproven capability strips before the runner starts", asy
   for (const capability of ["skills", "agents"] as const) {
     const runner = new FakeOpenCodeRunner();
     const runtime = new EnsembleRuntime({
-      engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner })]),
+      engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
       defaultMaxAttempts: 1
     });
     try {
@@ -520,6 +557,7 @@ test("opencode publishes streamed usage while its worker is still running", asyn
   });
   let runtime: EnsembleRuntime | null = null;
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -551,7 +589,7 @@ test("opencode publishes streamed usage while its worker is still running", asyn
 test("a per-call cwd reaches opencode run and overrides the adapter cwd", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-per-call-cwd-"));
   const runner = new FakeOpenCodeRunner();
-  const adapter = new OpenCodeEngineAdapter({ cwd: "/adapter/cwd", runner });
+  const adapter = new OpenCodeEngineAdapter({ cwd: "/adapter/cwd", runner, modelRegistry: testOpenCodeModelRegistry });
   const runtime = new EnsembleRuntime({
     engines: new EngineRegistry([adapter]),
     defaultMaxAttempts: 1
@@ -585,6 +623,7 @@ test("opencode export fallback recovers the complete final stopped step into the
     }
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     cwd,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
@@ -655,6 +694,7 @@ test("opencode fallback usage below the ceiling admits the next call", async () 
     }
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -683,6 +723,7 @@ test("opencode stream and export share snapshot-input and delta-output accountin
   });
   let fallbackRuntime: EnsembleRuntime | null = null;
   const fallbackAdapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner: fallbackRunner,
     onEvent: (event) => fallbackRuntime?.handleEngineEvent("opencode", event)
   });
@@ -712,6 +753,7 @@ test("opencode stream and export share snapshot-input and delta-output accountin
   });
   let exportRuntime: EnsembleRuntime | null = null;
   const exportAdapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner: exportRunner,
     onEvent: (event) => exportRuntime?.handleEngineEvent("opencode", event)
   });
@@ -746,7 +788,7 @@ test("opencode cache writes survive the engine path as a separate archive roll-u
     })}\n`
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
   const writer = await RunRecordWriter.start({
@@ -801,6 +843,7 @@ test("opencode fallback without usable token data leaves the budget unmeasured",
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -843,6 +886,7 @@ test("opencode fallback charges token-bearing schema retries", async () => {
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -880,7 +924,7 @@ test("opencode run record distinguishes an unparseable export from a failed expo
     exportResult: { status: "ok", stdout: "Exporting session: ses_test\n{not-json" }
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
   const writer = await RunRecordWriter.start({
@@ -919,7 +963,7 @@ test("opencode records a missing stream session id separately without attempting
       ].join("\n")
     }
   });
-  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+  const invocation = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry }).createInvocation("answer", {
     model: "glm-5.2"
   });
 
@@ -951,6 +995,7 @@ test("a token-bearing stream with no session id still reaches the budget under a
     }
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -993,7 +1038,7 @@ test("opencode fallback keeps the last text-bearing stopped step when a textless
     },
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
-  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+  const invocation = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry }).createInvocation("answer", {
     model: "glm-5.2"
   });
 
@@ -1032,7 +1077,7 @@ test("opencode schema agents keep a completed answer when unowned text is later 
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
 
@@ -1070,7 +1115,7 @@ test("opencode retains ownerless-only fallback text when no completed answer pre
     },
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
-  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+  const invocation = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry }).createInvocation("answer", {
     model: "glm-5.2"
   });
 
@@ -1096,7 +1141,7 @@ test("opencode records empty-output only when neither export nor stream contains
     exportResult: { status: "command-failed", exitCode: 1, signal: null, stderr: "export failed" }
   });
   const runtime = new EnsembleRuntime({
-    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner })]),
+    engines: new EngineRegistry([new OpenCodeEngineAdapter({ cwd, runner, modelRegistry: testOpenCodeModelRegistry })]),
     defaultMaxAttempts: 1
   });
   const writer = await RunRecordWriter.start({
@@ -1140,7 +1185,7 @@ test("opencode falls back from a parseable export without assistant text while r
       })}`
     }
   });
-  const invocation = new OpenCodeEngineAdapter({ runner }).createInvocation("answer", {
+  const invocation = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry }).createInvocation("answer", {
     model: "glm-5.2"
   });
 
@@ -1163,6 +1208,7 @@ test("opencode durable agent record stores authored and resolved models", async 
     exportText: exportText(JSON.stringify({ status: "ok" }), tokens(4, 3, 0))
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     cwd,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
@@ -1185,7 +1231,7 @@ test("opencode durable agent record stores authored and resolved models", async 
 
   await runtime.agent("return JSON", {
     engine: "opencode",
-    model: "qwen-3-8-27b",
+    model: "local-model",
     schema: {
       type: "object",
       required: ["status"],
@@ -1200,8 +1246,8 @@ test("opencode durable agent record stores authored and resolved models", async 
     model: unknown;
     resolved_model: unknown;
   };
-  assert.equal(agent.model, "qwen-3-8-27b");
-  assert.equal(agent.resolved_model, "local/Qwen3.8-27B");
+  assert.equal(agent.model, "local-model");
+  assert.equal(agent.resolved_model, "local/Served-Model");
 });
 
 test("opencode reaches the shared schema validation and budget path", async () => {
@@ -1210,6 +1256,7 @@ test("opencode reaches the shared schema validation and budget path", async () =
     exportText: exportText(JSON.stringify({ status: "ok" }), tokens(4, 3, 0))
   });
   const adapter = new OpenCodeEngineAdapter({
+    modelRegistry: testOpenCodeModelRegistry,
     runner,
     onEvent: (event) => runtime?.handleEngineEvent("opencode", event)
   });
@@ -1371,7 +1418,7 @@ test("opencode forwards liveness evidence, fired by the real runner's first stdo
   // Forwarding half: the invocation hands the agent-level callback through as
   // the run's onFirstData.
   const runner = new FakeOpenCodeRunner();
-  const adapter = new OpenCodeEngineAdapter({ runner });
+  const adapter = new OpenCodeEngineAdapter({ runner, modelRegistry: testOpenCodeModelRegistry });
   const invocation = adapter.createInvocation("say", { timeoutMs: 1_000, model: "glm-5.2" });
   let evidence = 0;
   await invocation.runAttempt({

@@ -6,6 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { liveOpenCodeModel } from "./live-models.js";
+
 // These destructive legs are separate from the ordinary live estate: each
 // observes text from the real worker transport before terminating that worker.
 const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE === "1";
@@ -15,7 +17,9 @@ for (const scenario of [
   { engine: "claude", model: null, error: /claude-poll-timeout: worker left the roster/ },
   // An opencode run failure consumes its (single) attempt, so exhaustion
   // surfaces the engine diagnostic on the failure notice.
-  { engine: "opencode", model: "glm-5.2", error: /opencode run failed/ }
+  ...(liveOpenCodeModel !== undefined
+    ? [{ engine: "opencode", model: liveOpenCodeModel, error: /opencode run failed/ }]
+    : [])
 ] as const) {
   test(
     `live built CLI archives observed partial ${scenario.engine} text and reports its termination cause`,

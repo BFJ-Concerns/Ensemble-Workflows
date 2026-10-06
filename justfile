@@ -43,6 +43,9 @@ install:
 build:
     npm run build
 
-# The live tests, which reach real engines. Not part of the gate.
+# The live tests, which reach real engines. Not part of the gate. Legs that
+# must name a model read it from ENSEMBLE_LIVE_CODEX_MODEL or
+# ENSEMBLE_LIVE_OPENCODE_MODEL (a key from the machine config's
+# opencode_models) and skip while it is unset.
 test-live:
     npm run test:live

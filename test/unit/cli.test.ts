@@ -1684,7 +1684,7 @@ test("CLI wires per-engine concurrency caps into the runtime scheduler", async (
   assert.equal(stderr.text(), "");
 });
 
-test("CLI threads the config file's worker environment into runtime construction", async () => {
+test("CLI threads the config file's worker environment and opencode models into runtime construction", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-env-"));
   const configHome = path.join(directory, "config");
   const configFile = path.join(configHome, "ensemble", "config.json");
@@ -1694,7 +1694,8 @@ test("CLI threads the config file's worker environment into runtime construction
     configFile,
     JSON.stringify({
       schema_version: 1,
-      worker_environment: { claude: { ANTHROPIC_BASE_URL: "https://gateway.example" } }
+      worker_environment: { claude: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+      opencode_models: { "declared-model": { provider_model: "router/declared-model" } }
     })
   );
   await writeFile(script, `export const meta = { name: "cli-worker-env" }; return "done";`);
@@ -1716,6 +1717,10 @@ test("CLI threads the config file's worker environment into runtime construction
   assert.deepEqual(observed[0]?.workerEnvironment, {
     claude: { ANTHROPIC_BASE_URL: "https://gateway.example" }
   });
+  assert.deepEqual(
+    observed[0]?.openCodeModels?.map((model) => [model.key, model.providerModel]),
+    [["declared-model", "router/declared-model"]]
+  );
 
   // A run with no section behaves exactly as today: the option is absent,
   // not an empty object a later consumer might treat as a declaration.
@@ -1736,6 +1741,7 @@ test("CLI threads the config file's worker environment into runtime construction
   });
   assert.equal(bareExit, 0);
   assert.equal(bareObserved[0]?.workerEnvironment, undefined);
+  assert.equal(bareObserved[0]?.openCodeModels, undefined);
 });
 
 test("CLI wires the whole-workflow agent ceiling into runtime construction", async () => {

@@ -35,7 +35,8 @@ export async function closeDefaultRuntime(): Promise<void> {
 export { EnsembleRuntime, defaultConcurrency } from "./runtime.js";
 export { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 export { EngineRegistry, CodexEngineAdapter, ClaudeEngineAdapter, OpenCodeEngineAdapter } from "./engines.js";
-export { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
+export { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
+export type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 export { createWorkflowHooks, parallel, pipeline } from "./hooks.js";
 export {
   runWorkflowScript,

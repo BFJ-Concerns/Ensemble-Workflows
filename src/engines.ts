@@ -15,7 +15,7 @@ import {
 } from "./errors.js";
 import { OpenCodeCliRunner, OpenCodeEngineInvocation } from "./opencode-engine.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
-import { defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
+import { createOpenCodeModelRegistry, defaultOpenCodeModelRegistry } from "./opencode-model-registry.js";
 import { Scheduler } from "./scheduler.js";
 import { normaliseForCodexOutputSchema } from "./schema.js";
 import {
@@ -29,7 +29,7 @@ import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
-import type { OpenCodeModelRegistry } from "./opencode-model-registry.js";
+import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type {
   AgentWaitSnapshot,
   EngineName,
@@ -715,6 +715,7 @@ export interface CreateDefaultEngineRegistryOptions {
   clientVersion: string;
   concurrencyCaps?: EngineConcurrencyCaps;
   workerEnvironment?: EngineWorkerEnvironment;
+  openCodeModels?: readonly OpenCodeModelRegistryEntry[];
   /**
    * The run's resolved hold scope (null for the shared scope), handed to the
    * Claude control plane for delivery to every worker session. Omitted, the
@@ -770,6 +771,7 @@ export async function createDefaultEngineRegistry(
         ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
         : {}),
       ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
+      ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
       onEvent: options.onOpenCodeEvent
     })
   ]);

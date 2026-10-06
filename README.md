@@ -12,7 +12,7 @@ both is stronger than either family could vouch for alone.
 **Status:** feature-complete v1, landed and tested. The harness runs
 `agent()` calls on any registered engine — Codex over a `codex app-server`, Claude as
 `claude --bg` background sessions, and opencode through `opencode run` with
-curated models — with schema-validated structured output and
+models the machine configuration declares — with schema-validated structured output and
 bounded retry, schedules concurrent workers under a per-engine self-imposed cap,
 accounts for tokens against independent per-engine budget ceilings, and offers the full script
 surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
@@ -21,8 +21,9 @@ surface — `parallel()`, `pipeline()`, full-Node workflow scripts, and
 objects as JSON objects, plain-text answers as JSON strings with enclosing
 quotes — logs on stderr, non-zero exit on a thrown script). `agent()` requires an `engine` (`'codex'`,
 `'claude'`, or `'opencode'`): there is no default and no engine is privileged.
-opencode also requires a curated `model`; v1 ships `model: "glm-5.2"`, resolved
-to `openrouter/z-ai/glm-5.2` with `vision:false` and pay-as-you-go billing.
+opencode also requires a `model`, named from the `opencode_models` section of
+the machine configuration; the harness ships no models of its own (see
+[Ambient settings](skills/ensemble-workflow/README.md#ambient-settings)).
 
 ```bash
 ensemble my-workflow.js > result.json 2> run.log

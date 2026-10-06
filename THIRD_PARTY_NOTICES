@@ -1,10 +1,9 @@
 Third-party software in the skill launcher
 
-The skill launcher under skills/ensemble-workflow/ is a single file built
-with esbuild, which bundles third-party packages into it. Each package the
-launcher bundles is listed below and redistributed under its own licence,
-reproduced in full. A package listed here may not be bundled by every
-version of the launcher.
+skills/ensemble-workflow/Base/scripts/ensemble.mjs is a single file built with
+esbuild, and it contains the packages below. Each is redistributed under its
+own licence, reproduced in full. The build copies this file into the launcher
+and fails when a bundled package has no entry here.
 
 ==============================================================================
 Package: acorn

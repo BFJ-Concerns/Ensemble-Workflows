@@ -710,4 +710,7 @@ tools that consume it.
 ## Licence
 
 Ensemble is licensed under the GNU Affero General Public License, version 3
-or (at your option) any later version. See [LICENSE](LICENSE).
+or (at your option) any later version. See [LICENSE](LICENSE). The skill
+launcher bundles third-party packages under their own licences, listed in
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and carried at the end of the
+launcher file itself.

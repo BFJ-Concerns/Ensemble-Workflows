@@ -536,7 +536,8 @@ for (const scenario of placementScenarios) {
     // resolved_cwd — and from a side effect only a worker started in the
     // target directory could leave there: a relative-path copy of a receipt it
     // could learn nowhere else. The worker's reply is not asserted; how it
-    // words "done" is its own choice.
+    // words "done" is its own choice, and a live test asserts what the
+    // product determines, never the model's compliance.
     assert.equal(result.code, 0, result.stderr);
     const { agent } = await recordedAgent(recordStore, `per-call-cwd-${scenario.engine}`);
     assert.equal(agent.resolved_cwd, targetCwd);

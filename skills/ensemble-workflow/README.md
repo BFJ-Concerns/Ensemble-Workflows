@@ -2,8 +2,9 @@
 
 This directory ships one artefact: `Base/scripts/ensemble.mjs`, the
 self-contained launcher for the Ensemble CLI, built from `src/` by
-`npm run build:skill`. This file covers only what the runtime itself does,
-derived from `src/`.
+`npm run build:skill`. The skill that teaches workflow authoring and
+orchestration is maintained separately and is not mirrored here; this file
+covers only what the runtime itself does, derived from `src/`.
 
 All invocation paths below are relative to the repository root — the parent
 of `skills/`. A cold consumer given the bundle beside this file can resolve

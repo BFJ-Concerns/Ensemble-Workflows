@@ -17287,6 +17287,7 @@ import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
 import path10 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
+var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
 var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
@@ -17301,12 +17302,17 @@ var ClaudeCliControlPlane = class {
   #valveSubmitSettleMs;
   #valveKillSettleMs;
   #valveCounter = 0;
+  /**
+   * Where each valve's socket directory is made: where tmux keeps its own
+   * sockets, by the launcher's own TMUX_TMPDIR (else /tmp). Never a
+   * declared worker variable, so no declared value reaches a valve's
+   * `-S` argument.
+   */
+  #valveSocketRoot;
   #env;
   #workerEnv;
   /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
   #holdScope;
-  /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
-  #launchEnv;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = /* @__PURE__ */ new Map();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
@@ -17316,8 +17322,11 @@ var ClaudeCliControlPlane = class {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === void 0 ? resolveHoldScope(void 0, process.env) : options.holdScope;
-    this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
-    this.#env = { ...withoutRunScopedVariables(process.env), ...this.#launchEnv };
+    this.#env = {
+      ...withoutRunScopedVariables(process.env),
+      ...this.#workerEnv,
+      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
+    };
     this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
@@ -17325,6 +17334,7 @@ var ClaudeCliControlPlane = class {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
+    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
   async dispatch(options) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
@@ -17487,15 +17497,21 @@ var ClaudeCliControlPlane = class {
     }
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
+    let socketDir;
     try {
-      const environmentFlags = Object.entries(this.#launchEnv).flatMap(([name, value]) => [
-        "-e",
-        `${name}=${value}`
-      ]);
+      socketDir = await mkdtemp(path10.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+    } catch (error) {
+      const said = error instanceof Error ? error.message : String(error);
+      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+    }
+    const server = ["-S", path10.join(socketDir, "tmux.sock")];
+    try {
       const created = await this.#run(this.#tmuxBin, [
+        ...server,
+        "-f",
+        "/dev/null",
         "new-session",
         "-d",
-        ...environmentFlags,
         "-s",
         valve,
         `${this.#claudeBin} attach ${handle.id}`
@@ -17506,20 +17522,21 @@ var ClaudeCliControlPlane = class {
       await delay(this.#valveAttachSettleMs);
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
       }
       await delay(this.#valveSubmitSettleMs);
-      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) {
         return refused("tmux send-keys (submit)", submitted);
       }
       await delay(this.#valveKillSettleMs);
       return { delivered: true };
     } finally {
-      await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
+      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
   async stop(handle) {

@@ -22,6 +22,8 @@ import { boundedEvidence } from "./operator-diagnosis.js";
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 /** Per-dispatch settings directories live under the temp root as `<prefix><dispatch name>-<random>`. */
 const SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
+/** Each valve's private tmux socket lives at `<tmux's socket root>/<prefix><random>/tmux.sock`. */
+const VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 /** The owner evidence written beside `settings.json`, judged by the next launcher's sweep. */
 const OWNER_FILENAME = "owner.json";
 
@@ -158,9 +160,13 @@ export interface ClaudeCliControlPlaneOptions {
    *   `ensemble` run inside a Claude worker resolves those settings from
    *   the machine config and the defaults, except the hold scope, whose
    *   contract is inheritance and which the settings file carries.
-   * - **The valve's `claude attach` client** gets explicit tmux `-e` flags:
-   *   a pre-existing tmux server starts pane commands from the *server's*
-   *   environment, not this client's.
+   * - **The valve's `claude attach` client** runs in a tmux server of its
+   *   own, started for that one valve from the same spread `#env`: a new
+   *   server takes its starting client's environment as the one its panes
+   *   inherit, whereas a pre-existing server starts pane commands from its
+   *   *own* environment. Never as tmux arguments (`new-session -e`): any
+   *   local user can read a process's argv, and the declared values are
+   *   gateway credentials.
    *
    * The harness's own sandboxed-workspace declaration
    * (`SANDBOXED_WORKSPACE_VARIABLE`) rides the second and third surfaces
@@ -205,7 +211,7 @@ interface ExecResult {
 
 /**
  * The real control plane: drives `claude` and `tmux` as child processes. The
- * valve sequence (attach in a disposable tmux pane, settle, type literally,
+ * valve sequence (attach in a disposable tmux server, settle, type literally,
  * submit, kill) is retry-safe because the daemon owns the session, so a
  * botched injection costs a retry, never a worker.
  */
@@ -220,12 +226,17 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
   #valveCounter = 0;
+  /**
+   * Where each valve's socket directory is made: where tmux keeps its own
+   * sockets, by the launcher's own TMUX_TMPDIR (else /tmp). Never a
+   * declared worker variable, so no declared value reaches a valve's
+   * `-S` argument.
+   */
+  #valveSocketRoot: string;
   #env: NodeJS.ProcessEnv;
   #workerEnv: Record<string, string>;
   /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
   #holdScope: string | null;
-  /** The declared worker environment plus the harness's sandboxed-workspace declaration: what every launched `claude` process sees. */
-  #launchEnv: Record<string, string>;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = new Map<string, string>();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
@@ -236,18 +247,21 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#tmuxBin = options.tmuxBin ?? "tmux";
     // Declared variables sit above inherited ones; everything undeclared
     // still inherits, so a configured parent keeps working unchanged. The
-    // declared map is also kept separately: the tmux valve needs it as
-    // explicit -e flags (see steer()).
+    // declared map is also kept separately: the per-dispatch settings file
+    // carries it to the worker session (see #writeWorkerSettings()).
     this.#workerEnv = options.workerEnv ?? {};
     this.#holdScope = options.holdScope === undefined ? resolveHoldScope(undefined, process.env) : options.holdScope;
-    // The sandboxed-workspace declaration is harness bookkeeping and lands
-    // last, above any machine declaration of the same name: every `claude`
-    // this control plane launches must see it, or dispatch fails on trust.
-    this.#launchEnv = { ...this.#workerEnv, [SANDBOXED_WORKSPACE_VARIABLE]: "1" };
     // Inherit the operator's environment minus the run's own settings: a
     // child here can start the per-user daemon, and the daemon must not be
     // homed on this run's record or status directories (see `workerEnv`).
-    this.#env = { ...withoutRunScopedVariables(process.env), ...this.#launchEnv };
+    // The sandboxed-workspace declaration is harness bookkeeping and lands
+    // last, above any machine declaration of the same name: every `claude`
+    // this control plane launches must see it, or dispatch fails on trust.
+    this.#env = {
+      ...withoutRunScopedVariables(process.env),
+      ...this.#workerEnv,
+      [SANDBOXED_WORKSPACE_VARIABLE]: "1"
+    };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
@@ -255,6 +269,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
+    this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -507,20 +522,33 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveCounter += 1;
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
 
+    // Each valve runs in a tmux server of its own, on a socket in a fresh
+    // private directory. A new server's panes inherit the environment of
+    // the client that started it, so the declared worker variables reach
+    // the `claude attach` child through `#env` — a process environment only
+    // this user can read — and never as `new-session -e` arguments, which
+    // any local user can read in the process table. The server reads no
+    // configuration file: the operator's tmux configuration, plugins
+    // included, has no business running on every valve. The directory sits
+    // where tmux keeps its own sockets (`#valveSocketRoot`), not under the
+    // temp root: a socket path is bounded (about 108 bytes), and a deeply
+    // nested TMPDIR overruns it.
+    let socketDir: string;
     try {
-      // A pre-existing tmux server starts the pane's command from the
-      // *server's* environment, not this client's, so the declared worker
-      // variables must ride explicit `-e` flags (tmux >= 3.2) to reach the
-      // `claude attach` child. Without them the injection silently covers
-      // only the server-started-here case.
-      const environmentFlags = Object.entries(this.#launchEnv).flatMap(([name, value]) => [
-        "-e",
-        `${name}=${value}`
-      ]);
+      socketDir = await mkdtemp(path.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+    } catch (error) {
+      const said = error instanceof Error ? error.message : String(error);
+      return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
+    }
+    const server = ["-S", path.join(socketDir, "tmux.sock")];
+
+    try {
       const created = await this.#run(this.#tmuxBin, [
+        ...server,
+        "-f",
+        "/dev/null",
         "new-session",
         "-d",
-        ...environmentFlags,
         "-s",
         valve,
         `${this.#claudeBin} attach ${handle.id}`
@@ -539,20 +567,23 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // as the message needs. Submit follows as its own keystroke.
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "-l", slice]);
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
       }
       await delay(this.#valveSubmitSettleMs);
-      const submitted = await this.#run(this.#tmuxBin, ["send-keys", "-t", valve, "Enter"]);
+      const submitted = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "Enter"]);
       if (!submitted.ok) {
         return refused("tmux send-keys (submit)", submitted);
       }
       await delay(this.#valveKillSettleMs);
       return { delivered: true };
     } finally {
-      await this.#run(this.#tmuxBin, ["kill-session", "-t", valve]);
+      // The server is this valve's alone, so ending it ends the pane too.
+      // tmux leaves its socket file behind; the directory takes it.
+      await this.#run(this.#tmuxBin, [...server, "kill-server"]);
+      await rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

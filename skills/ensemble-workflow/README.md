@@ -300,13 +300,19 @@ Codex and opencode children die with the run and inherit as before — so a
 nested `ensemble` invocation inside a Claude worker resolves those settings
 from the machine config and the defaults; the hold scope, whose contract is
 inheritance by every nested invocation, rides the settings file to the
-worker session instead. Variables the harness does not own are not
-withheld: relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, never by
-pointing `XDG_DATA_HOME` at a scratch directory — Claude Code homes its own
-data on `XDG_DATA_HOME` too, and a dispatch that starts the daemon under a
-relocated value was measured (2026-09-28) to leave the daemon carrying it
-for every later background session; the operator's `claude` launcher was
-found re-pointed into the relocated tree in the same incident.
+worker session instead. The reply valve's `claude attach` client, which
+types follow-up turns into a held session, receives the declared variables
+under the same withholding: each injection starts a tmux server of its own
+from the environment those processes get, and the client inherits the
+variables from that server. Declared values therefore never appear on a
+command line, where other local users can normally read them. Variables
+the harness does not own are not withheld: relocate the run record with
+`ENSEMBLE_RUN_RECORD_DIR`, never by pointing `XDG_DATA_HOME` at a scratch
+directory — Claude Code homes its own data on `XDG_DATA_HOME` too, and a
+dispatch that starts the daemon under a relocated value was measured
+(2026-09-28) to leave the daemon carrying it for every later background
+session; the operator's `claude` launcher was found re-pointed into the
+relocated tree in the same incident.
 
 `opencode_models` declares the models opencode workers may name. It is the
 whole catalogue: the harness ships no models, so without this section every
@@ -729,10 +735,13 @@ engine is held at its one-shot surface).
   finalised at session close.
 - **Claude mechanics worth knowing:** follow-up turns ride the tmux reply
   valve into the held session, delivered in bounded slices so a follow-up of
-  any size (whole diffs included) arrives intact; without tmux, a session's
-  follow-up or correction fails loudly rather than silently substituting a
-  fresh worker, and a refused injection names the tmux step that failed and
-  what it said in the turn's `claude-valve-error` failure.
+  any size (whole diffs included) arrives intact. Each injection runs in a
+  tmux server started for it alone, so it never appears among the
+  operator's own tmux sessions, and that server loads no tmux
+  configuration. Without tmux, a session's follow-up or correction fails loudly
+  rather than silently substituting a fresh worker, and a refused injection
+  names the tmux step that failed and what it said in the turn's
+  `claude-valve-error` failure.
 
 ## Holds
 

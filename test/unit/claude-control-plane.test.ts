@@ -4,7 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 import {
   CLAUDE_CACHE_TTL_VARIABLE,
@@ -736,6 +736,17 @@ test("stop reaps a surviving process tagged with the dispatch's marker", async (
   }
 });
 
+/**
+ * A tmux stub's view of its own invocation. The valve names its private
+ * server before every command (`-S <socket>`, plus `-f <config>` when it
+ * starts the server), so a stub strips those global options to read the
+ * command itself as `command`.
+ */
+const TMUX_STUB_COMMAND = `
+  const command = process.argv.slice(2);
+  while (command[0] === "-S" || command[0] === "-f") command.splice(0, 2);
+`;
+
 test("steer returns false when either tmux delivery step fails", async (context) => {
   for (const failedStep of ["literal", "enter"] as const) {
     await context.test(failedStep, async () => {
@@ -764,9 +775,9 @@ test("steer returns false when either tmux delivery step fails", async (context)
         await writeFile(
           tmuxStub,
           `#!/usr/bin/env node
-            const args = process.argv.slice(2);
-            const literal = args[0] === "send-keys" && args.includes("-l");
-            const enter = args[0] === "send-keys" && args.at(-1) === "Enter";
+            ${TMUX_STUB_COMMAND}
+            const literal = command[0] === "send-keys" && command.includes("-l");
+            const enter = command[0] === "send-keys" && command.at(-1) === "Enter";
             if ((${JSON.stringify(failedStep)} === "literal" && literal) ||
                 (${JSON.stringify(failedStep)} === "enter" && enter)) {
               process.exit(1);
@@ -892,13 +903,24 @@ test("every launched claude child sees the workspace declared sandboxed, above a
   }
 });
 
-test("the valve's attach client receives the sandboxed-workspace declaration beside the declared environment as tmux -e flags", async () => {
+test("the valve's private tmux server starts from the declared environment, and no tmux argument carries a declared value", async () => {
+  // The declared values are gateway credentials, and a process's argv is
+  // readable by every local user: they must reach the attach client only as
+  // the environment its private server starts from.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-sandboxed-"));
   try {
     const claudeStub = path.join(dir, "claude-stub.mjs");
     const tmuxStub = path.join(dir, "tmux-stub.mjs");
-    const tmuxArgvPath = path.join(dir, "tmux-argv.json");
+    const invocationsPath = path.join(dir, "tmux-invocations.jsonl");
     const sessionId = "00000000-0000-4000-8000-000000000022";
+    // A declared TMUX_TMPDIR is the workers' setting, not the valve's: it
+    // must not steer where the valve's socket goes, which would put a
+    // declared value into every `-S` argument.
+    const declared = {
+      ANTHROPIC_BASE_URL: "https://declared.example",
+      ANTHROPIC_AUTH_TOKEN: "declared-gateway-token",
+      TMUX_TMPDIR: "/declared-tmux-root"
+    };
     await writeFile(
       claudeStub,
       `#!/usr/bin/env node
@@ -920,10 +942,12 @@ test("the valve's attach client receives the sandboxed-workspace declaration bes
       tmuxStub,
       `#!/usr/bin/env node
         import { appendFile } from "node:fs/promises";
-        const args = process.argv.slice(2);
-        if (args[0] === "new-session") {
-          await appendFile(${JSON.stringify(tmuxArgvPath)}, JSON.stringify(args) + "\\n");
-        }
+        await appendFile(${JSON.stringify(invocationsPath)}, JSON.stringify({
+          argv: process.argv.slice(2),
+          base: process.env.ANTHROPIC_BASE_URL ?? null,
+          token: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
+          sandboxed: process.env[${JSON.stringify(SANDBOXED_WORKSPACE_VARIABLE)}] ?? null
+        }) + "\\n");
       `
     );
     await chmod(claudeStub, 0o755);
@@ -933,7 +957,7 @@ test("the valve's attach client receives the sandboxed-workspace declaration bes
       claudeBin: claudeStub,
       tmuxBin: tmuxStub,
       projectsDir: dir,
-      workerEnv: { ANTHROPIC_BASE_URL: "https://declared.example" },
+      workerEnv: declared,
       valveAttachSettleMs: 0,
       valveSubmitSettleMs: 0,
       valveKillSettleMs: 0
@@ -941,11 +965,128 @@ test("the valve's attach client receives the sandboxed-workspace declaration bes
     const steered = await controlPlane.steer({ id: "valve-1", sessionId, name: "valve-probe", cwd: dir }, "continue");
     assert.deepEqual(steered, { delivered: true });
 
-    const newSession = JSON.parse((await readFile(tmuxArgvPath, "utf8")).trim()) as string[];
-    const flags = newSession.flatMap((argument, index) => (argument === "-e" ? [newSession[index + 1]] : []));
-    assert.deepEqual(flags, ["ANTHROPIC_BASE_URL=https://declared.example", `${SANDBOXED_WORKSPACE_VARIABLE}=1`]);
+    const invocations = (await readFile(invocationsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; base: string | null; token: string | null; sandboxed: string | null });
+    for (const { argv } of invocations) {
+      for (const value of Object.values(declared)) {
+        assert.ok(
+          argv.every((argument) => !argument.includes(value)),
+          `a tmux invocation carried a declared value in argv: ${JSON.stringify(argv)}`
+        );
+      }
+    }
+
+    // One private server for the whole valve: every command names the same
+    // socket, the server starts on no configuration file, and the valve ends
+    // by killing it.
+    const socket = invocations[0]?.argv[1];
+    assert.ok(invocations.every(({ argv }) => argv[0] === "-S" && argv[1] === socket));
+    assert.deepEqual(invocations[0]?.argv.slice(2, 5), ["-f", "/dev/null", "new-session"]);
+    assert.deepEqual(
+      invocations.slice(1).map(({ argv }) => argv[2]),
+      ["send-keys", "send-keys", "kill-server"]
+    );
+
+    // The server's starting environment is what its pane inherits.
+    const started = invocations[0];
+    assert.deepEqual(
+      { base: started?.base, token: started?.token, sandboxed: started?.sandboxed },
+      { base: declared.ANTHROPIC_BASE_URL, token: declared.ANTHROPIC_AUTH_TOKEN, sandboxed: "1" }
+    );
+
+    // tmux leaves its socket file behind on exit; the valve removes it with
+    // its directory.
+    await assert.rejects(access(path.dirname(socket ?? "")));
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a real tmux valve hands the declared environment and the message to its attach client, and leaves no server behind", async (t) => {
+  try {
+    execFileSync("tmux", ["-V"], { stdio: "ignore" });
+  } catch {
+    t.skip("tmux is not installed");
+    return;
+  }
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-valve-real-"));
+  // The pane runs its command through the server's shell, which tmux takes
+  // from SHELL: a plain sh keeps the attach stub's start well inside the
+  // attach settle, whatever the operator's login shell loads.
+  const savedShell = process.env.SHELL;
+  const savedTmpdir = process.env.TMPDIR;
+  const savedTmuxTmpdir = process.env.TMUX_TMPDIR;
+  process.env.SHELL = "/bin/sh";
+  // tmux keeps its sockets under TMUX_TMPDIR. A short, empty root of the
+  // test's own keeps the valve away from the operator's tmux server and
+  // shows afterwards whether anything — a default server's socket
+  // directory, a valve's leftover one — was made there.
+  const tmuxRoot = await mkdtemp(path.join("/tmp", "ensemble-tmux-root-"));
+  process.env.TMUX_TMPDIR = tmuxRoot;
+  try {
+    const claudeStub = path.join(dir, "claude-stub.sh");
+    const sessionId = "00000000-0000-4000-8000-000000000024";
+    const roster = JSON.stringify([
+      { id: "valve-real-1", sessionId, name: "valve-real-probe", kind: "background", cwd: dir, status: "idle", state: "blocked" }
+    ]);
+    // The attach stub records the two variables it inherited, then echoes
+    // its terminal input to a file, as the real attach client would take it.
+    await writeFile(
+      claudeStub,
+      `#!/bin/sh
+case "$1" in
+  agents) printf '%s' '${roster}' ;;
+  attach)
+    printf '%s\\n%s\\n' "$ANTHROPIC_AUTH_TOKEN" "$${SANDBOXED_WORKSPACE_VARIABLE}" > '${dir}/attach-env.tmp'
+    mv '${dir}/attach-env.tmp' '${dir}/attach-env'
+    exec cat > '${dir}/attach-input'
+    ;;
+esac
+`
+    );
+    await chmod(claudeStub, 0o755);
+    // A temp root deeper than any socket path can be: the valve's socket
+    // lives where tmux keeps its own, so the temp root must not matter.
+    const deepTmpdir = path.join(dir, "t".repeat(120));
+    await mkdir(deepTmpdir);
+    process.env.TMPDIR = deepTmpdir;
+
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: claudeStub,
+      projectsDir: dir,
+      workerEnv: { ANTHROPIC_AUTH_TOKEN: "declared-gateway-token" },
+      valveAttachSettleMs: 1_500,
+      valveSubmitSettleMs: 200,
+      valveKillSettleMs: 1_000
+    });
+    const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, "continue");
+    assert.deepEqual(steered, { delivered: true });
+
+    assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
+    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), "continue\n");
+    assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
+    // The server is forked from the client that started it and keeps that
+    // client's argv, which names the stub; it exits once killed, though not
+    // necessarily before the kill command returns.
+    const deadline = Date.now() + 5_000;
+    while ((await processesNaming(claudeStub)).length > 0) {
+      assert.ok(Date.now() < deadline, "the valve's tmux server outlived the valve");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } finally {
+    restoreEnv("SHELL", savedShell);
+    restoreEnv("TMPDIR", savedTmpdir);
+    restoreEnv("TMUX_TMPDIR", savedTmuxTmpdir);
+    // Only a valve that used the default server leaves one running here.
+    try {
+      execFileSync("tmux", ["kill-server"], { env: { ...process.env, TMUX_TMPDIR: tmuxRoot }, stdio: "ignore" });
+    } catch {
+      // No server under the test's root: the expected case.
+    }
+    await rm(dir, { recursive: true, force: true });
+    await rm(tmuxRoot, { recursive: true, force: true });
   }
 });
 
@@ -993,9 +1134,9 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
       tmuxStub,
       `#!/usr/bin/env node
         import { appendFile } from "node:fs/promises";
-        const args = process.argv.slice(2);
-        if (args[0] === "send-keys") {
-          await appendFile(${JSON.stringify(sendKeysPath)}, JSON.stringify(args.slice(3)) + "\\n");
+        ${TMUX_STUB_COMMAND}
+        if (command[0] === "send-keys") {
+          await appendFile(${JSON.stringify(sendKeysPath)}, JSON.stringify(command.slice(3)) + "\\n");
         }
       `
     );
@@ -1112,6 +1253,17 @@ test("a dispatch the daemon accepted but never registered is a registration time
   }
 });
 
+
+/** Pids whose command line mentions `text`; a process that exits mid-scan is passed over. */
+async function processesNaming(text: string): Promise<number[]> {
+  const pids: number[] = [];
+  for (const entry of await readdir("/proc").catch(() => [] as string[])) {
+    if (/^\d+$/.test(entry) && (await readFile(path.join("/proc", entry, "cmdline"), "utf8").catch(() => "")).includes(text)) {
+      pids.push(Number(entry));
+    }
+  }
+  return pids;
+}
 
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {

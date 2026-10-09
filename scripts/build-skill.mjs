@@ -9,9 +9,11 @@
 // single source of truth; only the moment of reading it moves from runtime to
 // build time.
 //
-// The bundle travels as one file, so the licences of the third-party packages
-// esbuild inlines travel inside it: THIRD_PARTY_NOTICES is appended as a
-// closing comment. The build fails when the bundled packages and the notices'
+// The bundle travels as one file, so its licensing travels inside it: it
+// opens with Ensemble's own copyright and licence notice, built from
+// package.json's author, licence, and repository, and the licences of the
+// third-party packages esbuild inlines follow at the end — THIRD_PARTY_NOTICES
+// is appended as a closing comment. The build fails when the bundled packages and the notices'
 // `Package:` entries disagree, so a dependency change cannot ship without its
 // licence or keep a stale one.
 
@@ -35,6 +37,28 @@ if (typeof pkg.version !== "string" || pkg.version.trim().length === 0) {
   throw new Error("package.json is missing version; cannot inline the harness version");
 }
 
+const sourceUrl = /^git\+(https:\/\/.+?)(?:\.git)?$/.exec(pkg.repository?.url ?? "")?.[1];
+if (typeof pkg.author !== "string" || typeof pkg.license !== "string" || sourceUrl === undefined) {
+  throw new Error("package.json needs author, license, and a git+https repository.url for the launcher's licence notice");
+}
+const licenceNotice = `/*
+ * Ensemble — multi-engine workflow runtime for AI coding agents.
+ * Copyright (C) 2026 ${pkg.author}
+ * SPDX-License-Identifier: ${pkg.license}
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU Affero General Public License as published by the
+ * Free Software Foundation, either version 3 of the License, or (at your
+ * option) any later version. It is distributed in the hope that it will be
+ * useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+ * General Public License for more details.
+ *
+ * Source code and the full licence text: ${sourceUrl}
+ * Bundled third-party packages keep their own licences, reproduced at the end
+ * of this file.
+ */`;
+
 const notices = readFileSync(noticesPath, "utf8");
 if (notices.includes("*/")) {
   throw new Error("THIRD_PARTY_NOTICES contains */, which would end the comment that carries it");
@@ -47,6 +71,7 @@ const result = await build({
   format: "esm",
   target: "node24",
   outfile,
+  banner: { js: licenceNotice },
   write: false,
   metafile: true,
   define: {

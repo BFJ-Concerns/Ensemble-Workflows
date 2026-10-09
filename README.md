@@ -220,6 +220,7 @@ Copyright (C) 2026 BFJ Concerns.
 
 Ensemble is licensed under the GNU Affero General Public License, version 3
 or (at your option) any later version. See [LICENSE](LICENSE). The launcher
-bundles third-party packages under their own licences, listed in
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and included at the end of the
-launcher file itself.
+file opens with this copyright and licence notice, so a copy carried on its
+own keeps it. It also bundles third-party packages under their own licences,
+listed in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and included at the end
+of the launcher file itself.

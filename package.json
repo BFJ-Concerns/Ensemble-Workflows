@@ -1,8 +1,18 @@
 {
   "name": "ensemble-workflows",
   "version": "0.0.1",
+  "private": true,
   "description": "Deterministic multi-engine orchestration harness for Codex, Claude, opencode, and cross-engine verification.",
   "license": "AGPL-3.0-or-later",
+  "author": "BFJ Concerns",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BFJ-Concerns/Ensemble-Workflows.git"
+  },
+  "homepage": "https://github.com/BFJ-Concerns/Ensemble-Workflows#readme",
+  "bugs": {
+    "url": "https://github.com/BFJ-Concerns/Ensemble-Workflows/issues"
+  },
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",

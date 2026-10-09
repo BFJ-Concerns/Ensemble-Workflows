@@ -1,0 +1,60 @@
+# CI on GitHub Actions.
+#
+# Runs `just verify` — the same command a dev box runs — on a GitHub-hosted
+# Ubuntu VM. What the gate checks lives in the justfile, not here, so the two
+# cannot drift apart. The steps before it only provide the gate's toolchain:
+# Node 24, just, the `codex` CLI (some tests ask it for the app-server
+# protocol schema), and a systemd user session (the recursion test bounds
+# each child with `systemd-run --user --scope` and reads its cgroup).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    # A hang costs this long, not GitHub's 6 h default; the ceiling is well
+    # above the gate's normal run time.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install just and codex
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y just
+          npm install --global @openai/codex@0.160.0
+
+      # Lingering starts the runner user's systemd manager; the exported
+      # variables let `systemd-run --user` reach it from later steps.
+      - name: Start a systemd user session
+        run: |
+          uid=$(id -u)
+          sudo loginctl enable-linger "$USER"
+          for _ in $(seq 1 30); do
+            [ -S "/run/user/$uid/bus" ] && break
+            sleep 1
+          done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify
+        run: just verify

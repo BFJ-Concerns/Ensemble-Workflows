@@ -30,12 +30,12 @@ function progressAt(clock: () => number, budget: BudgetView = new StubBudget()):
 }
 
 function documentedStatusSchemaSection(): string {
-  const readme = readFileSync("README.md", "utf8");
-  const start = readme.indexOf("### `ensemble.<run-uuid>.local.json` schema");
-  const end = readme.indexOf("Example:", start);
-  assert.notEqual(start, -1, "README must document the status file schema");
-  assert.notEqual(end, -1, "README schema section must end before the example");
-  return readme.slice(start, end);
+  const reference = readFileSync("docs/run-records.md", "utf8");
+  const start = reference.indexOf("### `ensemble.<run-uuid>.local.json` schema");
+  const end = reference.indexOf("Example:", start);
+  assert.notEqual(start, -1, "docs/run-records.md must document the status file schema");
+  assert.notEqual(end, -1, "docs/run-records.md schema section must end before the example");
+  return reference.slice(start, end);
 }
 
 function documentedTopLevelFields(section: string): string[] {
@@ -45,7 +45,7 @@ function documentedTopLevelFields(section: string): string[] {
 function documentedBullet(section: string, field: string): string {
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = section.match(new RegExp(`^- \`${escaped}\`:[\\s\\S]*?(?=\\n- \`|\\n\\n)`, "m"));
-  assert.ok(match !== null, `README must document ${field}`);
+  assert.ok(match !== null, `docs/run-records.md must document ${field}`);
   return match[0];
 }
 
@@ -92,7 +92,7 @@ test("queue → start → settle tracks per-engine and total counts", () => {
   assert.equal(snapshot.agents.length, 0);
 });
 
-test("README status file schema stays in sync with progress snapshots", () => {
+test("documented status file schema stays in sync with progress snapshots", () => {
   const clock = 1_000;
   const budget = new StubBudget();
   budget.ceilings.codex = 100;

@@ -1073,7 +1073,7 @@ interface RunEndingWatch {
  * uncaught exception after the body settled is reported and returned as the
  * teardown failure; a late `process.exit` is reported as ignored, in a line
  * that says what stands (the result) rather than borrowing the in-window
- * message's consequence; a late signal is silent — the README documents it
+ * message's consequence; a late signal is silent — docs/cli.md documents it
  * as absorbed. Null when there is nothing to degrade.
  */
 function lateEndingJudge(ending: RunEndingWatch, stderr: Writable): () => { kind: string; message: string } | null {

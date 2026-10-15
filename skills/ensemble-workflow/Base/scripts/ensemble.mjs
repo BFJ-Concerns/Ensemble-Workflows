@@ -14176,6 +14176,13 @@ var FallbackTargetRejectedError = class extends AgentOptionRejectedError {
     super(`Invalid fallback chain: ${detail}`);
   }
 };
+var LeanStartUnsupportedError = class extends AgentOptionRejectedError {
+  constructor(engine, detail) {
+    super(
+      `the ${engine} engine cannot arrange a lean start: ${detail}. The worker was not dispatched. Remove the lean request, or use an engine that can withhold the operator's context.`
+    );
+  }
+};
 var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine, capability, detail) {
     super(
@@ -14363,7 +14370,8 @@ var AGENT_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   identity: true,
-  strip: true
+  strip: true,
+  lean: true
 });
 var AGENT_OPTION_KEY_SET = new Set(AGENT_OPTION_KEYS);
 var REMOVED_AGENT_OPTION_KEYS = /* @__PURE__ */ new Set(["sandbox", "network", "webSearch", "fallbackModel"]);
@@ -14423,6 +14431,11 @@ function assertValidAgentOptions(options) {
   if (values.strip !== void 0) {
     collect(() => assertValidStripOption(values.strip));
   }
+  collect(() => {
+    if (values.lean !== void 0 && typeof values.lean !== "boolean") {
+      throw new InvalidAgentOptionValueError("lean", values.lean, "a boolean");
+    }
+  });
   collect(() => assertValidFallbackChain(values.fallback));
   if (errors.length === 1) {
     throw errors[0];
@@ -14443,6 +14456,7 @@ var WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
+  lean: true,
   stalenessMark: true
 });
 var WORKER_SESSION_OPTION_KEY_SET = new Set(WORKER_SESSION_OPTION_KEYS);
@@ -14466,6 +14480,9 @@ function assertValidWorkerSessionOptions(options) {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== void 0 && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.lean !== void 0 && typeof values.lean !== "boolean") {
+    throw new InvalidAgentOptionValueError("lean", values.lean, "a boolean");
   }
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
@@ -16097,6 +16114,7 @@ var RunRecordWriter = class _RunRecordWriter {
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       strip: record.strip,
+      lean: record.lean,
       session: record.session,
       transcript_capture: record.transcriptCapture,
       parse_route: record.parseRoute,
@@ -17185,6 +17203,17 @@ function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/lean-start.ts
+function effectiveLean(runWide, perCall) {
+  return runWide === true || perCall === true;
+}
+function resolveLeanStart(engine, support) {
+  if (support === void 0 || support.route === "unsupported") {
+    throw new LeanStartUnsupportedError(engine, support?.detail ?? "the engine declares no lean-start route");
+  }
+  return { route: support.route, detail: support.detail };
+}
+
 // src/failure-classification.ts
 var OUTPUT_FAILURE_KINDS = /* @__PURE__ */ new Set(["empty-output", "invalid-json", "schema-validation"]);
 var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
@@ -17306,6 +17335,7 @@ var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
+var LEAN_START_FLAGS = ["--setting-sources", "project,local", "--strict-mcp-config"];
 var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
@@ -17360,6 +17390,9 @@ var ClaudeCliControlPlane = class {
     }
     if (options.effort !== void 0) {
       args.push("--effort", options.effort);
+    }
+    if (options.lean === true) {
+      args.push(...LEAN_START_FLAGS);
     }
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
@@ -18271,6 +18304,7 @@ var ClaudeEngineInvocation = class {
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
       ...this.#options.effort !== void 0 ? { effort: this.#options.effort } : {},
       ...denyRules.length > 0 ? { permissionDenyRules: denyRules } : {},
+      ...this.#options.lean === true ? { lean: true } : {},
       // Loiter pricing: only a session meant to be resumed pays the
       // 1-hour cache-write premium; one-shot workers keep the 5m default.
       ...this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {}
@@ -21345,6 +21379,16 @@ var CodexEngineAdapter = class {
       detail: "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
     }
   };
+  /**
+   * No measured route withholds the operator's `~/.codex` instructions,
+   * skills and MCP servers from one thread (judged 2026-10-15 against
+   * codex-cli 0.153.2); a lean request on Codex fails loud pre-spawn until
+   * one is measured through the thread/start config overlay.
+   */
+  leanStart = {
+    route: "unsupported",
+    detail: "judged 2026-10-15 on codex-cli 0.153.2: no measured per-thread route withholds the operator's ~/.codex instructions, skills and MCP servers"
+  };
   #transport;
   #scheduler;
   constructor(options) {
@@ -21468,6 +21512,21 @@ var ClaudeEngineAdapter = class {
       detail: "worker tool surface measured 2026-08-28 on Claude Code 2.1.250 used mcp__-prefixed names; that session's skills pair showed the bare Skill deny working (Skill absent under a skills strip, present in the baseline). The agents deny set was witnessed 2026-08-30 on Claude Code 2.1.251: ListAgents and SendMessage were absent at the stripped worker, while the unstripped control demonstrated discovery and messaging. Agent was also absent, but the witness cannot isolate it from the machine-wide Agent deny. Task remains in the delivered deny set, which the exact-set regression proves."
     }
   };
+  /**
+   * The lean route is the dispatch's own flags (`claude-control-plane`'s
+   * `dispatch()`): `--setting-sources project,local` withholds the user
+   * settings layer, and with it the operator's rules files (they ride the
+   * first user message as attachments), the operator's skill listing, the
+   * plugins' MCP servers and the user-level permission mode;
+   * `--strict-mcp-config` closes the user-scope MCP servers a
+   * `~/.claude.json` adds. Project and local settings, the project's
+   * CLAUDE.md, the built-in tools and the per-dispatch settings file all
+   * still apply, so the worker keeps its reach and its default tool surface.
+   */
+  leanStart = {
+    route: "config",
+    detail: "measured 2026-10-15 on Claude Code 2.1.300: --setting-sources project,local and --strict-mcp-config withhold the user settings layer, the operator's rules files, the skill listing and every MCP server; a --bg worker's first user message fell from 44,601 to 591 characters and its first-request cached input from 36,706 to 30,206 tokens, the residue being the engine's own tool schemas, inlined whole (63 KB against 27 KB) once the user layer's deny rules and tool deferral no longer apply"
+  };
   #scheduler;
   #cwd;
   #controlPlane;
@@ -21550,6 +21609,11 @@ var OpenCodeEngineAdapter = class {
       route: "unsupported",
       detail: "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
+  };
+  /** Held at its one-shot surface and never measured for a lean start; a lean request fails loud pre-spawn. */
+  leanStart = {
+    route: "unsupported",
+    detail: "judged 2026-10-15: no measured route withholds the operator's opencode context; the engine is held at its current surface"
   };
   #scheduler;
   #cwd;
@@ -21805,6 +21869,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #defaultMaxAttempts;
   /** Run-wide capability strip, united with each call's own list. */
   #strip;
+  /** The run-wide lean start: every worker begins without the operator's interactive context. */
+  #lean;
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -21860,6 +21926,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       assertValidStripOption(options.strip);
     }
     this.#strip = options.strip ?? [];
+    this.#lean = options.lean === true;
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
       runId: options.runId ?? randomUUID5(),
@@ -21947,6 +22014,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
+      ...options.lean !== void 0 ? { lean: options.lean } : {},
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -22039,13 +22107,18 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const lean = effectiveLean(this.#lean, options.lean);
+    const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+      if (lean) {
+        resolveLeanStart(targetEngine.name, targetEngine.leanStart);
+      }
     }
-    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
+    const dispatchOptions = strip.length === 0 && !lean ? options : { ...options, ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} };
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
@@ -22060,7 +22133,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, leanRoute);
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -22152,6 +22225,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
+    const lean = effectiveLean(this.#lean, options.lean);
+    const leanRoute = lean ? resolveLeanStart(engine.name, engine.leanStart) : null;
     for (const target of options.fallback ?? []) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
@@ -22160,8 +22235,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
+      if (lean) {
+        resolveLeanStart(targetEngine.name, targetEngine.leanStart);
+      }
     }
-    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+    const sessionOptions = strip.length === 0 && !lean ? options : { ...options, ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} };
     this.#sessionCounter += 1;
     const state = {
       id: this.#sessionCounter,
@@ -22170,6 +22248,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
+      leanRoute,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its configured (injected) cache TTL, Codex's the measured coin-flip
       // idle point — both overridable as library-level runtime options.
@@ -22246,9 +22325,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.label !== void 0 ? { label: options.label } : {},
         ...options.phase !== void 0 ? { phase: options.phase } : {},
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
-        ...options.strip !== void 0 ? { strip: options.strip } : {}
+        ...options.strip !== void 0 ? { strip: options.strip } : {},
+        ...options.lean === true ? { lean: true } : {}
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.leanRoute);
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -22292,6 +22372,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     state.stalenessThresholdMs = targetEngine.name === "claude" ? this.#claudeSessionStaleAfterMs : this.#codexSessionStaleAfterMs;
     const options = state.options;
     state.stripRoutes = this.#recordStripRoutesFor(agentRecord, targetEngine, options.strip);
+    state.leanRoute = this.#recordLeanRouteFor(agentRecord, targetEngine, options.lean);
     state.placement ??= await this.#placement.open({
       ...options.cwd !== void 0 ? { cwd: options.cwd } : {},
       ...options.isolation !== void 0 ? { isolation: options.isolation } : {}
@@ -22316,7 +22397,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
           ...options.model !== void 0 ? { model: options.model } : {},
           ...options.effort !== void 0 ? { effort: options.effort } : {},
           ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
-          ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {}
+          ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
+          ...options.lean === true ? { lean: true } : {}
         },
         state.placement.cwd
       )
@@ -22901,6 +22983,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
+    this.#recordLeanRouteFor(agentRecord, engine, options.lean);
     let invocation;
     let completion;
     const attempts = { target, ledger, chainRemains };
@@ -23282,6 +23365,19 @@ var EnsembleRuntime = class _EnsembleRuntime {
     record.strip = { requested: [...strip], enforcement };
     return enforcement;
   }
+  /**
+   * The lean route the archive records is the *dispatching* engine's, as
+   * the strip routes are: a chain step onto another engine re-resolves it
+   * (judged enforceable pre-spawn, so this cannot newly throw).
+   */
+  #recordLeanRouteFor(record, engine, lean) {
+    if (lean !== true) {
+      return null;
+    }
+    const route = resolveLeanStart(engine.name, engine.leanStart);
+    record.lean = { requested: true, ...route };
+    return route;
+  }
   /** One classification call for every failed attempt, so the archive's class always came from the same table. */
   #classify(engine, failure, appServerDiagnostic, diagnostics) {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });
@@ -23364,10 +23460,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.model !== void 0 ? { model: options.model } : {},
       ...options.effort !== void 0 ? { effort: options.effort } : {},
       ...options.strip !== void 0 && options.strip.length > 0 ? { strip: options.strip } : {},
+      ...options.lean === true ? { lean: true } : {},
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+  #newAgentRecord(id, engine, prompt, options, stripRoutes = null, leanRoute = null) {
     return {
       id,
       engine,
@@ -23394,6 +23491,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       concurrencyGroup: engine,
       schema: options.schema ?? null,
       strip: stripRoutes === null || options.strip === void 0 ? null : { requested: [...options.strip], enforcement: stripRoutes },
+      lean: leanRoute === null ? null : { requested: true, ...leanRoute },
       session: null,
       transcriptCapture: null,
       parseRoute: null,
@@ -30403,7 +30501,8 @@ var AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  lean: { type: "boolean" }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -30620,6 +30719,7 @@ async function runEnsembleCli(argv, options = {}) {
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
+      ...invocation.lean === true ? { lean: true } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
@@ -30986,6 +31086,7 @@ function cliFlags(invocation) {
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
+    ...invocation.lean === true ? { lean: true } : {},
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -31193,7 +31294,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        lean: { type: "boolean" }
       },
       strict: true,
       allowPositionals: false
@@ -31223,7 +31325,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
-    ...holdScope !== void 0 ? { holdScope } : {}
+    ...holdScope !== void 0 ? { holdScope } : {},
+    ...parsed.values.lean === true ? { lean: true } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin, program) {
@@ -31296,7 +31399,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
-    ...holdScope !== void 0 ? { holdScope } : {}
+    ...holdScope !== void 0 ? { holdScope } : {},
+    ...parsed.values.lean === true ? { lean: true } : {}
   };
 }
 async function readPrompt(stdin) {
@@ -31345,7 +31449,7 @@ function splitTuningFlags(argv, program) {
     if (value === "agent" && tuningArgs.length > 0) {
       throw new CliUsageError(`Tuning flags must appear after ${program} agent, not before it`);
     }
-    if (isKnownInlineOption(value)) {
+    if (isKnownInlineOption(value) || isBooleanTuningOption(value)) {
       tuningArgs.push(value);
       continue;
     }
@@ -31362,7 +31466,9 @@ function splitTuningFlags(argv, program) {
       throw new CliUsageError(`Unknown option before script path: ${value}`);
     }
     const scriptArgs = argv.slice(index + 1);
-    const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
+    const misplacedTuningFlag = scriptArgs.find(
+      (argument) => isKnownOption(argument) || isKnownInlineOption(argument) || isBooleanTuningOption(argument)
+    );
     if (misplacedTuningFlag !== void 0) {
       throw new CliUsageError(
         `Tuning flag ${misplacedTuningFlag} appears after the script path; put tuning flags before the script, or put \`--\` before the script path to pass it through`
@@ -31446,6 +31552,9 @@ function isBooleanAgentFlag(value) {
 }
 function isKnownOption(value) {
   return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
+}
+function isBooleanTuningOption(value) {
+  return value === "--lean";
 }
 function isKnownInlineOption(value) {
   return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
@@ -31712,7 +31821,8 @@ var RUN_OPTION_SYNOPSES = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--lean"
 ];
 var AGENT_OPTION_SYNOPSES = [
   "--model <model>",
@@ -31731,7 +31841,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--lean"
 ];
 function usage(program) {
   const forms = [

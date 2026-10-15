@@ -8,6 +8,7 @@ import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { LeanStartUnsupportedError } from "../../src/errors.js";
 import {
   AgentCwdRejectedError,
   AgentOptionRejectedError,
@@ -35,7 +36,7 @@ import {
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import { Scheduler } from "../../src/scheduler.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions, EngineWorkerSession } from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -4223,4 +4224,124 @@ test("with no chain declared, no attempt carries a chain decision and no chain n
     [["codex/agentFailed", null]]
   );
   await runtime.close();
+});
+
+/** A ChainEngine that also holds sessions: each turn answers the next scripted step on the same engine. */
+class SessionEngine extends ChainEngine {
+  readonly sessionsCreated: Array<{ model: string | undefined }> = [];
+
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    this.sessionsCreated.push({ model: options.model });
+    const invocation = this.createInvocation.bind(this);
+    return {
+      beginTurn: (prompt, turn) => invocation(prompt, { ...options, ...(turn.schema !== undefined ? { schema: turn.schema } : {}) }),
+      close: async () => {}
+    };
+  }
+}
+
+test("a lean start reaches the engine's turn options and the durable record, and a worker nobody asked to be lean is unchanged", async () => {
+  const seen: Array<boolean | undefined> = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seen.push(options.lean);
+      return { runAttempt: async () => turn("done") };
+    },
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    await runtime.agent("lean work", { engine: "claude", lean: true });
+    await runtime.agent("ordinary work", { engine: "claude" });
+    assert.deepEqual(seen, [true, undefined]);
+    assert.deepEqual(records.find((record) => record.prompt === "lean work")?.lean, {
+      requested: true,
+      route: "config",
+      detail: "setting sources withheld"
+    });
+    assert.equal(records.find((record) => record.prompt === "ordinary work")?.lean, null);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a lean start an engine cannot arrange fails loud before any worker spawns — on the call's engine and on a chain entry alike", async () => {
+  const invocations: string[] = [];
+  const codex: EngineAdapter = {
+    name: "codex",
+    concurrency: 1,
+    leanStart: { route: "unsupported", detail: "no measured route" },
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      invocations.push("codex");
+      return { runAttempt: async () => turn("never") };
+    },
+    close: async () => undefined
+  };
+  const claude: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: () => {
+      invocations.push("claude");
+      return { runAttempt: async () => turn("never") };
+    },
+    close: async () => undefined
+  };
+  const records: unknown[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), defaultMaxAttempts: 1 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(record); } } as RunRecordWriter);
+  try {
+    await assert.rejects(
+      () => runtime.agent("lean work", { engine: "codex", lean: true }),
+      (error: unknown) => error instanceof LeanStartUnsupportedError && error.message.includes("no measured route")
+    );
+    // The chain entry is a dispatch of its own: judged now, not on the day the chain first advances.
+    await assert.rejects(
+      () => runtime.agent("lean work", { engine: "claude", lean: true, fallback: [{ engine: "codex", model: "gpt-6.1-sol" }] }),
+      LeanStartUnsupportedError
+    );
+    assert.deepEqual(invocations, []);
+    assert.deepEqual(records, []);
+    // The option is a boolean: anything else is a rejected option, pre-spawn.
+    await assert.rejects(() => runtime.agent("x", { engine: "claude", lean: "yes" as unknown as boolean }), /lean/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a run-wide lean start reaches every worker, a call cannot lift it, and a session carries it for its life", async () => {
+  const seen: Array<{ engine: string; lean: boolean | undefined }> = [];
+  const claude = new SessionEngine("claude", [answers("one"), answers("two"), answers("three")]);
+  const leanClaude: EngineAdapter = Object.assign(claude, { leanStart: { route: "config" as const, detail: "setting sources withheld" } });
+  const createInvocation = claude.createInvocation.bind(claude);
+  claude.createInvocation = (prompt, options) => {
+    seen.push({ engine: "claude", lean: options.lean });
+    return createInvocation(prompt, options);
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([leanClaude]), defaultMaxAttempts: 1, lean: true });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    assert.equal(await runtime.agent("one", { engine: "claude", lean: false }), "one");
+    const session = runtime.createWorkerSession({ engine: "claude" });
+    assert.equal(await session.send("two"), "two");
+    assert.equal(await session.send("three"), "three");
+    await session.close();
+    // The one-shot call and each of the session's two turns, every dispatch lean.
+    assert.deepEqual(seen.map((entry) => entry.lean), [true, true, true]);
+    assert.deepEqual(claude.sessionsCreated, [{ model: undefined }]);
+    for (const record of records) {
+      assert.deepEqual(record.lean, { requested: true, route: "config", detail: "setting sources withheld" }, record.prompt);
+    }
+  } finally {
+    await runtime.close();
+  }
 });

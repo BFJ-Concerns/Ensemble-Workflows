@@ -65,6 +65,7 @@ export interface CliFlagsRecord {
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   strip?: string[];
+  lean?: boolean;
   jsonArgs: boolean;
 }
 
@@ -267,6 +268,13 @@ export interface RuntimeAgentRecord {
     requested: StrippableCapability[];
     enforcement: Partial<Record<StrippableCapability, DischargedEnforcement>>;
   } | null;
+  /**
+   * The call's lean start, where one was requested: the route the
+   * dispatching engine arranged it through and the measurement the route
+   * rests on. Null when nobody asked — the worker then started with the
+   * operator's full interactive context, as every worker does by default.
+   */
+  lean: { requested: true; route: "config"; detail: string } | null;
   /**
    * The multi-turn worker session this record is one turn of: the
    * run-scoped session ordinal and this record's 1-based turn number within
@@ -952,6 +960,7 @@ export class RunRecordWriter {
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
       strip: record.strip,
+      lean: record.lean,
       session: record.session,
       transcript_capture: record.transcriptCapture,
       parse_route: record.parseRoute,

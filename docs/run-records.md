@@ -461,6 +461,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   unresponsive engine.
 - `schema`: the requested JSON Schema, or `null`.
 - `strip`: requested capability names and how each was enforced.
+- `lean`: `{ requested: true, route, detail }` where a lean start was
+  requested — the route the dispatching engine arranged it through and the
+  measurement behind it — or `null` where nobody asked.
 - `session`: the held session's run-scoped id and this record's turn number,
   or `null` for a one-shot call.
 - `transcript_capture`: what the engine's capture path observed for this turn —

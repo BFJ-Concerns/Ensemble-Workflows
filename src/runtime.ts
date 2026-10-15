@@ -243,6 +243,34 @@ interface UnsettledAgentRecord {
 }
 
 /**
+ * The author's options with a few properties settled by the runtime — the
+ * effective strip, the lean start — laid over them. A view over the
+ * author's object, not a copy, for the reason `optionsForTarget` gives: a
+ * copy would drop options an author's accessor or Proxy trap supplies. The
+ * overrides answer `get`, `has`, `ownKeys` and property descriptors alike,
+ * so a spread or an `in` test downstream sees them as own properties.
+ */
+function withOptionOverrides<T extends object>(options: T, overrides: Record<string, unknown>): T {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(source, property, receiver);
+    },
+    has(source, property) {
+      return (typeof property === "string" && Object.hasOwn(overrides, property)) || Reflect.has(source, property);
+    },
+    ownKeys(source) {
+      return [...new Set([...Reflect.ownKeys(source), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(source, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(source, property);
+    }
+  });
+}
+
+/**
  * The promise `agent()` hands the script — the exact object, so marking it
  * handled reaches what the script holds. Null until the call is created:
  * `agent()` starts the leg's async settlement and only then has the
@@ -794,11 +822,13 @@ export class EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    // The author's object is kept whole where nothing is added (a Proxy's
-    // get trap must keep supplying its options); a copy is taken only to
-    // carry the effective strip or lean.
+    // The author's object is kept whole — a Proxy's get trap must keep
+    // supplying its options — with the effective strip and lean laid over
+    // it as a view, never a copy.
     const dispatchOptions =
-      strip.length === 0 && !lean ? options : { ...options, ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) };
+      strip.length === 0 && !lean
+        ? options
+        : withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
     // The per-engine budget is an admission boundary, judged once per
     // agent() call, synchronously here — so the outcome depends only on
     // the script's dispatch order, never on how usage events interleave
@@ -959,7 +989,9 @@ export class EnsembleRuntime {
       }
     }
     const sessionOptions =
-      strip.length === 0 && !lean ? options : { ...options, ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) };
+      strip.length === 0 && !lean
+        ? options
+        : withOptionOverrides(options, { ...(strip.length > 0 ? { strip } : {}), ...(lean ? { lean: true } : {}) });
 
     this.#sessionCounter += 1;
     const state: WorkerSessionState = {

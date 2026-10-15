@@ -627,13 +627,6 @@ export class FallbackTargetRejectedError extends AgentOptionRejectedError {
 }
 
 /**
- * Thrown before any worker spawns when a requested capability strip cannot
- * be enforced through the target engine's own configuration surface. A
- * restriction the author asked for and did not get is exactly the silent
- * no-op the options invariant exists to prevent — the worker must not
- * dispatch unrestricted.
- */
-/**
  * A lean start asked for on an engine that cannot arrange one. Pre-spawn
  * by construction: the judgement is made before any worker exists, so no
  * worker ever dispatches carrying the operator's context the author
@@ -648,6 +641,13 @@ export class LeanStartUnsupportedError extends AgentOptionRejectedError {
   }
 }
 
+/**
+ * Thrown before any worker spawns when a requested capability strip cannot
+ * be enforced through the target engine's own configuration surface. A
+ * restriction the author asked for and did not get is exactly the silent
+ * no-op the options invariant exists to prevent — the worker must not
+ * dispatch unrestricted.
+ */
 export class CapabilityStripUnsupportedError extends AgentOptionRejectedError {
   constructor(engine: string, capability: string, detail: string) {
     super(

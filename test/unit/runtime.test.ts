@@ -4345,3 +4345,42 @@ test("a run-wide lean start reaches every worker, a call cannot lift it, and a s
     await runtime.close();
   }
 });
+
+test("a run-wide lean start lays its flag over the author's options without copying them: a Proxy's get trap still supplies the rest", async () => {
+  const seen: EngineTurnOptions[] = [];
+  const engine: EngineAdapter = {
+    name: "claude",
+    concurrency: 1,
+    capabilities: { skills: { route: "config", detail: "deny rules" }, agents: { route: "config", detail: "deny rules" } },
+    leanStart: { route: "config", detail: "setting sources withheld" },
+    schedule: async (task) => task(),
+    createInvocation: (_prompt, options) => {
+      seen.push(options);
+      return { runAttempt: async () => turn('{"ok":true}') };
+    },
+    close: async () => undefined
+  };
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 1, lean: true, strip: ["skills"] });
+  try {
+    // Only `engine` is an own property; the deadline and schema come from
+    // the get trap alone, as an author's accessor-backed options would.
+    const options = new Proxy({ engine: "claude" } as Partial<AgentOptions>, {
+      get(target, property, receiver) {
+        if (property === "timeoutMs") {
+          return 1234;
+        }
+        if (property === "schema") {
+          return { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
+        }
+        return Reflect.get(target, property, receiver);
+      }
+    });
+    assert.deepEqual(await runtime.agent("go", options), { ok: true });
+    assert.equal(seen[0]?.lean, true);
+    assert.deepEqual(seen[0]?.strip, ["skills"]);
+    assert.equal(seen[0]?.timeoutMs, 1234);
+    assert.deepEqual(seen[0]?.schema, { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] });
+  } finally {
+    await runtime.close();
+  }
+});

@@ -21786,6 +21786,25 @@ function optionsForTarget(options, target) {
     }
   });
 }
+function withOptionOverrides(options, overrides) {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(source, property, receiver);
+    },
+    has(source, property) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(source, property);
+    },
+    ownKeys(source) {
+      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(source), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(source, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(source, property);
+    }
+  });
+}
 var RUN_ENDED_LEG = {
   "in-flight": "while this worker's turn was in flight",
   queued: "before this worker's queued turn was dispatched",
@@ -22118,7 +22137,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    const dispatchOptions = strip.length === 0 && !lean ? options : { ...options, ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} };
+    const dispatchOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
@@ -22239,7 +22258,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveLeanStart(targetEngine.name, targetEngine.leanStart);
       }
     }
-    const sessionOptions = strip.length === 0 && !lean ? options : { ...options, ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} };
+    const sessionOptions = strip.length === 0 && !lean ? options : withOptionOverrides(options, { ...strip.length > 0 ? { strip } : {}, ...lean ? { lean: true } : {} });
     this.#sessionCounter += 1;
     const state = {
       id: this.#sessionCounter,
@@ -31279,6 +31298,17 @@ async function parseInvocation(argv, cwd, stdin, program) {
   }
   return parseWorkflowInvocation(argv, cwd, program);
 }
+var WORKFLOW_TUNING_OPTIONS = {
+  "json-args": { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  strip: { type: "string", multiple: true },
+  "caller-identity": { type: "string" },
+  "hold-scope": { type: "string" },
+  lean: { type: "boolean" }
+};
 async function parseWorkflowInvocation(argv, cwd, program) {
   const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
@@ -31286,17 +31316,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
   try {
     parsed = parseArgs({
       args: split.tuningArgs,
-      options: {
-        "json-args": { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        strip: { type: "string", multiple: true },
-        "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" },
-        lean: { type: "boolean" }
-      },
+      options: WORKFLOW_TUNING_OPTIONS,
       strict: true,
       allowPositionals: false
     });
@@ -31554,7 +31574,11 @@ function isKnownOption(value) {
   return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
 }
 function isBooleanTuningOption(value) {
-  return value === "--lean";
+  if (!value.startsWith("--")) {
+    return false;
+  }
+  const name = value.slice(2);
+  return Object.hasOwn(WORKFLOW_TUNING_OPTIONS, name) && WORKFLOW_TUNING_OPTIONS[name].type === "boolean";
 }
 function isKnownInlineOption(value) {
   return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");

@@ -1245,6 +1245,19 @@ async function parseInvocation(argv: string[], cwd: string, stdin: Readable, pro
   return parseWorkflowInvocation(argv, cwd, program);
 }
 
+/** The run-tuning flags a workflow invocation takes before the script path; a value-less flag is one whose `type` is `boolean`. */
+const WORKFLOW_TUNING_OPTIONS = {
+  "json-args": { type: "string" },
+  budget: { type: "string", multiple: true },
+  "agent-ceiling": { type: "string" },
+  concurrency: { type: "string", multiple: true },
+  timeout: { type: "string" },
+  strip: { type: "string", multiple: true },
+  "caller-identity": { type: "string" },
+  "hold-scope": { type: "string" },
+  lean: { type: "boolean" }
+} as const;
+
 async function parseWorkflowInvocation(argv: string[], cwd: string, program: string): Promise<ParsedWorkflowInvocation> {
   const split = splitTuningFlags(argv, program);
   rejectDuplicateScalarFlags(split.tuningArgs);
@@ -1252,17 +1265,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
   try {
     parsed = parseArgs({
       args: split.tuningArgs,
-      options: {
-        "json-args": { type: "string" },
-        budget: { type: "string", multiple: true },
-        "agent-ceiling": { type: "string" },
-        concurrency: { type: "string", multiple: true },
-        timeout: { type: "string" },
-        strip: { type: "string", multiple: true },
-        "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" },
-        lean: { type: "boolean" }
-      },
+      options: WORKFLOW_TUNING_OPTIONS,
       strict: true,
       allowPositionals: false
     });
@@ -1581,9 +1584,13 @@ function isKnownOption(value: string): boolean {
   );
 }
 
-/** A tuning flag that consumes no value token. */
+/** A tuning flag that consumes no value token, read off the option map's own `type` — not a hand-kept flag list. */
 function isBooleanTuningOption(value: string): boolean {
-  return value === "--lean";
+  if (!value.startsWith("--")) {
+    return false;
+  }
+  const name = value.slice(2);
+  return Object.hasOwn(WORKFLOW_TUNING_OPTIONS, name) && WORKFLOW_TUNING_OPTIONS[name as keyof typeof WORKFLOW_TUNING_OPTIONS].type === "boolean";
 }
 
 function isKnownInlineOption(value: string): boolean {

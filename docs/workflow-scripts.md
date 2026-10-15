@@ -140,12 +140,17 @@ A failed worker is already its call's `null`. A thunk or stage that throws for
 any other reason also becomes `null` in the results, and is logged. Check
 fan-in results for `null`.
 
-One family of errors propagates instead and fails the run: errors in how the
-script was written, raised before any worker spawns. These are a rejected
-`agent()` option, a malformed schema, an unresolvable `workflow()` reference
-or non-JSON `workflow()` arguments, a nesting violation, and a child
-workflow's load-time error. When several of a call's options fail the
-option check, one error names them all.
+Two things propagate instead. One is errors in how the script was written,
+raised before any worker spawns: a rejected `agent()` option, a malformed
+schema, an unresolvable `workflow()` reference or non-JSON `workflow()`
+arguments, a nesting violation, and a child workflow's load-time error (when
+several of a call's options fail the option check, one error names them all).
+The other is the run's own ending — an interrupt, the whole-run timeout, the
+launcher closing the run under a leg still in flight — which throws through
+`parallel()` and `pipeline()` as it does through a bare `await`, so a body
+never resumes past the combinator to run further code (commit, push, write a
+results file) on a run that has already begun ending. Only a worker's own
+failure is a value.
 
 To tell a failed call from one that legitimately answered `null`, pass
 `identity: true`. The call then resolves `{ label, phase, output, failure }`,
@@ -330,7 +335,8 @@ cannot pass silently:
   (`ClaudeDispatchError`, `CodexSubstrateRefusedError`), a strip that cannot
   be enforced, or a budget refusal.
 - The run's own ending — an interrupt or a whole-run timeout — which throws
-  through any call it cut short.
+  through any call it cut short, and through `parallel()` and `pipeline()`
+  around it.
 
 A schema value of JSON `null` that validates is a successful answer, not a
 failure.

@@ -15,26 +15,27 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
-  AppServerExitedError,
   AgentPromptRejectedError,
+  appServerDiagnosticOf,
+  AppServerExitedError,
+  attachAgentIdentity,
+  CodexSchemaSubsetUnsupportedError,
+  describeError,
   EngineShutdownError,
+  failedTurnResultOf,
   FallbackTargetRejectedError,
+  firstDeltaMsOf,
   HoldRejectedError,
+  markRunEnding,
   MissingEngineError,
   MultiTurnUnsupportedError,
-  CodexSchemaSubsetUnsupportedError,
+  partialTranscriptOf,
+  partialWorkerTextOf,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
-  TallyRejectedError,
-  appServerDiagnosticOf,
-  attachAgentIdentity,
-  describeError,
-  failedTurnResultOf,
-  firstDeltaMsOf,
-  partialWorkerTextOf,
-  partialTranscriptOf,
   SubstrateRefusedError,
+  TallyRejectedError,
   TurnTimeoutError,
   UnknownEngineError,
   workerExitStatusOf
@@ -1469,6 +1470,11 @@ export class EnsembleRuntime {
         // tells the operator the chain behind it was spent.
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
+        }
+        // The run's own ending leaves marked, so the combinators rethrow
+        // it rather than collapse it to a value or an identity envelope.
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
         }
         throw error;
       }

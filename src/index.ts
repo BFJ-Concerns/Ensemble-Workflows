@@ -91,7 +91,9 @@ export {
   attachPartialWorkerText,
   partialWorkerTextOf,
   attachWorkerExitStatus,
-  workerExitStatusOf
+  workerExitStatusOf,
+  markRunEnding,
+  isRunEnding
 } from "./errors.js";
 export type { WorkerExitStatus } from "./errors.js";
 export {

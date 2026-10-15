@@ -14034,6 +14034,13 @@ function agentIdentityOf(error) {
   }
   return null;
 }
+function markRunEnding(error) {
+  error.ensembleRunEnding = true;
+  return error;
+}
+function isRunEnding(error) {
+  return error instanceof Error && error.ensembleRunEnding === true;
+}
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -22562,6 +22569,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         if (agentRecord.attempts.at(-1)?.chainDecision === "exhausted") {
           this.#announceFailure(engineName, identity, agentId, agentRecord, error);
         }
+        if (error instanceof Error && this.#runSettlementCause(error) !== null) {
+          markRunEnding(error);
+        }
         throw error;
       }
       return this.#failedValue(engineName, identity, agentId, agentRecord, error);
@@ -23613,7 +23623,7 @@ async function parallel(thunks, log, presentError) {
       try {
         return await thunk();
       } catch (error) {
-        if (error instanceof PreSpawnAuthorError) {
+        if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
           throw error;
         }
         presentError?.(error);
@@ -23644,7 +23654,7 @@ async function pipeline(items, stages, log, presentError) {
         try {
           previous = await stage(previous, item, index);
         } catch (error) {
-          if (error instanceof PreSpawnAuthorError) {
+          if (error instanceof PreSpawnAuthorError || isRunEnding(error)) {
             throw error;
           }
           presentError?.(error);

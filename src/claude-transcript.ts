@@ -474,20 +474,22 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
 
 /** The tool whose successful call moves the session into a worktree; its result names the path. */
 const WORKTREE_TOOL = "EnterWorktree";
-/** A created worktree's result sentence, as Claude Code 2.1.300 writes it (measured 2026-10-15). */
-const WORKTREE_CREATED = /^Created worktree at (\S+) on branch (\S+)\./;
+/** A created worktree's result sentence, as Claude Code 2.1.300 writes it (measured 2026-10-15); the path may hold spaces, the branch may not. */
+const WORKTREE_CREATED = /^Created worktree at (.+?) on branch (\S+)\./;
 
 /**
  * The worktrees the worker moved itself into since `fromIndex`, read from
  * its `EnterWorktree` calls and their results. A creation names path and
  * branch in one sentence; a switch into an existing worktree (`path` in
  * the call's input) is read from the result echoing that path, with no
- * branch. Read only from the tool's own result on a `user` row — the row
- * Claude Code delivers the result to the model on; its `api-request-blob`
- * rows log the request body and repeat the same block (measured 2026-10-15,
- * 2.1.300) — and once per call. A worker whose shell output quotes the
- * sentence has entered nothing, and an `EnterWorktree` call whose result
- * names no path (a refusal) enters nothing.
+ * branch — the switch's result shape is not measured, so the echo is the
+ * weakest reading the result supports. Read only from the tool's own
+ * result on a `user` row — the row Claude Code delivers the result to the
+ * model on; its `api-request-blob` rows log the request body and repeat
+ * the same block (measured 2026-10-15, 2.1.300) — once per call, and
+ * never from a result Claude Code marked `is_error`: a refusal that quotes
+ * the requested path entered nothing. A worker whose shell output quotes
+ * the sentence has entered nothing either.
  */
 export function enteredWorktrees(entries: TranscriptEntry[], fromIndex = 0): EnteredWorktree[] {
   const calls = new Map<string, { path: string | null }>();
@@ -520,6 +522,9 @@ export function enteredWorktrees(entries: TranscriptEntry[], fromIndex = 0): Ent
         continue;
       }
       calls.delete(result.toolUseId);
+      if (result.isError) {
+        continue;
+      }
       const created = WORKTREE_CREATED.exec(result.text);
       if (created?.[1] !== undefined && created[2] !== undefined) {
         entered.push({ path: created[1], branch: created[2] });
@@ -574,17 +579,20 @@ function toolUseBlocks(content: unknown): ToolCall[] {
   return calls;
 }
 
-function toolResultBlocks(content: unknown): Array<{ toolUseId: string; text: string }> {
+function toolResultBlocks(content: unknown): Array<{ toolUseId: string; text: string; isError: boolean }> {
   if (!Array.isArray(content)) {
     return [];
   }
-  const results: Array<{ toolUseId: string; text: string }> = [];
+  const results: Array<{ toolUseId: string; text: string; isError: boolean }> = [];
   for (const block of content) {
     const record = asRecord(block);
     if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
       continue;
     }
-    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+    // Claude Code marks a tool's refusal on the block itself; a reader
+    // that keys on the result's prose must never take a refusal that
+    // echoes the request for the thing requested.
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content), isError: record.is_error === true });
   }
   return results;
 }

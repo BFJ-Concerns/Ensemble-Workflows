@@ -1168,14 +1168,17 @@ esac
 test("valveSlices cuts a message into typed-length, code-point-whole send-keys arguments that rejoin exactly", () => {
   assert.deepEqual(valveSlices(""), []);
   assert.deepEqual(valveSlices("continue"), ["continue"]);
-  // Two sends the client reads as one must still fall under its paste
-  // threshold: the slice is half of it by construction.
-  assert.ok(VALVE_SLICE_CHARS * 2 <= VALVE_PASTE_THRESHOLD_CHARS);
+  // Three sends the client reads as one must still fall under its paste
+  // threshold: the slice is a quarter of it by construction.
+  assert.ok(VALVE_SLICE_CHARS * 3 < VALVE_PASTE_THRESHOLD_CHARS);
 
   // Astral characters take two UTF-16 code units, so a cut by code units
   // lands between a surrogate pair somewhere unless the slicer steps by code
-  // point; the newline keeps the fixture line-shaped.
-  const message = "a😀\n".repeat(20_000);
+  // point. The repeat is five code units long, which no slice bound that is
+  // a multiple of four divides, so a naive `slice(offset, offset + bound)`
+  // would tear a pair at some boundary; the newline keeps the fixture
+  // line-shaped.
+  const message = "ab😀\n".repeat(20_000);
   const slices = valveSlices(message);
   assert.ok(slices.length > 1);
   for (const slice of slices) {

@@ -246,22 +246,36 @@ test("enteredWorktrees names the worktree an EnterWorktree call created, from th
   );
   assert.equal(enteredWorktrees(logged).length, 1);
 
-  // A switch into an existing worktree names its path in the call and the
-  // result echoes it; the branch is not Claude Code's to name there.
+  // A created worktree's path may hold spaces; the branch may not.
+  const spaced = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_sp", "EnterWorktree", {})], { stop: "tool_use" }),
+      toolResult("toolu_sp", "Created worktree at /repo with spaces/.claude/worktrees/fix on branch worktree-fix. The session is now working in the worktree."),
+      assistant([textBlock("done")])
+    ].join("\n")
+  );
+  assert.deepEqual(enteredWorktrees(spaced), [{ path: "/repo with spaces/.claude/worktrees/fix", branch: "worktree-fix" }]);
+
+  // A switch into an existing worktree names its path in the call; its
+  // result shape is unmeasured, so the reader takes the weakest reading —
+  // a non-error result echoing the path — and names no branch.
   const switched = parseTranscriptText(
     [
       assistant([toolUse("toolu_sw", "EnterWorktree", { path: "/repo/.claude/worktrees/existing" })], { stop: "tool_use" }),
-      toolResult("toolu_sw", "Switched to the worktree at /repo/.claude/worktrees/existing on branch worktree-existing."),
+      toolResult("toolu_sw", "Now working in /repo/.claude/worktrees/existing."),
       assistant([textBlock("done")])
     ].join("\n")
   );
   assert.deepEqual(enteredWorktrees(switched), [{ path: "/repo/.claude/worktrees/existing", branch: null }]);
 
-  // A refused call entered nothing.
+  // A refused call entered nothing — including a refusal that quotes the
+  // requested path, which Claude Code marks `is_error` on the block.
   const refused = parseTranscriptText(
     [
       assistant([toolUse("toolu_no", "EnterWorktree", {})], { stop: "tool_use" }),
       toolResult("toolu_no", "EnterWorktree failed: not a git repository."),
+      assistant([toolUse("toolu_bad", "EnterWorktree", { path: "/repo/.claude/worktrees/existing" })], { stop: "tool_use" }),
+      toolResult("toolu_bad", "Cannot enter /repo/.claude/worktrees/existing: not a worktree.", true),
       assistant([textBlock("edited in place")])
     ].join("\n")
   );
@@ -270,8 +284,11 @@ test("enteredWorktrees names the worktree an EnterWorktree call created, from th
 
 // A tool result row as Claude Code persists it: a user entry whose content
 // is a tool_result block naming the call it answers.
-function toolResult(toolUseId: string, text: string): string {
-  return JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: text }] } });
+function toolResult(toolUseId: string, text: string, isError = false): string {
+  return JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: text, ...(isError ? { is_error: true } : {}) }] }
+  });
 }
 
 function toolUse(id: string, name: string, input: Record<string, unknown>): unknown {

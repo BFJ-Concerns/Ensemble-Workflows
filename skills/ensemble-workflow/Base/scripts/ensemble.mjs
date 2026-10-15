@@ -17354,7 +17354,7 @@ var ClaudeCliControlPlane = class {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
-    this.#valveSliceGapMs = options.valveSliceGapMs ?? 20;
+    this.#valveSliceGapMs = options.valveSliceGapMs ?? 30;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
   async dispatch(options) {
@@ -17724,7 +17724,7 @@ function normaliseState(state) {
   return "unknown";
 }
 var VALVE_PASTE_THRESHOLD_CHARS = 800;
-var VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 2;
+var VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 4;
 function refused(step, result) {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
@@ -17959,7 +17959,7 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
   return [...outstanding.values()];
 }
 var WORKTREE_TOOL = "EnterWorktree";
-var WORKTREE_CREATED = /^Created worktree at (\S+) on branch (\S+)\./;
+var WORKTREE_CREATED = /^Created worktree at (.+?) on branch (\S+)\./;
 function enteredWorktrees(entries, fromIndex = 0) {
   const calls = /* @__PURE__ */ new Map();
   const entered = [];
@@ -17991,6 +17991,9 @@ function enteredWorktrees(entries, fromIndex = 0) {
         continue;
       }
       calls.delete(result.toolUseId);
+      if (result.isError) {
+        continue;
+      }
       const created = WORKTREE_CREATED.exec(result.text);
       if (created?.[1] !== void 0 && created[2] !== void 0) {
         entered.push({ path: created[1], branch: created[2] });
@@ -18034,7 +18037,7 @@ function toolResultBlocks(content) {
     if (record?.type !== "tool_result" || typeof record.tool_use_id !== "string") {
       continue;
     }
-    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content) });
+    results.push({ toolUseId: record.tool_use_id, text: blockText(record.content), isError: record.is_error === true });
   }
   return results;
 }

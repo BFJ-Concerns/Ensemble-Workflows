@@ -293,7 +293,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
-    this.#valveSliceGapMs = options.valveSliceGapMs ?? 20;
+    this.#valveSliceGapMs = options.valveSliceGapMs ?? 30;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
 
@@ -840,16 +840,21 @@ function normaliseState(state: unknown): ClaudeSessionState {
 export const VALVE_PASTE_THRESHOLD_CHARS = 800;
 
 /**
- * Largest length, in UTF-16 code units, of one `send-keys -l` argument: half
- * the paste threshold, so that two consecutive sends the client happens to
- * read together still fall under it, with `valveSliceGapMs` between sends
- * making even that coalescing unlikely. A slice is far inside the two outer
- * caps a send must also respect — tmux refuses a client command over
- * 16 KiB ("command too long", measured on tmux 3.7c) and Linux rejects one
- * argv element over 128 KiB (`spawn E2BIG`) — since 400 code units is at
- * most 1,200 bytes of UTF-8.
+ * Largest length, in UTF-16 code units, of one `send-keys -l` argument: a
+ * quarter of the paste threshold, so that three consecutive sends the
+ * client happens to read together still fall under it, with
+ * `valveSliceGapMs` between sends making even two coalescing unlikely.
+ * The valve has no acknowledgement from the attach client, so a client
+ * stalled across four or more sends is the one shape that could still
+ * coalesce past the threshold; the slice size and the gap are the levers,
+ * and the measured comparison is strictly greater than the threshold (a
+ * read of exactly 800 types). A slice is far inside the two outer caps a
+ * send must also respect — tmux refuses a client command over 16 KiB
+ * ("command too long", measured on tmux 3.7c) and Linux rejects one argv
+ * element over 128 KiB (`spawn E2BIG`) — since 200 code units is at most
+ * 600 bytes of UTF-8.
  */
-export const VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 2;
+export const VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 4;
 
 /** A refused valve step, named with the bounded text tmux gave for it. */
 function refused(step: string, result: ExecResult): ValveDelivery {

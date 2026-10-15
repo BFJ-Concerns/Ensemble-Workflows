@@ -21972,6 +21972,22 @@ var EnsembleRuntime = class _EnsembleRuntime {
   setRunRecorder(recorder) {
     this.#runRecorder = recorder;
   }
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Returns the same
+   * promise.
+   */
+  trackCallPromise(promise) {
+    const call = { outward: promise };
+    this.#openCalls.add(call);
+    void promise.finally(() => {
+      this.#openCalls.delete(call);
+    }).catch(() => void 0);
+    return promise;
+  }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
     this.progress.setPhase(title);
@@ -22032,7 +22048,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   async #agentCall(prompt, options) {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     options = snapshotAgentCwd(options);
@@ -22209,7 +22225,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return session;
   }
   async #runSessionTurn(state, prompt, turn) {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -22307,7 +22326,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => void 0);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
@@ -22512,6 +22531,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }
@@ -23571,6 +23593,7 @@ function createWorkflowHooks(options) {
     options.log(message);
   };
   const defaults = options.defaults ?? {};
+  const track = (promise) => options.runtime.trackCallPromise !== void 0 ? options.runtime.trackCallPromise(promise) : promise;
   function agentWithDefaults(prompt, agentOptions) {
     return options.runtime.agent(prompt, mergeAgentDefaults(defaults, agentOptions));
   }
@@ -23591,8 +23614,8 @@ function createWorkflowHooks(options) {
       return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    parallel: (thunks) => track(parallel(thunks, writeLog, options.presentError)),
+    pipeline: (items, ...stages) => track(pipeline(items, stages, writeLog, options.presentError)),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);

@@ -653,6 +653,23 @@ export class EnsembleRuntime {
     this.#runRecorder = recorder;
   }
 
+  /**
+   * Holds a promise the script receives from a combinator — `parallel()`,
+   * `pipeline()` — open from creation to settlement, exactly as `agent()`
+   * holds its own, so a run ending that rejects it (the combinators rethrow
+   * the run's own ending) is marked handled at close when nothing awaits
+   * it, never raised against a run that ended cleanly. Returns the same
+   * promise.
+   */
+  trackCallPromise<T>(promise: Promise<T>): Promise<T> {
+    const call: AgentCall = { outward: promise };
+    this.#openCalls.add(call);
+    void promise.finally(() => {
+      this.#openCalls.delete(call);
+    }).catch(() => undefined);
+    return promise;
+  }
+
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title: string): void {
     this.progress.setPhase(title);
@@ -739,7 +756,9 @@ export class EnsembleRuntime {
 
   async #agentCall(prompt: string, options: Partial<AgentOptions>): Promise<string | unknown | null> {
     if (this.#closed) {
-      throw new Error("EnsembleRuntime is closed");
+      // A call made after the run began ending is the run's ending reaching
+      // the body, not a worker failing: marked, so a combinator rethrows it.
+      throw markRunEnding(new Error("EnsembleRuntime is closed"));
     }
     assertValidAgentPrompt(prompt);
     // `cwd` is read here and nowhere else on this path: what follows works
@@ -975,7 +994,11 @@ export class EnsembleRuntime {
   }
 
   async #runSessionTurn(state: WorkerSessionState, prompt: string, turn: SessionTurnOptions): Promise<unknown> {
-    if (this.#closed || state.closed) {
+    if (this.#closed) {
+      // The run's ending, not the session's own close: marked for the combinators.
+      throw markRunEnding(new SessionClosedError());
+    }
+    if (state.closed) {
       throw new SessionClosedError();
     }
     if (state.inFlight) {
@@ -1117,7 +1140,7 @@ export class EnsembleRuntime {
       const placement = state.placement;
       state.placement = null;
       await this.#placement.close(placement).catch(() => undefined);
-      throw new SessionClosedError();
+      throw this.#closed ? markRunEnding(new SessionClosedError()) : new SessionClosedError();
     }
     agentRecord.resolvedCwd = state.placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
@@ -1384,6 +1407,11 @@ export class EnsembleRuntime {
         this.#settleTerminalStatus(agentRecord, error, "queued");
         agentRecord.queuedMs += Math.max(0, Date.now() - queuedAt);
         await this.#recordSettlementSafely(agentId, agentRecord);
+        // A queued leg the shutdown cancelled leaves as the run's ending
+        // too — this path never reaches #executeAgent's marking site.
+        if (error instanceof Error && this.#runSettlementCause(error, "queued") !== null) {
+          markRunEnding(error);
+        }
       }
       throw error;
     }

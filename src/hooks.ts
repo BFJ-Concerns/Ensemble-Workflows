@@ -26,6 +26,13 @@ export interface WorkflowRuntime {
    * it validates against the module default, as before.
    */
   readonly openCodeModelRegistry?: OpenCodeModelRegistry | undefined;
+  /**
+   * Holds a combinator's promise open from creation to settlement as the
+   * runtime holds `agent()`'s own, so the run's ending rejecting it is
+   * marked handled at close when the script never awaited it. Optional: a
+   * runtime without it leaves an un-awaited combinator's rejection to Node.
+   */
+  trackCallPromise?: <T>(promise: Promise<T>) => Promise<T>;
   // The canonical overload set, not a Parameters/ReturnType projection of
   // the runtime method: TypeScript resolves those utility types to the
   // *last* overload alone, which is exactly the collapse that hid the
@@ -115,6 +122,11 @@ export function createWorkflowHooks(options: {
     options.log(message);
   };
   const defaults = options.defaults ?? {};
+  // The combinators' promises are the script's to await or not; the run's
+  // ending rejects them (hooks rethrow it), so they are held open like a
+  // call's own promise and marked handled at close when nothing awaits.
+  const track = <T,>(promise: Promise<T>): Promise<T> =>
+    options.runtime.trackCallPromise !== undefined ? options.runtime.trackCallPromise(promise) : promise;
 
   // The defaults-merging wrapper restates the canonical signatures so each
   // call site narrows exactly as a direct runtime call would; the merged
@@ -147,8 +159,8 @@ export function createWorkflowHooks(options: {
       return raiseHold.call(options.runtime, holdOptions);
     },
     workflow: options.workflow,
-    parallel: (thunks) => parallel(thunks, writeLog, options.presentError),
-    pipeline: (items, ...stages) => pipeline(items, stages, writeLog, options.presentError),
+    parallel: (thunks) => track(parallel(thunks, writeLog, options.presentError)),
+    pipeline: (items, ...stages) => track(pipeline(items, stages, writeLog, options.presentError)),
     phase: (title) => {
       options.runtime.notePhase(title);
       writeLog(`[phase] ${title}`);

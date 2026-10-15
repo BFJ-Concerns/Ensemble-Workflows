@@ -16132,6 +16132,7 @@ var RunRecordWriter = class _RunRecordWriter {
           observed_at: wait.observedAt,
           ended_at: wait.endedAt
         })),
+        worktrees_entered: attempt.worktreesEntered.map((worktree) => ({ path: worktree.path, branch: worktree.branch })),
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,
@@ -17307,6 +17308,7 @@ var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
 var CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
+var BACKGROUND_ISOLATION_VARIABLE = "CLAUDE_BG_ISOLATION";
 var SANDBOXED_WORKSPACE_VARIABLE = "CLAUDE_CODE_SANDBOXED";
 var ClaudeCliControlPlane = class {
   #claudeBin;
@@ -17318,6 +17320,7 @@ var ClaudeCliControlPlane = class {
   #valveAttachSettleMs;
   #valveSubmitSettleMs;
   #valveKillSettleMs;
+  #valveSliceGapMs;
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17351,6 +17354,7 @@ var ClaudeCliControlPlane = class {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
+    this.#valveSliceGapMs = options.valveSliceGapMs ?? 20;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
   async dispatch(options) {
@@ -17412,6 +17416,7 @@ var ClaudeCliControlPlane = class {
    */
   async #writeWorkerSettings(dispatchName, permissionDenyRules, cacheTtl) {
     const env = {
+      [BACKGROUND_ISOLATION_VARIABLE]: "none",
       ...this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {},
       ...cacheTtl !== void 0 ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {},
       ...this.#workerEnv,
@@ -17539,7 +17544,10 @@ var ClaudeCliControlPlane = class {
       await delay(this.#valveAttachSettleMs);
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        if (index > 0) {
+          await delay(this.#valveSliceGapMs);
+        }
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -17715,7 +17723,8 @@ function normaliseState(state) {
   }
   return "unknown";
 }
-var VALVE_SLICE_BYTES = 8 * 1024;
+var VALVE_PASTE_THRESHOLD_CHARS = 800;
+var VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 2;
 function refused(step, result) {
   const said = result.stderr.trim() || result.stdout.trim() || "exited without a message";
   return { delivered: false, reason: `${step} failed: ${boundedEvidence(said)}` };
@@ -17723,16 +17732,12 @@ function refused(step, result) {
 function valveSlices(message) {
   const slices = [];
   let current2 = "";
-  let currentBytes = 0;
   for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
+    if (current2.length + character.length > VALVE_SLICE_CHARS) {
       slices.push(current2);
       current2 = "";
-      currentBytes = 0;
     }
     current2 += character;
-    currentBytes += characterBytes;
   }
   if (current2 !== "") {
     slices.push(current2);
@@ -17952,6 +17957,49 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
     }
   }
   return [...outstanding.values()];
+}
+var WORKTREE_TOOL = "EnterWorktree";
+var WORKTREE_CREATED = /^Created worktree at (\S+) on branch (\S+)\./;
+function enteredWorktrees(entries, fromIndex = 0) {
+  const calls = /* @__PURE__ */ new Map();
+  const entered = [];
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === void 0) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      const content = entry.message?.content;
+      if (!Array.isArray(content)) {
+        continue;
+      }
+      for (const block of content) {
+        const record = asRecord(block);
+        if (record?.type === "tool_use" && record.name === WORKTREE_TOOL && typeof record.id === "string") {
+          const input = asRecord(record.input);
+          calls.set(record.id, { path: typeof input?.path === "string" && input.path.length > 0 ? input.path : null });
+        }
+      }
+      continue;
+    }
+    if (entry.type !== "user") {
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      const call = calls.get(result.toolUseId);
+      if (call === void 0) {
+        continue;
+      }
+      calls.delete(result.toolUseId);
+      const created = WORKTREE_CREATED.exec(result.text);
+      if (created?.[1] !== void 0 && created[2] !== void 0) {
+        entered.push({ path: created[1], branch: created[2] });
+      } else if (call.path !== null && result.text.includes(call.path)) {
+        entered.push({ path: call.path, branch: null });
+      }
+    }
+  }
+  return entered;
 }
 var BACKGROUNDING_TOOLS = {
   Bash: (input) => input?.run_in_background === true,
@@ -18505,6 +18553,7 @@ var ClaudeEngineInvocation = class {
     const resolvedModel = resolvedModelSince(entries, fromIndex);
     const resolvedEffort = effortSince(entries, fromIndex);
     const usage2 = usageSince(entries, fromIndex);
+    const worktreesEntered = enteredWorktrees(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage2, usage2);
     return {
@@ -18512,6 +18561,7 @@ var ClaudeEngineInvocation = class {
       ...resolvedModel !== null ? { resolvedModel } : {},
       ...resolvedEffort !== null ? { resolvedEffort } : {},
       ...this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {},
+      ...worktreesEntered.length > 0 ? { worktreesEntered } : {},
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -18568,7 +18618,8 @@ var ClaudeEngineInvocation = class {
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex),
-      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
+      backgroundWaits: this.#waits.map((wait) => ({ ...wait })),
+      worktreesEntered: enteredWorktrees(transcript.entries, fromIndex)
     };
   }
   /** The failed turn's spend, as the same event shape the success path emits. */
@@ -18705,11 +18756,13 @@ function failedTurnResult(error, evidence, usageEvent) {
   const resolvedModel = evidence?.resolvedModel ?? null;
   const resolvedEffort = evidence?.resolvedEffort ?? null;
   const backgroundWaits = evidence?.backgroundWaits ?? [];
+  const worktreesEntered = evidence?.worktreesEntered ?? [];
   return {
     text,
     ...resolvedModel !== null ? { resolvedModel } : {},
     ...resolvedEffort !== null ? { resolvedEffort } : {},
     ...backgroundWaits.length > 0 ? { backgroundWaits } : {},
+    ...worktreesEntered.length > 0 ? { worktreesEntered } : {},
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -23463,7 +23516,8 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
     diagnostics: result?.diagnostics ?? {},
-    backgroundWaits: result?.backgroundWaits ?? []
+    backgroundWaits: result?.backgroundWaits ?? [],
+    worktreesEntered: result?.worktreesEntered ?? []
   };
 }
 function rejectBlankHoldScope(holdScope) {

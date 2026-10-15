@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   effortSince,
+  enteredWorktrees,
   finalAssistantText,
   outstandingBackgroundTasks,
   parseTranscriptText,
@@ -212,6 +213,59 @@ test("usageSince never re-counts a message id an earlier turn already counted", 
   assert.equal(later.totalTokens, 83);
   // The whole session, read from the start, still counts each call once.
   assert.equal(usageSince(entries).totalTokens, 55 + 83);
+});
+
+test("enteredWorktrees names the worktree an EnterWorktree call created, from the tool's own result and nothing else", () => {
+  // The rows as Claude Code 2.1.300 writes them (measured 2026-10-15): the
+  // creation result names path and branch in one sentence.
+  const created = "Created worktree at /repo/.claude/worktrees/main-js-return-2 on branch worktree-main-js-return-2. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.";
+  const entries = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_wt", "EnterWorktree", {})], { stop: "tool_use" }),
+      toolResult("toolu_wt", created),
+      // A shell command whose output quotes the sentence has entered nothing.
+      assistant([toolUse("toolu_cat", "Bash", { command: "cat notes.txt" })], { stop: "tool_use" }),
+      toolResult("toolu_cat", created),
+      assistant([textBlock("done")])
+    ].join("\n")
+  );
+  assert.deepEqual(enteredWorktrees(entries), [{ path: "/repo/.claude/worktrees/main-js-return-2", branch: "worktree-main-js-return-2" }]);
+  // Read from the turn's own rows: an earlier turn's worktree is not this turn's.
+  assert.deepEqual(enteredWorktrees(entries, 2), []);
+
+  // Claude Code also logs each request body as an `api-request-blob` row
+  // carrying the same tool_result block (measured 2026-10-15, 2.1.300): the
+  // result counts once, from the user row that delivered it.
+  const logged = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_wt", "EnterWorktree", {})], { stop: "tool_use" }),
+      JSON.stringify({ type: "api-request-blob", hash: "abc", message: { content: [{ type: "tool_result", tool_use_id: "toolu_wt", content: created }] } }),
+      toolResult("toolu_wt", created),
+      assistant([textBlock("done")])
+    ].join("\n")
+  );
+  assert.equal(enteredWorktrees(logged).length, 1);
+
+  // A switch into an existing worktree names its path in the call and the
+  // result echoes it; the branch is not Claude Code's to name there.
+  const switched = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_sw", "EnterWorktree", { path: "/repo/.claude/worktrees/existing" })], { stop: "tool_use" }),
+      toolResult("toolu_sw", "Switched to the worktree at /repo/.claude/worktrees/existing on branch worktree-existing."),
+      assistant([textBlock("done")])
+    ].join("\n")
+  );
+  assert.deepEqual(enteredWorktrees(switched), [{ path: "/repo/.claude/worktrees/existing", branch: null }]);
+
+  // A refused call entered nothing.
+  const refused = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_no", "EnterWorktree", {})], { stop: "tool_use" }),
+      toolResult("toolu_no", "EnterWorktree failed: not a git repository."),
+      assistant([textBlock("edited in place")])
+    ].join("\n")
+  );
+  assert.deepEqual(enteredWorktrees(refused), []);
 });
 
 // A tool result row as Claude Code persists it: a user entry whose content

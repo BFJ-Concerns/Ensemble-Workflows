@@ -18,5 +18,6 @@
   "target",
   "token_usage_events",
   "validated_output",
-  "worker_exit"
+  "worker_exit",
+  "worktrees_entered"
 ]

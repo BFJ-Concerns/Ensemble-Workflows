@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { ClaudeTranscriptError } from "./errors.js";
 
-import type { TokenUsageBreakdown } from "./types.js";
+import type { EnteredWorktree, TokenUsageBreakdown } from "./types.js";
 
 /**
  * A Claude background session persists its conversation as newline-delimited
@@ -470,6 +470,65 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
     }
   }
   return [...outstanding.values()];
+}
+
+/** The tool whose successful call moves the session into a worktree; its result names the path. */
+const WORKTREE_TOOL = "EnterWorktree";
+/** A created worktree's result sentence, as Claude Code 2.1.300 writes it (measured 2026-10-15). */
+const WORKTREE_CREATED = /^Created worktree at (\S+) on branch (\S+)\./;
+
+/**
+ * The worktrees the worker moved itself into since `fromIndex`, read from
+ * its `EnterWorktree` calls and their results. A creation names path and
+ * branch in one sentence; a switch into an existing worktree (`path` in
+ * the call's input) is read from the result echoing that path, with no
+ * branch. Read only from the tool's own result on a `user` row — the row
+ * Claude Code delivers the result to the model on; its `api-request-blob`
+ * rows log the request body and repeat the same block (measured 2026-10-15,
+ * 2.1.300) — and once per call. A worker whose shell output quotes the
+ * sentence has entered nothing, and an `EnterWorktree` call whose result
+ * names no path (a refusal) enters nothing.
+ */
+export function enteredWorktrees(entries: TranscriptEntry[], fromIndex = 0): EnteredWorktree[] {
+  const calls = new Map<string, { path: string | null }>();
+  const entered: EnteredWorktree[] = [];
+  for (let index = Math.max(0, fromIndex); index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry === undefined) {
+      continue;
+    }
+    if (entry.type === "assistant") {
+      const content = entry.message?.content;
+      if (!Array.isArray(content)) {
+        continue;
+      }
+      for (const block of content) {
+        const record = asRecord(block);
+        if (record?.type === "tool_use" && record.name === WORKTREE_TOOL && typeof record.id === "string") {
+          const input = asRecord(record.input);
+          calls.set(record.id, { path: typeof input?.path === "string" && input.path.length > 0 ? input.path : null });
+        }
+      }
+      continue;
+    }
+    if (entry.type !== "user") {
+      continue;
+    }
+    for (const result of toolResultBlocks(entry.message?.content)) {
+      const call = calls.get(result.toolUseId);
+      if (call === undefined) {
+        continue;
+      }
+      calls.delete(result.toolUseId);
+      const created = WORKTREE_CREATED.exec(result.text);
+      if (created?.[1] !== undefined && created[2] !== undefined) {
+        entered.push({ path: created[1], branch: created[2] });
+      } else if (call.path !== null && result.text.includes(call.path)) {
+        entered.push({ path: call.path, branch: null });
+      }
+    }
+  }
+  return entered;
 }
 
 /** The tools whose call can background work: Bash with `run_in_background`, and Monitor always. */

@@ -20,6 +20,7 @@ import {
 import {
   apiErrorSince,
   effortSince,
+  enteredWorktrees,
   endsInSyntheticReply,
   finalAssistantText,
   outstandingBackgroundTasks,
@@ -47,7 +48,14 @@ import type {
 import type { StrippableCapability } from "./capability-stripping.js";
 import type {
   AgentWaitSnapshot,
-  BackgroundTaskWait, JsonSchema, RuntimeEvent, TokenUsageBreakdown, TokenUsageEvent, TurnResult } from "./types.js";
+  BackgroundTaskWait,
+  EnteredWorktree,
+  JsonSchema,
+  RuntimeEvent,
+  TokenUsageBreakdown,
+  TokenUsageEvent,
+  TurnResult
+} from "./types.js";
 
 /**
  * The Claude rendering of each strippable capability: the permission deny
@@ -717,6 +725,9 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
     // silently defaulted dispatch is visible in the record as what ran.
     const resolvedEffort = effortSince(entries, fromIndex);
     const usage = usageSince(entries, fromIndex);
+    // Where the worker's edits went: a worker that entered a worktree of its
+    // own says so on the record, so a reader finds its work.
+    const worktreesEntered = enteredWorktrees(entries, fromIndex);
     this.#reportUsage(handle, entries, fromIndex);
     const usageEvent = this.#usageEvent(handle, usage, usage);
     return {
@@ -724,6 +735,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       ...(resolvedModel !== null ? { resolvedModel } : {}),
       ...(resolvedEffort !== null ? { resolvedEffort } : {}),
       ...(this.#waits.length > 0 ? { backgroundWaits: this.#waits.map((wait) => ({ ...wait })) } : {}),
+      ...(worktreesEntered.length > 0 ? { worktreesEntered } : {}),
       deltaText: text,
       durationMs: null,
       firstDeltaMs: null,
@@ -783,7 +795,8 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
       apiError: apiErrorSince(transcript.entries, fromIndex),
-      backgroundWaits: this.#waits.map((wait) => ({ ...wait }))
+      backgroundWaits: this.#waits.map((wait) => ({ ...wait })),
+      worktreesEntered: enteredWorktrees(transcript.entries, fromIndex)
     };
   }
 
@@ -966,11 +979,13 @@ function failedTurnResult(
   const resolvedModel = evidence?.resolvedModel ?? null;
   const resolvedEffort = evidence?.resolvedEffort ?? null;
   const backgroundWaits = evidence?.backgroundWaits ?? [];
+  const worktreesEntered = evidence?.worktreesEntered ?? [];
   return {
     text,
     ...(resolvedModel !== null ? { resolvedModel } : {}),
     ...(resolvedEffort !== null ? { resolvedEffort } : {}),
     ...(backgroundWaits.length > 0 ? { backgroundWaits } : {}),
+    ...(worktreesEntered.length > 0 ? { worktreesEntered } : {}),
     attemptFailure: claudeAttemptFailure(error),
     deltaText: text,
     durationMs: null,
@@ -1009,6 +1024,8 @@ interface FailureEvidence {
   apiError: TranscriptApiError | null;
   /** The background tasks the dying attempt waited on — an open wait names the task that never woke it. */
   backgroundWaits: BackgroundTaskWait[];
+  /** The worktrees the dying attempt's worker entered — where its work is, if it moved. */
+  worktreesEntered: EnteredWorktree[];
 }
 
 /** The per-attempt observers the runtime hands an attempt (`EngineAttemptContext`'s callbacks). */

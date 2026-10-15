@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type {
   BackgroundTaskWait,
   EngineName,
+  EnteredWorktree,
   EngineTranscriptArtifact,
   FallbackTarget,
   JsonObject,
@@ -192,6 +193,13 @@ export interface RuntimeAgentAttemptRecord {
    * own ending cut short — the task never woke the session in time.
    */
   backgroundWaits: BackgroundTaskWait[];
+  /**
+   * The worktrees this attempt's worker entered on its own, in the order
+   * observed — where its edits are when they are not in the directory it
+   * was placed in. Empty where it stayed put, or its engine has no such
+   * notion.
+   */
+  worktreesEntered: EnteredWorktree[];
 }
 
 /** Bounded evidence emitted when the Codex transport cannot decode an inbound frame. */
@@ -996,6 +1004,7 @@ export class RunRecordWriter {
           observed_at: wait.observedAt,
           ended_at: wait.endedAt
         })),
+        worktrees_entered: attempt.worktreesEntered.map((worktree) => ({ path: worktree.path, branch: worktree.branch })),
         raw_output: attempt.rawOutput,
         validated_output: attempt.validatedOutput,
         resolved_model: attempt.resolvedModel,

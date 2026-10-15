@@ -46,6 +46,8 @@ import type {
 interface ScriptedTurn {
   busyPolls?: number;
   outcome?: "complete" | "blocked";
+  /** Raw transcript rows the fake writes ahead of the assistant line — tool calls and their results, as Claude Code persists them. */
+  rows?: string[];
   /**
    * `effort` scripts what the fake CLI reports serving: unset mirrors the
    * real CLI (the dispatched `--effort`, or its `medium` default); a string
@@ -179,7 +181,8 @@ class FakeControlPlane implements ClaudeControlPlane {
     const turn = this.#turns.shift();
     this.#busyRemaining = turn?.busyPolls ?? 0;
     this.#outcome = turn?.outcome ?? "complete";
-    const line = turn?.assistant !== undefined ? `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n` : "";
+    const rows = (turn?.rows ?? []).map((row) => `${row}\n`).join("");
+    const line = rows + (turn?.assistant !== undefined ? `${assistantLine(turn.assistant, this.#dispatchedEffort)}\n` : "");
     if (this.#path === null) {
       return;
     }
@@ -1561,6 +1564,31 @@ const backgroundTaskRows = {
  * two after that. In every shape the model's reply lands two polls after a
  * delivery, never in the same write, as it does live.
  */
+test("a worker that enters a worktree of its own names it on the attempt record, and one that stays put names none", async () => {
+  // Every dispatch tells the worker to edit in place; a worker that moves
+  // anyway must say where its work went, or a reader of the record looks in
+  // the placed directory and finds nothing.
+  const created = JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_wt", content: "Created worktree at /repo/.claude/worktrees/fix-parser on branch worktree-fix-parser. The session is now working in the worktree." }] }
+  });
+  const entered = JSON.stringify({
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_wt", name: "EnterWorktree", input: {} }], stop_reason: "tool_use" }
+  });
+  await withControlPlane([{ rows: [entered, created], assistant: { text: "moved and edited" } }, { assistant: { text: "edited in place" } }], async (controlPlane) => {
+    const runtime = makeRuntime(controlPlane, { maxAttempts: 1 });
+    try {
+      assert.equal(await runtime.agent("fix the parser", { engine: "claude" }), "moved and edited");
+      assert.deepEqual(runtime.lastAgentRecord()?.attempts[0]?.worktreesEntered, [{ path: "/repo/.claude/worktrees/fix-parser", branch: "worktree-fix-parser" }]);
+      assert.equal(await runtime.agent("fix the tests", { engine: "claude" }), "edited in place");
+      assert.deepEqual(runtime.lastAgentRecord()?.attempts[0]?.worktreesEntered, []);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
 class BackgroundTaskControlPlane implements ClaudeControlPlane {
   pollCount = 0;
   readonly snapshots: Array<{ poll: number; waitingOn: unknown }> = [];

@@ -212,7 +212,7 @@ unknown engine throws before any worker spawns.
 | `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 | `schema` | JSON Schema the answer must satisfy |
 | `fallback` | Ordered chain of `{ engine, model, effort? }` targets (see [Fallback chains](#fallback-chains)) |
-| `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
+| `cwd` | Worker working directory; must exist. Defaults to the run's working directory. A worker's edits land here: a Claude worker is dispatched with `CLAUDE_BG_ISOLATION=none`, so it edits in place rather than moving into a worktree of its own, and any worktree it enters regardless is named on its attempt record |
 | `isolation` | `"worktree"` to run in a fresh git worktree (see [Worktree isolation](#worktree-isolation)) |
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |
 | `maxAttempts` | Attempt bound, a positive integer. Default 3 |
@@ -494,11 +494,15 @@ await builder.close();
   `session: { id, turn }` field. A session using `isolation: "worktree"` works
   in one worktree for its whole life, finalised when the session closes.
 - **Claude follow-ups need tmux:** follow-up turns are typed into the held
-  session through tmux, in bounded slices so that a follow-up of any size
-  arrives intact. Each injection uses a private tmux server that loads no
-  tmux configuration and does not appear among your own sessions. Without
-  tmux, a follow-up or correction fails with a `claude-valve-error` naming
-  the tmux step that failed, rather than silently starting a fresh worker.
+  session through tmux as the user's own input — in slices short enough that
+  Claude Code reads each as typing rather than as a paste (which it would
+  wrap in `<pasted_content>` and the worker would treat as distrusted
+  material), newlines included, so a follow-up of any size and shape
+  arrives intact and typed. Each injection uses a private tmux server that
+  loads no tmux configuration and does not appear among your own sessions.
+  Without tmux, a follow-up or correction fails with a `claude-valve-error`
+  naming the tmux step that failed, rather than silently starting a fresh
+  worker.
 
 ## Holds
 

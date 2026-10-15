@@ -508,6 +508,11 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
     waited on, each `{ task_id, description, observed_at, ended_at }`
     (`ended_at` is `null` where the attempt ended before the task woke the
     session); empty for engines without background tasks.
+  - `worktrees_entered`: the worktrees the worker moved itself into, each
+    `{ path, branch }` (`branch` is `null` for a switch into an existing
+    worktree) — where its edits are when they are not in `resolved_cwd`.
+    A Claude worker is told to edit in place, so this is normally empty;
+    empty for engines whose workers cannot move themselves.
 - `classification` on a failed attempt: `{ class, rule }`. `class` is
   `"availability"` (the engine refused or lost the worker before it answered:
   allowance exhausted, provider overload past its own retry, an engine process

@@ -89,6 +89,24 @@ export interface ClaudeDispatchOptions {
 export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
 
 /**
+ * The settings-file variable that tells a `--bg` worker session where its
+ * edits land. Claude Code's default for a background session is `worktree`:
+ * the job prompt tells the model to call `EnterWorktree` before its first
+ * edit, and the Edit and Write tools reject a path in the shared checkout
+ * until it does — so a worker placed by `cwd` in a repository leaves that
+ * checkout untouched and its work in `<repo>/.claude/worktrees/<name>`.
+ * `none` makes the prompt say to edit in place and lifts the block. Measured
+ * 2026-10-15 on Claude Code 2.1.300: the dispatching client's own
+ * environment is not carried to the daemon-served session, the settings
+ * file's `env` block is, and so is a `worktree.bgIsolation` key — the env
+ * block is used because the file already carries one. Written on every
+ * dispatch as a harness default that a machine declaration of the same
+ * name overrides, so an operator who wants isolated background workers
+ * declares `CLAUDE_BG_ISOLATION=worktree` in `worker_environment`.
+ */
+export const BACKGROUND_ISOLATION_VARIABLE = "CLAUDE_BG_ISOLATION";
+
+/**
  * Declares the workspace sandboxed to every `claude` process this control
  * plane launches. Claude Code (2.1.281 and later) gates background
  * dispatch on the directory's trust — accepted once, interactively, per
@@ -201,6 +219,11 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
+  /**
+   * The pause between two literal sends of one follow-up, so each slice
+   * lands as its own read at the attach client (see `VALVE_SLICE_CHARS`).
+   */
+  valveSliceGapMs?: number;
 }
 
 interface ExecResult {
@@ -225,6 +248,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
+  #valveSliceGapMs: number;
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -269,6 +293,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
+    this.#valveSliceGapMs = options.valveSliceGapMs ?? 20;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
   }
 
@@ -370,10 +395,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * and the file itself is 0o600.
    */
   async #writeWorkerSettings(dispatchName: string, permissionDenyRules?: string[], cacheTtl?: string): Promise<string> {
-    // Spread order is the precedence: the TTL is a harness default the
-    // dispatch asks for, so a machine-declared worker_environment value for
-    // the same variable (spread after it) wins, and the ownership tag —
-    // harness bookkeeping, not configuration — always lands last.
+    // Spread order is the precedence: the in-place-editing declaration and
+    // the TTL are harness defaults, so a machine-declared worker_environment
+    // value for the same variable (spread after them) wins, and the
+    // ownership tag — harness bookkeeping, not configuration — always lands
+    // last. In-place editing is declared on every dispatch: a worker placed
+    // by `cwd` must edit that directory (`BACKGROUND_ISOLATION_VARIABLE`).
     // The hold scope is per-lead coordination state whose contract is
     // inheritance by every nested invocation (`HOLD_SCOPE_ENV`). It is
     // withheld from control-plane children like every run-level setting —
@@ -383,6 +410,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // option), never a fresh read of this process's variable: a scope the
     // launcher took from `--hold-scope` exists nowhere in the environment.
     const env = {
+      [BACKGROUND_ISOLATION_VARIABLE]: "none",
       ...(this.#holdScope !== null ? { [HOLD_SCOPE_ENV]: this.#holdScope } : {}),
       ...(cacheTtl !== undefined ? { [CLAUDE_CACHE_TTL_VARIABLE]: cacheTtl } : {}),
       ...this.#workerEnv,
@@ -559,15 +587,24 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
       // The TUI needs a beat to attach and take focus before input lands.
       await delay(this.#valveAttachSettleMs);
-      // `-l` sends the message literally — no key-name interpretation, no quoting
-      // hazards. Each call carries one bounded slice: a follow-up turn routinely
-      // holds whole diffs, and one command must fit both the platform's argv
-      // element cap and tmux's own client-message cap (see VALVE_SLICE_BYTES),
-      // so the bytes go to the same pane input in order across as many calls
-      // as the message needs. Submit follows as its own keystroke.
+      // `-l` sends the message literally — no key-name interpretation, no
+      // quoting hazards — and `--` ends tmux's option parsing, so a slice
+      // that begins with `-` is text, not a flag. Each call carries one
+      // slice short enough that Claude Code reads it as typed input rather
+      // than as a paste (see VALVE_SLICE_CHARS): a follow-up turn routinely
+      // holds whole diffs, and the attach client wraps any single read
+      // longer than its threshold in `<pasted_content>`, which the model
+      // treats as distrusted material rather than as the user's own turn.
+      // Newlines inside a slice insert a newline in the input; only the
+      // `Enter` keystroke submits, so it follows the last slice on its own.
       const slices = valveSlices(message);
       for (const [index, slice] of slices.entries()) {
-        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", slice]);
+        if (index > 0) {
+          // Let the client drain one read before the next send lands, so two
+          // slices are not read as one.
+          await delay(this.#valveSliceGapMs);
+        }
+        const typed = await this.#run(this.#tmuxBin, [...server, "send-keys", "-t", valve, "-l", "--", slice]);
         if (!typed.ok) {
           return refused(`tmux send-keys (slice ${index + 1} of ${slices.length})`, typed);
         }
@@ -792,14 +829,27 @@ function normaliseState(state: unknown): ClaudeSessionState {
 }
 
 /**
- * Largest byte length of one `send-keys -l` argument. Two caps bound it: Linux
- * rejects a single argv element over 128 KiB (`spawn E2BIG`), and tmux's client
- * refuses any one command over its 16 KiB message size ("command too long",
- * measured on tmux 3.7c: 16000 bytes accepted, 20000 refused). This sits well
- * beneath both, so a valve message of any size reaches the pane as an ordered
- * sequence of literal sends.
+ * The length, in UTF-16 code units, above which Claude Code's prompt input
+ * treats one read of terminal input as a paste rather than typing (measured
+ * 2026-10-15 on Claude Code 2.1.300: a 1,200-character line sent in one
+ * `send-keys -l` arrived wrapped in `<pasted_content>`, a 300-character line
+ * typed; bracketed-paste markers are the only other trigger, and the valve
+ * never sends them). The valve exists so that a follow-up reaches the worker
+ * as the user's own words, so no single read may exceed this.
  */
-export const VALVE_SLICE_BYTES = 8 * 1024;
+export const VALVE_PASTE_THRESHOLD_CHARS = 800;
+
+/**
+ * Largest length, in UTF-16 code units, of one `send-keys -l` argument: half
+ * the paste threshold, so that two consecutive sends the client happens to
+ * read together still fall under it, with `valveSliceGapMs` between sends
+ * making even that coalescing unlikely. A slice is far inside the two outer
+ * caps a send must also respect — tmux refuses a client command over
+ * 16 KiB ("command too long", measured on tmux 3.7c) and Linux rejects one
+ * argv element over 128 KiB (`spawn E2BIG`) — since 400 code units is at
+ * most 1,200 bytes of UTF-8.
+ */
+export const VALVE_SLICE_CHARS = VALVE_PASTE_THRESHOLD_CHARS / 2;
 
 /** A refused valve step, named with the bounded text tmux gave for it. */
 function refused(step: string, result: ExecResult): ValveDelivery {
@@ -809,23 +859,21 @@ function refused(step: string, result: ExecResult): ValveDelivery {
 
 /**
  * Split a valve message into `send-keys -l` arguments of at most
- * `VALVE_SLICE_BYTES` bytes each, cutting only between code points so no
- * character is torn across two sends. Exported for the delivery tests; a
- * message within the bound is one slice, and an empty message is none.
+ * `VALVE_SLICE_CHARS` UTF-16 code units each, cutting only between code
+ * points so no surrogate pair is torn across two sends. Newlines stay inside
+ * the slices: the client inserts them, and only `Enter` submits. Exported for
+ * the delivery tests; a message within the bound is one slice, and an empty
+ * message is none.
  */
 export function valveSlices(message: string): string[] {
   const slices: string[] = [];
   let current = "";
-  let currentBytes = 0;
   for (const character of message) {
-    const characterBytes = Buffer.byteLength(character, "utf8");
-    if (currentBytes + characterBytes > VALVE_SLICE_BYTES) {
+    if (current.length + character.length > VALVE_SLICE_CHARS) {
       slices.push(current);
       current = "";
-      currentBytes = 0;
     }
     current += character;
-    currentBytes += characterBytes;
   }
   if (current !== "") {
     slices.push(current);

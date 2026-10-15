@@ -7,10 +7,12 @@ import test from "node:test";
 import { execFileSync, spawn } from "node:child_process";
 
 import {
+  BACKGROUND_ISOLATION_VARIABLE,
   CLAUDE_CACHE_TTL_VARIABLE,
   ClaudeCliControlPlane,
   SANDBOXED_WORKSPACE_VARIABLE,
-  VALVE_SLICE_BYTES,
+  VALVE_PASTE_THRESHOLD_CHARS,
+  VALVE_SLICE_CHARS,
   WORKER_MARKER_VARIABLE,
   valveSlices
 } from "../../src/claude-control-plane.js";
@@ -227,6 +229,7 @@ test("the run's own environment-layer settings are withheld from every claude ch
     // beneath the machine's declarations, above nothing else.
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
       env: {
+        [BACKGROUND_ISOLATION_VARIABLE]: "none",
         ENSEMBLE_HOLD_SCOPE: "lead-session-42",
         ENSEMBLE_STATUS_DIR: path.join(dir, "declared-status"),
         [WORKER_MARKER_VARIABLE]: name
@@ -296,17 +299,20 @@ test("the settings file carries the run's resolved hold scope: an explicit scope
     try {
       // Explicit wins: the flag's scope, not the variable's, reaches the session.
       assert.deepEqual(await settingsFor("explicit-scope", "flag-scope-7"), {
+        [BACKGROUND_ISOLATION_VARIABLE]: "none",
         ENSEMBLE_HOLD_SCOPE: "flag-scope-7",
         [WORKER_MARKER_VARIABLE]: "explicit-scope"
       });
       // No explicit input: the control plane resolves as a bare invocation would.
       assert.deepEqual(await settingsFor("inherited-scope", undefined), {
+        [BACKGROUND_ISOLATION_VARIABLE]: "none",
         ENSEMBLE_HOLD_SCOPE: "lead-session-42",
         [WORKER_MARKER_VARIABLE]: "inherited-scope"
       });
       // The shared scope, resolved by the caller: nothing is delivered, even
       // though this process's own variable names a scope.
       assert.deepEqual(await settingsFor("shared-scope", null), {
+        [BACKGROUND_ISOLATION_VARIABLE]: "none",
         [WORKER_MARKER_VARIABLE]: "shared-scope"
       });
     } finally {
@@ -470,7 +476,7 @@ test("a declared worker environment rides a per-dispatch settings file to the wo
     assert.notEqual(flagIndex, -1);
     const settingsPath = dispatchArgv[flagIndex + 1]!;
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
-      env: { ...declared, [WORKER_MARKER_VARIABLE]: name }
+      env: { [BACKGROUND_ISOLATION_VARIABLE]: "none", ...declared, [WORKER_MARKER_VARIABLE]: name }
     });
 
     // The file holds credentials: private file in a private directory, and it
@@ -532,11 +538,72 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
     });
     const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir, cacheTtl: "1h" });
     assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
-      env: { [CLAUDE_CACHE_TTL_VARIABLE]: "5m", [WORKER_MARKER_VARIABLE]: name }
+      env: { [BACKGROUND_ISOLATION_VARIABLE]: "none", [CLAUDE_CACHE_TTL_VARIABLE]: "5m", [WORKER_MARKER_VARIABLE]: name }
     });
     await controlPlane.stop(handle);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("every dispatch declares in-place editing to the worker session, and a machine declaration of the same variable wins", async (context) => {
+  // Claude Code's background default is `worktree`: the job prompt tells the
+  // model to call EnterWorktree before its first edit and the Edit and Write
+  // tools reject the shared checkout until it does (measured 2026-10-15,
+  // 2.1.300), so a worker placed by `cwd` would leave that directory
+  // untouched. The declaration rides the settings file — the one surface that
+  // reaches the daemon-served session — beneath the operator's own word.
+  for (const declared of [undefined, { [BACKGROUND_ISOLATION_VARIABLE]: "worktree" }]) {
+    await context.test(declared === undefined ? "harness default" : "machine declaration wins", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-isolation-"));
+      try {
+        const settingsCopyPath = path.join(dir, "settings-copy.json");
+        const stubPath = path.join(dir, "claude-stub.mjs");
+        const sessionId = "00000000-0000-4000-8000-000000000031";
+        const name = "isolation-probe";
+        await writeFile(
+          stubPath,
+          `#!/usr/bin/env node
+            import { copyFile } from "node:fs/promises";
+            const args = process.argv.slice(2);
+            if (args[0] === "--bg") {
+              const flag = args.indexOf("--settings");
+              if (flag !== -1) {
+                await copyFile(args[flag + 1], ${JSON.stringify(settingsCopyPath)});
+              }
+              process.exit(0);
+            }
+            if (args[0] === "agents" && args[1] === "--json") {
+              process.stdout.write(JSON.stringify([{
+                id: "isolation-1",
+                sessionId: ${JSON.stringify(sessionId)},
+                name: ${JSON.stringify(name)},
+                kind: "background",
+                cwd: ${JSON.stringify(dir)},
+                status: "busy",
+                state: "working"
+              }]));
+            }
+            process.exit(0);
+          `
+        );
+        await chmod(stubPath, 0o755);
+
+        const controlPlane = new ClaudeCliControlPlane({
+          claudeBin: stubPath,
+          projectsDir: dir,
+          dispatchTimeoutMs: 1_000,
+          ...(declared !== undefined ? { workerEnv: declared } : {})
+        });
+        const handle = await controlPlane.dispatch({ prompt: "edit main.js", name, cwd: dir });
+        assert.deepEqual(JSON.parse(await readFile(settingsCopyPath, "utf8")), {
+          env: { [BACKGROUND_ISOLATION_VARIABLE]: declared === undefined ? "none" : "worktree", [WORKER_MARKER_VARIABLE]: name }
+        });
+        await controlPlane.stop(handle);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -587,7 +654,7 @@ test("an undeclared worker environment still dispatches with the ownership tag a
     const flagIndex = dispatchArgv.indexOf("--settings");
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
-      env: { [WORKER_MARKER_VARIABLE]: name }
+      env: { [BACKGROUND_ISOLATION_VARIABLE]: "none", [WORKER_MARKER_VARIABLE]: name }
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -646,7 +713,7 @@ test("permission deny rules join the per-dispatch settings file beside the env b
     const flagIndex = dispatchArgv.indexOf("--settings");
     assert.notEqual(flagIndex, -1);
     assert.deepEqual(JSON.parse(await readFile(dispatchArgv[flagIndex + 1]!, "utf8")), {
-      env: { [WORKER_MARKER_VARIABLE]: name },
+      env: { [BACKGROUND_ISOLATION_VARIABLE]: "none", [WORKER_MARKER_VARIABLE]: name },
       permissions: { deny: ["Skill", "Task", "Agent", "ListAgents", "SendMessage"] }
     });
   } finally {
@@ -886,6 +953,7 @@ test("every launched claude child sees the workspace declared sandboxed, above a
         assert.equal(child.sandboxed, "1", `the '${child.child}' child did not see the declaration`);
       }
       assert.deepEqual(plain.settings.env, {
+        [BACKGROUND_ISOLATION_VARIABLE]: "none",
         ANTHROPIC_BASE_URL: "https://declared.example",
         [WORKER_MARKER_VARIABLE]: "sandboxed-plain"
       });
@@ -1061,11 +1129,18 @@ esac
       valveSubmitSettleMs: 200,
       valveKillSettleMs: 1_000
     });
-    const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, "continue");
+    // A follow-up with the shapes the valve must carry literally: a leading
+    // dash, newlines that insert rather than submit, non-ASCII text, and a
+    // length that takes several sends. The attach stub reads the pane's tty in
+    // canonical mode, which passes every byte here and turns the submitting
+    // Enter (a carriage return) into the trailing newline.
+    const message = `-- continue\nline ${"é".repeat(900)}\nend`;
+    assert.ok(message.length > VALVE_SLICE_CHARS * 2);
+    const steered = await controlPlane.steer({ id: "valve-real-1", sessionId, name: "valve-real-probe", cwd: dir }, message);
     assert.deepEqual(steered, { delivered: true });
 
     assert.equal(await readFile(path.join(dir, "attach-env"), "utf8"), "declared-gateway-token\n1\n");
-    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), "continue\n");
+    assert.equal(await readFile(path.join(dir, "attach-input"), "utf8"), `${message}\n`);
     assert.deepEqual(await readdir(tmuxRoot), [], "the valve left a socket directory behind, or used the default tmux server");
     // The server is forked from the client that started it and keeps that
     // client's argv, which names the stub; it exits once killed, though not
@@ -1090,18 +1165,22 @@ esac
   }
 });
 
-test("valveSlices cuts a message into bounded, code-point-whole send-keys arguments that rejoin exactly", () => {
+test("valveSlices cuts a message into typed-length, code-point-whole send-keys arguments that rejoin exactly", () => {
   assert.deepEqual(valveSlices(""), []);
   assert.deepEqual(valveSlices("continue"), ["continue"]);
+  // Two sends the client reads as one must still fall under its paste
+  // threshold: the slice is half of it by construction.
+  assert.ok(VALVE_SLICE_CHARS * 2 <= VALVE_PASTE_THRESHOLD_CHARS);
 
-  // Three-byte characters never divide the bound evenly, so every cut lands
-  // mid-character on a byte slicer; the newline keeps the fixture line-shaped.
-  const message = "€\n".repeat(60_000);
+  // Astral characters take two UTF-16 code units, so a cut by code units
+  // lands between a surrogate pair somewhere unless the slicer steps by code
+  // point; the newline keeps the fixture line-shaped.
+  const message = "a😀\n".repeat(20_000);
   const slices = valveSlices(message);
   assert.ok(slices.length > 1);
   for (const slice of slices) {
-    assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
-    assert.equal(Buffer.from(slice, "utf8").toString("utf8"), slice, "a slice is whole UTF-8, never a torn character");
+    assert.ok(slice.length <= VALVE_SLICE_CHARS, "a slice is read as typing, never as a paste");
+    assert.equal(Buffer.from(slice, "utf8").toString("utf8"), slice, "a slice is whole UTF-16, never a torn surrogate pair");
   }
   assert.equal(slices.join(""), message);
 });
@@ -1149,12 +1228,15 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
       projectsDir: dir,
       valveAttachSettleMs: 0,
       valveSubmitSettleMs: 0,
-      valveKillSettleMs: 0
+      valveKillSettleMs: 0,
+      valveSliceGapMs: 0
     });
-    // Well past Linux's 128 KiB single-argument cap: a diff-carrying follow-up
-    // of the size that a one-argument send fails on with `spawn E2BIG`.
-    const message = "diff --git a/src/wide.ts b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(12_000);
-    assert.ok(Buffer.byteLength(message, "utf8") > 256 * 1024);
+    // Well past tmux's 16 KiB client-command cap: a diff-carrying follow-up
+    // of the size a one-command send is refused at ("command too long"). It
+    // begins with `-`, the shape a slice boundary can leave at the head of
+    // any send, so each literal must be sent after `--`.
+    const message = "-- a/src/wide.ts\n+++ b/src/wide.ts\n" + "+  const value = \"é\";\n".repeat(1_500);
+    assert.ok(Buffer.byteLength(message, "utf8") > 32 * 1024);
 
     const steered = await controlPlane.steer({ id: "valve-2", sessionId, name: "valve-large-probe", cwd: dir }, message);
     assert.deepEqual(steered, { delivered: true });
@@ -1163,12 +1245,13 @@ test("a follow-up turn larger than one argv element reaches the valve whole, in 
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as string[]);
-    const literal = sends.filter((send) => send[0] === "-l").map((send) => send[1] ?? "");
-    assert.ok(literal.length > 1, "the message took more than one literal send");
-    for (const slice of literal) {
-      assert.ok(Buffer.byteLength(slice, "utf8") <= VALVE_SLICE_BYTES);
+    const literalSends = sends.filter((send) => send[0] === "-l");
+    assert.ok(literalSends.length > 1, "the message took more than one literal send");
+    for (const send of literalSends) {
+      assert.equal(send[1], "--", "option parsing ends before the literal, whatever it begins with");
+      assert.ok((send[2] ?? "").length <= VALVE_SLICE_CHARS, "a slice is read as typing, never as a paste");
     }
-    assert.equal(literal.join(""), message);
+    assert.equal(literalSends.map((send) => send[2] ?? "").join(""), message);
     assert.deepEqual(sends.at(-1), ["Enter"], "the submit keystroke follows the last slice");
   } finally {
     await rm(dir, { recursive: true, force: true });

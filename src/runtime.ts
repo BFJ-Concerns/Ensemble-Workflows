@@ -2623,6 +2623,7 @@ function attemptRecord(
     | "resolvedModel"
     | "resolvedEffort"
     | "backgroundWaits"
+    | "worktreesEntered"
   >> | null,
   workerExit: { exitCode: number | null; signal: string | null } | null = null,
   appServerDiagnostic: RuntimeAgentAttemptRecord["appServerDiagnostic"] = null,
@@ -2658,7 +2659,8 @@ function attemptRecord(
     tokenUsageEvents: result?.tokenUsageEvents ?? [],
     transcripts: result?.transcripts ?? [],
     diagnostics: result?.diagnostics ?? {},
-    backgroundWaits: result?.backgroundWaits ?? []
+    backgroundWaits: result?.backgroundWaits ?? [],
+    worktreesEntered: result?.worktreesEntered ?? []
   };
 }
 

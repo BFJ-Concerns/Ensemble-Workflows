@@ -91,6 +91,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
         observedFailure: null,
         workerExit: null,
       backgroundWaits: [],
+      worktreesEntered: [],
         appServerDiagnostic: null,
         rawOutput: "",
         validatedOutput: null,

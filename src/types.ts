@@ -310,6 +310,19 @@ export interface BackgroundTaskWait {
   endedAt: string | null;
 }
 
+/**
+ * A worktree a Claude worker moved itself into with its `EnterWorktree`
+ * tool, as the tool's own result named it. A worker's edits land where it
+ * was placed by default, so an entry here says the worker chose otherwise
+ * and where its work is.
+ */
+export interface EnteredWorktree {
+  /** The worktree's absolute path. */
+  path: string;
+  /** The branch Claude Code created for it, or null where the result named none (a switch into an existing worktree). */
+  branch: string | null;
+}
+
 /** What a live agent is waiting on right now, as the status snapshot shows it. */
 export interface AgentWaitSnapshot {
   kind: "background-task";
@@ -329,6 +342,12 @@ export interface TurnResult {
    * the engine has no such observation.
    */
   backgroundWaits?: BackgroundTaskWait[];
+  /**
+   * The worktrees this turn's worker entered on its own, in the order
+   * observed. Only engines whose workers can move themselves into a
+   * worktree report it; omission means the engine has no such observation.
+   */
+  worktreesEntered?: EnteredWorktree[];
   itemText?: string;
   deltaText: string;
   durationMs: number | null;

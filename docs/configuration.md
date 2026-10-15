@@ -102,7 +102,11 @@ Declares environment variables to inject into the workers Ensemble dispatches,
 per engine: a variable declared for `claude` reaches Claude workers only.
 Injected values override inherited ones for that engine's workers, apart from
 two variables Ensemble sets on every Claude worker itself
-(`CLAUDE_CODE_SANDBOXED` and `ENSEMBLE_CLAUDE_WORKER`). Everything undeclared
+(`CLAUDE_CODE_SANDBOXED` and `ENSEMBLE_CLAUDE_WORKER`). A third,
+`CLAUDE_BG_ISOLATION=none`, is a default rather than a fixed value: it makes
+a Claude worker edit the directory it was placed in instead of moving into a
+worktree of its own, and a declaration of that variable (`worktree`) wins
+over it. Everything undeclared
 is still inherited from the launching process, apart from the run settings
 withheld from Claude processes (below). Values must be
 strings, and unknown engines or non-string values fail the run. This section

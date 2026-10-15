@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "../../src/ambient-settings.js";
+import { CALLER_IDENTITY_ENV, DISPATCH_REMAP_ENV, isRunScopedEnvironmentVariable, resolveAmbientSettings } from "../../src/ambient-settings.js";
+
+test("the dispatch remap variable is the run's own: withheld from the Claude processes the run launches", () => {
+  // A remap carried into the per-user daemon would silently un-cross every
+  // later session's workflows on the machine.
+  assert.equal(isRunScopedEnvironmentVariable(DISPATCH_REMAP_ENV), true);
+  assert.equal(isRunScopedEnvironmentVariable("ENSEMBLE_CLAUDE_WORKER"), false);
+});
 
 test("caller identity has a named environment route without widening ambient settings", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-caller-identity-env-"));

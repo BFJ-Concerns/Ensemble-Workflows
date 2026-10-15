@@ -369,6 +369,12 @@ families with their own schema versions (`3` and `2`), described above.
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `dispatch_remap`: the launch-time dispatch remap as `{ value, layer }` —
+  the rules as written (`value: null` with layer `default` when none) and
+  `flag` or `env` for the layer that supplied them.
+- `dispatch_remap_unmatched`: the rules that matched no dispatch by the run's
+  end, as written; `[]` when every rule caught something, `null` while the
+  run is open or where no remap was in force.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -441,6 +447,12 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   and `model` is the answering attempt's served model (`null` if unreported) —
   or `null` while no attempt has completed. Read with each attempt's `target`,
   it shows when a call meant for one engine was answered by another.
+- `remap`: the targets the dispatch remap moved, each
+  `{ key, entry, requested: { engine, model }, dispatched: { engine, model } }`
+  (`entry` is `-1` for the call's own target, else the fallback-chain index);
+  `null` when nothing moved. For a moved call the top-level `engine` and
+  `model` are the dispatched target and `fallback` the chain as dispatched;
+  the script's own request is under `remap`.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).

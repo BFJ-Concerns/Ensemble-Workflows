@@ -225,6 +225,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
+  // The remap resolves a moved call's model against the target engine's
+  // block, so the runtime needs the defaults the hooks merge from.
+  options.runtime.setWorkflowDefaults?.(defaults ?? {});
   const resolvedFilename = path.resolve(options.filename);
   const cwd = options.cwd ?? path.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;

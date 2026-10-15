@@ -25,13 +25,13 @@ Usage: node ensemble.mjs [run options] <script.js> [args...]
 Run options (before the script path):
   --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N
   --agent-ceiling N|null  --timeout ms  --strip capability
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]
 Agent options (after agent, before the prompt):
   --model <model>  --effort <effort>  --label <label>  --phase <phase>
   --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'
   --max-attempts N  --task <identity>  --strip capability  --budget engine=N
   --agent-ceiling N|null  --concurrency engine=N  --timeout ms
-  --caller-identity <identity>  --hold-scope <scope>
+  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]
 The prompt is the one positional argument, or stdin when omitted.
 Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.
 ```
@@ -62,9 +62,10 @@ a script argument spelled like a run option, put `--` before the script path:
 | `--strip capability` | Remove a tool-surface capability (`skills` or `agents`) from every worker in the run; an opencode worker refuses any strip (see [Permissions](workflow-scripts.md#permissions-and-strip)). Repeatable |
 | `--caller-identity <identity>` | Opaque identity of the invoking session, recorded in the run record. Overrides `ENSEMBLE_CALLER_IDENTITY` |
 | `--hold-scope <scope>` | Scope for decision holds raised during the run. Overrides `ENSEMBLE_HOLD_SCOPE` |
+| `--remap key=engine[:model]` | Move every dispatch the key matches onto another engine without editing the script (see [Dispatch remap](workflow-scripts.md#dispatch-remap)). Repeatable; together the flags replace `ENSEMBLE_DISPATCH_REMAP` whole |
 
-Only `--budget`, `--concurrency`, and `--strip` may be repeated; every other
-option may appear once. `--concurrency` and `--agent-ceiling` sit on top of the
+Only `--budget`, `--concurrency`, `--strip`, and `--remap` may be repeated;
+every other option may appear once. `--concurrency` and `--agent-ceiling` sit on top of the
 environment and configuration-file layers described in
 [Configuration](configuration.md).
 

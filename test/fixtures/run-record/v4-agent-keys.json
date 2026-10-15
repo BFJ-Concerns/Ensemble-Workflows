@@ -20,6 +20,7 @@
   "prompt",
   "queued_ms",
   "raw_output",
+  "remap",
   "resolved_cwd",
   "resolved_effort",
   "resolved_model",

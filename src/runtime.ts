@@ -5,6 +5,8 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
+import { DispatchRemapLedger } from "./dispatch-remap.js";
+import type { DispatchRemapRule } from "./dispatch-remap.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
@@ -90,6 +92,7 @@ import type { StrippableCapability } from "./capability-stripping.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type {
   ChainDecision,
+  DispatchRemapEvidence,
   RunRecordWriter,
   RuntimeAgentAttemptRecord,
   RuntimeAgentRecord,
@@ -240,6 +243,31 @@ interface UnsettledAgentRecord {
   stage: "dispatching" | "admitting";
 }
 
+/** The script's per-engine model defaults, as the remap resolves a model-less target against them. */
+type RemapModelDefaults = Partial<Record<EngineName, { model?: string | undefined }>>;
+
+/** A dispatch after the remap: the options as dispatched, and the moves the record and the notices name. */
+interface RemappedDispatch<T> {
+  options: T;
+  moves: DispatchRemapEvidence[];
+}
+
+/**
+ * The author's options with the remap's targets in place of the script's:
+ * `engine` and `model` for a moved call target, `fallback` with each moved
+ * entry rewritten. A view over the author's object, not a copy, for the
+ * reason `optionsForTarget` gives; a property the remap settles answers
+ * from the overrides, `model` included when it settles to undefined (the
+ * target engine's own default).
+ */
+function remappedOptions<T extends object>(options: T, overrides: Record<string, unknown>): T {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(source, property, receiver);
+    }
+  });
+}
+
 /**
  * The promise `agent()` hands the script — the exact object, so marking it
  * handled reaches what the script holds. Null until the call is created:
@@ -323,6 +351,8 @@ interface WorkerSessionState {
   id: number;
   options: WorkerSessionOptions;
   engine: EngineAdapter;
+  /** The targets the remap moved at creation — the creating turn's call target and chain entries — named on every turn's record. */
+  remapMoves: DispatchRemapEvidence[];
   /**
    * The served identity learned when this held session first reaches its
    * engine. Codex keeps one thread across turns, so later records inherit
@@ -443,6 +473,10 @@ export class EnsembleRuntime {
   #defaultMaxAttempts: number;
   /** Run-wide capability strip, united with each call's own list. */
   #strip: StrippableCapability[];
+  /** The launch-time dispatch remap, or null when the run has none. */
+  #remap: DispatchRemapLedger | null;
+  /** The script's per-engine defaults, for a moved target's model; empty until the script runner hands them over. */
+  #workflowDefaults: RemapModelDefaults = {};
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -504,6 +538,7 @@ export class EnsembleRuntime {
     defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
+    dispatchRemap?: readonly DispatchRemapRule[];
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -513,6 +548,9 @@ export class EnsembleRuntime {
     runId?: string;
     now?: () => number;
   }) {
+    // The remap is the launcher's per-run tuning, parsed before the runtime
+    // exists; an empty list is no remap, and the report then says nothing.
+    this.#remap = options.dispatchRemap !== undefined && options.dispatchRemap.length > 0 ? new DispatchRemapLedger(options.dispatchRemap) : null;
     if (options.strip !== undefined) {
       // A malformed run-wide strip fails at construction, before any call
       // pays for a worker — same boundary as a malformed per-call value.
@@ -624,6 +662,7 @@ export class EnsembleRuntime {
       ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
+      ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -650,6 +689,101 @@ export class EnsembleRuntime {
 
   setRunRecorder(recorder: RunRecordWriter | null): void {
     this.#runRecorder = recorder;
+  }
+
+  /**
+   * The script's `export const defaults`, handed over by the script runner
+   * once read: a call the remap moves to another engine with no model named
+   * takes that engine's declared model, as an unpinned call on it would.
+   */
+  setWorkflowDefaults(defaults: RemapModelDefaults): void {
+    this.#workflowDefaults = defaults;
+  }
+
+  /**
+   * The remap in force and the rules that caught no dispatch so far, as
+   * written — read at the run's end for the stderr report and the
+   * manifest, so a mistyped key is never silent. Null when the run has no
+   * remap.
+   */
+  dispatchRemapReport(): { rules: string[]; unmatched: string[] } | null {
+    if (this.#remap === null) {
+      return null;
+    }
+    return { rules: this.#remap.rules.map((rule) => rule.source), unmatched: this.#remap.unmatched() };
+  }
+
+  /**
+   * Every dispatch resolves through here before its engine is looked up:
+   * the call's own target and each fallback-chain entry are matched against
+   * the remap (label, phase, `engine:model`, engine — most specific key
+   * wins), a moved target taking the rule's model, else the target engine's
+   * declared default, else that engine's own; effort rides unchanged. The
+   * phase a key matches is the call's own, else the run's current one.
+   */
+  #remapDispatch<T extends { engine?: EngineName; model?: string; fallback?: FallbackTarget[]; label?: string; phase?: string }>(
+    options: T
+  ): RemappedDispatch<T> {
+    const ledger = this.#remap;
+    if (ledger === null || typeof options.engine !== "string") {
+      return { options, moves: [] };
+    }
+    const label = options.label ?? null;
+    const phase = options.phase ?? this.progress.snapshot().currentPhase;
+    const moves: DispatchRemapEvidence[] = [];
+    const overrides: Record<string, unknown> = {};
+    const own = ledger.resolve({ engine: options.engine, model: options.model, label, phase });
+    if (own !== null) {
+      const model = own.model ?? this.#workflowDefaults[own.engine]?.model;
+      overrides.engine = own.engine;
+      overrides.model = model;
+      moves.push({
+        key: own.rule.source,
+        entry: -1,
+        requested: { engine: options.engine, model: options.model ?? null },
+        dispatched: { engine: own.engine, model: model ?? null }
+      });
+    }
+    if (options.fallback !== undefined) {
+      let changed = false;
+      const fallback = options.fallback.map((target, index) => {
+        const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
+        if (move === null) {
+          return target;
+        }
+        changed = true;
+        const model = move.model ?? this.#workflowDefaults[move.engine]?.model;
+        moves.push({
+          key: move.rule.source,
+          entry: index,
+          requested: { engine: target.engine, model: target.model },
+          dispatched: { engine: move.engine, model: model ?? null }
+        });
+        // A moved entry with no model named anywhere runs the target
+        // engine's own default, as a moved call does: the entry's model
+        // requirement is the author's declaration rule, not the operator's.
+        const moved: FallbackTarget = { ...target, engine: move.engine, model: model as string };
+        if (model === undefined) {
+          delete (moved as { model?: string }).model;
+        }
+        return moved;
+      });
+      if (changed) {
+        overrides.fallback = fallback;
+      }
+    }
+    return moves.length === 0 ? { options, moves } : { options: remappedOptions(options, overrides), moves };
+  }
+
+  /** One notice per moved target, on the dispatched engine's channel, once the leg has an id. */
+  #announceRemap(agentId: number, identity: { label: string | null; phase: string | null }, moves: DispatchRemapEvidence[]): void {
+    for (const move of moves) {
+      this.#emitEvent({
+        method: `${move.dispatched.engine}/remapped`,
+        params: { agentId, label: identity.label, phase: identity.phase, ...move },
+        receivedAt: Date.now()
+      });
+    }
   }
 
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
@@ -746,6 +880,11 @@ export class EnsembleRuntime {
     // judges is the value the dispatch record and the opened placement use.
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    // The remap moves the call before anything reads its engine: strip
+    // enforcement, admission, the budget and the record all see the
+    // dispatched target. The moves are announced once the leg has an id.
+    const remapped = this.#remapDispatch(options);
+    options = remapped.options;
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
       assertCompilableSchema(options.schema);
@@ -806,7 +945,8 @@ export class EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, remapped.moves);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves);
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     // Dispatch-time record: persisted in-progress before the engine is
@@ -913,6 +1053,10 @@ export class EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    // A session's engine is fixed at creation, so the remap moves it here,
+    // once, for its whole life — the creating turn's chain entries with it.
+    const remapped = this.#remapDispatch(options);
+    options = remapped.options;
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
       throw new MultiTurnUnsupportedError(engine.name);
@@ -937,6 +1081,7 @@ export class EnsembleRuntime {
       id: this.#sessionCounter,
       options: sessionOptions,
       engine,
+      remapMoves: remapped.moves,
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
@@ -1023,7 +1168,10 @@ export class EnsembleRuntime {
         ...(turn.schema !== undefined ? { schema: turn.schema } : {}),
         ...(options.strip !== undefined ? { strip: options.strip } : {})
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      if (state.turnCount === 0) {
+        this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
+      }
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves);
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
       // observed session identity into its dispatch-time record rather than
@@ -2509,7 +2657,8 @@ export class EnsembleRuntime {
     engine: EngineName,
     prompt: string,
     options: Partial<AgentOptions>,
-    stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null
+    stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
+    remapMoves: DispatchRemapEvidence[] = []
   ): RuntimeAgentRecord {
     return {
       id,
@@ -2523,6 +2672,7 @@ export class EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
+      remap: remapMoves.length === 0 ? null : remapMoves.map((move) => ({ ...move, requested: { ...move.requested }, dispatched: { ...move.dispatched } })),
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,

@@ -3,7 +3,9 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, DISPATCH_REMAP_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { parseDispatchRemap, splitDispatchRemapVariable } from "./dispatch-remap.js";
+import { DispatchRemapRejectedError } from "./errors.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
@@ -49,7 +51,8 @@ const AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  remap: { type: "string", multiple: true }
 } as const;
 
 export interface EnsembleCliOptions {
@@ -277,8 +280,12 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
 
   let invocation: ParsedInvocation;
   let ambientSettings: AmbientSettings;
+  // The remap is launch tuning like the flags above it: a rule the
+  // launcher cannot read rejects the invocation before any work starts.
+  let dispatchRemap: ReturnType<typeof resolveDispatchRemap> = null;
   try {
     invocation = await parseInvocation(argv, cwd, stdin, program);
+    dispatchRemap = resolveDispatchRemap(invocation.remap, env);
     ambientSettings = resolveAmbientSettings({
       env,
       cwd,
@@ -350,6 +357,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // a teardown that fails after a clean body must be able to degrade it
   // rather than exit 0 under a `complete` sentinel.
   let exitCode = 1;
+  let dispatchRemapUnmatched: string[] | null = null;
 
   try {
     // Flag outranks the inherited variable; resolved here against the
@@ -360,6 +368,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       ...(invocation.budgetCeilings !== undefined ? { budgetCeilings: invocation.budgetCeilings } : {}),
       ...(holdScope !== null ? { holdScope } : {}),
       ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
+      ...(dispatchRemap !== null ? { dispatchRemap: dispatchRemap.rules } : {}),
       ...(Object.keys(ambientSettings.workerEnvironment).length > 0
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
@@ -410,7 +419,11 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: {
+          ...recordEffectiveSettings(invocation, options.timeoutMs),
+          dispatchRemap:
+            dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer }
+        }
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -447,6 +460,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         const model = typeof event.params.model === "string" ? event.params.model : "unknown";
         const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
         stderr.write(`[codex] agent ${agentId}${label} runs unpinned — resolved ambient default: ${model}${effort}\n`);
+        return;
+      }
+      if (event.method.endsWith("/remapped")) {
+        const engine = event.method.slice(0, -"/remapped".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const key = typeof event.params.key === "string" ? event.params.key : "?";
+        const entry = typeof event.params.entry === "number" ? event.params.entry : -1;
+        const what = entry === -1 ? "" : ` fallback entry ${entry}`;
+        stderr.write(
+          `[${engine}] agent ${agentId}${label}${what} remapped by ${JSON.stringify(key)}: asked for ${targetName(event.params.requested)}, dispatched to ${targetName(event.params.dispatched)}\n`
+        );
         return;
       }
       if (event.method === "runRecord/writeFailed") {
@@ -674,6 +699,16 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           if (terminalStatus === "complete") {
             reportLegsUnfinishedAtReturn(runtime, stderr);
           }
+          // A remap rule that caught nothing is said at the end, when every
+          // dispatch has been made: a mistyped key must never leave the
+          // run silently where it was.
+          const remapReport = runtime.dispatchRemapReport?.() ?? null;
+          if (remapReport !== null) {
+            dispatchRemapUnmatched = remapReport.unmatched;
+            for (const rule of remapReport.unmatched) {
+              stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch\n`);
+            }
+          }
         }
       } catch (error) {
         teardownError = describeError(error);
@@ -695,6 +730,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           await runRecordWriter.finish({
             ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
             ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
+            ...(dispatchRemapUnmatched !== null ? { dispatchRemapUnmatched } : {}),
             error: terminalError ?? teardownError
           });
         }
@@ -827,6 +863,8 @@ interface InvocationTuning {
   callerIdentity?: string;
   /** The scope this run's holds publish under; outranks the inherited env variable. */
   holdScope?: string;
+  /** `--remap` rules as written, in order; outranks the environment's whole. */
+  remap?: string[];
 }
 
 interface ParsedWorkflowInvocation extends InvocationTuning {
@@ -913,6 +951,7 @@ function cliFlags(invocation: ParsedInvocation): {
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   strip?: string[];
+  remap?: string[];
   jsonArgs: boolean;
 } {
   return {
@@ -921,6 +960,7 @@ function cliFlags(invocation: ParsedInvocation): {
     ...(invocation.concurrencyCaps !== undefined ? { concurrency: invocation.concurrencyCaps } : {}),
     ...(invocation.timeoutMs !== undefined ? { timeoutMs: invocation.timeoutMs } : {}),
     ...(invocation.strip !== undefined ? { strip: invocation.strip } : {}),
+    ...(invocation.remap !== undefined ? { remap: invocation.remap } : {}),
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -1254,7 +1294,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        remap: { type: "string", multiple: true }
       },
       strict: true,
       allowPositionals: false
@@ -1276,6 +1317,7 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const remap = parseRemapFlag(parsed.values.remap);
 
   return {
     kind: "workflow",
@@ -1288,7 +1330,8 @@ async function parseWorkflowInvocation(argv: string[], cwd: string, program: str
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(strip !== undefined ? { strip } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
-    ...(holdScope !== undefined ? { holdScope } : {})
+    ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(remap !== undefined ? { remap } : {})
   };
 }
 
@@ -1349,6 +1392,7 @@ async function parseAgentInvocation(
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const remap = parseRemapFlag(parsed.values.remap);
   const agentOptions: AgentOptions = {
     engine,
     ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
@@ -1373,7 +1417,8 @@ async function parseAgentInvocation(
     ...(concurrencyCaps !== undefined ? { concurrencyCaps } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(callerIdentity !== undefined ? { callerIdentity } : {}),
-    ...(holdScope !== undefined ? { holdScope } : {})
+    ...(holdScope !== undefined ? { holdScope } : {}),
+    ...(remap !== undefined ? { remap } : {})
   };
 }
 
@@ -1393,6 +1438,47 @@ function parseIsolation(value: string | undefined): "worktree" | undefined {
     throw new CliUsageError(`--isolation must be worktree; got ${value}`);
   }
   return value;
+}
+
+/** `--remap` values as written; each is read in `resolveDispatchRemap`, where a bad rule is a usage error. */
+function parseRemapFlag(values: string[] | undefined): string[] | undefined {
+  if (values === undefined) {
+    return undefined;
+  }
+  for (const value of values) {
+    if (value.trim().length === 0) {
+      throw new CliUsageError("--remap requires a rule of the form <key>=<engine>[:<model>]");
+    }
+  }
+  return [...values];
+}
+
+/**
+ * The remap in force: the flag's rules, else the variable's comma-separated
+ * ones, else none. The flag outranks the variable whole — rules do not
+ * merge across layers, so a launch's own remap is exactly what it says. A
+ * rule neither can read is a usage error on the flag and a refused start on
+ * the variable, each naming the rule.
+ */
+function resolveDispatchRemap(
+  flag: string[] | undefined,
+  env: NodeJS.ProcessEnv
+): { rules: ReturnType<typeof parseDispatchRemap>; sources: string[]; layer: "flag" | "env" } | null {
+  const inherited = env[DISPATCH_REMAP_ENV];
+  const layer = flag !== undefined ? "flag" : inherited !== undefined && inherited.trim().length > 0 ? "env" : null;
+  if (layer === null) {
+    return null;
+  }
+  const written = flag ?? splitDispatchRemapVariable(inherited ?? "");
+  try {
+    const rules = parseDispatchRemap(written);
+    return rules.length === 0 ? null : { rules, sources: rules.map((rule) => rule.source), layer };
+  } catch (error) {
+    if (error instanceof DispatchRemapRejectedError) {
+      throw new CliUsageError(layer === "flag" ? `--remap: ${error.message}` : `${DISPATCH_REMAP_ENV}: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 function parseStripList(values: string[] | undefined): StrippableCapability[] | undefined {
@@ -1533,7 +1619,7 @@ function optionName(value: string): string | undefined {
 }
 
 function isRepeatableOption(flag: string): boolean {
-  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip" || flag === "--remap";
 }
 
 function isKnownAgentOption(value: string): boolean {
@@ -1566,7 +1652,8 @@ function isKnownOption(value: string): boolean {
     value === "--timeout" ||
     value === "--strip" ||
     value === "--caller-identity" ||
-    value === "--hold-scope"
+    value === "--hold-scope" ||
+    value === "--remap"
   );
 }
 
@@ -1579,7 +1666,8 @@ function isKnownInlineOption(value: string): boolean {
     value.startsWith("--timeout=") ||
     value.startsWith("--strip=") ||
     value.startsWith("--caller-identity=") ||
-    value.startsWith("--hold-scope=")
+    value.startsWith("--hold-scope=") ||
+    value.startsWith("--remap=")
   );
 }
 
@@ -1914,7 +2002,8 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--remap key=engine[:model]"
 ];
 
 /** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
@@ -1935,7 +2024,8 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--remap key=engine[:model]"
 ];
 
 /**

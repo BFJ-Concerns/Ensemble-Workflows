@@ -2370,13 +2370,13 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
       "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]\n" +
       "Agent options (after agent, before the prompt):\n" +
       "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
       "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
       "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --remap key=engine[:model]\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
       "Run `ensemble --help` for orientation; each subcommand answers --help.\n"
   );
@@ -3968,6 +3968,140 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
     assert.match(usageErr.text(), /Usage: ensemble holds answer/);
   } finally {
     holds.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("--remap and ENSEMBLE_DISPATCH_REMAP move the matching dispatches, the flag outranking the variable whole, each move noticed and archived, and an unmatched rule reported at the end", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-remap-"));
+  const script = path.join(directory, "remap.workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "remap-probe" };
+      export const defaults = { codex: { model: "gpt-6.1-sol" } };
+      const a = await agent("first", { engine: "claude", model: "opus", label: "critic" });
+      const b = await agent("second", { engine: "claude", model: "opus", label: "writer" });
+      return [a, b];
+    `
+  );
+  const cases = [
+    { name: "flag", argv: ["--remap", "label:critic=codex", "--remap", "label:none*=codex", script], env: {}, layer: "flag" },
+    {
+      name: "environment",
+      argv: [script],
+      env: { ENSEMBLE_DISPATCH_REMAP: " label:critic=codex , label:none*=codex " },
+      layer: "env"
+    },
+    {
+      name: "flag wins over environment",
+      argv: ["--remap", "label:critic=codex", "--remap", "label:none*=codex", script],
+      env: { ENSEMBLE_DISPATCH_REMAP: "claude=codex" },
+      layer: "flag"
+    }
+  ];
+  try {
+    for (const entry of cases) {
+      const codex = new FixedResponseEngine("codex", "from codex");
+      const claude = new FixedResponseEngine("claude", "from claude");
+      const captured: unknown[] = [];
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli(entry.argv, {
+        cwd: directory,
+        stdout,
+        stderr,
+        runRecordDir: path.join(directory, `${entry.name.replaceAll(" ", "-")}-records`),
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ...entry.env },
+        createRuntime: async (options = {}) => {
+          captured.push(options.dispatchRemap?.map((rule) => rule.source));
+          return new EnsembleRuntime({
+            engines: new EngineRegistry([codex, claude]),
+            defaultMaxAttempts: 1,
+            cwd: directory,
+            ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {})
+          });
+        }
+      });
+      assert.equal(exitCode, 0, `${entry.name}: ${stderr.text()}`);
+      assert.deepEqual(JSON.parse(stdout.text()), ["from codex", "from claude"], entry.name);
+      assert.deepEqual(captured, [["label:critic=codex", "label:none*=codex"]], entry.name);
+      // The moved call took the target engine's declared model; the other stayed put.
+      assert.deepEqual(codex.turnOptions.map((options) => options.model), ["gpt-6.1-sol"], entry.name);
+      assert.deepEqual(claude.turnOptions.map((options) => options.model), ["opus"], entry.name);
+      const lines = stderr.text().split("\n");
+      assert.ok(
+        lines.includes('[codex] agent 1 (critic) remapped by "label:critic=codex": asked for claude/opus, dispatched to codex/gpt-6.1-sol'),
+        `${entry.name}: ${stderr.text()}`
+      );
+      assert.ok(lines.includes('[remap] rule "label:none*=codex" matched no dispatch'), `${entry.name}: ${stderr.text()}`);
+      const announced = announcedRunRecord(stderr.text());
+      const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as {
+        dispatch_remap: { value: string[] | null; layer: string };
+        dispatch_remap_unmatched: string[] | null;
+        cli_flags: { remap?: string[] };
+      };
+      assert.deepEqual(manifest.dispatch_remap, { value: ["label:critic=codex", "label:none*=codex"], layer: entry.layer }, entry.name);
+      assert.deepEqual(manifest.dispatch_remap_unmatched, ["label:none*=codex"], entry.name);
+      assert.deepEqual(manifest.cli_flags.remap, entry.layer === "flag" ? ["label:critic=codex", "label:none*=codex"] : undefined, entry.name);
+      const moved = JSON.parse(await readFile(path.join(announced.archive_path, "agents/000001/agent.json"), "utf8")) as {
+        engine: string;
+        model: string;
+        remap: unknown;
+      };
+      assert.equal(moved.engine, "codex");
+      assert.equal(moved.model, "gpt-6.1-sol");
+      assert.deepEqual(moved.remap, [
+        { key: "label:critic=codex", entry: -1, requested: { engine: "claude", model: "opus" }, dispatched: { engine: "codex", model: "gpt-6.1-sol" } }
+      ]);
+      const unmoved = JSON.parse(await readFile(path.join(announced.archive_path, "agents/000002/agent.json"), "utf8")) as { remap: unknown };
+      assert.equal(unmoved.remap, null);
+    }
+
+    // No remap: the manifest says so in the default shape, and nothing is reported.
+    {
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli([script], {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: path.join(directory, "none-records"),
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config") },
+        createRuntime: async (options = {}) =>
+          new EnsembleRuntime({
+            engines: new EngineRegistry([new FixedResponseEngine("codex", "c"), new FixedResponseEngine("claude", "d")]),
+            defaultMaxAttempts: 1,
+            cwd: directory,
+            ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {})
+          })
+      });
+      assert.equal(exitCode, 0, stderr.text());
+      assert.doesNotMatch(stderr.text(), /\[remap\]|remapped by/);
+      const announced = announcedRunRecord(stderr.text());
+      const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as Record<string, unknown>;
+      assert.deepEqual(manifest.dispatch_remap, { value: null, layer: "default" });
+      assert.equal(manifest.dispatch_remap_unmatched, null);
+    }
+
+    // A rule the launcher cannot read is a usage error naming it, before any engine is reached.
+    for (const [argv, env, expected] of [
+      [["--remap", "critic=codex", script], {}, /^--remap: dispatch remap rule "critic=codex" is invalid: "critic" is neither an engine/],
+      [[script], { ENSEMBLE_DISPATCH_REMAP: "claude=gpt" }, /^ENSEMBLE_DISPATCH_REMAP: dispatch remap rule "claude=gpt" is invalid: the target engine "gpt" is not an engine/]
+    ] as const) {
+      const engine = new FixedResponseEngine("codex", "never");
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli([...argv], {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config"), ...env },
+        createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+      });
+      assert.equal(exitCode, 2, stderr.text());
+      assert.equal(engine.attempts, 0);
+      assert.match(stderr.text().trim().split("\n").at(-1) ?? "", expected);
+    }
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

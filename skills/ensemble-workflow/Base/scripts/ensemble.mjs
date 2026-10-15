@@ -16963,6 +16963,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
@@ -21831,15 +21832,18 @@ var ChainAdvance = class {
   }
   engine;
 };
-function chainTargets(engine, options) {
+function chainTargets(engine, options, moves = /* @__PURE__ */ new Map()) {
   return [
     { entry: -1, engine, model: options.model, effort: options.effort },
-    ...(options.fallback ?? []).map((target, index) => ({
-      entry: index,
-      engine: target.engine,
-      model: target.model,
-      effort: target.effort ?? options.effort
-    }))
+    ...(options.fallback ?? []).map((target, index) => {
+      const moved = moves.get(index);
+      return {
+        entry: index,
+        engine: moved?.engine ?? target.engine,
+        model: moved === void 0 ? target.model : moved.model,
+        effort: target.effort ?? options.effort
+      };
+    })
   ];
 }
 function withoutChain(options) {
@@ -21860,10 +21864,22 @@ function optionsForTarget(options, target) {
     }
   });
 }
-function remappedOptions(options, overrides) {
+function withOptionOverrides(options, overrides) {
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(source, property, receiver);
+    },
+    has(source, property) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(source, property);
+    },
+    ownKeys(source) {
+      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(source), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(source, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(source, property);
     }
   });
 }
@@ -21952,8 +21968,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #strip;
   /** The launch-time dispatch remap, or null when the run has none. */
   #remap;
-  /** The script's per-engine defaults, for a moved target's model; empty until the script runner hands them over. */
-  #workflowDefaults = {};
+  /**
+   * The script's per-engine defaults a moved target's model resolves
+   * against, scoped to the workflow body that declared them: a composed
+   * child runs inside its own scope and the parent's continuation returns
+   * to the parent's, so concurrent and nested bodies never read each
+   * other's block.
+   */
+  #workflowDefaults = new AsyncLocalStorage();
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -22117,12 +22139,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#runRecorder = recorder;
   }
   /**
-   * The script's `export const defaults`, handed over by the script runner
-   * once read: a call the remap moves to another engine with no model named
-   * takes that engine's declared model, as an unpinned call on it would.
+   * Runs a workflow body under its own `export const defaults`, so a call
+   * the remap moves to another engine with no model named takes that
+   * engine's declared model, as an unpinned call on it would — the
+   * declaring body's block, however the bodies nest or interleave.
    */
-  setWorkflowDefaults(defaults) {
-    this.#workflowDefaults = defaults;
+  runWithWorkflowDefaults(defaults, body) {
+    return this.#workflowDefaults.run(defaults, body);
   }
   /**
    * The remap in force and the rules that caught no dispatch so far, as
@@ -22147,15 +22170,17 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #remapDispatch(options) {
     const ledger = this.#remap;
     if (ledger === null || typeof options.engine !== "string") {
-      return { options, moves: [] };
+      return { options, entryMoves: /* @__PURE__ */ new Map(), moves: [] };
     }
+    const defaults = this.#workflowDefaults.getStore() ?? {};
     const label = options.label ?? null;
     const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const moves = [];
+    const entryMoves = /* @__PURE__ */ new Map();
     const overrides = {};
     const own = ledger.resolve({ engine: options.engine, model: options.model, label, phase });
     if (own !== null) {
-      const model = own.model ?? this.#workflowDefaults[own.engine]?.model;
+      const model = own.model ?? defaults[own.engine]?.model;
       overrides.engine = own.engine;
       overrides.model = model;
       moves.push({
@@ -22165,32 +22190,25 @@ var EnsembleRuntime = class _EnsembleRuntime {
         dispatched: { engine: own.engine, model: model ?? null }
       });
     }
-    if (options.fallback !== void 0) {
-      let changed = false;
-      const fallback = options.fallback.map((target, index) => {
-        const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
-        if (move === null) {
-          return target;
-        }
-        changed = true;
-        const model = move.model ?? this.#workflowDefaults[move.engine]?.model;
-        moves.push({
-          key: move.rule.source,
-          entry: index,
-          requested: { engine: target.engine, model: target.model },
-          dispatched: { engine: move.engine, model: model ?? null }
-        });
-        const moved = { ...target, engine: move.engine, model };
-        if (model === void 0) {
-          delete moved.model;
-        }
-        return moved;
-      });
-      if (changed) {
-        overrides.fallback = fallback;
+    (options.fallback ?? []).forEach((target, index) => {
+      const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
+      if (move === null) {
+        return;
       }
-    }
-    return moves.length === 0 ? { options, moves } : { options: remappedOptions(options, overrides), moves };
+      const model = move.model ?? defaults[move.engine]?.model;
+      entryMoves.set(index, { engine: move.engine, model });
+      moves.push({
+        key: move.rule.source,
+        entry: index,
+        requested: { engine: target.engine, model: target.model },
+        dispatched: { engine: move.engine, model: model ?? null }
+      });
+    });
+    return {
+      options: own === null ? options : withOptionOverrides(options, overrides),
+      entryMoves,
+      moves
+    };
   }
   /** One notice per moved target, on the dispatched engine's channel, once the leg has an id. */
   #announceRemap(agentId, identity, moves) {
@@ -22278,13 +22296,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
-    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
+    const dispatchOptions = strip.length > 0 ? withOptionOverrides(options, { strip }) : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
@@ -22306,7 +22324,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryMoves);
       if (options.identity === true) {
         const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
@@ -22394,7 +22412,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -22403,13 +22421,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
-    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+    const sessionOptions = strip.length > 0 ? withOptionOverrides(options, { strip }) : options;
     this.#sessionCounter += 1;
     const state = {
       id: this.#sessionCounter,
       options: sessionOptions,
       engine,
       remapMoves: remapped.moves,
+      remapEntryMoves: remapped.entryMoves,
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
@@ -22504,7 +22523,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(agentRecord);
         unsettled.stage = "admitting";
         try {
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
+          const targets = chainTargets(
+            engine.name,
+            state.turnCount === 0 ? options : withoutChain(options),
+            state.turnCount === 0 ? state.remapEntryMoves : void 0
+          );
           const output = await this.#runChained(
             engine,
             targets,
@@ -22655,10 +22678,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt, entryMoves) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options),
+      chainTargets(engine.name, options, entryMoves),
       { label: options.label ?? null, phase: options.phase ?? null },
       options.maxAttempts,
       agentId,
@@ -29891,7 +29914,6 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  options.runtime.setWorkflowDefaults?.(defaults ?? {});
   const resolvedFilename = path12.resolve(options.filename);
   const cwd = options.cwd ?? path12.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
@@ -29953,7 +29975,8 @@ async function runWorkflowScript(options) {
     // sitting where the script sits.
     require: createRequire(resolvedFilename)
   };
-  const resultPromise = run(bindings);
+  const runtime = options.runtime;
+  const resultPromise = runtime.runWithWorkflowDefaults !== void 0 ? runtime.runWithWorkflowDefaults(defaults ?? {}, () => run(bindings)) : run(bindings);
   const noteBodySettled = () => {
     if (workflowDepth === 0) {
       options.onBodySettled?.();
@@ -31122,13 +31145,6 @@ async function runEnsembleCli(argv, options = {}) {
         }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
-          await runtime.close(
-            terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
-            terminalStatus === "complete" ? "body-returned" : "run-ended"
-          );
-          if (terminalStatus === "complete") {
-            reportLegsUnfinishedAtReturn(runtime, stderr);
-          }
           const remapReport = runtime.dispatchRemapReport?.() ?? null;
           if (remapReport !== null) {
             dispatchRemapUnmatched = remapReport.unmatched;
@@ -31136,6 +31152,13 @@ async function runEnsembleCli(argv, options = {}) {
               stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch
 `);
             }
+          }
+          await runtime.close(
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
+            terminalStatus === "complete" ? "body-returned" : "run-ended"
+          );
+          if (terminalStatus === "complete") {
+            reportLegsUnfinishedAtReturn(runtime, stderr);
           }
         }
       } catch (error) {

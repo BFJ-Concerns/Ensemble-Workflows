@@ -27,12 +27,13 @@ export interface WorkflowRuntime {
    */
   readonly openCodeModelRegistry?: OpenCodeModelRegistry | undefined;
   /**
-   * Hands the runtime the script's `export const defaults` once read, so a
+   * Runs a workflow body under the script's `export const defaults`, so a
    * dispatch the remap moves to another engine takes that engine's declared
-   * model as an unpinned call on it would. Optional: a runtime without it
+   * model as an unpinned call on it would — the declaring body's block,
+   * however bodies nest or interleave. Optional: a runtime without it
    * remaps to the target engine's own default.
    */
-  setWorkflowDefaults?: (defaults: WorkflowDefaults) => void;
+  runWithWorkflowDefaults?: <T>(defaults: WorkflowDefaults, body: () => T) => T;
   // The canonical overload set, not a Parameters/ReturnType projection of
   // the runtime method: TypeScript resolves those utility types to the
   // *last* overload alone, which is exactly the collapse that hid the

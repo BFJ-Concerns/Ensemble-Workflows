@@ -150,8 +150,11 @@ ENSEMBLE_DISPATCH_REMAP='claude=codex:gpt-6.1-sol' ensemble review.js
 - **The target** is an engine with or without a model. A moved dispatch takes
   the rule's model, else the script's `defaults` model for the target engine,
   else that engine's own default — exactly as an unpinned call on that engine
-  would; the call's `effort` carries over in the canonical vocabulary and
-  clamps as any dispatch does.
+  would, so a call's own `model` never crosses engines; the call's `effort`
+  and its fallback chain (each entry itself subject to the remap) ride across
+  as the call declared them. A rule whose target is the engine the call is
+  already on still counts as a move: the call takes the rule's model, or the
+  defaults', in place of its own.
 - **Every dispatch** resolves through the remap: a call's own target, each
   entry of its fallback chain (so a chain cannot carry a call back onto an
   engine the operator moved it off), and a session's creation, once, for its

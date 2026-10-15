@@ -451,8 +451,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   `{ key, entry, requested: { engine, model }, dispatched: { engine, model } }`
   (`entry` is `-1` for the call's own target, else the fallback-chain index);
   `null` when nothing moved. For a moved call the top-level `engine` and
-  `model` are the dispatched target and `fallback` the chain as dispatched;
-  the script's own request is under `remap`.
+  `model` are the dispatched target; `fallback` stays the chain as declared,
+  each attempt's `target` says where the entry went, and the script's own
+  request is under `remap`.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).

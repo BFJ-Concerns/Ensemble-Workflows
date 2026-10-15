@@ -692,22 +692,24 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           // returned, not that the run was interrupted. The word and the
           // occasion are chosen here, the one site that already knows the
           // body's outcome; `abandoned` stays the reaper's alone.
-          await runtime.close(
-            terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
-            terminalStatus === "complete" ? "body-returned" : "run-ended"
-          );
-          if (terminalStatus === "complete") {
-            reportLegsUnfinishedAtReturn(runtime, stderr);
-          }
           // A remap rule that caught nothing is said at the end, when every
-          // dispatch has been made: a mistyped key must never leave the
-          // run silently where it was.
+          // dispatch has been made — read before close, which dispatches
+          // nothing and may reject, so the report reaches the archive on
+          // every ending: a mistyped key must never leave the run silently
+          // where it was.
           const remapReport = runtime.dispatchRemapReport?.() ?? null;
           if (remapReport !== null) {
             dispatchRemapUnmatched = remapReport.unmatched;
             for (const rule of remapReport.unmatched) {
               stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch\n`);
             }
+          }
+          await runtime.close(
+            terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
+            terminalStatus === "complete" ? "body-returned" : "run-ended"
+          );
+          if (terminalStatus === "complete") {
+            reportLegsUnfinishedAtReturn(runtime, stderr);
           }
         }
       } catch (error) {

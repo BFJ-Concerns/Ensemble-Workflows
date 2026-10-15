@@ -229,7 +229,7 @@ export interface RuntimeAgentRecord {
   };
   model: string | null;
   effort: string | null;
-  /** The fallback chain as dispatched — the call's or its engine defaults', each entry the remap moved rewritten; null when none. */
+  /** The declared fallback chain, as the call or its engine defaults declared it; null when none. Where the remap moved an entry, `remap` names the move and each attempt's `target` says where it went. */
   fallback: FallbackTarget[] | null;
   /**
    * The targets the launch-time dispatch remap moved, one entry per moved

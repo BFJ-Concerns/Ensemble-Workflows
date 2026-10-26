@@ -161,7 +161,7 @@ test("a killed engine process is reported once, in operator terms, with what to 
     lines[0],
     "the Codex engine process stopped unexpectedly (codex app-server exited with code null signal SIGKILL), so the worker had no engine to run on"
   );
-  assert.match(lines[1] ?? "", /^ {2}Nothing in the workflow caused this: re-run it; if it recurs, check that `codex app-server` starts/);
+  assert.match(lines[1] ?? "", /^ {2}Unless the run was being stopped, the workflow did not cause this: re-run it; if it recurs, check that `codex app-server` starts/);
   assert.equal(lines.length, 2);
   assert.equal(rendered.split("SIGKILL").length - 1, 2, "the death is named once; the remedy names the kill signal once");
   assert.doesNotMatch(rendered, /Error\b/);

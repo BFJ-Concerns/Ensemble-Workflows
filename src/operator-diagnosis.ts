@@ -169,7 +169,7 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     const lines = [
       `the Codex engine process ${how}${firstLine === undefined || firstLine === "" ? "" : ` (${firstLine})`}, so the worker had no engine to run on`,
       ...rest,
-      "Nothing in the workflow caused this: re-run it; if it recurs, check that `codex app-server` starts on this machine and that memory is not exhausted (an out-of-memory kill arrives as SIGKILL)."
+      "Unless the run was being stopped, the workflow did not cause this: re-run it; if it recurs, check that `codex app-server` starts on this machine and that memory is not exhausted (an out-of-memory kill arrives as SIGKILL)."
     ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {

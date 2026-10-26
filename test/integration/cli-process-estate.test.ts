@@ -1002,7 +1002,7 @@ test("built CLI propagates malformed schemas from both combinators before openin
 
       assert.equal(result.code, 1);
       assertSalvageEnvelope(result.stdout, "failed");
-      assert.match(result.stderr, /InvalidAgentSchemaError/);
+      assert.match(result.stderr, /^agent schema does not compile as JSON Schema/m);
       assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
     } finally {
       await fixture.cleanup();
@@ -1080,7 +1080,7 @@ test("built CLI reports a direct-agent malformed --schema before the Codex worke
 
     assert.equal(result.code, 1);
     assertSalvageEnvelope(result.stdout, "failed");
-    assert.match(result.stderr, /InvalidAgentSchemaError/);
+    assert.match(result.stderr, /^agent schema does not compile as JSON Schema/m);
     assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
     assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
   } finally {

@@ -823,26 +823,38 @@ export class EnsembleRuntime {
       return "off";
     }
     const workers = new Set<string>();
-    const families = new Set<string>();
+    const families = new Map<string, string>();
     for (const record of this.#agentRecords) {
       if (record.attempts.length === 0) {
         continue;
       }
       workers.add(record.session === null ? `agent:${record.id}` : `session:${record.session.id}`);
       for (const attempt of record.attempts) {
-        families.add(this.#familyOf(attempt.target));
+        const family = this.#familyOf(attempt.target);
+        families.set(family.identity, family.name);
       }
     }
-    const [family] = families;
+    const [family] = families.values();
     return workers.size >= 2 && families.size === 1 && family !== undefined ? { family, workers: workers.size } : null;
   }
 
-  #familyOf(target: { engine: EngineName; model: string | null }): string {
+  /**
+   * An attempt's family: `identity` is what families compare by and `name`
+   * what the notice prints. A named family (Codex, Claude, or an opencode
+   * entry's declared one) and an opencode entry declaring none sit in
+   * separate identity namespaces, so no declared string can match an
+   * unlabelled entry, whatever it spells.
+   */
+  #familyOf(target: { engine: EngineName; model: string | null }): { identity: string; name: string } {
     if (target.engine !== "opencode") {
-      return target.engine;
+      return { identity: `named:${target.engine}`, name: target.engine };
     }
     const entry = target.model === null ? undefined : this.openCodeModelRegistry?.get(target.model);
-    return entry?.family ?? `opencode:${entry?.key ?? target.model ?? "unknown"}`;
+    if (entry?.family !== undefined) {
+      return { identity: `named:${entry.family}`, name: entry.family };
+    }
+    const key = entry?.key ?? target.model ?? "unknown";
+    return { identity: `unlabelled:${key}`, name: `opencode:${key}` };
   }
 
   /**

@@ -4660,7 +4660,8 @@ class OpenCodeChainEngine extends OpenCodeEngineAdapter {
         { key: "glm-5.2", providerModel: "openrouter/z-ai/glm-5.2", displayName: "GLM 5.2", provider: "openrouter", family: "glm", capabilities: { vision: false }, variants: [] },
         { key: "glm-air", providerModel: "openrouter/z-ai/glm-air", displayName: "GLM Air", provider: "openrouter", family: "glm", capabilities: { vision: false }, variants: [] },
         { key: "local-qwen", providerModel: "local/qwen", displayName: "Qwen", provider: "local", capabilities: { vision: false }, variants: [] },
-        { key: "local-llama", providerModel: "local/llama", displayName: "Llama", provider: "local", capabilities: { vision: false }, variants: [] }
+        { key: "local-llama", providerModel: "local/llama", displayName: "Llama", provider: "local", capabilities: { vision: false }, variants: [] },
+        { key: "qwen-lookalike", providerModel: "local/qwen-lookalike", displayName: "Qwen lookalike", provider: "local", family: "opencode:local-qwen", capabilities: { vision: false }, variants: [] }
       ])
     });
     this.#steps = [...steps];
@@ -4755,6 +4756,21 @@ test("the single-family report names the one family every attempt of two or more
       Promise.all([runtime.agent("one", { engine: "opencode", model: "local-qwen" }), runtime.agent("two", { engine: "opencode", model: "local-llama" })])
     ),
     null
+  );
+  // An unlabelled entry is its own family even beside an entry whose
+  // declared family spells the unlabelled one's printed name.
+  assert.equal(
+    await judge([new OpenCodeChainEngine([answers("a"), answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "opencode", model: "local-qwen" }), runtime.agent("two", { engine: "opencode", model: "qwen-lookalike" })])
+    ),
+    null
+  );
+  // Two workers on one unlabelled entry share its family, named for the entry.
+  assert.deepEqual(
+    await judge([new OpenCodeChainEngine([answers("a"), answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "opencode", model: "local-qwen" }), runtime.agent("two", { engine: "opencode", model: "local-qwen" })])
+    ),
+    { family: "opencode:local-qwen", workers: 2 }
   );
   // Switched off, the report says so rather than judging.
   assert.equal(

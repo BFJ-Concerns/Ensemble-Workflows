@@ -18,7 +18,7 @@ import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeou
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 
-import type { EffectiveRunSettingsRecord, NamedTargetBindingsRecord, RuntimeAgentRecord } from "./run-record.js";
+import type { EffectiveRunSettingsRecord, NamedTargetBindingsRecord, RuntimeAgentRecord, SingleFamilyRecord } from "./run-record.js";
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
@@ -26,7 +26,7 @@ import type { AmbientSettings, Resolved } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { AgentOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
+import type { AgentOptions, DispatchTargetOptions, EngineBudgetCeilings, EngineConcurrencyCaps, EngineName, JsonSchema } from "./types.js";
 import type { Readable, Writable } from "node:stream";
 
 type InterruptSignal = "SIGINT" | "SIGTERM";
@@ -35,6 +35,7 @@ const MAX_JSON_ARGS_DEPTH = 256;
 
 const AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
+  target: { type: "string" },
   model: { type: "string" },
   effort: { type: "string" },
   label: { type: "string" },
@@ -145,7 +146,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\n" +
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\n" +
+        "on a named target the machine configuration binds (--target <name>), and\n" +
         "prints its result as JSON on stdout. The prompt is the single positional\n" +
         "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
         "validates the reply against a JSON Schema; --identity wraps the result as\n" +
@@ -358,6 +360,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // rather than exit 0 under a `complete` sentinel.
   let exitCode = 1;
   let dispatchRemapUnmatched: string[] | null = null;
+  let singleFamily: SingleFamilyRecord | null = null;
 
   try {
     // Flag outranks the inherited variable; resolved here against the
@@ -376,6 +379,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // Always passed, bindings or none: a refusal names the file that
       // binds nothing as readily as the one that binds the wrong names.
       namedTargets: { bindings: ambientSettings.namedTargets.value, source: ambientSettings.configFile },
+      singleFamilyNotice: ambientSettings.singleFamilyNotice.value,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -426,7 +430,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           ...recordEffectiveSettings(invocation, options.timeoutMs),
           dispatchRemap:
             dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer },
-          namedTargets: recordNamedTargets(ambientSettings)
+          namedTargets: recordNamedTargets(ambientSettings),
+          singleFamilyNotice: ambientSettings.singleFamilyNotice
         }
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -708,6 +713,13 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
               stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch\n`);
             }
           }
+          // Judged at the same point and for the same reason: a run whose
+          // workers never crossed families lost its cross-check silently
+          // unless the end says so. "off" is recorded, never printed.
+          singleFamily = runtime.singleFamilyReport?.() ?? null;
+          if (singleFamily !== null && singleFamily !== "off") {
+            stderr.write(`[single-family] all ${singleFamily.workers} workers ran on one model family: ${singleFamily.family}\n`);
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === undefined ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"
@@ -737,6 +749,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
             ...(finalRecord ?? { status: "failed" as const, exitCode: 1, result: null }),
             ...(teardownError !== null ? { status: "failed" as const, exitCode: 1 } : {}),
             ...(dispatchRemapUnmatched !== null ? { dispatchRemapUnmatched } : {}),
+            ...(singleFamily !== null ? { singleFamily } : {}),
             error: terminalError ?? teardownError
           });
         }
@@ -1391,10 +1404,11 @@ async function parseAgentInvocation(
   }
 
   const rawEngine = parsed.values.engine;
-  if (rawEngine === undefined) {
-    throw new CliUsageError(`${program} agent requires --engine`);
+  const target = parsed.values.target;
+  if (rawEngine === undefined && target === undefined) {
+    throw new CliUsageError(`${program} agent requires --engine or --target`);
   }
-  const engine = parseEngineName(rawEngine, "--engine");
+  const engine = rawEngine === undefined ? undefined : parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema =
     parsed.values.schema === undefined
@@ -1409,9 +1423,17 @@ async function parseAgentInvocation(
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const remap = parseRemapFlag(parsed.values.remap);
+  // Engine, target and model pass through as given: whether a target may
+  // stand beside a literal engine or model is the runtime's to judge, the
+  // one place that holds the bindings — so the object is built as an
+  // untyped script's would be, not narrowed to one arm here.
+  const dispatchTarget = {
+    ...(engine !== undefined ? { engine } : {}),
+    ...(target !== undefined ? { target } : {}),
+    ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {})
+  } as unknown as DispatchTargetOptions;
   const agentOptions: AgentOptions = {
-    engine,
-    ...(parsed.values.model !== undefined ? { model: parsed.values.model } : {}),
+    ...dispatchTarget,
     ...(parsed.values.effort !== undefined ? { effort: parsed.values.effort } : {}),
     ...(parsed.values.label !== undefined ? { label: parsed.values.label } : {}),
     ...(parsed.values.phase !== undefined ? { phase: parsed.values.phase } : {}),
@@ -2022,7 +2044,7 @@ const RUN_OPTION_SYNOPSES: readonly string[] = [
   "--remap key=engine[:model]"
 ];
 
-/** The flags `agent` accepts between the subcommand and the prompt (`--engine` is in the synopsis). */
+/** The flags `agent` accepts between the subcommand and the prompt (`--engine` and `--target` are in the synopsis). */
 const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--model <model>",
   "--effort <effort>",
@@ -2054,7 +2076,7 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
 function usage(program: string): string {
   const forms: readonly (readonly string[])[] = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    ["agent", "--engine <engine>|--target <name>", "[agent options]", "[prompt]"],
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]

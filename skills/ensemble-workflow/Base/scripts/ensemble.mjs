@@ -15278,7 +15278,8 @@ function resolveAmbientSettings(input) {
     statusDir: resolveStatus(config, input.env, input.cwd),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
-    namedTargets: config?.targets === void 0 ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" }
+    namedTargets: config?.targets === void 0 ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" },
+    singleFamilyNotice: config?.single_family_notice === void 0 ? { value: true, layer: "default" } : { value: config.single_family_notice, layer: "config-file" }
   };
 }
 function machineConfigPath(env) {
@@ -15306,7 +15307,7 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "single_family_notice"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -15315,6 +15316,7 @@ function readMachineConfig(configFile) {
     );
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
+  validateOptionalBoolean(parsed, "single_family_notice", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
@@ -15468,6 +15470,12 @@ function validateOptionalPositiveInteger(section, key, configFile, prefix = "") 
   }
   const qualified = prefix.length > 0 ? `${prefix}.${key}` : key;
   assertPositiveInteger(value, qualified, configFile);
+}
+function validateOptionalBoolean(root, key, configFile) {
+  const value = root[key];
+  if (value !== void 0 && typeof value !== "boolean") {
+    throw fileValueError(configFile, key, "must be a boolean");
+  }
 }
 function assertKnownKeys(value, knownKeys, configFile, prefix) {
   const allowed = new Set(knownKeys);
@@ -16044,6 +16052,8 @@ var RunRecordWriter = class _RunRecordWriter {
       dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
       dispatch_remap_unmatched: null,
       named_targets: options.effectiveSettings?.namedTargets ?? { value: {}, layer: "default" },
+      single_family_notice: options.effectiveSettings?.singleFamilyNotice ?? { value: true, layer: "default" },
+      single_family: null,
       git: {
         start: gitStart,
         end: null
@@ -16355,6 +16365,9 @@ var RunRecordWriter = class _RunRecordWriter {
       this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
       if (options.dispatchRemapUnmatched !== void 0) {
         this.manifest.dispatch_remap_unmatched = [...options.dispatchRemapUnmatched];
+      }
+      if (options.singleFamily !== void 0) {
+        this.manifest.single_family = options.singleFamily === "off" ? "off" : { ...options.singleFamily };
       }
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
       if (this.manifest.git.end.diffPath !== null) {
@@ -22087,6 +22100,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #remap;
   /** The machine's named targets and the file they came from, or null when the run was given none (every name then unbound). */
   #namedTargets;
+  /** Whether the run's end judges its workers' families (`singleFamilyReport`). */
+  #singleFamilyNotice;
+  /** Every agent record the run has opened, in dispatch order; each accrues its attempts in place. */
+  #agentRecords = [];
   /**
    * The script's per-engine defaults — the block a moved target's model and
    * a named target's unsaid options resolve against — scoped to the workflow
@@ -22148,6 +22165,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   constructor(options) {
     this.#remap = options.dispatchRemap !== void 0 && options.dispatchRemap.length > 0 ? new DispatchRemapLedger(options.dispatchRemap) : null;
     this.#namedTargets = options.namedTargets ?? null;
+    this.#singleFamilyNotice = options.singleFamilyNotice ?? true;
     if (options.strip !== void 0) {
       assertValidStripOption(options.strip);
     }
@@ -22241,6 +22259,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.strip !== void 0 ? { strip: options.strip } : {},
       ...options.dispatchRemap !== void 0 ? { dispatchRemap: options.dispatchRemap } : {},
       ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
+      ...options.singleFamilyNotice !== void 0 ? { singleFamilyNotice: options.singleFamilyNotice } : {},
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -22281,6 +22300,56 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return null;
     }
     return { rules: this.#remap.rules.map((rule) => rule.source), unmatched: this.#remap.unmatched() };
+  }
+  /**
+   * Whether every worker this run dispatched ran on one model family —
+   * read at the run's end for the stderr line and the manifest, because a
+   * run that never crossed families has lost the cross-check it exists
+   * for. Judged per attempt, on the engine each attempt actually ran on,
+   * so a chain that advanced from Codex to Claude spans both. Codex and
+   * Claude are each a family; an opencode attempt takes its model entry's
+   * declared `family`, and an entry declaring none is a family of its own.
+   * A worker is a one-shot call or a session (its turns are one worker);
+   * one that never reached an attempt ran on nothing. The family when two
+   * or more workers all share it, `"off"` when the machine turned the
+   * notice off, null otherwise.
+   */
+  singleFamilyReport() {
+    if (!this.#singleFamilyNotice) {
+      return "off";
+    }
+    const workers = /* @__PURE__ */ new Set();
+    const families = /* @__PURE__ */ new Map();
+    for (const record of this.#agentRecords) {
+      if (record.attempts.length === 0) {
+        continue;
+      }
+      workers.add(record.session === null ? `agent:${record.id}` : `session:${record.session.id}`);
+      for (const attempt of record.attempts) {
+        const family2 = this.#familyOf(attempt.target);
+        families.set(family2.identity, family2.name);
+      }
+    }
+    const [family] = families.values();
+    return workers.size >= 2 && families.size === 1 && family !== void 0 ? { family, workers: workers.size } : null;
+  }
+  /**
+   * An attempt's family: `identity` is what families compare by and `name`
+   * what the notice prints. A named family (Codex, Claude, or an opencode
+   * entry's declared one) and an opencode entry declaring none sit in
+   * separate identity namespaces, so no declared string can match an
+   * unlabelled entry, whatever it spells.
+   */
+  #familyOf(target) {
+    if (target.engine !== "opencode") {
+      return { identity: `named:${target.engine}`, name: target.engine };
+    }
+    const entry = target.model === null ? void 0 : this.openCodeModelRegistry?.get(target.model);
+    if (entry?.family !== void 0) {
+      return { identity: `named:${entry.family}`, name: entry.family };
+    }
+    const key = entry?.key ?? target.model ?? "unknown";
+    return { identity: `unlabelled:${key}`, name: `opencode:${key}` };
   }
   /**
    * Every dispatch resolves its named targets here first, before the remap
@@ -23804,7 +23873,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     };
   }
   #newAgentRecord(id, engine, prompt, options, stripRoutes = null, remapMoves = [], namedTargets = []) {
-    return {
+    const record = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -23842,6 +23911,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#agentRecords.push(record);
+    return record;
   }
 };
 async function createRuntime(options = {}) {
@@ -30827,6 +30898,7 @@ async function createRuntime2(options = {}) {
 var MAX_JSON_ARGS_DEPTH = 256;
 var AGENT_INVOCATION_OPTIONS = {
   engine: { type: "string" },
+  target: { type: "string" },
   model: { type: "string" },
   effort: { type: "string" },
   label: { type: "string" },
@@ -30897,7 +30969,7 @@ async function runEnsembleCli(argv, options = {}) {
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
     stdout.write(usage(program));
     stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
+      "\nDispatches one worker on the named engine (--engine codex|claude|opencode), or\non a named target the machine configuration binds (--target <name>), and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
     );
     return 0;
   }
@@ -31057,6 +31129,7 @@ async function runEnsembleCli(argv, options = {}) {
   };
   let exitCode = 1;
   let dispatchRemapUnmatched = null;
+  let singleFamily = null;
   try {
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -31070,6 +31143,7 @@ async function runEnsembleCli(argv, options = {}) {
       // Always passed, bindings or none: a refusal names the file that
       // binds nothing as readily as the one that binds the wrong names.
       namedTargets: { bindings: ambientSettings.namedTargets.value, source: ambientSettings.configFile },
+      singleFamilyNotice: ambientSettings.singleFamilyNotice.value,
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -31103,7 +31177,8 @@ async function runEnsembleCli(argv, options = {}) {
         effectiveSettings: {
           ...recordEffectiveSettings(invocation, options.timeoutMs),
           dispatchRemap: dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer },
-          namedTargets: recordNamedTargets(ambientSettings)
+          namedTargets: recordNamedTargets(ambientSettings),
+          singleFamilyNotice: ambientSettings.singleFamilyNotice
         }
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -31326,6 +31401,11 @@ async function runEnsembleCli(argv, options = {}) {
 `);
             }
           }
+          singleFamily = runtime.singleFamilyReport?.() ?? null;
+          if (singleFamily !== null && singleFamily !== "off") {
+            stderr.write(`[single-family] all ${singleFamily.workers} workers ran on one model family: ${singleFamily.family}
+`);
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"
@@ -31346,6 +31426,7 @@ async function runEnsembleCli(argv, options = {}) {
             ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
             ...teardownError !== null ? { status: "failed", exitCode: 1 } : {},
             ...dispatchRemapUnmatched !== null ? { dispatchRemapUnmatched } : {},
+            ...singleFamily !== null ? { singleFamily } : {},
             error: terminalError ?? teardownError
           });
         }
@@ -31745,10 +31826,11 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     throw new CliUsageError(`${program} agent requires a prompt argument or a non-empty prompt on stdin`);
   }
   const rawEngine = parsed.values.engine;
-  if (rawEngine === void 0) {
-    throw new CliUsageError(`${program} agent requires --engine`);
+  const target = parsed.values.target;
+  if (rawEngine === void 0 && target === void 0) {
+    throw new CliUsageError(`${program} agent requires --engine or --target`);
   }
-  const engine = parseEngineName(rawEngine, "--engine");
+  const engine = rawEngine === void 0 ? void 0 : parseEngineName(rawEngine, "--engine");
   const isolation = parseIsolation(parsed.values.isolation);
   const schema = parsed.values.schema === void 0 ? void 0 : await parseJsonValue(parsed.values.schema, cwd, "--schema");
   const budgetCeilings = parseEngineMap(parsed.values.budget, parseBudgetCeiling, "--budget");
@@ -31760,9 +31842,13 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
   const remap = parseRemapFlag(parsed.values.remap);
+  const dispatchTarget = {
+    ...engine !== void 0 ? { engine } : {},
+    ...target !== void 0 ? { target } : {},
+    ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {}
+  };
   const agentOptions = {
-    engine,
-    ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
+    ...dispatchTarget,
     ...parsed.values.effort !== void 0 ? { effort: parsed.values.effort } : {},
     ...parsed.values.label !== void 0 ? { label: parsed.values.label } : {},
     ...parsed.values.phase !== void 0 ? { phase: parsed.values.phase } : {},
@@ -32254,7 +32340,7 @@ var AGENT_OPTION_SYNOPSES = [
 function usage(program) {
   const forms = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    ["agent", "--engine <engine>|--target <name>", "[agent options]", "[prompt]"],
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]

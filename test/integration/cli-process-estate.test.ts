@@ -50,7 +50,8 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
     assert.equal(
       result.stderr,
       "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
-      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
+      "       node ensemble.mjs agent --engine <engine>|--target <name> [agent options]\n" +
+      "                         [prompt]\n" +
       "       node ensemble.mjs workflows\n" +
       "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
       "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +

@@ -380,6 +380,13 @@ families with their own schema versions (`3` and `2`), described above.
   `{ engine, model }` (`model` `null` where the binding leaves it to the
   engine's default), with layer `config-file`; `{}` with layer `default` when
   the file declares none.
+- `single_family_notice`: whether the machine's single-family notice was on,
+  as `{ value, layer }` — layer `config-file` when the file sets
+  `single_family_notice`, else `{ value: true, layer: "default" }`.
+- `single_family`: set at the run's end to `{ family, workers }` when two or
+  more workers all ran on one model family (judged on every attempt), or
+  `"off"` when the notice was switched off; `null` while the run is open and
+  when the workers spanned families or numbered fewer than two.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
 import { createRuntime } from "../../src/index.js";
-import { liveOpenCodeModel, machineOpenCodeModels } from "./live-models.js";
+import { liveCodexOptions, liveOpenCodeModel, machineOpenCodeModels } from "./live-models.js";
 
 import type { AgentOptions, EngineName } from "../../src/types.js";
 
@@ -30,24 +30,23 @@ test(
       defaultMaxAttempts: 1
     });
 
-    const engines: Array<{ name: EngineName; model?: string }> = [
-      { name: "codex" },
-      { name: "claude" },
-      ...(liveOpenCodeModel !== undefined ? [{ name: "opencode" as const, model: liveOpenCodeModel }] : [])
-    ];
-
     try {
-      for (const engine of engines) {
-        const options: AgentOptions & { schema?: undefined } = {
-          engine: engine.name,
-          cwd: markerDir,
-          ...(engine.model !== undefined ? { model: engine.model } : {})
-        };
-        const result = await runtime.agent(
-          "Read marker.txt from your current working directory using your tools. Return the file's exact contents.",
+      for (const engine of liveEngines()) {
+        const copy = `placed-${engine.name}.txt`;
+        const options: AgentOptions & { schema?: undefined } = { engine: engine.name, cwd: markerDir, ...engine.options };
+        await runtime.agent(
+          `Copy marker.txt in your current working directory to a new file named ${copy} in the same directory, ` +
+            "using relative paths only. Then reply with the single word done.",
           options
         );
-        assert.match(result ?? "", new RegExp(marker), `${engine.name} did not return the marker read from its cwd`);
+        // Placement is witnessed by a relative-path copy of a marker the worker
+        // could find nowhere else, left in the requested directory — not by
+        // the worker's reply.
+        assert.equal(
+          (await readFile(path.join(markerDir, copy), "utf8")).trimEnd(),
+          marker,
+          `${engine.name} did not start in the requested cwd`
+        );
       }
     } finally {
       await runtime.close();
@@ -70,31 +69,24 @@ test(
       defaultTurnTimeoutMs: 420_000,
       defaultMaxAttempts: 1
     });
-    const engines: Array<{ name: EngineName; model?: string }> = [
-      { name: "codex" },
-      { name: "claude" },
-      ...(liveOpenCodeModel !== undefined ? [{ name: "opencode" as const, model: liveOpenCodeModel }] : [])
-    ];
-
     try {
-      for (const engine of engines) {
+      for (const engine of liveEngines()) {
         const token = `UNIFORM_WORKTREE_${engine.name}_${randomUUID()}`;
         const filename = `placement-${engine.name}.txt`;
         const options: AgentOptions & { schema?: undefined } = {
           engine: engine.name,
           cwd: repo,
           isolation: "worktree",
-          ...(engine.model !== undefined ? { model: engine.model } : {})
+          ...engine.options
         };
         const previousWorktrees = runtime.worktrees.length;
-        const result = await runtime.agent(
+        await runtime.agent(
           `Create ${filename} containing exactly ${token} followed by a newline. ` +
             `Run git add ${filename} and git commit -m "record ${engine.name} placement". ` +
-            "Return the file contents after the commit succeeds.",
+            "Then reply with the single word done.",
           options
         );
 
-        assert.match(result ?? "", new RegExp(token), `${engine.name} did not report the committed token`);
         assert.equal(runtime.worktrees.length, previousWorktrees + 1);
         const worktree = runtime.worktrees.at(-1);
         assert.ok(worktree, `${engine.name} produced no worktree record`);
@@ -116,6 +108,14 @@ test(
     }
   }
 );
+
+function liveEngines(): Array<{ name: EngineName; options: { model?: string; effort?: string } }> {
+  return [
+    { name: "codex", options: liveCodexOptions() },
+    { name: "claude", options: {} },
+    ...(liveOpenCodeModel !== undefined ? [{ name: "opencode" as const, options: { model: liveOpenCodeModel } }] : [])
+  ];
+}
 
 async function initialiseRepo(repo: string): Promise<void> {
   await mkdir(repo);

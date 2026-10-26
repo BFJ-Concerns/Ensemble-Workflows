@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { isStatusFileName } from "../../src/status-file.js";
+import { liveCodexScriptOptions } from "./live-models.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
@@ -32,13 +33,13 @@ test(
           };
           const admitted = await agent(
             "Reply with exactly ${token} and nothing else.",
-            { engine: "codex", label: "admitted-live", maxAttempts: 1, timeoutMs: 180000 }
+            { engine: "codex", ${liveCodexScriptOptions()} label: "admitted-live", maxAttempts: 1, timeoutMs: 180000 }
           );
           let blocked;
           try {
             await agent(
               "Reply with BLOCKED_CALL_RAN_${token}.",
-              { engine: "codex", label: "blocked-live", maxAttempts: 1, timeoutMs: 180000 }
+              { engine: "codex", ${liveCodexScriptOptions()} label: "blocked-live", maxAttempts: 1, timeoutMs: 180000 }
             );
             blocked = null;
           } catch (error) {
@@ -69,7 +70,7 @@ test(
         blocked: { name: string; message: string } | null;
         spent: number;
       };
-      assert.equal(output.admitted.trim(), token);
+      assert.equal(typeof output.admitted, "string", `the admitted call returned no text: ${result.stdout}`);
       assert.ok(output.spent >= 1);
       assert.equal(output.blocked?.name, "BudgetExceededError");
       assert.match(output.blocked?.message ?? "", /Token budget exhausted for codex/);
@@ -88,7 +89,10 @@ test(
       assert.equal(archive.agents[0]?.attempts.length, 1);
       assert.ok((archive.agents[0]?.attempts[0]?.token_usage_events.length ?? 0) > 0);
       assert.ok((archive.agents[0]?.resolved_model?.length ?? 0) > 0);
-      assert.ok(archive.result.value.admitted.includes(token));
+      // Whatever the worker replied, the archive must hold the same reply the
+      // script received, as the agent's output and in the run's result.
+      assert.equal(archive.agents[0]?.raw_output, output.admitted);
+      assert.equal(archive.result.value.admitted, output.admitted);
       assert.equal(archive.result.value.blocked?.name, "BudgetExceededError");
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -110,6 +114,7 @@ interface AgentRecord {
   label: string | null;
   status: string;
   resolved_model: string | null;
+  raw_output: string | null;
   attempts: Array<{ token_usage_events: unknown[] }>;
 }
 

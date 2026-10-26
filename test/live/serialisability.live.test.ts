@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { liveCodexModel } from "./live-models.js";
+import { liveCodexScriptOptions } from "./live-models.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
@@ -38,7 +38,7 @@ function withoutArchiveAnnouncement(stderr: string): string {
 
 test(
   "live built CLI salvages completed Codex output and a consumer can recover it from the archive alone",
-  { skip: !isLive || (liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false), timeout: 300_000 },
+  { skip: !isLive, timeout: 300_000 },
   async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-serialisability-"));
     const script = path.join(directory, "workflow.js");
@@ -55,8 +55,7 @@ test(
           };
           const completed = await agent("Return exactly one JSON object containing token ${token}.", {
             engine: "codex",
-            model: ${JSON.stringify(liveCodexModel)},
-            effort: "low",
+            ${liveCodexScriptOptions()}
             maxAttempts: 1,
             timeoutMs: 180000,
             label: "live-serialisability-worker",

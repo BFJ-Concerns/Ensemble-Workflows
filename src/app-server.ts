@@ -1145,7 +1145,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         source: "codex-app-server-events",
         threadId,
         content: this.#transcriptText(threadId),
-        partial: true
+        partial: turn.completedAt === null
       });
     }
     this.#transcripts.delete(threadId);

@@ -2047,6 +2047,36 @@ test("each held turn's attempt retains the worker's observed model", async () =>
   await runtime.close();
 });
 
+test("a held correction keeps the served model reported by its rejected first answer", async () => {
+  const transport = new FakeTransport([
+    { ...turn('{"answer":"no"}'), resolvedModel: "gpt-served" },
+    turn('{"answer":"yes"}')
+  ]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+  assert.deepEqual(await session.send("answer", { schema }), { answer: "yes" });
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.resolvedModel), ["gpt-served", "gpt-served"]);
+  assert.deepEqual(settled.answeredBy, { entry: -1, engine: "codex", model: "gpt-served" });
+  await session.close();
+  await runtime.close();
+});
+
+test("a worker inherits the current phase unless its call declares another", async () => {
+  const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("before"), answers("one"), answers("two"), answers("override")])], 1);
+  await runtime.agent("before", { engine: "codex" });
+  runtime.notePhase("First response");
+  await runtime.agent("one", { engine: "codex" });
+  await runtime.agent("two", { engine: "codex" });
+  await runtime.agent("override", { engine: "codex", phase: "Review" });
+  const phases = records.filter((record) => record.status === "complete").map((record) => record.phase);
+  assert.deepEqual(phases, [null, "First response", "First response", "Review"]);
+  assert.deepEqual(records.filter((record) => record.status === "in-progress").map((record) => record.phase), phases);
+  await runtime.close();
+});
+
 test("a held turn that answered empty acquires no served-model claim", async () => {
   // The carry-forward is for answers from the observed worker; an empty
   // answer produced nothing to attribute to it, and the carry resumes on the
@@ -4089,6 +4119,42 @@ test("an output failure under a chain records retried-in-place then exhausted, a
   await runtime.close();
 });
 
+test("a fallback placement failure counts only the target actually dispatched", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", []);
+  claude.createInvocation = () => { throw new Error("fallback placement failed"); };
+  const { runtime, records } = chainRuntime([codex, claude], 1);
+  const notices = chainNotices(runtime);
+  await runtime.agent("work", {
+    engine: "codex", model: "gpt-6-sol", fallback: [{ engine: "claude", model: "sonnet" }]
+  }).catch(() => undefined);
+  assert.equal(codex.dispatches.length, 1);
+  assert.equal(claude.dispatches.length, 0);
+  assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.target.engine), ["codex"]);
+  assert.equal(notices.find((notice) => notice.method.endsWith("/agentFailed"))?.params.targetsTried, 1);
+  await runtime.close();
+});
+
+test("an invocation close failure after a completed correction names the close error", async () => {
+  let attempts = 0;
+  const engine: EngineAdapter = {
+    name: "codex", concurrency: 1, schedule: async (task) => task(),
+    createInvocation: () => ({
+      runAttempt: async () => ++attempts === 1 ? turn("") : turn("answered"),
+      close: async () => { throw new Error("invocation close failed"); }
+    }),
+    close: async () => undefined
+  };
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 2 });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  assert.equal(await runtime.agent("correct", { engine: "codex" }), null);
+  const settled = records.at(-1)!;
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
+  assert.equal(settled.terminationCause?.message, "invocation close failed");
+  await runtime.close();
+});
+
 test("an unrecognised failure with a chain entry remaining records chain-not-consulted and announces it once", async () => {
   const threadFailed = (): (() => Promise<EngineAttemptResult>) => async () => {
     throw new AppServerSystemError("turn notification", { code: "threadFailed", message: "the thread failed" });
@@ -4205,6 +4271,30 @@ test("run settlement leaves an in-flight chained attempt without a chain decisio
   assert.deepEqual(settled.attempts[0]?.classification, { class: "unclassified", rule: "run-settlement" });
   assert.equal(settled.attempts[0]?.chainDecision, null);
   assert.equal(claude.dispatches.length, 0);
+});
+
+test("a deadline observed during shutdown records the run cause and retains the deadline observation", async () => {
+  let markStarted: (() => void) | undefined;
+  let rejectAttempt: ((error: Error) => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const engine = new ChainEngine("codex", [() => new Promise<EngineAttemptResult>((_, reject) => {
+    rejectAttempt = reject;
+    markStarted?.();
+  })]);
+  engine.close = async () => {
+    rejectAttempt?.(new TurnTimeoutError("turn reached its deadline", { kind: "turn", timeoutMs: 50, threadId: "thread-1" }));
+  };
+  const { runtime, records } = chainRuntime([engine], 1);
+  const worker = runtime.agent("wait", { engine: "codex" });
+  worker.catch(() => undefined);
+  await started;
+  await runtime.close("interrupted");
+  await assert.rejects(worker, TurnTimeoutError);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "interrupted");
+  assert.equal(settled.terminationCause?.kind, "run-interrupted");
+  assert.equal(settled.attempts[0]?.failure?.kind, "run-interrupted");
+  assert.equal(settled.attempts[0]?.observedFailure?.kind, "TurnTimeoutError");
 });
 
 test("with no chain declared, no attempt carries a chain decision and no chain notice is announced", async () => {

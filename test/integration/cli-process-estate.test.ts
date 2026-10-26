@@ -1787,6 +1787,7 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
   for (const interruptResponse of ["accepted", "rejected", "withheld"] as const) {
     const fixture = await createProcessFixture(`interrupt-before-replacement-${interruptResponse}`, "recovered");
     const recordStore = path.join(path.dirname(fixture.script), "records");
+    const wireTimingPath = path.join(path.dirname(fixture.script), "wire-timing.jsonl");
     try {
       await writeFile(
         fixture.script,
@@ -1802,15 +1803,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
         `
       );
 
-      const startedAt = performance.now();
       const result = await fixture.runWithEnv({
         ENSEMBLE_FAKE_CODEX_NOTIFICATION_SEQUENCES: JSON.stringify(overloadSequence),
         ENSEMBLE_FAKE_CODEX_REJECT_INTERRUPT: interruptResponse === "rejected" ? "1" : "0",
         ENSEMBLE_FAKE_CODEX_WITHHOLD_INTERRUPT_RESPONSE: interruptResponse === "withheld" ? "1" : "0",
+        ENSEMBLE_FAKE_CODEX_CAPTURE_TIMING: wireTimingPath,
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore
       });
-      const elapsedMs = performance.now() - startedAt;
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.stdout, `"recovered"\n`);
@@ -1819,6 +1819,14 @@ test("built CLI interrupts an abandoned turn before replacement without awaiting
       );
       assert.equal(overloadPayloadOptOut, undefined, "the overload payload must validate without its itemId opt-out");
       if (interruptResponse === "withheld") {
+        const wireTimings = (await readFile(wireTimingPath, "utf8"))
+          .trim().split("\n")
+          .map((line) => JSON.parse(line) as { method: string; atMs: number });
+        const interruptIndex = wireTimings.findIndex((timing) => timing.method === "turn/interrupt");
+        assert.ok(interruptIndex >= 0, "the fixture did not receive the interrupt request");
+        const replacementStart = wireTimings.slice(interruptIndex + 1).find((timing) => timing.method === "thread/start");
+        assert.ok(replacementStart, "the fixture did not receive the replacement thread start");
+        const elapsedMs = replacementStart.atMs - wireTimings[interruptIndex]!.atMs;
         assert.ok(
           elapsedMs < 10_000,
           `replacement took ${elapsedMs.toFixed(0)}ms with the interrupt response withheld; it must not await the 30s request timeout`

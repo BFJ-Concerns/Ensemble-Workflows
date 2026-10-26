@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { assertSalvageEnvelope, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 
 function withoutSentinelAnnouncement(stderr: string): string {
   const announcement = /^\[sentinel\] will write \S+\/completion-sentinel\.json when the run ends\n/gm;

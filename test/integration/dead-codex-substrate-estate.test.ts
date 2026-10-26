@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { assertSalvageEnvelope, runProcess } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 
 test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: 60_000 }, async () => {
   for (const mode of ["exit-at-start", "close-stdin-before-exit"] as const) {

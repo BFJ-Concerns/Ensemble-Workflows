@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { executablePath, findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const recordingAppServerPath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-archived-agents.mjs");
 

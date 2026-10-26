@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ensemble Workflow"
+  short_description: "Write and run cross-engine multi-agent workflows on the Ensemble runtime"
+  default_prompt: "Use $ensemble-workflow to orchestrate agents on the Ensemble runtime: write and run a JavaScript workflow script that fans work out over Codex, Claude and opencode workers and has one model family check another's, or dispatch a single worker on a chosen engine with no script. When an engine family misbehaves, move the dispatches with a named-target rebinding or a launch-time remap rather than editing the workflow. The launcher is the bundled scripts/ensemble.mjs beside the skill, run with node by absolute path — there is no ensemble command on PATH."

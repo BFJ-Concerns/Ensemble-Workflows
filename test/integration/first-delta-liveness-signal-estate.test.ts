@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { findOnlyFile, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const deadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-first-output-deadline.mjs");
 const schemaCodexPath = spawnSync("which", ["codex"], { encoding: "utf8" }).stdout.trim();

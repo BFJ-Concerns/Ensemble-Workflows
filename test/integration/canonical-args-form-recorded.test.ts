@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 import { hermeticEstateEnvironment } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const archiveVerifierPath = path.resolve("test/consumers/verify-args.mjs");
 const execFileAsync = promisify(execFile);
 

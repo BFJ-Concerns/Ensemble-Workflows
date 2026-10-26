@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { executablePath, findOnlyFile, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const appServerFixturePath = path.resolve("test/fixtures/codex/post-promise-app-server.mjs");
 const deadlineAcceleratorPath = path.resolve(
   "test/fixtures/codex/accelerate-post-promise-deadline.mjs"

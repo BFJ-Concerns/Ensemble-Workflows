@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const fakeClaudePath = path.resolve("test/fixtures/claude/blocked-worker-cli.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-claude-interruption-evidence.mjs");
 // The readiness poll guards against a fixture that never dispatches, not

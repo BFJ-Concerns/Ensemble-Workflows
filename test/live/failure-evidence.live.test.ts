@@ -11,7 +11,7 @@ import { liveOpenCodeModel } from "./live-models.js";
 // These destructive legs are separate from the ordinary live estate: each
 // observes text from the real worker transport before terminating that worker.
 const isLive = process.env.ENSEMBLE_LIVE === "1" && process.env.ENSEMBLE_LIVE_FAILURE_EVIDENCE === "1";
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 
 for (const scenario of [
   { engine: "claude", model: null, error: /claude-poll-timeout: worker left the roster/ },

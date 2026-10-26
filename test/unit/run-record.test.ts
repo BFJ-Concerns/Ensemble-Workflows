@@ -461,7 +461,7 @@ test("a standalone bundle does not attribute the workflow checkout to its own bu
   const scratch = await mkdtemp(path.join(tmpdir(), "ensemble-build-identity-"));
   try {
     const bundle = path.join(scratch, "ensemble.mjs");
-    await writeFile(bundle, await readFile("skills/ensemble-workflow/Base/scripts/ensemble.mjs"));
+    await writeFile(bundle, await readFile("skills/ensemble-workflow/scripts/ensemble.mjs"));
     const workflow = path.join(scratch, "workflow.js");
     await writeFile(workflow, "export const meta = { name: 'build-identity' };\nreturn true;\n");
     await execFileAsync(process.execPath, [bundle, workflow], {

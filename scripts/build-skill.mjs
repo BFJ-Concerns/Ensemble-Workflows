@@ -1,8 +1,8 @@
 // Bundles the CLI into the standalone skill launcher
-// (skills/ensemble-workflow/Base/scripts/ensemble.mjs).
+// (skills/ensemble-workflow/scripts/ensemble.mjs).
 //
 // The skill's guidance is maintained separately; this repo ships only the
-// bundle, at the Base/scripts/ path skill installs expect — no package.json
+// bundle, beside the skill's SKILL.md, where the plugin layout places it — no package.json
 // beside the bundle. The version guard needs the Node floor at
 // startup, so we read `engines.node` here at build time and inline it via an
 // esbuild `define`, leaving the bundle self-contained. package.json stays the
@@ -25,7 +25,7 @@ import { build } from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
-const outfile = path.join(repoRoot, "skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const outfile = path.join(repoRoot, "skills/ensemble-workflow/scripts/ensemble.mjs");
 const noticesPath = path.join(repoRoot, "THIRD_PARTY_NOTICES");
 
 const pkg = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));

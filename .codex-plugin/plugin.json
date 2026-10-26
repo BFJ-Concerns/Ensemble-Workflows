@@ -1,0 +1,22 @@
+{
+  "name": "ensemble",
+  "description": "Ensemble: run JavaScript workflow scripts over Codex, Claude and opencode workers, so one model family can check another's work. Ships the ensemble-workflow skill with its bundled launcher.",
+  "author": { "name": "BFJ-Concerns" },
+  "homepage": "https://github.com/BFJ-Concerns/Ensemble-Workflows#readme",
+  "repository": "https://github.com/BFJ-Concerns/Ensemble-Workflows",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["workflow", "orchestration", "multi-agent", "codex", "opencode", "cross-engine"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ensemble",
+    "shortDescription": "Author and run cross-engine multi-agent workflows",
+    "longDescription": "Ensemble runs JavaScript workflow scripts over AI coding agents on three engines — Codex, Claude and opencode — so one model family can check another's work in a single run. The bundled ensemble-workflow skill teaches writing and running workflows, dispatching a single worker on a chosen engine, fallback chains, named targets and the dispatch remap, decision holds, and reading a run's record.",
+    "developerName": "BFJ-Concerns",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Use the ensemble-workflow skill to have a Claude worker review the change a Codex worker makes.",
+      "Dispatch a single Codex worker through Ensemble to summarise this repository."
+    ]
+  }
+}

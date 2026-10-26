@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { executablePath, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
 test("built CLI exposes rejection of a malformed partial assistant delta from its recording instrument", async () => {

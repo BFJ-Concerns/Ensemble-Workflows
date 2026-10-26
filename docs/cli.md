@@ -1,12 +1,14 @@
 # Command-line interface
 
 The launcher is a single self-contained file,
-`skills/ensemble-workflow/Base/scripts/ensemble.mjs`. Run it with Node.js
+`skills/ensemble-workflow/scripts/ensemble.mjs`, beside the `ensemble-workflow`
+skill's `SKILL.md` in the plugin (see the README for installing the plugin on
+Claude Code, Codex or opencode). Run it with Node.js
 24.14.0 or later; an older Node exits 1 with a version error. This page writes
 it as `ensemble`, as if a shell alias or a symlink on `PATH` gave it that name:
 
 ```sh
-alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/scripts/ensemble.mjs'
+alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/scripts/ensemble.mjs'
 ```
 
 ## Synopsis
@@ -93,7 +95,7 @@ the prompt.
 | `--task <identity>` | Grouping identity copied into the run record |
 
 The run options `--budget`, `--concurrency`, `--agent-ceiling`, `--timeout`,
-`--strip`, `--caller-identity`, and `--hold-scope` apply here too.
+`--strip`, `--caller-identity`, `--hold-scope`, and `--remap` apply here too.
 
 The option semantics match `agent()` in a script; see
 [`agent()` options](workflow-scripts.md#agent-options). There is no fallback

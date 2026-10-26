@@ -23,13 +23,21 @@ The test suite needs a systemd user session (some tests bound child processes
 with `systemd-run --user --scope`) and `codex` on `PATH` (some tests ask it for
 the app-server protocol schema).
 
-## The launcher
+## The launcher and the plugin
 
-`skills/ensemble-workflow/Base/scripts/ensemble.mjs` is the self-contained
-launcher, built from `src/` by `npm run build:skill`. Skill installs expect
-exactly that path, so do not move or rename it, and keep the directory to that
-one file: the `ensemble-workflow` skill's guidance (`SKILL.md` and its
-references) is maintained in a separate repository.
+The repository is a plugin for Claude Code and Codex (manifests in
+`.claude-plugin/`, `.codex-plugin/` and `.agents/plugins/`; the plugin and
+marketplace are both named at the root) carrying one skill,
+`skills/ensemble-workflow/`: its `SKILL.md` and `references/` are the guidance
+an agent on any of the three tools drives the runtime with, `agents/openai.yaml`
+is Codex's interface block, and `scripts/ensemble.mjs` beside them is the
+self-contained launcher, built from `src/` by `npm run build:skill`. The
+plugin layout fixes that path — the launcher sits beside `SKILL.md` with no
+directory between — so do not move or rename it. The skill's text ships with
+the runtime it describes and is kept true of it in the same change; it names
+nothing particular to one machine (no hosts, paths, services or routing
+policy), so a change that would add such a thing belongs in a user's own
+guidance, not here.
 
 Building rewrites the tracked launcher, so `just verify` and `npm test` can
 leave the tree dirty. Commit the rebuilt launcher with the change that caused

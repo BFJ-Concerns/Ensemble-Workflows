@@ -1,0 +1,12 @@
+{
+  "name": "ensemble-workflows",
+  "interface": { "displayName": "Ensemble Workflows" },
+  "plugins": [
+    {
+      "name": "ensemble",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

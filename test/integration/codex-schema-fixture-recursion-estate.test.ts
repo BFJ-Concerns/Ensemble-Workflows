@@ -26,7 +26,7 @@ function assertSubstrateRefusal(result: { code: number | null; stdout: string; s
   assert.doesNotMatch(result.stderr, /failed after \d+ attempts?/);
 }
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const recordingFixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 const scopeProperties = ["-p", "TasksMax=60", "-p", "MemoryMax=500M", "-p", "MemorySwapMax=0"];
 let scopeCounter = 0;

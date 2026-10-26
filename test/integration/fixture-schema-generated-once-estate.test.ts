@@ -8,7 +8,7 @@ import test from "node:test";
 
 import { executablePath, hermeticEstateEnvironment } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const fixturePath = path.resolve("test/fixtures/codex/recording-app-server.mjs");
 
 test("parallel built-CLI fixtures generate one shared schema without signal-kill residue", { timeout: 30_000 }, async (t) => {

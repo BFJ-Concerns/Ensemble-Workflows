@@ -42,13 +42,32 @@ Ensemble is developed and tested on Linux.
 
 ## Getting started
 
-The launcher, `skills/ensemble-workflow/Base/scripts/ensemble.mjs`, is a
-single self-contained file, so a checkout runs it with no install step:
+Ensemble ships as a plugin carrying one skill, `ensemble-workflow`, and the
+runtime's launcher beside it. Install it on the tool your agent runs in:
+
+- **Claude Code:** `/plugin install ensemble --marketplace BFJ-Concerns/Ensemble-Workflows`
+  in a session (or `claude plugin marketplace add BFJ-Concerns/Ensemble-Workflows`
+  then `claude plugin install ensemble@ensemble-workflows` from a shell). The
+  skill is listed as `/ensemble:ensemble-workflow`.
+- **Codex:** `codex plugin marketplace add BFJ-Concerns/Ensemble-Workflows`
+  then `codex plugin add ensemble@ensemble-workflows`; the skill is listed as
+  `ensemble:ensemble-workflow` in a new session.
+- **opencode:** opencode reads skills from directories, not plugin manifests.
+  Clone the repository and link (or copy) `skills/ensemble-workflow` into
+  `~/.config/opencode/skills/` or a project's `.opencode/skills/`; the skill
+  is listed as `ensemble-workflow` in a new session. A skill of the same name
+  already installed under another of opencode's skill directories is listed
+  in its place, so remove or rename that copy first.
+
+The installed skill teaches the agent to write and run workflows with the
+launcher it carries, `skills/ensemble-workflow/scripts/ensemble.mjs`. That
+launcher is a single self-contained file, so a checkout also runs it with no
+install step:
 
 ```sh
 git clone https://github.com/BFJ-Concerns/Ensemble-Workflows.git
 cd Ensemble-Workflows
-node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent \
+node skills/ensemble-workflow/scripts/ensemble.mjs agent \
   --engine codex --model gpt-6-luna 'Say hello in one sentence.'
 ```
 
@@ -62,10 +81,13 @@ The rest of this README writes the launcher as `ensemble`. An alias gives it
 that name:
 
 ```sh
-alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/Base/scripts/ensemble.mjs'
+alias ensemble='node /path/to/Ensemble-Workflows/skills/ensemble-workflow/scripts/ensemble.mjs'
 ```
 
 The launcher can also be copied anywhere on its own and run with `node`.
+The plugin's manifests sit at the repository root (`.claude-plugin/`,
+`.codex-plugin/`, `.agents/plugins/`), so the repository is the marketplace
+and the plugin at once.
 
 ## A first workflow
 
@@ -212,7 +234,7 @@ npm run build
 ```
 
 The build compiles the TypeScript in `src/` to `dist/` and rebuilds the
-launcher at `skills/ensemble-workflow/Base/scripts/ensemble.mjs`.
+launcher at `skills/ensemble-workflow/scripts/ensemble.mjs`.
 
 ## Licence
 

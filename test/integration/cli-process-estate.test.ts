@@ -15,7 +15,7 @@ import { assertSalvageEnvelope, executablePath, findOnlyFile, hermeticEstateEnvi
 import type { BudgetView } from "../../src/progress.js";
 import type { EngineName } from "../../src/types.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const turnTimeoutAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-turn-timeout.mjs");
 const delayedAgentWritePreloadPath = path.resolve("test/fixtures/delay-agent-record-writes.mjs");
 // This only catches a wedged fixture process. It is not a product deadline and

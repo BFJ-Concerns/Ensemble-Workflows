@@ -1,0 +1,9 @@
+{
+  "name": "ensemble",
+  "description": "Ensemble: run JavaScript workflow scripts over Codex, Claude and opencode workers, so one model family can check another's work. Ships the ensemble-workflow skill with its bundled launcher.",
+  "author": { "name": "BFJ-Concerns", "url": "https://github.com/BFJ-Concerns" },
+  "homepage": "https://github.com/BFJ-Concerns/Ensemble-Workflows#readme",
+  "repository": "https://github.com/BFJ-Concerns/Ensemble-Workflows",
+  "license": "AGPL-3.0-or-later",
+  "keywords": ["workflow", "orchestration", "multi-agent", "codex", "opencode", "cross-engine"]
+}

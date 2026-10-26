@@ -12,7 +12,7 @@ import { liveCodexModel, liveOpenCodeModel } from "./live-models.js";
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const codexModelSkip = liveCodexModel === undefined ? "ENSEMBLE_LIVE_CODEX_MODEL is unset" : false;
 const liveOptions = { skip: !isLive };
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const execFileAsync = promisify(execFile);
 
 test("live CLI runs a fan-out then compiler workflow and splits stdout from stderr", liveOptions, async () => {

@@ -9,7 +9,7 @@ import test from "node:test";
 import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-process.js";
 
-const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
+const bundledCliPath = path.resolve("skills/ensemble-workflow/scripts/ensemble.mjs");
 const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
 const archivedAgentsConsumerPath = path.resolve("test/consumers/read-archived-agents.mjs");
 test("a sealed archive attests itself and its sentinel attests it back", async () => {

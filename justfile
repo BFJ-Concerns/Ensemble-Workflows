@@ -19,7 +19,7 @@ verify: lint test bundle-fresh
 # notices the diff. Scoped to the bundle path so unrelated working-tree
 # changes never fail here.
 bundle-fresh:
-    git diff --stat --exit-code -- skills/ensemble-workflow/Base/scripts/ensemble.mjs || { echo "Tracked skill bundle is stale: commit the rebuilt skills/ensemble-workflow/Base/scripts/ensemble.mjs with the change that caused it." >&2; exit 1; }
+    git diff --stat --exit-code -- skills/ensemble-workflow/scripts/ensemble.mjs || { echo "Tracked skill bundle is stale: commit the rebuilt skills/ensemble-workflow/scripts/ensemble.mjs with the change that caused it." >&2; exit 1; }
 
 # Alias for `verify`, kept for muscle memory.
 ci: verify
@@ -39,7 +39,7 @@ test:
 install:
     npm ci
 
-# Rebuild the standalone skill launcher (skills/…/Base/scripts/ensemble.mjs).
+# Rebuild the standalone skill launcher (skills/ensemble-workflow/scripts/ensemble.mjs).
 build:
     npm run build
 

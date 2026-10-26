@@ -1115,7 +1115,11 @@ test("a reasoning frame stops the whitespace bound while the turn continues", as
   });
   try {
     const threadId = await transport.openThread({});
-    assert.equal((await transport.runTurn(threadId, "whitespace then reasoning", {})).text, "answered after reasoning activity");
+    let answer: string | undefined;
+    await assert.doesNotReject(async () => {
+      answer = (await transport.runTurn(threadId, "whitespace then reasoning", {})).text;
+    });
+    assert.equal(answer, "answered after reasoning activity");
   } finally {
     await transport.close();
   }

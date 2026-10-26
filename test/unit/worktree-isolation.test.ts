@@ -188,7 +188,9 @@ test("a repository with a separate git directory keeps its worktree beside the c
 
   try {
     const manager = new GitWorktreeIsolationManager();
-    const worktree = await manager.create(repo);
+    const worktree = await manager.create(repo).catch((error: unknown): never => {
+      assert.fail(`separate git directory must support worktree creation: ${String(error)}`);
+    });
     assert.equal(path.dirname(worktree.path), path.join(directory, "repo.ensemble-workflows-worktrees"));
     await manager.finish(worktree);
   } finally {

@@ -756,7 +756,7 @@ test("concurrent answerers report only their own submission's outcome", async ()
 
 test("answerHold checks its receipt again after an in-flight hold read finds no file", async () => {
   await withHoldsDir(async (dir) => {
-    const holds = new HoldManager({ dir, runId: "receipt-race", cwd: "/fake/cwd", scope: null, pollIntervalMs: 5 });
+    const holds = new HoldManager({ dir, runId: "receipt-race", cwd: "/fake/cwd", scope: null, pollIntervalMs: 300 });
     const decision = holds.raise({ content: "proceed?", verdicts: ["go"] });
     decision.catch(() => undefined);
     let releaseRead: (() => void) | undefined;
@@ -771,7 +771,9 @@ test("answerHold checks its receipt again after an in-flight hold read finds no 
           await blockedRead;
           return readFile(holdPath, "utf8");
         } });
-      await readStarted;
+      await Promise.race([readStarted, new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("answerer never reached the delayed hold read")), 2000);
+      })]);
       assert.deepEqual(await decision, { verdict: "go", note: null });
       releaseRead?.();
       assert.deepEqual(await answering, { outcome: "consumed", hold_id: record.hold_id, verdict: "go" });

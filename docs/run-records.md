@@ -429,7 +429,11 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   last target admitted: initially the requested engine, and the answering
   engine's group when a fallback answers).
 - `header_identity`: `"original_request"`, stating that the top-level
-  `engine`, `model`, and `effort` fields describe the request.
+  `engine`, `model`, and `effort` fields describe the request. The field
+  joined the record within schema version 4, so a version-4 agent record
+  from an older Ensemble checkout can lack it; read a missing
+  `header_identity` as `"original_request"`, because those fields describe
+  the request in such records too.
 - `engine`, `model`, `effort`: what was asked for (`effort` as the canonical
   level).
 - `resolved_model` / `resolved_effort`: what was actually served, as the

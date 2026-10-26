@@ -33,9 +33,9 @@ import {
 } from "../../src/errors.js";
 
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
-import { Scheduler } from "../../src/scheduler.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult } from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -3244,61 +3244,11 @@ test("a thrown string reaches the record as the words the engine actually threw"
 // records the chain wrote.
 // ---------------------------------------------------------------------------
 
-/**
- * One scripted engine: each createInvocation consumes the next step for its
- * model. The cap is the adapter's own — the runtime reads an injected
- * adapter's `concurrency`, never the `concurrencyCaps` option, which only
- * shapes the default registry — so a test that wants a cap of one says so
- * here.
- */
-class ChainEngine implements EngineAdapter {
-  readonly concurrency: number;
-  readonly dispatches: Array<{ model: string | undefined; effort: string | undefined; prompt: string }> = [];
-  readonly scheduler: Scheduler;
-  #steps: Array<() => Promise<EngineAttemptResult>>;
-
-  constructor(
-    readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>,
-    concurrency = 4
-  ) {
-    this.#steps = [...steps];
-    this.concurrency = concurrency;
-    this.scheduler = new Scheduler(concurrency);
-  }
-
-  schedule<T>(task: () => Promise<T>): Promise<T> {
-    return this.scheduler.schedule(task);
-  }
-
-  createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation {
-    this.dispatches.push({ model: options.model, effort: options.effort, prompt });
-    return {
-      runAttempt: async () => {
-        const step = this.#steps.shift();
-        assert.ok(step, `${this.name} engine ran out of scripted steps`);
-        return step();
-      }
-    };
-  }
-
-  async close(): Promise<void> {}
-}
-
 /** A Codex refusal as the transport raises it: the app-server's own code riding the error. */
 function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
   return async () => {
     throw appServerErrorFromPayload("turn notification", { code, message: `refused: ${code}` });
   };
-}
-
-/** A Claude refusal as the engine returns it: a failed result carrying the API's status and code. */
-function claudeRefusal(status: number, code: string): () => Promise<EngineAttemptResult> {
-  return async () => ({
-    ...turn(""),
-    attemptFailure: { kind: "claude-worker-diagnostic", message: `API Error: Request rejected (${status})` },
-    diagnostics: { apiError: { status, code } }
-  });
 }
 
 function answers(text: string, resolvedModel?: string): () => Promise<EngineAttemptResult> {

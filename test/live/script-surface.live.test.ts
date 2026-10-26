@@ -7,6 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { assertEach } from "./launcher.js";
 import { liveCodexModel, liveCodexScriptOptions, liveOpenCodeModel } from "./live-models.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
@@ -84,12 +85,15 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
     drafts: Array<{ point: unknown } | null>;
     compiled: { count: unknown; summary: unknown };
   };
-  assert.equal(parsed.drafts.length, 2);
-  for (const draft of parsed.drafts) {
-    assert.equal(typeof draft?.point, "string", `a fan-out result was not its validated object: ${JSON.stringify(draft)}`);
-  }
-  assert.ok(Number.isInteger(parsed.compiled.count), `the compiled result was not its validated object: ${result.stdout}`);
-  assert.equal(typeof parsed.compiled.summary, "string");
+  assertEach([
+    ["the fan-out returned both results", () => assert.equal(parsed.drafts.length, 2)],
+    ...[0, 1].map((index): [string, () => void] => [
+      `fan-out result ${index} is its validated object`,
+      () => assert.equal(typeof parsed.drafts[index]?.point, "string", JSON.stringify(parsed.drafts[index]))
+    ]),
+    ["the compiled count is its validated integer", () => assert.ok(Number.isInteger(parsed.compiled.count), result.stdout)],
+    ["the compiled summary is its validated string", () => assert.equal(typeof parsed.compiled.summary, "string")]
+  ]);
 });
 
 test("live built CLI runs a current Codex model with unusual open-domain metadata", { skip: !isLive || codexModelSkip, timeout: 240_000 }, async () => {
@@ -258,16 +262,21 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
     const parsed = JSON.parse(result.stdout) as { finding: unknown; verification: unknown };
     const { agent: finder } = await recordedAgent(recordStore, "cross-find");
     const { agent: verifier } = await recordedAgent(recordStore, "cross-verify");
-    assert.equal(finder.engine, "codex");
-    assert.equal(verifier.engine, "claude");
-    assert.equal(finder.status, "complete");
-    assert.equal(verifier.status, "complete");
-    assert.deepEqual(finder.validated_output, parsed.finding);
-    assert.deepEqual(verifier.validated_output, parsed.verification);
-    assert.ok(
-      verifier.prompt.includes(JSON.stringify(parsed.finding)),
-      `the Claude verifier's recorded prompt did not carry the Codex finding: ${verifier.prompt}`
-    );
+    assertEach([
+      ["the finder ran on codex", () => assert.equal(finder.engine, "codex")],
+      ["the verifier ran on claude", () => assert.equal(verifier.engine, "claude")],
+      ["the finder completed", () => assert.equal(finder.status, "complete")],
+      ["the verifier completed", () => assert.equal(verifier.status, "complete")],
+      ["the finder's validated output is the finding returned", () => assert.deepEqual(finder.validated_output, parsed.finding)],
+      [
+        "the verifier's validated output is the verification returned",
+        () => assert.deepEqual(verifier.validated_output, parsed.verification)
+      ],
+      [
+        "the verifier's recorded prompt carries the Codex finding",
+        () => assert.ok(verifier.prompt.includes(JSON.stringify(parsed.finding)), verifier.prompt)
+      ]
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -334,13 +343,21 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
       }
 
       const returned: unknown = JSON.parse(result.stdout);
-      assert.equal(agent.attempts.length, 1);
-      assert.equal(agent.attempts[0]?.status, "complete", `the prose-wrapped reply was not accepted: ${rawOutput}`);
-      assert.equal(agent.parse_route, "object-fallback");
-      assert.deepEqual(agent.validated_output, returned);
       const objectEnd = rawOutput.lastIndexOf("}") + 1;
-      assert.ok(objectStart >= 0 && objectEnd > objectStart, `the archived raw reply holds no JSON object: ${rawOutput}`);
-      assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned);
+      assert.equal(agent.attempts.length, 1);
+      assertEach([
+        ["the prose-wrapped reply was accepted", () => assert.equal(agent.attempts[0]?.status, "complete", rawOutput)],
+        ["the archive records the object-fallback parse route", () => assert.equal(agent.parse_route, "object-fallback")],
+        ["the archive's validated output is the value returned", () => assert.deepEqual(agent.validated_output, returned)],
+        [
+          "the archived raw reply holds a JSON object",
+          () => assert.ok(objectStart >= 0 && objectEnd > objectStart, `no JSON object in: ${rawOutput}`)
+        ],
+        [
+          "the object inside the raw reply is the value returned",
+          () => assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned)
+        ]
+      ]);
       return;
     }
     t.skip(`Claude replied without prose in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);

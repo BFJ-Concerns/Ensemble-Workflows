@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { isStatusFileName } from "../../src/status-file.js";
+import { assertEach } from "./launcher.js";
 import { liveCodexScriptOptions } from "./live-models.js";
 
 const isLive = process.env.ENSEMBLE_LIVE === "1";
@@ -70,7 +71,6 @@ test(
         blocked: { name: string; message: string } | null;
         spent: number;
       };
-      assert.equal(typeof output.admitted, "string", `the admitted call returned no text: ${result.stdout}`);
       assert.ok(output.spent >= 1);
       assert.equal(output.blocked?.name, "BudgetExceededError");
       assert.match(output.blocked?.message ?? "", /Token budget exhausted for codex/);
@@ -78,6 +78,14 @@ test(
       assert.ok(snapshots.every((snapshot) => snapshot.agents.every((agent) => agent.label !== "blocked-live")));
 
       const archive = await readArchiveAsConsumer(recordStore);
+      // Whatever the worker replied, the script received it as a string, and
+      // the archive holds that same reply as the agent's output and in the
+      // run's result.
+      assertEach([
+        ["the admitted call returned its reply", () => assert.equal(typeof output.admitted, "string", result.stdout)],
+        ["the archived agent output is the reply received", () => assert.equal(archive.agents[0]?.raw_output, output.admitted)],
+        ["the archived run result holds the reply received", () => assert.equal(archive.result.value.admitted, output.admitted)]
+      ]);
       assert.equal(archive.manifest.schema_version, 4);
       assert.deepEqual(archive.manifest.meta.task, {
         id: "budget-ordering-live-proof",
@@ -89,10 +97,6 @@ test(
       assert.equal(archive.agents[0]?.attempts.length, 1);
       assert.ok((archive.agents[0]?.attempts[0]?.token_usage_events.length ?? 0) > 0);
       assert.ok((archive.agents[0]?.resolved_model?.length ?? 0) > 0);
-      // Whatever the worker replied, the archive must hold the same reply the
-      // script received, as the agent's output and in the run's result.
-      assert.equal(archive.agents[0]?.raw_output, output.admitted);
-      assert.equal(archive.result.value.admitted, output.admitted);
       assert.equal(archive.result.value.blocked?.name, "BudgetExceededError");
     } finally {
       await rm(directory, { recursive: true, force: true });

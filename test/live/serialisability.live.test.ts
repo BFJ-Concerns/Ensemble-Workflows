@@ -40,7 +40,7 @@ function withoutArchiveAnnouncement(stderr: string): string {
 // resolved to. The leg runs unpinned unless ENSEMBLE_LIVE_CODEX_MODEL is set,
 // so the notice is required exactly once when unpinned and absent when pinned.
 function withoutUnpinnedNotice(stderr: string): string {
-  const notice = /^\[codex\] agent 1 \(live-serialisability-worker\) runs unpinned — resolved ambient default: \S+\n/gm;
+  const notice = /^\[codex\] agent 1 \(live-serialisability-worker\) runs unpinned — resolved ambient default: [^\n]+\n/gm;
   const matches = stderr.match(notice) ?? [];
   assert.equal(matches.length, liveCodexModel === undefined ? 1 : 0, `unexpected unpinned-worker notices in:\n${stderr}`);
   return stderr.replace(notice, "");

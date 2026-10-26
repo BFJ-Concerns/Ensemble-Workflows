@@ -27,21 +27,26 @@ export interface WorktreeIsolationManager {
   finish(worktree: IsolatedWorktree): Promise<IsolatedWorktreeRecord>;
 }
 
+interface RepositoryRoots {
+  checkout: string;
+  main: string;
+}
+
 export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
   #counter = 0;
-  #repoRoots = new Map<string, Promise<string>>();
+  #repoRoots = new Map<string, Promise<RepositoryRoots>>();
   #worktreeRoots = new Map<string, string>();
 
   async create(baseCwd: string): Promise<IsolatedWorktree> {
-    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path.join(path.dirname(repoRoot), `${path.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    const worktreePath = path.join(path.dirname(repoRoots.main), `${path.basename(repoRoots.main)}.ensemble-workflows-worktrees`, name);
 
     await mkdir(path.dirname(worktreePath), { recursive: true });
-    await git(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    await git(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git(worktreePath, ["rev-parse", "HEAD"])).trim();
-    this.#worktreeRoots.set(worktreePath, repoRoot);
+    this.#worktreeRoots.set(worktreePath, repoRoots.checkout);
 
     return {
       path: worktreePath,
@@ -94,25 +99,37 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     };
   }
 
-  async #gitRepoRoot(baseCwd: string): Promise<string> {
+  async #gitRepoRoots(baseCwd: string): Promise<RepositoryRoots> {
     const resolvedCwd = path.resolve(baseCwd);
-    let repoRoot = this.#repoRoots.get(resolvedCwd);
-    if (repoRoot === undefined) {
-      repoRoot = git(resolvedCwd, ["rev-parse", "--git-common-dir"]).then((commonDir) =>
-        path.dirname(path.resolve(resolvedCwd, commonDir.trim()))
-      ).catch((error: unknown) => {
+    let repoRoots = this.#repoRoots.get(resolvedCwd);
+    if (repoRoots === undefined) {
+      repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error: unknown) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
       });
-      this.#repoRoots.set(resolvedCwd, repoRoot);
+      this.#repoRoots.set(resolvedCwd, repoRoots);
     }
     try {
-      return (await repoRoot).trim();
+      return await repoRoots;
     } catch (error) {
       this.#repoRoots.delete(resolvedCwd);
       throw error;
     }
+  }
+
+  async #resolveRepoRoots(cwd: string): Promise<RepositoryRoots> {
+    const checkout = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
+    const common = path.resolve(cwd, (await git(cwd, ["rev-parse", "--git-common-dir"])).trim());
+    const worktree = (await git(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
+    // A normal repository stores its common directory at <main>/.git.
+    // Submodules record the main checkout relative to their common git dir.
+    // A separate git dir without core.worktree records no main checkout path;
+    // keep placement beside the checkout in that layout.
+    const main = worktree.length > 0 ? path.resolve(common, worktree)
+      : path.basename(common) === ".git" ? path.dirname(common)
+      : checkout;
+    return { checkout, main };
   }
 
   #uniqueName(): string {

@@ -3456,10 +3456,13 @@ test("authoring refusals say what was found and which declaration is wrong", asy
   }
 });
 
-test("every option mistake on ensemble agent is refused before a run exists: exit 2, one line, no archive", async () => {
+test("ensemble agent refuses every option the agent() option check judges before a run exists: exit 2, one line, no archive", async () => {
   // The direct form runs the same option validator agent() runs, before the
-  // run begins, so the exit code and archive behaviour do not depend on
-  // which option was wrong or which layer judged it.
+  // run begins, so an option that validator judges is refused at the same
+  // boundary as the parser's own option errors. Judgements made by an engine
+  // adapter at dispatch (an opencode model, a strip the engine cannot
+  // enforce, worktree placement) are outside this validator and still fail
+  // as a run.
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-option-rule-"));
   const runRecordDir = path.join(directory, "records");
   const cases: Array<{ flags: string[]; line: string }> = [

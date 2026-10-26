@@ -86,7 +86,7 @@ Each status file contains one JSON object with these fields:
   first observed. That distinguishes a stuck background task from a worker
   that is still generating.
 - `holds`: array of open decision holds, empty when the run is not waiting.
-  Each object has string `hold_id`, string `content` (cut to 500 characters plus
+  Each object has string `id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
   `verdicts`, and numeric `raisedAtMs` (Unix epoch milliseconds).
 
@@ -378,7 +378,8 @@ families with their own schema versions (`3` and `2`), described above.
   before the child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle — raise, accepted answer, rejected
   answer, timeout, and retirement, including after its raiser dies — in
-  event order. Each entry carries `hold_id`, `event`, `verdict` or `reason`
+  event order. A run that sweeps another run's dead hold also records that
+  `hold/retired` event in its own `hold_events`. Each entry carries `hold_id`, `event`, `verdict` or `reason`
   where applicable, and a timestamp. An `answered` entry also carries
   `answered_by` (the answerer the decision file named, or `null`) and the
   decider's `note` (or `null`). Rejected answers carry those fields too when

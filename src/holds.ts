@@ -138,6 +138,8 @@ export interface RetiredHoldRecord extends HoldFileRecord {
   state: "retired";
   retired_at: string;
   retirement_reason: "dead-raiser" | "timed-out";
+  /** Why the raising run's archive could not record this retirement. */
+  archive_error?: string;
 }
 
 /** One enumerated open hold. */
@@ -490,6 +492,8 @@ export interface AnswerHoldOptions {
   /** Gap between hold-file re-reads while waiting. */
   checkIntervalMs?: number;
   procDir?: string;
+  /** Test seam for an in-flight hold read after a receipt check. */
+  readHoldFile?: (holdPath: string) => Promise<string>;
 }
 
 /** What an answer write produced, judged by the hold and decision files. */
@@ -552,26 +556,27 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
   const waitMs = options.waitMs ?? cadence * 4 + 1000;
   const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
   const started = Date.now();
-  for (;;) {
+  async function readReceipt(): Promise<AnswerHoldOutcome | null> {
     const receiptPath = decisionReceiptPath(record.decision_path, submissionId);
-    let receipt: DecisionReceipt | null = null;
+    let receipt: DecisionReceipt;
     try {
       receipt = JSON.parse(await readFile(receiptPath, "utf8")) as DecisionReceipt;
-      await rm(receiptPath, { force: true });
     } catch (error) {
-      if (!(error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT")) {
-        throw error;
-      }
+      if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
     }
-    if (receipt?.submission_id === submissionId) {
-      if (receipt.outcome === "consumed") {
-        return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
-      }
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
-    }
+    await rm(receiptPath, { force: true });
+    if (receipt.submission_id !== submissionId) return null;
+    return receipt.outcome === "consumed"
+      ? { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict }
+      : { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
+  }
+  for (;;) {
+    const receipt = await readReceipt();
+    if (receipt !== null) return receipt;
     let current: HoldFileRecord | null;
     try {
-      current = JSON.parse(await readFile(holdPath, "utf8")) as HoldFileRecord;
+      current = JSON.parse(await (options.readHoldFile?.(holdPath) ?? readFile(holdPath, "utf8"))) as HoldFileRecord;
     } catch (error) {
       if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         current = null;
@@ -580,6 +585,9 @@ export async function answerHold(options: AnswerHoldOptions): Promise<AnswerHold
       }
     }
     if (current === null) {
+      // Settlement can publish its receipt between the two reads above.
+      const settled = await readReceipt();
+      if (settled !== null) return settled;
       return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
     }
     const waited = Date.now() - started;
@@ -676,7 +684,7 @@ async function enumerateScopeDirectory(
         const retired = JSON.parse(await readFile(holdPath, "utf8")) as RetiredHoldRecord;
         if (retired.kind === "ensemble_hold" && retired.state === "retired") {
           if (retired.retirement_reason === "dead-raiser" && retired.run_identity?.archive_path) {
-            await recordRetiredHold(retired.run_identity.archive_path, retired);
+            await recordRetirementEvidence(retired, holdPath);
           }
           result.retired.push(retired);
         }
@@ -720,9 +728,22 @@ async function retireHold(
   await publishHoldRecord(holdPath.replace(/\.json$/, RETIRED_SUFFIX), retired);
   await rm(holdPath, { force: true });
   if (reason === "dead-raiser" && record.run_identity?.archive_path) {
-    await recordRetiredHold(record.run_identity.archive_path, retired);
+    await recordRetirementEvidence(retired, holdPath.replace(/\.json$/, RETIRED_SUFFIX));
   }
   return retired;
+}
+
+async function recordRetirementEvidence(retired: RetiredHoldRecord, tombstonePath: string): Promise<void> {
+  try {
+    await recordRetiredHold(retired.run_identity!.archive_path!, retired);
+    if (retired.archive_error === undefined) return;
+    delete retired.archive_error;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (retired.archive_error === message) return;
+    retired.archive_error = message;
+  }
+  await publishHoldRecord(tombstonePath, retired);
 }
 
 async function publishHoldRecord(holdPath: string, record: HoldFileRecord): Promise<void> {

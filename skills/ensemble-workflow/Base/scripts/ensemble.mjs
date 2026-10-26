@@ -15012,12 +15012,7 @@ async function recordRetiredHold(archiveDir, retired) {
     note: null,
     at: retired.retired_at
   });
-  if (typeof manifest.integrity?.manifest_sha256 === "string") {
-    manifest.integrity.manifest_sha256 = null;
-    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
-  }
-  await writeStandaloneText(manifestPath, `${canonicalJson(manifest)}
-`);
+  await writeAttestedManifest(manifestPath, manifest);
 }
 var RunRecordWriter = class _RunRecordWriter {
   archiveDir;
@@ -15442,12 +15437,8 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
-    this.manifest.integrity.manifest_sha256 = null;
-    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path4.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path4.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
-`);
+    await writeAttestedManifest(destination, this.manifest, true);
   }
   // pid + sequence keeps names unique within the process; Date.now() alone
   // collided when two agents settled in the same millisecond.
@@ -15643,12 +15634,7 @@ async function reapAbandonedRuns(options) {
       }
       fresh.status = "abandoned";
       fresh.abandonment = abandonment;
-      if (fresh.integrity !== void 0 && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
-        fresh.integrity.manifest_sha256 = null;
-        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
-      }
-      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
-`);
+      await writeAttestedManifest(manifestPath, fresh);
       reaped.push(entry.name);
     } catch {
     }
@@ -15798,6 +15784,14 @@ function extractTask(meta) {
 async function hashFile(filePath) {
   const text = await readFile3(filePath);
   return createHash2("sha256").update(text).digest("hex");
+}
+async function writeAttestedManifest(destination, manifest, initialise = false) {
+  if (manifest.integrity !== void 0 && manifest.integrity !== null && (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
+    manifest.integrity.manifest_sha256 = null;
+    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
+  }
+  await writeStandaloneText(destination, `${canonicalJson(manifest)}
+`);
 }
 async function writeStandaloneText(destination, content) {
   await mkdir(path4.dirname(destination), { recursive: true });
@@ -16103,26 +16097,25 @@ async function answerHold(options) {
   const waitMs = options.waitMs ?? cadence * 4 + 1e3;
   const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
   const started = Date.now();
-  for (; ; ) {
+  async function readReceipt() {
     const receiptPath = decisionReceiptPath(record.decision_path, submissionId);
-    let receipt = null;
+    let receipt;
     try {
       receipt = JSON.parse(await readFile4(receiptPath, "utf8"));
-      await rm2(receiptPath, { force: true });
     } catch (error) {
-      if (!(error instanceof Error && error.code === "ENOENT")) {
-        throw error;
-      }
+      if (error instanceof Error && error.code === "ENOENT") return null;
+      throw error;
     }
-    if (receipt?.submission_id === submissionId) {
-      if (receipt.outcome === "consumed") {
-        return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
-      }
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
-    }
+    await rm2(receiptPath, { force: true });
+    if (receipt.submission_id !== submissionId) return null;
+    return receipt.outcome === "consumed" ? { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict } : { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
+  }
+  for (; ; ) {
+    const receipt = await readReceipt();
+    if (receipt !== null) return receipt;
     let current2;
     try {
-      current2 = JSON.parse(await readFile4(holdPath, "utf8"));
+      current2 = JSON.parse(await (options.readHoldFile?.(holdPath) ?? readFile4(holdPath, "utf8")));
     } catch (error) {
       if (error instanceof Error && error.code === "ENOENT") {
         current2 = null;
@@ -16131,6 +16124,8 @@ async function answerHold(options) {
       }
     }
     if (current2 === null) {
+      const settled = await readReceipt();
+      if (settled !== null) return settled;
       return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
     }
     const waited = Date.now() - started;
@@ -16200,7 +16195,7 @@ async function enumerateScopeDirectory(scopeDir, options) {
         const retired = JSON.parse(await readFile4(holdPath, "utf8"));
         if (retired.kind === "ensemble_hold" && retired.state === "retired") {
           if (retired.retirement_reason === "dead-raiser" && retired.run_identity?.archive_path) {
-            await recordRetiredHold(retired.run_identity.archive_path, retired);
+            await recordRetirementEvidence(retired, holdPath);
           }
           result.retired.push(retired);
         }
@@ -16235,9 +16230,21 @@ async function retireHold(record, holdPath, reason) {
   await publishHoldRecord(holdPath.replace(/\.json$/, RETIRED_SUFFIX), retired);
   await rm2(holdPath, { force: true });
   if (reason === "dead-raiser" && record.run_identity?.archive_path) {
-    await recordRetiredHold(record.run_identity.archive_path, retired);
+    await recordRetirementEvidence(retired, holdPath.replace(/\.json$/, RETIRED_SUFFIX));
   }
   return retired;
+}
+async function recordRetirementEvidence(retired, tombstonePath) {
+  try {
+    await recordRetiredHold(retired.run_identity.archive_path, retired);
+    if (retired.archive_error === void 0) return;
+    delete retired.archive_error;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (retired.archive_error === message) return;
+    retired.archive_error = message;
+  }
+  await publishHoldRecord(tombstonePath, retired);
 }
 async function publishHoldRecord(holdPath, record) {
   const tmp = `${holdPath}.${randomUUID()}.tmp`;
@@ -18907,7 +18914,7 @@ var RunProgress = class {
   /** An open hold joins the snapshot the moment it is raised. */
   noteHoldRaised(hold) {
     this.#openHolds.set(hold.id, {
-      hold_id: hold.id,
+      id: hold.id,
       content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
       verdicts: [...hold.verdicts],
       raisedAtMs: this.#now()

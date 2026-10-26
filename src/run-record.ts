@@ -546,11 +546,7 @@ export async function recordRetiredHold(
     note: null,
     at: retired.retired_at
   });
-  if (typeof manifest.integrity?.manifest_sha256 === "string") {
-    manifest.integrity.manifest_sha256 = null;
-    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
-  }
-  await writeStandaloneText(manifestPath, `${canonicalJson(manifest)}\n`);
+  await writeAttestedManifest(manifestPath, manifest);
 }
 
 interface WorkflowInvocationEntry {
@@ -1117,11 +1113,8 @@ export class RunRecordWriter {
     // Self-attestation last, over everything above it: null the field, hash
     // the canonical form, then write. Computed on every manifest write, not
     // only at seal, so a manifest read mid-run is verifiable too.
-    this.manifest.integrity.manifest_sha256 = null;
-    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
+    await writeAttestedManifest(destination, this.manifest, true);
   }
 
   // pid + sequence keeps names unique within the process; Date.now() alone
@@ -1472,11 +1465,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // canonical form, then let the standalone helper atomically replace it.
       // Pre-attestation manifests have no self-digest to renew, but remain
       // eligible for the established reap route.
-      if (fresh.integrity !== undefined && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
-        fresh.integrity.manifest_sha256 = null;
-        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
-      }
-      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
+      await writeAttestedManifest(manifestPath, fresh);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.
@@ -1669,6 +1658,19 @@ function extractTask(meta: unknown): unknown {
 async function hashFile(filePath: string): Promise<string> {
   const text = await readFile(filePath);
   return createHash("sha256").update(text).digest("hex");
+}
+
+async function writeAttestedManifest(
+  destination: string,
+  manifest: { integrity?: { manifest_sha256?: string | null } | null },
+  initialise = false
+): Promise<void> {
+  if (manifest.integrity !== undefined && manifest.integrity !== null &&
+      (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
+    manifest.integrity.manifest_sha256 = null;
+    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
+  }
+  await writeStandaloneText(destination, `${canonicalJson(manifest)}\n`);
 }
 
 async function writeStandaloneText(destination: string, content: string): Promise<void> {

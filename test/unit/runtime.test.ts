@@ -5,10 +5,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { appServerErrorFromPayload } from "../../src/app-server.js";
-import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
+import { CodexEngineAdapter, EngineRegistry, OpenCodeEngineAdapter } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { parseDispatchRemap } from "../../src/dispatch-remap.js";
+import { createOpenCodeModelRegistry } from "../../src/opencode-model-registry.js";
 import {
   AgentCwdRejectedError,
   AgentOptionRejectedError,
@@ -4647,4 +4648,121 @@ test("a chain the resolved engine's defaults supplied records its named entries,
   } finally {
     await runtime.close();
   }
+});
+
+/** An opencode adapter, so the runtime reads its registry, whose dispatches answer in turn like `ChainEngine`'s. */
+class OpenCodeChainEngine extends OpenCodeEngineAdapter {
+  #steps: Array<() => Promise<EngineAttemptResult>>;
+
+  constructor(steps: Array<() => Promise<EngineAttemptResult>>) {
+    super({
+      modelRegistry: createOpenCodeModelRegistry([
+        { key: "glm-5.2", providerModel: "openrouter/z-ai/glm-5.2", displayName: "GLM 5.2", provider: "openrouter", family: "glm", capabilities: { vision: false }, variants: [] },
+        { key: "glm-air", providerModel: "openrouter/z-ai/glm-air", displayName: "GLM Air", provider: "openrouter", family: "glm", capabilities: { vision: false }, variants: [] },
+        { key: "local-qwen", providerModel: "local/qwen", displayName: "Qwen", provider: "local", capabilities: { vision: false }, variants: [] },
+        { key: "local-llama", providerModel: "local/llama", displayName: "Llama", provider: "local", capabilities: { vision: false }, variants: [] }
+      ])
+    });
+    this.#steps = [...steps];
+  }
+
+  override createInvocation(): EngineInvocation {
+    return {
+      runAttempt: async () => {
+        const step = this.#steps.shift();
+        assert.ok(step, "opencode engine ran out of scripted steps");
+        return step();
+      }
+    };
+  }
+}
+
+test("the single-family report names the one family every attempt of two or more workers ran on, and nothing else", async () => {
+  const judge = async (
+    engines: EngineAdapter[],
+    body: (runtime: EnsembleRuntime) => Promise<unknown>,
+    singleFamilyNotice?: boolean
+  ): Promise<ReturnType<EnsembleRuntime["singleFamilyReport"]>> => {
+    const runtime = new EnsembleRuntime({
+      engines: new EngineRegistry(engines),
+      cwd: "/fake/repo",
+      defaultMaxAttempts: 1,
+      ...(singleFamilyNotice !== undefined ? { singleFamilyNotice } : {})
+    });
+    try {
+      await body(runtime);
+      return runtime.singleFamilyReport();
+    } finally {
+      await runtime.close();
+    }
+  };
+
+  // Two Codex workers, a model apart: one family.
+  assert.deepEqual(
+    await judge([new ChainEngine("codex", [answers("a"), answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "codex", model: "gpt-6-luna" }), runtime.agent("two", { engine: "codex" })])
+    ),
+    { family: "codex", workers: 2 }
+  );
+  // One worker is below the floor, however many turns its session takes.
+  assert.equal(await judge([new ChainEngine("codex", [answers("a")])], (runtime) => runtime.agent("one", { engine: "codex" })), null);
+  const lone = new SessionEngine("codex", [answers("turn 1"), answers("turn 2")]);
+  assert.equal(
+    await judge([lone], async (runtime) => {
+      const session = runtime.createWorkerSession({ engine: "codex" });
+      await session.send("one");
+      await session.send("two");
+      await session.close();
+    }),
+    null
+  );
+  // One worker per family spans two.
+  assert.equal(
+    await judge([new ChainEngine("codex", [answers("a")]), new ChainEngine("claude", [answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "codex" }), runtime.agent("two", { engine: "claude" })])
+    ),
+    null
+  );
+  // A chain that advanced from Codex to Claude ran on both, though its
+  // record's own engine and the other worker's are both Codex.
+  assert.equal(
+    await judge(
+      [new ChainEngine("codex", [codexRefusal("usageLimitExceeded"), answers("b")]), new ChainEngine("claude", [answers("a")])],
+      async (runtime) => {
+        await runtime.agent("one", { engine: "codex", fallback: [{ engine: "claude", model: "haiku" }] });
+        await runtime.agent("two", { engine: "codex" });
+      }
+    ),
+    null
+  );
+  // A worker refused before it spawned ran on nothing and is not counted.
+  assert.equal(
+    await judge([new ChainEngine("codex", [answers("a")])], async (runtime) => {
+      await runtime.agent("one", { engine: "codex" });
+      await assert.rejects(runtime.agent("two", { target: "unbound" }));
+    }),
+    null
+  );
+  // opencode takes its entry's declared family; an entry declaring none is its own.
+  assert.deepEqual(
+    await judge([new OpenCodeChainEngine([answers("a"), answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "opencode", model: "glm-5.2" }), runtime.agent("two", { engine: "opencode", model: "glm-air" })])
+    ),
+    { family: "glm", workers: 2 }
+  );
+  assert.equal(
+    await judge([new OpenCodeChainEngine([answers("a"), answers("b")])], (runtime) =>
+      Promise.all([runtime.agent("one", { engine: "opencode", model: "local-qwen" }), runtime.agent("two", { engine: "opencode", model: "local-llama" })])
+    ),
+    null
+  );
+  // Switched off, the report says so rather than judging.
+  assert.equal(
+    await judge(
+      [new ChainEngine("codex", [answers("a"), answers("b")])],
+      (runtime) => Promise.all([runtime.agent("one", { engine: "codex" }), runtime.agent("two", { engine: "codex" })]),
+      false
+    ),
+    "off"
+  );
 });

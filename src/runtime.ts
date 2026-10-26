@@ -546,6 +546,10 @@ export class EnsembleRuntime {
   #remap: DispatchRemapLedger | null;
   /** The machine's named targets and the file they came from, or null when the run was given none (every name then unbound). */
   #namedTargets: NamedTargets | null;
+  /** Whether the run's end judges its workers' families (`singleFamilyReport`). */
+  #singleFamilyNotice: boolean;
+  /** Every agent record the run has opened, in dispatch order; each accrues its attempts in place. */
+  #agentRecords: RuntimeAgentRecord[] = [];
   /**
    * The script's per-engine defaults — the block a moved target's model and
    * a named target's unsaid options resolve against — scoped to the workflow
@@ -617,6 +621,7 @@ export class EnsembleRuntime {
     strip?: StrippableCapability[];
     dispatchRemap?: readonly DispatchRemapRule[];
     namedTargets?: NamedTargets;
+    singleFamilyNotice?: boolean;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -632,6 +637,7 @@ export class EnsembleRuntime {
     // The bindings are read once, when the run starts, like every ambient
     // setting: a rebinding reaches the next run, never one in flight.
     this.#namedTargets = options.namedTargets ?? null;
+    this.#singleFamilyNotice = options.singleFamilyNotice ?? true;
     if (options.strip !== undefined) {
       // A malformed run-wide strip fails at construction, before any call
       // pays for a worker — same boundary as a malformed per-call value.
@@ -745,6 +751,7 @@ export class EnsembleRuntime {
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {}),
       ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
+      ...(options.singleFamilyNotice !== undefined ? { singleFamilyNotice: options.singleFamilyNotice } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -796,6 +803,46 @@ export class EnsembleRuntime {
       return null;
     }
     return { rules: this.#remap.rules.map((rule) => rule.source), unmatched: this.#remap.unmatched() };
+  }
+
+  /**
+   * Whether every worker this run dispatched ran on one model family —
+   * read at the run's end for the stderr line and the manifest, because a
+   * run that never crossed families has lost the cross-check it exists
+   * for. Judged per attempt, on the engine each attempt actually ran on,
+   * so a chain that advanced from Codex to Claude spans both. Codex and
+   * Claude are each a family; an opencode attempt takes its model entry's
+   * declared `family`, and an entry declaring none is a family of its own.
+   * A worker is a one-shot call or a session (its turns are one worker);
+   * one that never reached an attempt ran on nothing. The family when two
+   * or more workers all share it, `"off"` when the machine turned the
+   * notice off, null otherwise.
+   */
+  singleFamilyReport(): { family: string; workers: number } | "off" | null {
+    if (!this.#singleFamilyNotice) {
+      return "off";
+    }
+    const workers = new Set<string>();
+    const families = new Set<string>();
+    for (const record of this.#agentRecords) {
+      if (record.attempts.length === 0) {
+        continue;
+      }
+      workers.add(record.session === null ? `agent:${record.id}` : `session:${record.session.id}`);
+      for (const attempt of record.attempts) {
+        families.add(this.#familyOf(attempt.target));
+      }
+    }
+    const [family] = families;
+    return workers.size >= 2 && families.size === 1 && family !== undefined ? { family, workers: workers.size } : null;
+  }
+
+  #familyOf(target: { engine: EngineName; model: string | null }): string {
+    if (target.engine !== "opencode") {
+      return target.engine;
+    }
+    const entry = target.model === null ? undefined : this.openCodeModelRegistry?.get(target.model);
+    return entry?.family ?? `opencode:${entry?.key ?? target.model ?? "unknown"}`;
   }
 
   /**
@@ -2804,7 +2851,7 @@ export class EnsembleRuntime {
     remapMoves: DispatchRemapEvidence[] = [],
     namedTargets: NamedTargetEvidence[] = []
   ): RuntimeAgentRecord {
-    return {
+    const record: RuntimeAgentRecord = {
       id,
       engine,
       headerIdentity: "original_request",
@@ -2845,6 +2892,8 @@ export class EnsembleRuntime {
       executionMs: 0,
       attempts: []
     };
+    this.#agentRecords.push(record);
+    return record;
   }
 }
 

@@ -108,6 +108,13 @@ export interface AmbientSettings {
    * when it is not, which the manifest records as the bindings in force.
    */
   namedTargets: Resolved<NamedTargetBindings>;
+  /**
+   * Whether a run whose workers all ran on one model family says so at its
+   * end (the config file's top-level `single_family_notice`). On by
+   * default; a machine that runs one family by choice turns it off.
+   * Config-file only, like `namedTargets`.
+   */
+  singleFamilyNotice: Resolved<boolean>;
 }
 
 export interface AmbientSettingFlags {
@@ -125,6 +132,7 @@ export class AmbientConfigError extends Error {
 interface MachineConfig {
   schema_version: 1;
   agent_ceiling?: number;
+  single_family_notice?: boolean;
   concurrency?: Partial<Record<EngineName, number>>;
   run_record?: {
     enabled?: boolean;
@@ -198,7 +206,11 @@ export function resolveAmbientSettings(input: {
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models),
     namedTargets:
-      config?.targets === undefined ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" }
+      config?.targets === undefined ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" },
+    singleFamilyNotice:
+      config?.single_family_notice === undefined
+        ? { value: true, layer: "default" }
+        : { value: config.single_family_notice, layer: "config-file" }
   };
 }
 
@@ -243,7 +255,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
 
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets", "single_family_notice"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -252,6 +264,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
     );
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
+  validateOptionalBoolean(parsed, "single_family_notice", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
   validateSection(parsed, "run_record", ["enabled", "dir"], configFile, validateRunSetting);
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
@@ -458,6 +471,14 @@ function validateOptionalPositiveInteger(
   }
   const qualified = prefix.length > 0 ? `${prefix}.${key}` : key;
   assertPositiveInteger(value, qualified, configFile);
+}
+
+/** A top-level switch: absent, or a JSON boolean. */
+function validateOptionalBoolean(root: Record<string, unknown>, key: string, configFile: string): void {
+  const value = root[key];
+  if (value !== undefined && typeof value !== "boolean") {
+    throw fileValueError(configFile, key, "must be a boolean");
+  }
 }
 
 function assertKnownKeys(

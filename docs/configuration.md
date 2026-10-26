@@ -55,6 +55,7 @@ version 1:
 {
   "schema_version": 1,
   "agent_ceiling": 2,
+  "single_family_notice": true,
   "concurrency": {
     "codex": 4,
     "claude": 2,
@@ -90,6 +91,7 @@ version 1:
 |---|---|---|
 | `schema_version` | integer | Must be `1` |
 | `agent_ceiling` | integer | Maximum workers running at once across every engine |
+| `single_family_notice` | boolean | Whether a run whose workers all ran on one model family says so at its end (default `true`; see below) |
 | `concurrency.<engine>` | integer | Maximum workers running at once on that engine |
 | `run_record.enabled` | boolean | Whether runs write a durable run record |
 | `run_record.dir` | string | The record store's data home (see below) |
@@ -202,6 +204,28 @@ file. The run record's manifest carries the bindings in force under
 and model it resolved to, so a reader comparing runs across a rebinding sees
 what was asked for as well as what ran.
 
+### `single_family_notice`
+
+A run that dispatched two or more workers, every one of which ran on the same
+model family, prints one line on stderr when it ends:
+
+```text
+[single-family] all 2 workers ran on one model family: codex
+```
+
+and records the judgement in the manifest's `single_family` field. Families
+are judged on every attempt a worker made, so a fallback chain that advanced
+from Codex to Claude ran on both. Codex is one family and Claude another; an
+opencode worker's family is its model's declared `family` in
+`opencode_models`, and a model declaring none is a family of its own. A
+session counts as one worker however many turns it takes. A run of one
+worker, or whose workers span two families, says nothing.
+
+Set `"single_family_notice": false` on a machine that runs one family by
+choice: the line is not printed and `single_family` records `"off"`. Like the
+maps above, the switch exists only in the file; the manifest records it under
+`single_family_notice` with its layer.
+
 ## Environment variables
 
 | Variable | Description |
@@ -262,6 +286,7 @@ standalone launcher exports nothing. Apart from `holdScope`, which mirrors
 | `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
 | `claudeSessionStaleAfterMs` | 60 minutes, or a cache TTL declared in `worker_environment` | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
+| `singleFamilyNotice` | `true` | Whether `singleFamilyReport()` judges the run's workers' families; the CLI passes the file's `single_family_notice` |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only

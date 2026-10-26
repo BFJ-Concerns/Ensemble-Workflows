@@ -2362,7 +2362,7 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   assert.equal(
     result.stderr,
       "Usage: ensemble [run options] <script.js> [args...]\n" +
-      "       ensemble agent --engine <engine> [agent options] [prompt]\n" +
+      "       ensemble agent --engine <engine>|--target <name> [agent options] [prompt]\n" +
       "       ensemble workflows\n" +
       "       ensemble holds [--json] [--scope <scope> | --all]\n" +
       "       ensemble holds answer <hold-id> --verdict <verdict> [--note <note>]\n" +
@@ -2434,7 +2434,7 @@ test("usage names the program as the caller invoked it and keeps every line with
       await runEnsembleCli(["agent", "prompt"], { stdin: Readable.from([]), stdout: new CaptureStream(), stderr: agentErr, programName }),
       2
     );
-    assert.equal(agentErr.text(), `${programName} agent requires --engine\n`);
+    assert.equal(agentErr.text(), `${programName} agent requires --engine or --target\n`);
   }
 });
 
@@ -4065,6 +4065,125 @@ test("a script naming targets dispatches as the machine configuration binds them
       assert.match(failed.text(), /Invalid named target: "doer" is not bound: .*missing-config.*config\.json binds no targets/);
       assert.equal(engine.attempts, 0);
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("ensemble agent --target dispatches on the name's binding without --engine, and the runtime, not the CLI, refuses a target beside a literal engine or an unbound name", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-target-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(configFile, JSON.stringify({ schema_version: 1, targets: { grunt: { engine: "codex", model: "gpt-6-luna" } } }));
+  const launch = async (argv: string[]) => {
+    const codex = new FixedResponseEngine("codex", "from codex");
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli(argv, {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir: path.join(directory, "records"),
+      env: { XDG_CONFIG_HOME: configHome },
+      createRuntime: async (options = {}) =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([codex]),
+          defaultMaxAttempts: 1,
+          cwd: directory,
+          ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {})
+        })
+    });
+    return { codex, stdout: stdout.text(), stderr: stderr.text(), exitCode };
+  };
+  try {
+    const named = await launch(["agent", "--target", "grunt", "--effort", "low", "do it"]);
+    assert.equal(named.exitCode, 0, named.stderr);
+    assert.equal(JSON.parse(named.stdout), "from codex");
+    assert.deepEqual(named.codex.turnOptions.map((options) => [options.model, options.effort]), [["gpt-6-luna", "low"]]);
+    const archive = announcedRunRecord(named.stderr).archive_path;
+    const record = JSON.parse(await readFile(path.join(archive, "agents/000001/agent.json"), "utf8")) as {
+      named_targets: unknown;
+      attempts: Array<{ named_target: string | null }>;
+    };
+    assert.deepEqual(record.named_targets, [{ name: "grunt", entry: -1, resolved: { engine: "codex", model: "gpt-6-luna" } }]);
+    assert.deepEqual(record.attempts.map((attempt) => attempt.named_target), ["grunt"]);
+
+    // Both flags pass through; the resolver's own refusal names the file.
+    const both = await launch(["agent", "--target", "grunt", "--engine", "codex", "do it"]);
+    assert.notEqual(both.exitCode, 0);
+    assert.match(both.stderr, /"grunt".*codex/);
+    assert.ok(both.stderr.includes(configFile), both.stderr);
+    assert.equal(both.codex.attempts, 0);
+
+    const unbound = await launch(["agent", "--target", "nobody", "do it"]);
+    assert.notEqual(unbound.exitCode, 0);
+    assert.match(unbound.stderr, /Invalid named target: "nobody" is not bound/);
+    assert.equal(unbound.codex.attempts, 0);
+
+    const neither = await launch(["agent", "do it"]);
+    assert.equal(neither.exitCode, 2);
+    assert.match(neither.stderr, /agent requires --engine or --target/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a run whose two workers resolved onto one family says so on stderr and in the manifest, a mixed run says nothing, and the machine switch turns it off", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-families-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  const script = path.join(directory, "pair.workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "pair-probe" };
+      const a = await agent("write", { target: "doer" });
+      const b = await agent("review", { target: "reviewer" });
+      return [a, b];
+    `
+  );
+  const launch = async (config: Record<string, unknown>) => {
+    await writeFile(configFile, JSON.stringify({ schema_version: 1, ...config }));
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr,
+      runRecordDir: path.join(directory, "records"),
+      env: { XDG_CONFIG_HOME: configHome },
+      createRuntime: async (options = {}) =>
+        new EnsembleRuntime({
+          engines: new EngineRegistry([new FixedResponseEngine("codex", "from codex"), new FixedResponseEngine("claude", "from claude")]),
+          defaultMaxAttempts: 1,
+          cwd: directory,
+          ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
+          ...(options.singleFamilyNotice !== undefined ? { singleFamilyNotice: options.singleFamilyNotice } : {})
+        })
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(announcedRunRecord(stderr.text()).archive_path, "manifest.json"), "utf8")) as {
+      single_family: unknown;
+      single_family_notice: unknown;
+    };
+    return { stderr: stderr.text(), manifest };
+  };
+  const codexPair = { doer: { engine: "codex", model: "gpt-6-luna" }, reviewer: { engine: "codex", model: "gpt-6-astra" } };
+  try {
+    const single = await launch({ targets: codexPair });
+    assert.match(single.stderr, /\n\[single-family\] all 2 workers ran on one model family: codex\n/);
+    assert.deepEqual(single.manifest.single_family, { family: "codex", workers: 2 });
+    assert.deepEqual(single.manifest.single_family_notice, { value: true, layer: "default" });
+
+    const mixed = await launch({ targets: { ...codexPair, reviewer: { engine: "claude", model: "haiku" } } });
+    assert.doesNotMatch(mixed.stderr, /\[single-family\]/);
+    assert.equal(mixed.manifest.single_family, null);
+
+    const off = await launch({ targets: codexPair, single_family_notice: false });
+    assert.doesNotMatch(off.stderr, /\[single-family\]/);
+    assert.equal(off.manifest.single_family, "off");
+    assert.deepEqual(off.manifest.single_family_notice, { value: false, layer: "config-file" });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

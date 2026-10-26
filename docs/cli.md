@@ -16,7 +16,8 @@ names the program as you invoked it:
 
 ```text
 Usage: node ensemble.mjs [run options] <script.js> [args...]
-       node ensemble.mjs agent --engine <engine> [agent options] [prompt]
+       node ensemble.mjs agent --engine <engine>|--target <name> [agent options]
+                         [prompt]
        node ensemble.mjs workflows
        node ensemble.mjs holds [--json] [--scope <scope> | --all]
        node ensemble.mjs holds answer <hold-id> --verdict <verdict>
@@ -72,7 +73,7 @@ environment and configuration-file layers described in
 ## Running a single agent
 
 ```sh
-ensemble agent --engine <engine> [agent options] [prompt]
+ensemble agent --engine <engine>|--target <name> [agent options] [prompt]
 ```
 
 Dispatches one worker without a script. Give the prompt as the final argument,
@@ -81,7 +82,8 @@ the prompt.
 
 | Option | Description |
 |---|---|
-| `--engine <engine>` | Required. `codex`, `claude`, or `opencode` |
+| `--engine <engine>` | `codex`, `claude`, or `opencode`. Required unless `--target` is given |
+| `--target <name>` | A named target the machine configuration binds, in place of `--engine` and `--model` (see [targets](configuration.md#targets)) |
 | `--model <model>` | Model to run. Required for opencode |
 | `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed |

@@ -31,6 +31,8 @@
     "run_timeout_ms",
     "run_uuid",
     "schema_version",
+    "single_family",
+    "single_family_notice",
     "started_at",
     "status",
     "tallies",

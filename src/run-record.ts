@@ -108,7 +108,16 @@ export interface EffectiveRunSettingsRecord {
   dispatchRemap?: Resolved<string[] | null>;
   /** The named targets in force — each name's engine and model (`null` for the engine's default) — with the layer that supplied them (`config-file`, or `default` for none). */
   namedTargets?: Resolved<NamedTargetBindingsRecord>;
+  /** The machine's single-family notice switch, with the layer that supplied it (`config-file`, or `default` for on). */
+  singleFamilyNotice?: Resolved<boolean>;
 }
+
+/**
+ * The run's end judgement of its workers' model families: the one family
+ * every worker ran on and how many workers that was, or `"off"` where the
+ * machine turned the notice off.
+ */
+export type SingleFamilyRecord = { family: string; workers: number } | "off";
 
 /** The manifest's view of the `targets` map: every binding's engine and model, the model `null` where the binding leaves it to the engine's default. */
 export type NamedTargetBindingsRecord = Record<string, { engine: EngineName; model: string | null }>;
@@ -354,6 +363,8 @@ export interface RunRecordFinishOptions {
   result: unknown;
   /** The remap rules that caught no dispatch, as the runtime reports them at the run's end; omitted where no remap was in force. */
   dispatchRemapUnmatched?: string[];
+  /** The single-family judgement the runtime reports at the run's end; omitted where the workers spanned families or numbered fewer than two. */
+  singleFamily?: SingleFamilyRecord;
   /**
    * What ended the run, when it ended badly. Null on a clean finish and
    * where the launcher never saw an error — never an inferred cause.
@@ -497,6 +508,15 @@ interface Manifest {
   dispatch_remap_unmatched: string[] | null;
   /** The named targets in force when the run started: each name's engine and model, with the layer that supplied the map (`config-file`, or `default` with an empty map). */
   named_targets: Resolved<NamedTargetBindingsRecord>;
+  /** Whether the machine's single-family notice was on for this run, with the layer that supplied the switch. */
+  single_family_notice: Resolved<boolean>;
+  /**
+   * Set at the run's end when two or more workers all ran on one model
+   * family — that family and the worker count — or `"off"` when the
+   * notice was switched off. Null while the run is open and when the
+   * workers spanned families or numbered fewer than two.
+   */
+  single_family: SingleFamilyRecord | null;
   git: {
     start: GitState;
     end: GitState | null;
@@ -721,6 +741,8 @@ export class RunRecordWriter {
       dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
       dispatch_remap_unmatched: null,
       named_targets: options.effectiveSettings?.namedTargets ?? { value: {}, layer: "default" },
+      single_family_notice: options.effectiveSettings?.singleFamilyNotice ?? { value: true, layer: "default" },
+      single_family: null,
       git: {
         start: gitStart,
         end: null
@@ -1083,6 +1105,9 @@ export class RunRecordWriter {
       this.manifest.ended_at = options.endedAt ?? new Date().toISOString();
       if (options.dispatchRemapUnmatched !== undefined) {
         this.manifest.dispatch_remap_unmatched = [...options.dispatchRemapUnmatched];
+      }
+      if (options.singleFamily !== undefined) {
+        this.manifest.single_family = options.singleFamily === "off" ? "off" : { ...options.singleFamily };
       }
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
       if (this.manifest.git.end.diffPath !== null) {

@@ -199,6 +199,11 @@ export interface RuntimeOptions {
    * spawns; omitted, every named target is refused as unbound.
    */
   namedTargets?: NamedTargets;
+  /**
+   * Whether the run's end judges its workers' model families for the
+   * single-family notice (default true); false reports the notice off.
+   */
+  singleFamilyNotice?: boolean;
   codexBin?: string;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;

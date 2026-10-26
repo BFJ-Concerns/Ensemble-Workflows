@@ -30,6 +30,7 @@ test("caller identity has a named environment route without widening ambient set
       "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",
+      "singleFamilyNotice",
       "statusDir",
       "workerEnvironment"
     ]);
@@ -432,6 +433,32 @@ test("targets fails loud on malformed bindings, naming the key", async () => {
     const fixture = await configFixture({ schema_version: 1, targets: entry.targets });
     try {
       assert.throws(() => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }), entry.pattern);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+});
+
+test("single_family_notice is on by default and a top-level boolean in the file switches it, the layer saying which", async () => {
+  for (const [config, expected] of [
+    [{ schema_version: 1 }, { value: true, layer: "default" }],
+    [{ schema_version: 1, single_family_notice: false }, { value: false, layer: "config-file" }],
+    [{ schema_version: 1, single_family_notice: true }, { value: true, layer: "config-file" }]
+  ] as const) {
+    const fixture = await configFixture(config);
+    try {
+      assert.deepEqual(resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }).singleFamilyNotice, expected);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+  for (const value of ["false", 0, null, { enabled: false }]) {
+    const fixture = await configFixture({ schema_version: 1, single_family_notice: value });
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        /single_family_notice.*must be a boolean/
+      );
     } finally {
       await fixture.cleanup();
     }

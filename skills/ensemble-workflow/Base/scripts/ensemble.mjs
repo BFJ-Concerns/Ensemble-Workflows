@@ -17959,7 +17959,7 @@ function outstandingBackgroundTasks(entries, fromIndex = 0) {
   return [...outstanding.values()];
 }
 var WORKTREE_TOOL = "EnterWorktree";
-var WORKTREE_CREATED = /^Created worktree at (.+?) on branch (\S+)\./;
+var WORKTREE_CREATED = /^Created worktree at (?:“(.+?)”|(.+?)) on branch (?:“(\S+)”|(\S+))\./;
 function enteredWorktrees(entries, fromIndex = 0) {
   const calls = /* @__PURE__ */ new Map();
   const entered = [];
@@ -17995,8 +17995,10 @@ function enteredWorktrees(entries, fromIndex = 0) {
         continue;
       }
       const created = WORKTREE_CREATED.exec(result.text);
-      if (created?.[1] !== void 0 && created[2] !== void 0) {
-        entered.push({ path: created[1], branch: created[2] });
+      const path15 = created?.[1] ?? created?.[2];
+      const branch = created?.[3] ?? created?.[4];
+      if (path15 !== void 0 && branch !== void 0) {
+        entered.push({ path: path15, branch });
       } else if (call.path !== null && result.text.includes(call.path)) {
         entered.push({ path: call.path, branch: null });
       }

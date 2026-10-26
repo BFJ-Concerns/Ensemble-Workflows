@@ -474,8 +474,8 @@ export function outstandingBackgroundTasks(entries: TranscriptEntry[], fromIndex
 
 /** The tool whose successful call moves the session into a worktree; its result names the path. */
 const WORKTREE_TOOL = "EnterWorktree";
-/** A created worktree's result sentence, as Claude Code 2.1.300 writes it (measured 2026-10-15); the path may hold spaces, the branch may not. */
-const WORKTREE_CREATED = /^Created worktree at (.+?) on branch (\S+)\./;
+/** A created worktree's result sentence; Claude Code may wrap both names in curly quotes. The path may hold spaces, the branch may not. */
+const WORKTREE_CREATED = /^Created worktree at (?:“(.+?)”|(.+?)) on branch (?:“(\S+)”|(\S+))\./;
 
 /**
  * The worktrees the worker moved itself into since `fromIndex`, read from
@@ -526,8 +526,10 @@ export function enteredWorktrees(entries: TranscriptEntry[], fromIndex = 0): Ent
         continue;
       }
       const created = WORKTREE_CREATED.exec(result.text);
-      if (created?.[1] !== undefined && created[2] !== undefined) {
-        entered.push({ path: created[1], branch: created[2] });
+      const path = created?.[1] ?? created?.[2];
+      const branch = created?.[3] ?? created?.[4];
+      if (path !== undefined && branch !== undefined) {
+        entered.push({ path, branch });
       } else if (call.path !== null && result.text.includes(call.path)) {
         entered.push({ path: call.path, branch: null });
       }

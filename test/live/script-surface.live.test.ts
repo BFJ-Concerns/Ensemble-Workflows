@@ -263,6 +263,15 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
     const parsed = JSON.parse(result.stdout) as { finding: unknown; verification: unknown };
     const { agent: finder } = await recordedAgent(recordStore, "cross-find");
     const { agent: verifier } = await recordedAgent(recordStore, "cross-verify");
+    // The script appends the finding to the verifier's prompt as JSON; the
+    // archive may serialise the same value with its keys in another order,
+    // so the hand-off is compared as a value, not as text.
+    const handedOff = (): unknown => {
+      const marker = "Finding: ";
+      const at = verifier.prompt.indexOf(marker);
+      assert.ok(at >= 0, `the verifier's recorded prompt carries no finding: ${verifier.prompt}`);
+      return JSON.parse(verifier.prompt.slice(at + marker.length)) as unknown;
+    };
     assertEach([
       ["the finder ran on codex", () => assert.equal(finder.engine, "codex")],
       ["the verifier ran on claude", () => assert.equal(verifier.engine, "claude")],
@@ -275,11 +284,11 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
       ],
       [
         "the verifier's recorded prompt carries the finding the script received",
-        () => assert.ok(verifier.prompt.includes(JSON.stringify(parsed.finding)), verifier.prompt)
+        () => assert.deepEqual(handedOff(), parsed.finding)
       ],
       [
         "the verifier's recorded prompt carries the finder's archived output",
-        () => assert.ok(verifier.prompt.includes(JSON.stringify(finder.validated_output)), verifier.prompt)
+        () => assert.deepEqual(handedOff(), finder.validated_output)
       ]
     ]);
     t.diagnostic(`model-chosen tokens: finding ${JSON.stringify(parsed.finding)}; verification ${JSON.stringify(parsed.verification)}`);

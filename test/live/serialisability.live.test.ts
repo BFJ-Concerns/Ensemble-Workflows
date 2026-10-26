@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { liveCodexScriptOptions } from "./live-models.js";
+import { liveCodexModel, liveCodexScriptOptions } from "./live-models.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const archiveReaderPath = path.resolve("test/consumers/read-run-record.mjs");
@@ -34,6 +34,16 @@ function withoutArchiveAnnouncement(stderr: string): string {
   const matches = stderr.match(announcement) ?? [];
   assert.equal(matches.length, 1, `expected exactly one run-record-archive announcement, got:\n${stderr}`);
   return stderr.replace(announcement, "");
+}
+
+// A worker dispatched without a model announces the ambient default it
+// resolved to. The leg runs unpinned unless ENSEMBLE_LIVE_CODEX_MODEL is set,
+// so the notice is required exactly once when unpinned and absent when pinned.
+function withoutUnpinnedNotice(stderr: string): string {
+  const notice = /^\[codex\] agent 1 \(live-serialisability-worker\) runs unpinned — resolved ambient default: \S+\n/gm;
+  const matches = stderr.match(notice) ?? [];
+  assert.equal(matches.length, liveCodexModel === undefined ? 1 : 0, `unexpected unpinned-worker notices in:\n${stderr}`);
+  return stderr.replace(notice, "");
 }
 
 test(
@@ -77,7 +87,7 @@ test(
 
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
-        withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr)),
+        withoutUnpinnedNotice(withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr))),
         "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;

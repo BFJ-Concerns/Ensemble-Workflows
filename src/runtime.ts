@@ -1331,6 +1331,10 @@ export class EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            // The next target is a fresh worker: the refused one's served
+            // identity stays on its own attempts and is never the record's.
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })

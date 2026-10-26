@@ -35,7 +35,13 @@ import {
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import { Scheduler } from "../../src/scheduler.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type {
+  EngineAdapter,
+  EngineAttemptResult,
+  EngineInvocation,
+  EngineTurnOptions,
+  EngineWorkerSession
+} from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -3335,6 +3341,16 @@ class ChainEngine implements EngineAdapter {
   async close(): Promise<void> {}
 }
 
+/** A ChainEngine whose held sessions draw their turns from the same scripted steps. */
+class SessionChainEngine extends ChainEngine {
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    return {
+      beginTurn: (prompt) => this.createInvocation(prompt, options),
+      close: async () => {}
+    };
+  }
+}
+
 /** A Codex refusal as the transport raises it: the app-server's own code riding the error. */
 function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
   return async () => {
@@ -3908,6 +3924,36 @@ test("a refused Claude dispatch advances the chain where an entry remains, costi
   );
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-after-claude" });
   await runtime.close();
+});
+
+test("a held session's fallback answer never inherits the refused worker's served model", async () => {
+  // The refused target reported its served model before refusing. The
+  // fallback is a fresh worker that reports none, on the same engine and on
+  // another, so neither its answer nor the session's later turns may name
+  // the refused worker's model.
+  const refusedServing = async (): Promise<EngineAttemptResult> => ({
+    ...(await claudeRefusal(429, "rate_limit")()),
+    resolvedModel: "claude-refused-served"
+  });
+  for (const fallback of [{ engine: "claude" as const, model: "sonnet" }, { engine: "codex" as const, model: "gpt-6-sol" }]) {
+    const claude = new SessionChainEngine("claude", [refusedServing, answers("fallback answer"), answers("turn two")]);
+    const codex = new SessionChainEngine("codex", [answers("fallback answer"), answers("turn two")]);
+    const { runtime, records } = chainRuntime([claude, codex], 1);
+    const session = runtime.createWorkerSession({ engine: "claude", model: "opus", fallback: [fallback] });
+
+    assert.equal(await session.send("turn one"), "fallback answer");
+    const turnOne = records.at(-1)!;
+    assert.deepEqual(turnOne.attempts.map((attempt) => attempt.resolvedModel), ["claude-refused-served", null]);
+    assert.deepEqual(turnOne.answeredBy, { entry: 0, engine: fallback.engine, model: null });
+    assert.equal(turnOne.resolvedModel, null);
+
+    assert.equal(await session.send("turn two"), "turn two");
+    const turnTwo = records.at(-1)!;
+    assert.equal(turnTwo.resolvedModel, null);
+    assert.deepEqual(turnTwo.answeredBy, { entry: -1, engine: fallback.engine, model: null });
+    await session.close();
+    await runtime.close();
+  }
 });
 
 test("a cross-engine answer keeps the requested header visibly distinct from the answering target", async () => {

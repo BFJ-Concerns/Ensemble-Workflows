@@ -22477,6 +22477,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })

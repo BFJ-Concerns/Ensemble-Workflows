@@ -20266,9 +20266,9 @@ var OpenCodeEngineInvocation = class {
         streamEvents.push(...parsed.events);
         streamSessionId ??= parsed.sessionId;
       }
-      const usage3 = usageFromStream(streamEvents);
-      if (usage3.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      const usage2 = usageFromStream(streamEvents);
+      if (usage2.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
       }
     };
     const run = await this.#runner.run({
@@ -20290,17 +20290,24 @@ var OpenCodeEngineInvocation = class {
       );
     }
     if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
-      throw attachWorkerExitStatus(
-        attachPartialWorkerText(
-          new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
-            kind: "turn",
-            timeoutMs: this.#options.timeoutMs,
-            threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
-          }),
-          fallback
-        ),
-        { exitCode: run.exitCode, signal: run.signal }
-      );
+      const workerExit = { exitCode: run.exitCode, signal: run.signal };
+      const timeout = new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
+        kind: "turn",
+        timeoutMs: this.#options.timeoutMs,
+        threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+      });
+      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      attachFailedTurnResult(timeout, {
+        text: fallback,
+        resolvedModel: this.#providerModel,
+        workerExit,
+        deltaText: fallback,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        ...evidence
+      });
+      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
     }
     let exportData = null;
     let exportDiagnostic;
@@ -20348,23 +20355,7 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl",
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-      }
-    ];
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
     if (run.exitCode !== 0) {
       return {
         text,
@@ -20378,7 +20369,7 @@ var OpenCodeEngineInvocation = class {
         durationMs: run.durationMs,
         firstDeltaMs: null,
         items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        tokenUsageEvents,
         transcripts,
         diagnostics: {
           opencode: {
@@ -20394,13 +20385,39 @@ var OpenCodeEngineInvocation = class {
       durationMs: run.durationMs,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      tokenUsageEvents,
       transcripts,
       diagnostics: {
         opencode: {
           session_export: exportDiagnostic
         }
       }
+    };
+  }
+  /**
+   * The spend and transcript one attempt produced: the export's account when
+   * it was read, else the stream's. Reports the spend as it does so.
+   */
+  #attemptEvidence(stdout, parsedRun, streamSessionId, exportData) {
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
+    return {
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.opencode.jsonl",
+          format: "jsonl",
+          source: "opencode run --format json",
+          content: transcriptContent(stdout, exportData),
+          ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+        }
+      ]
     };
   }
   async close() {

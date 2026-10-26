@@ -257,6 +257,53 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
   }
 });
 
+test("an opencode deadline keeps the spend and transcript the stream had already shown", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-usage-"));
+  const bin = path.join(directory, "opencode");
+  const records: RuntimeAgentRecord[] = [];
+  const stream = [
+    JSON.stringify({ type: "session.created", sessionID: "ses_deadline_usage" }),
+    JSON.stringify({
+      type: "step_finish",
+      sessionID: "ses_deadline_usage",
+      part: { type: "step-finish", tokens: { input: 5, output: 3, reasoning: 2, cache: { read: 0, write: 0 } } }
+    })
+  ];
+  await writeFile(bin, `#!/bin/sh\nprintf '%s\\n' '${stream[0]}' '${stream[1]}'\nexec sleep 2\n`);
+  await chmod(bin, 0o755);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([
+      new OpenCodeEngineAdapter({
+        cwd: directory,
+        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20 }),
+        modelRegistry: testOpenCodeModelRegistry
+      })
+    ]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    assert.equal(await runtime.agent("spend, then outlast the deadline", {
+      engine: "opencode",
+      model: "glm-5.2",
+      timeoutMs: 500,
+      maxAttempts: 1
+    }), null);
+    const attempt = records.at(-1)?.attempts[0];
+    assert.equal(attempt?.failure?.kind, "TurnTimeoutError");
+    assert.equal(attempt.tokenUsageEvents.length, 1);
+    assert.equal(attempt.tokenUsageEvents[0]?.last.totalTokens, 10);
+    assert.equal(attempt.transcripts.length, 1);
+    assert.match(attempt.transcripts[0]?.content ?? "", /ses_deadline_usage/);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an opencode run failure consumes an attempt and the retry redispatches with the failure", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-retry-cwd-"));
   // First dispatch dies operationally; the second succeeds. The documented

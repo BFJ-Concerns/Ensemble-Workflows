@@ -142,15 +142,20 @@ test("pipe-holder cleanup reaps its detached descendant after an assertion fails
 
 test("pipe-holder cleanup preserves the original failure without a ready marker", async () => {
   assertNotInsideSuiteSpawningTest();
+  let directory: string | undefined;
   await assert.rejects(withPipeHolder(async (pipeHolder) => {
+    directory = pipeHolder.directory;
     const run = startSuite(pipeHolder);
     try {
       await waitForFile(pipeHolder.pidPath);
+      await rm(pipeHolder.pidPath);
       throw new Error("original assertion failed before ready");
     } finally {
       await stopSuite(run);
     }
   }, true), /original assertion failed before ready/);
+  assert.ok(directory !== undefined);
+  await assert.rejects(access(directory), { code: "ENOENT" });
 });
 
 test("concurrent suite runners keep their hand-off state in separate namespaces", async () => {
@@ -280,9 +285,10 @@ async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>, wi
     const pid = Number((await readFile(pipeHolder.pidPath, "utf8")).trim());
     assert.ok(Number.isInteger(pid) && pid > 0);
     await waitForProcessExit(pid);
-    await rm(directory, { recursive: true, force: true });
   } catch (error) {
     if (failure === undefined) failure = error;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
   if (failure !== undefined) throw failure;
 }

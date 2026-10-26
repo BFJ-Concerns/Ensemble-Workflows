@@ -259,6 +259,40 @@ test("a systemError followed by Codex's schema diagnostic keeps its classified c
   }
 });
 
+test("a serialised provider invalid_type schema rejection has the common schema class", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("schema-invalid-type-provider-body");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-provider-schema-record-"));
+  const runtime = await createRuntime({ codexBin });
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "provider-schema",
+    workflowPath: path.join(process.cwd(), "provider-schema.js"), workflowSource: "return true;\n",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    assert.equal(await runtime.agent("reject this schema", { engine: "codex", maxAttempts: 2 }), null);
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8"));
+    assert.equal(record.attempts.length, 1);
+    assert.equal(record.attempts[0].failure.kind, "CodexSchemaSubsetUnsupportedError");
+    assert.deepEqual(record.attempts[0].classification, { class: "unclassified", rule: "codex.schema-rejected" });
+    assert.deepEqual(record.attempts[0].app_server_diagnostic.provider_error, {
+      code: "invalid_type", param: "text.format.schema"
+    });
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
+
+  const proseOnly = appServerErrorFromPayload("turn notification", {
+    code: "other",
+    message: "[ObjectParam] [text.format.schema] [invalid_type] expected an object",
+    data: { error: { message: "[ObjectParam] [text.format.schema] [invalid_type] expected an object" } }
+  });
+  assert.ok(!(proseOnly instanceof CodexSchemaSubsetUnsupportedError));
+  assert.equal(appServerDiagnosticOf(proseOnly)?.providerError, undefined);
+});
+
 test("a schema diagnostic disarms its systemError grace before a follow-up turn", async () => {
   const codexBin = await fakeCodexFailingTurnServer("system-error-then-schema-error-follow-up");
   const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
@@ -1074,6 +1108,19 @@ test("a tool frame stops the whitespace bound while the turn continues", async (
   }
 });
 
+test("a reasoning frame stops the whitespace bound while the turn continues", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-then-reasoning");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    assert.equal((await transport.runTurn(threadId, "whitespace then reasoning", {})).text, "answered after reasoning activity");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("exact -32001 backpressure outranks an incidental invalid_json_schema mention", () => {
   const error = appServerErrorFromPayload("turn/start", {
     code: -32001,
@@ -1794,6 +1841,8 @@ async function fakeCodexFailingTurnServer(
     | "tool-active-output-silent"
     | "whitespace-after-answer"
     | "whitespace-then-tool"
+    | "whitespace-then-reasoning"
+    | "schema-invalid-type-provider-body"
     | "no-first-delta"
     | "delayed-first-delta"
     | "recycled-thread-stragglers"
@@ -2054,15 +2103,22 @@ reader.on("line", (line) => {
       setInterval(() => {
         send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "item-1", message: "tool still active" } });
       }, 20);
-    } else if (mode === "whitespace-after-answer" || mode === "whitespace-then-tool") {
+    } else if (mode === "schema-invalid-type-provider-body") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: {
+        message: '{"error":{"code":"invalid_type","message":"Invalid type for \\'text.format.schema\\': expected an object, but got a boolean instead.","param":"text.format.schema","type":"invalid_request_error"}}',
+        codexErrorInfo: "other", additionalDetails: null
+      } } });
+    } else if (mode === "whitespace-after-answer" || mode === "whitespace-then-tool" || mode === "whitespace-then-reasoning") {
       send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "the answer" } });
       send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "   " } });
       if (mode === "whitespace-after-answer") {
         setInterval(() => send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " " } }), 20);
       } else {
-        setTimeout(() => send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "commandExecution" } } }), 60);
+        setTimeout(() => send({ method: mode === "whitespace-then-reasoning" ? "item/reasoning/summaryTextDelta" : "item/started", params: mode === "whitespace-then-reasoning"
+          ? { threadId, turnId: "turn-1", itemId: "reason-1", summaryIndex: 0, delta: "thinking" }
+          : { threadId, turnId: "turn-1", item: { type: "commandExecution" } } }), 60);
         setTimeout(() => {
-          send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "agentMessage", text: "answered after tool activity" } } });
+          send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "agentMessage", text: mode === "whitespace-then-reasoning" ? "answered after reasoning activity" : "answered after tool activity" } } });
           send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
         }, 220);
       }

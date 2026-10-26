@@ -105,6 +105,11 @@ async function playScenario(threadId, turnId, scenario) {
         method: "item/mcpToolCall/progress",
         params: { threadId, turnId, itemId: "tool-1", message: "tool still alive" }
       }, "ServerNotification.json");
+    } else if (action.type === "reasoning") {
+      send({
+        method: "item/reasoning/summaryTextDelta",
+        params: { threadId, turnId, itemId: "reason-1", summaryIndex: 0, delta: "thinking" }
+      }, "ServerNotification.json");
     } else if (action.type === "oversized-command") {
       const frame = {
         method: "item/completed",

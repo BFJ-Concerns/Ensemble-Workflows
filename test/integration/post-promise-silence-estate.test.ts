@@ -17,7 +17,7 @@ const firstOutputDeadlineAcceleratorPath = path.resolve(
 const whitespaceDeadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-whitespace-deadline.mjs");
 
 interface Action {
-  type: "deadline" | "whitespace-deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "oversized-command" | "approval" | "success" | "silence";
+  type: "deadline" | "whitespace-deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "reasoning" | "oversized-command" | "approval" | "success" | "silence";
   text?: string;
   diagnostic?: string;
   afterMs?: number;
@@ -90,6 +90,20 @@ test("built consumer keeps a turn open when a tool frame follows whitespace", { 
     ]], 1);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, '"tool-finished"\n');
+    assert.equal((await fixture.attempts()).length, 1);
+  });
+});
+
+test("built consumer keeps a turn open when a reasoning frame follows whitespace", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "delta", text: " " },
+      { type: "reasoning" },
+      { type: "whitespace-deadline", requireDisarm: true },
+      { type: "success", text: "reasoning-finished", afterMs: 100 }
+    ]], 1);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '"reasoning-finished"\n', result.stderr);
     assert.equal((await fixture.attempts()).length, 1);
   });
 });

@@ -502,7 +502,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics`, `app_server_diagnostic`, and `token_usage_events` (the
-    engine-native usage events).
+    engine-native usage events). A Codex `app_server_diagnostic` has
+    `provider_error: { code, param }` when its message contains a serialised
+    provider error body; `param` may be `null`.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble

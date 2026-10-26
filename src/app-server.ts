@@ -1406,7 +1406,9 @@ export function appServerErrorFromPayload(method: string, errorPayload: RpcError
   const error =
     errorPayload.code === -32001
       ? new AppServerBackpressureError(method, errorPayload)
-      : payloadContainsInvalidJsonSchema(errorPayload)
+      : (diagnostic.providerError?.code === "invalid_type" &&
+          diagnostic.providerError.param === "text.format.schema") ||
+        payloadContainsInvalidJsonSchema(errorPayload)
         ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic)
         : new AppServerRequestError(method, errorPayload);
   return attachAppServerDiagnostic(error, diagnostic);
@@ -1427,12 +1429,30 @@ function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {
   code: number | string | null;
   message: string;
   payload: string;
+  providerError?: { code: string; param: string | null };
 } {
+  const turnError = asJsonObject(asJsonObject(payload.data)?.error);
+  const providerError = providerErrorFromMessage(turnError?.message);
   return {
     code: payload.code ?? null,
     message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
+    payload: renderPayloadSafely(payload.data),
+    ...(providerError === null ? {} : { providerError })
   };
+}
+
+function providerErrorFromMessage(message: unknown): { code: string; param: string | null } | null {
+  if (typeof message !== "string") return null;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  const error = asJsonObject(asJsonObject(decoded)?.error);
+  return typeof error?.code === "string" && (typeof error.param === "string" || error.param === null)
+    ? { code: error.code, param: error.param }
+    : null;
 }
 
 function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {

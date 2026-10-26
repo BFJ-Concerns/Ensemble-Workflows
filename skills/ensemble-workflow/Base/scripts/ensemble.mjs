@@ -16136,7 +16136,8 @@ var RunRecordWriter = class _RunRecordWriter {
         app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
           code: attempt.appServerDiagnostic.code,
           message: attempt.appServerDiagnostic.message,
-          payload: attempt.appServerDiagnostic.payload
+          payload: attempt.appServerDiagnostic.payload,
+          ...attempt.appServerDiagnostic.providerError === void 0 ? {} : { provider_error: attempt.appServerDiagnostic.providerError }
         },
         background_waits: attempt.backgroundWaits.map((wait) => ({
           task_id: wait.taskId,
@@ -20102,7 +20103,7 @@ ${this.#stderrTail.join("\n")}` : "";
 };
 function appServerErrorFromPayload(method, errorPayload) {
   const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : diagnostic.providerError?.code === "invalid_type" && diagnostic.providerError.param === "text.format.schema" || payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
   return attachAppServerDiagnostic(error, diagnostic);
 }
 function appServerErrorFromNotification(params) {
@@ -20116,11 +20117,25 @@ function appServerErrorFromNotification(params) {
   return appServerErrorFromPayload("turn notification", errorPayload);
 }
 function appServerDiagnosticFromPayload(payload) {
+  const turnError = asJsonObject(asJsonObject(payload.data)?.error);
+  const providerError = providerErrorFromMessage(turnError?.message);
   return {
     code: payload.code ?? null,
     message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
+    payload: renderPayloadSafely(payload.data),
+    ...providerError === null ? {} : { providerError }
   };
+}
+function providerErrorFromMessage(message) {
+  if (typeof message !== "string") return null;
+  let decoded;
+  try {
+    decoded = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  const error = asJsonObject(asJsonObject(decoded)?.error);
+  return typeof error?.code === "string" && (typeof error.param === "string" || error.param === null) ? { code: error.code, param: error.param } : null;
 }
 function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);

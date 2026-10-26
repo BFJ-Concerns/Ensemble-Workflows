@@ -221,6 +221,8 @@ export interface AppServerDiagnostic {
   code: number | string | null;
   message: string;
   payload: string;
+  /** Provider fields decoded from a serialised error body, when present. */
+  providerError?: { code: string; param: string | null };
 }
 
 interface AppServerDiagnosticCarrier {

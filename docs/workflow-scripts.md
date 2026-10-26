@@ -480,13 +480,21 @@ await builder.close();
   one-hour prompt-cache TTL (`CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`; a
   value declared in `worker_environment` wins). Ensemble sets no TTL for
   one-shot Claude workers, which keep Claude Code's default. Codex has no TTL
-  setting.
+  setting. The TTL governs how long Claude Code asks the provider to retain
+  cache writes; it does not guarantee a cache read on the next turn. A later
+  turn can re-create part of the prefix even when it reaches the same held
+  session immediately. The run record reports the reads and writes the engine
+  reports for each turn (`cacheReadTokens` and
+  `cacheCreationTokens`), so use those figures when judging the cost of a
+  held worker.
 - **Staleness:** `handle.stale` becomes `true` once the idle time since the
   last turn outlasts the cache — the TTL on Claude, 60 idle minutes on
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
-  for that session, and `handle.staleAfterMs` gives the threshold in use.
+  for that session, and `handle.staleAfterMs` gives the threshold in use. An
+  unmarked Claude session is within its declared TTL, but may still miss the
+  prompt cache.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

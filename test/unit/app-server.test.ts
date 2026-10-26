@@ -19,6 +19,7 @@ import {
   AppServerStartupTimeoutError,
   AppServerSystemError,
   CodexSchemaSubsetUnsupportedError,
+  AppServerWhitespaceStreamTimeoutError,
   TurnTimeoutError,
   appServerDiagnosticOf,
   partialWorkerTextOf,
@@ -918,6 +919,17 @@ test("a turn-scoped server request disarms the silence deadline", async () => {
   }
 });
 
+test("a denied server request survives stdin closing before its response", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("approval-after-stdin-close");
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "request approval", {}), AppServerExitedError);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("a frame naming a different turn does not disarm the deadline", async () => {
   const codexBin = await fakeCodexFailingTurnServer("promise-foreign-frame-then-silence");
   const transport = await CodexAppServerTransport.start({
@@ -1039,6 +1051,37 @@ test("retryPromiseSilenceTimeoutMs threads from RuntimeOptions to the live trans
   }
 });
 
+test("whitespace after an answer ends with its partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-after-answer");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "answer then whitespace", {}), (error: unknown) => {
+      assert.ok(error instanceof AppServerWhitespaceStreamTimeoutError);
+      assert.match(partialWorkerTextOf(error) ?? "", /the answer\s+$/);
+      return true;
+    });
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a tool frame stops the whitespace bound while the turn continues", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-then-tool");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    const result = await transport.runTurn(threadId, "whitespace then tool", {});
+    assert.equal(result.text, "answered after tool activity");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("exact -32001 backpressure outranks an incidental invalid_json_schema mention", () => {
   const error = appServerErrorFromPayload("turn/start", {
     code: -32001,
@@ -1122,6 +1165,34 @@ test("an oversized stdout frame leaves bounded decode evidence and the transport
     assert.equal(result.text, "answer after oversized frame");
   } finally {
     await transport.close();
+  }
+});
+
+test("a dropped command event leaves a completed answer and an explicit record", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("oversized-command-event");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-oversized-command-record-"));
+  const runtime = await createRuntime({ codexBin });
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "oversized-command",
+    workflowPath: path.join(process.cwd(), "oversized-command.js"), workflowSource: "return true;\n",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    assert.equal(await runtime.agent("answer after command output", { engine: "codex", maxAttempts: 1 }), "answer after oversized frame");
+    await writer.finish({ status: "complete", exitCode: 0, result: "answer after oversized frame" });
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8"));
+    assert.equal(record.status, "complete");
+    assert.deepEqual(record.oversized_event, {
+      byte_length: 1_048_699,
+      dropped: "whole inbound event",
+      event_method: "item/completed",
+      item_type: "commandExecution",
+      result_affected: false
+    });
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
   }
 });
 
@@ -1726,8 +1797,12 @@ async function fakeCodexFailingTurnServer(
     | "turn-start-error"
     | "exit-at-thread-start"
     | "oversized-line"
+    | "oversized-command-event"
     | "just-under-limit-line"
     | "tool-active-output-silent"
+    | "whitespace-after-answer"
+    | "whitespace-then-tool"
+    | "approval-after-stdin-close"
     | "no-first-delta"
     | "delayed-first-delta"
     | "recycled-thread-stragglers"
@@ -1739,6 +1814,7 @@ async function fakeCodexFailingTurnServer(
     bin,
     `#!/usr/bin/env node
 import { createInterface } from "node:readline";
+import { closeSync } from "node:fs";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -1868,6 +1944,15 @@ reader.on("line", (line) => {
       );
       return;
     }
+    if (mode === "oversized-command-event") {
+      const frame = { method: "item/completed", params: { threadId, item: { type: "commandExecution", aggregatedOutput: "" } } };
+      const length = 1_048_699 - Buffer.byteLength(JSON.stringify(frame));
+      frame.params.item.aggregatedOutput = "x".repeat(length);
+      send(frame);
+      send({ method: "item/completed", params: { threadId, item: { type: "agentMessage", text: "answer after oversized frame" } } });
+      send({ method: "turn/completed", params: { threadId } });
+      return;
+    }
     if (mode === "oversized-line" || mode === "just-under-limit-line") {
       const prefix = mode === "oversized-line" ? "over-limit frame" : "under-limit frame";
       const targetByteLength = mode === "oversized-line" ? 1_048_699 : 1_048_575;
@@ -1979,6 +2064,22 @@ reader.on("line", (line) => {
       setInterval(() => {
         send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "item-1", message: "tool still active" } });
       }, 20);
+    } else if (mode === "whitespace-after-answer" || mode === "whitespace-then-tool") {
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "the answer" } });
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "   " } });
+      if (mode === "whitespace-after-answer") {
+        setInterval(() => send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " " } }), 20);
+      } else {
+        setTimeout(() => send({ method: "item/started", params: { threadId, turnId: "turn-1", item: { type: "commandExecution" } } }), 60);
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "agentMessage", text: "answered after tool activity" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+        }, 220);
+      }
+    } else if (mode === "approval-after-stdin-close") {
+      closeSync(0);
+      send({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId, turnId: "turn-1", itemId: "item-1" } });
+      setTimeout(() => process.exit(73), 750);
     }
     // hang-after-delta: send nothing further.
   }

@@ -392,6 +392,13 @@ export class AppServerFirstOutputTimeoutError extends EnsembleError {
   }
 }
 
+/** A Codex worker kept streaming whitespace without content or other activity. */
+export class AppServerWhitespaceStreamTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server turn streamed only whitespace for ${timeoutMs}ms`);
+  }
+}
+
 export class AppServerStartupTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);

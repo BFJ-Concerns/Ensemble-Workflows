@@ -15,6 +15,7 @@ const { codexFixtureSchemaIncludesDefinitionProperty, validateCodexFixturePayloa
 const capturePath = process.env.ENSEMBLE_POST_PROMISE_CAPTURE;
 const emittedFrameCapturePath = process.env.ENSEMBLE_POST_PROMISE_EMITTED_CAPTURE;
 const deadlineControlPath = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL;
+const whitespaceDeadlineControlPath = process.env.ENSEMBLE_WHITESPACE_DEADLINE_CONTROL;
 const deadlineKind = process.env.ENSEMBLE_POST_PROMISE_DEADLINE_KIND ?? "retry-promise";
 const scenarios = JSON.parse(process.env.ENSEMBLE_POST_PROMISE_SCENARIOS ?? "[]");
 let threadCounter = 0;
@@ -51,15 +52,15 @@ const send = (message, schemaPath, payload = message) => {
   validateCodexFixturePayload(schemaPath, payload);
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
-async function releaseDeadline(requireDisarm) {
-  if (deadlineControlPath === undefined) {
+async function releaseDeadline(requireDisarm, controlPath = deadlineControlPath, kind = deadlineKind) {
+  if (controlPath === undefined) {
     throw new Error("post-promise deadline control path is required");
   }
   for (let attempt = 0; attempt < 6_000; attempt += 1) {
-    const control = readFileSync(deadlineControlPath, "utf8");
-    const armed = [...control.matchAll(new RegExp(`armed:${deadlineKind}:(\\d+)`, "g"))].at(-1)?.[1];
-    if (armed !== undefined && (!requireDisarm || control.includes(`disarmed:${deadlineKind}:${armed}`))) {
-      appendFileSync(deadlineControlPath, `release:${deadlineKind}:${armed}\n`);
+    const control = readFileSync(controlPath, "utf8");
+    const armed = [...control.matchAll(new RegExp(`armed:${kind}:(\\d+)`, "g"))].at(-1)?.[1];
+    if (armed !== undefined && (!requireDisarm || control.includes(`disarmed:${kind}:${armed}`))) {
+      appendFileSync(controlPath, `release:${kind}:${armed}\n`);
       return;
     }
     await wait(5);
@@ -73,6 +74,8 @@ async function playScenario(threadId, turnId, scenario) {
     }
     if (action.type === "deadline") {
       await releaseDeadline(action.requireDisarm === true);
+    } else if (action.type === "whitespace-deadline") {
+      await releaseDeadline(action.requireDisarm === true, whitespaceDeadlineControlPath, "whitespace-stream");
     } else if (action.type === "delta") {
       send({
         method: "item/agentMessage/delta",
@@ -102,6 +105,20 @@ async function playScenario(threadId, turnId, scenario) {
         method: "item/mcpToolCall/progress",
         params: { threadId, turnId, itemId: "tool-1", message: "tool still alive" }
       }, "ServerNotification.json");
+    } else if (action.type === "oversized-command") {
+      const frame = {
+        method: "item/completed",
+        params: {
+          threadId, turnId, completedAtMs: Date.now(),
+          item: {
+            id: `command-${turnId}`, type: "commandExecution", command: "print project files",
+            commandActions: [], cwd: process.cwd(), status: "completed",
+            aggregatedOutput: ""
+          }
+        }
+      };
+      frame.params.item.aggregatedOutput = "x".repeat(1_056_599 - Buffer.byteLength(JSON.stringify(frame)));
+      send(frame, "ServerNotification.json");
     } else if (action.type === "approval") {
       requestCounter += 1;
       const approval = Promise.withResolvers();

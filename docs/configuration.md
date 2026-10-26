@@ -222,6 +222,7 @@ standalone launcher exports nothing. Apart from `holdScope`, which mirrors
 | Option | Default | Description |
 |---|---|---|
 | `retryPromiseSilenceTimeoutMs` | 15 minutes | Codex only. How long a turn may stay silent after the app-server promises to retry before the turn is ended |
+| `whitespaceStreamTimeoutMs` | 2 minutes | Codex only. Library override for tests of the fixed whitespace-only stream bound; no per-call, CLI or ambient setting |
 | `firstOutputTimeoutMs` | 15 minutes | Codex only. How long a started turn may wait for its first output-bearing frame |
 | `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
 | `claudeSessionStaleAfterMs` | 60 minutes, or a cache TTL declared in `worker_environment` | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |

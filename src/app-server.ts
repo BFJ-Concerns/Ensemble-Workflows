@@ -5,6 +5,7 @@ import {
   AppServerBackpressureError,
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
+  AppServerWhitespaceStreamTimeoutError,
   AppServerOverloadedError,
   AppServerRequestError,
   AppServerRetryPromiseBrokenError,
@@ -68,6 +69,8 @@ interface TurnState {
   tokenUsageEvents: TokenUsageEvent[];
   consecutiveRetryPromises: number;
   retryPromiseSilenceDeadline: NodeJS.Timeout | undefined;
+  whitespaceStreamDeadline: NodeJS.Timeout | undefined;
+  lastContentOrActivityAt: number;
   systemErrorDiagnosticGraceDeadline: NodeJS.Timeout | undefined;
   /** The honest terminal rendering if Codex never sends its separate error notification. */
   systemErrorDiagnosticFallback: Error | undefined;
@@ -91,6 +94,7 @@ const DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1_000;
  * producing evidence. Healthy long turns disarm this on their first output-bearing frame.
  */
 const DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1_000;
+const DEFAULT_WHITESPACE_STREAM_TIMEOUT_MS = 2 * 60 * 1_000;
 /**
  * How long a stdout EOF waits for the process's own exit event before
  * terminalising as "stdout closed". Long enough for a reaped death's status
@@ -151,6 +155,7 @@ export interface CodexAppServerTransportOptions {
   requestTimeoutMs: number;
   retryPromiseSilenceTimeoutMs?: number;
   firstOutputTimeoutMs?: number;
+  whitespaceStreamTimeoutMs?: number;
   startupHandshakeTimeoutMs?: number;
   clientName: string;
   clientVersion: string;
@@ -231,6 +236,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
   #requestTimeoutMs: number;
   #retryPromiseSilenceTimeoutMs: number;
   #firstOutputTimeoutMs: number;
+  #whitespaceStreamTimeoutMs: number;
   #startupHandshakeTimeoutMs: number;
   #skillDiscoveryStabilityIntervalMs: number;
   #skillDiscoveryDeadlineMs: number;
@@ -263,6 +269,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#retryPromiseSilenceTimeoutMs =
       options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#whitespaceStreamTimeoutMs = options.whitespaceStreamTimeoutMs ?? DEFAULT_WHITESPACE_STREAM_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 120_000;
     this.#skillDiscoveryStabilityIntervalMs =
       options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
@@ -658,7 +665,20 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
     };
     const reportOversizedLine = (): void => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+      const linePrefix = prefix.toString("utf8");
+      const eventMethod = /"method"\s*:\s*"([^"]+)"/.exec(linePrefix)?.[1] ?? null;
+      const itemType = /"item"\s*:\s*\{[^}]*"type"\s*:\s*"([^"]+)"/.exec(linePrefix)?.[1] ?? null;
+      this.#onEvent?.({
+        method: "transport/decodeFailed",
+        params: {
+          byteLength: oversizedLineByteLength,
+          linePrefix,
+          reason: "inbound-line-limit",
+          eventMethod,
+          itemType
+        },
+        receivedAt: Date.now()
+      });
     };
     const handleRetainedLine = (): void => {
       // Match readline's CRLF treatment while applying the byte limit before
@@ -773,6 +793,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== undefined) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#noteContentOrActivity(turn, Date.now());
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
         }
@@ -856,6 +877,9 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
 
     const now = Date.now();
+    if (speaksForTurn && isWhitespaceStreamActivity(method)) {
+      this.#noteContentOrActivity(turn, now);
+    }
     if (isTurnProgressNotification(method)) {
       turn.consecutiveRetryPromises = 0;
     }
@@ -892,6 +916,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       if (typeof params.delta === "string") {
         turn.deltaText += params.delta;
+        if (params.delta.trim().length > 0) {
+          this.#noteContentOrActivity(turn, now);
+        } else if (params.delta.length > 0 && speaksForTurn) {
+          this.#armWhitespaceStreamDeadline(threadId, turn);
+        }
       }
       return;
     }
@@ -1042,6 +1071,26 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
   }
 
+  #noteContentOrActivity(turn: TurnState, at: number): void {
+    turn.lastContentOrActivityAt = at;
+    this.#disarmWhitespaceStreamDeadline(turn);
+  }
+
+  #disarmWhitespaceStreamDeadline(turn: TurnState): void {
+    if (turn.whitespaceStreamDeadline !== undefined) {
+      clearTimeout(turn.whitespaceStreamDeadline);
+      turn.whitespaceStreamDeadline = undefined;
+    }
+  }
+
+  #armWhitespaceStreamDeadline(threadId: string, turn: TurnState): void {
+    if (turn.whitespaceStreamDeadline !== undefined) return;
+    const remaining = Math.max(0, this.#whitespaceStreamTimeoutMs - (Date.now() - turn.lastContentOrActivityAt));
+    turn.whitespaceStreamDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerWhitespaceStreamTimeoutError(this.#whitespaceStreamTimeoutMs));
+    }, remaining);
+  }
+
   #disarmSystemErrorDiagnosticGrace(turn: TurnState): void {
     if (turn.systemErrorDiagnosticGraceDeadline !== undefined) {
       clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
@@ -1152,6 +1201,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmWhitespaceStreamDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== undefined) {
@@ -1174,6 +1224,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmWhitespaceStreamDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
@@ -1252,6 +1303,8 @@ export class CodexAppServerTransport implements RuntimeTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: undefined,
+      whitespaceStreamDeadline: undefined,
+      lastContentOrActivityAt: Date.now(),
       systemErrorDiagnosticGraceDeadline: undefined,
       systemErrorDiagnosticFallback: undefined,
       firstOutputDeadline: undefined,
@@ -1426,6 +1479,12 @@ function isTurnProgressNotification(method: string): boolean {
     // resuming — the reset set's rationale. Counting it would let a
     // promise/heartbeat alternation defeat the consecutive-promise bound.
     (method.startsWith("item/") && method !== "item/mcpToolCall/progress")
+  );
+}
+
+function isWhitespaceStreamActivity(method: string): boolean {
+  return method !== "item/agentMessage/delta" && (
+    method.startsWith("item/") || method === "turn/plan/updated" || method === "turn/diff/updated"
   );
 }
 

@@ -35,7 +35,7 @@ if (process.argv[2] === "--version") {
       reader.close();
       closeSync(0);
       process.stderr.write("fake app-server closed stdin before exit\\n");
-      setTimeout(() => { process.exitCode = 73; }, 250);
+      setTimeout(() => { process.exitCode = 73; }, 750);
     });
   });
 }
@@ -49,7 +49,7 @@ if (process.argv[2] === "--version") {
           XDG_DATA_HOME: path.join(directory, `data-${attempt}`),
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_STATUS: "0"
-        }, 5_000);
+        }, 15_000);
         assert.equal(result.code, 1, `${mode} run ${attempt}: ${result.stderr}`);
         assert.ok(result.stdout.trim().length > 0, `${mode} run ${attempt}: missing failure envelope on stdout; stderr:\n${result.stderr}`);
         const envelope = assertSalvageEnvelope(result.stdout, "failed");

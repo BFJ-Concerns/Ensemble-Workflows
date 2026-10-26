@@ -285,6 +285,13 @@ export interface RuntimeAgentRecord {
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
   decodeFailure: DecodeFailureDiagnostic | null;
+  /** A bounded inbound event discarded by the Codex line limit. */
+  oversizedEvent: {
+    byteLength: number;
+    eventMethod: string | null;
+    itemType: string | null;
+    resultAffected: boolean | null;
+  } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   queuedMs: number;
@@ -961,6 +968,16 @@ export class RunRecordWriter {
           : {
               byte_length: record.decodeFailure.byteLength,
               line_prefix: record.decodeFailure.linePrefix
+            },
+      oversized_event:
+        record.oversizedEvent === null
+          ? null
+          : {
+              byte_length: record.oversizedEvent.byteLength,
+              dropped: "whole inbound event",
+              event_method: record.oversizedEvent.eventMethod,
+              item_type: record.oversizedEvent.itemType,
+              result_affected: record.oversizedEvent.resultAffected
             },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,

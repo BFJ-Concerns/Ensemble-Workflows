@@ -177,6 +177,8 @@ export interface RuntimeOptions {
    * deliberately not a CLI flag or ambient setting. Defaults to 15 minutes.
    */
   retryPromiseSilenceTimeoutMs?: number;
+  /** Codex's fixed whitespace-stream bound; a library override for transport tests only. */
+  whitespaceStreamTimeoutMs?: number;
   /**
    * Bounds a started Codex turn's wait for its first output-bearing frame;
    * expiry terminalises the turn. A library-level option like

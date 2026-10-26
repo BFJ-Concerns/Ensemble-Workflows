@@ -79,6 +79,13 @@ test("Codex schema rejection before generation is recognised without attributing
   );
 });
 
+test("a Codex whitespace-stream ending is an output failure", () => {
+  assert.deepEqual(classifyAttemptFailure(evidence({
+    engine: "codex",
+    failure: { kind: "AppServerWhitespaceStreamTimeoutError", message: "whitespace stream" }
+  })), { class: "output", rule: "codex.whitespace-stream" });
+});
+
 test("an unrecognised Codex diagnostic is unclassified with no rule, never defaulted into a class", () => {
   // A code the table has never seen — the shape a stale table produces when
   // Codex rewords its errors. `rule: null` is the archive's tell.

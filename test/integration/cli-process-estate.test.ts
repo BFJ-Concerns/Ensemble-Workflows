@@ -46,15 +46,19 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
 
     assert.equal(result.code, 2, result.stderr);
     assert.equal(result.stdout, "");
-    // Run as `node ensemble.mjs`, so the usage names that invocation.
+    // Run from the repository root by the launcher's path, so the usage
+    // names that invocation.
     assert.equal(
       result.stderr,
-      "Usage: node ensemble.mjs [run options] <script.js> [args...]\n" +
-      "       node ensemble.mjs agent --engine <engine> [agent options] [prompt]\n" +
-      "       node ensemble.mjs workflows\n" +
-      "       node ensemble.mjs holds [--json] [--scope <scope> | --all]\n" +
-      "       node ensemble.mjs holds answer <hold-id> --verdict <verdict>\n" +
-      "                         [--note <note>]\n" +
+      "Usage: node skills/ensemble-workflow/Base/scripts/ensemble.mjs [run options]\n" +
+      "         <script.js> [args...]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs agent\n" +
+      "         --engine <engine> [agent options] [prompt]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs workflows\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds [--json]\n" +
+      "         [--scope <scope> | --all]\n" +
+      "       node skills/ensemble-workflow/Base/scripts/ensemble.mjs holds answer\n" +
+      "         <hold-id> --verdict <verdict> [--note <note>]\n" +
       "\n" +
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
@@ -67,7 +71,8 @@ test("hostile ambient ENSEMBLE_ and colour variables never reach an estate child
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
       "  --caller-identity <identity>  --hold-scope <scope>\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
-      "Run `node ensemble.mjs --help` for orientation; each subcommand answers --help.\n"
+      "Run `node skills/ensemble-workflow/Base/scripts/ensemble.mjs --help` for\n" +
+      "orientation; each subcommand answers --help.\n"
     );
   } finally {
     for (const [key, value] of saved) {

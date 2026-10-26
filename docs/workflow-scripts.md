@@ -266,13 +266,22 @@ dispatch then resolves its level for the target it goes to, in two steps:
    engine's own per-model report (Codex lists each model's levels), then
    the table Ensemble ships for well-known models on both engines. A model
    none of them knows has its level passed through for the engine to judge.
+   The engine is asked for its report only where the answer can matter: a
+   pinned model the machine map covers costs no round trip, while a dispatch
+   that pins no model is always asked, to learn which model it runs on, so
+   that model's own bounds and map apply. A report the engine cannot give —
+   an app-server that will not start, a codex-cli without the listing — is
+   no report, and the table answers; a substrate that is down then refuses
+   the dispatch itself, which a fallback chain advances past.
 
-A fallback-chain entry or a remapped call resolves against its own target.
-The attempt record's `effort_resolution` states the requested level, the
-bound that applied, the source and level the clamp settled on, and the name
-dispatched; `resolved_effort` beside it is the level the engine reported
-serving. opencode is exempt: its `effort` names one of the model's declared
-`variants` and is sent as given.
+A fallback-chain entry or a remapped call resolves against its own target,
+with the call's `effort` where the entry names none. The attempt record's
+`effort_resolution` states the requested level, the bound that applied, the
+source and level the clamp settled on, and the name dispatched;
+`resolved_effort` beside it is the level the engine reported serving, and
+the agent record carries the last target's pair. opencode is exempt: its
+`effort` names one of the model's declared `variants` and is sent as given,
+and the `effort` section takes no opencode key.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`

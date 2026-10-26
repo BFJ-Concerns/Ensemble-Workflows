@@ -2,9 +2,10 @@ import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
 import { ClaudeEngineInvocation } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
-import { servedLevelsFromReport } from "./effort-resolution.js";
+import { CLAUDE_CLI_EFFORT_LEVELS, isClaudeCliEffort, servedLevelsFromReport } from "./effort-resolution.js";
 import {
   AppServerExitedError,
+  AppServerRequestError,
   AppServerStartupTimeoutError,
   attachWorkerExitStatus,
   CapabilityStripUnsupportedError,
@@ -29,7 +30,7 @@ import type { EngineCapabilityTable, StrippableCapability } from "./capability-s
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
-import type { ServedEffortLevels } from "./effort-resolution.js";
+import type { ServedEffortReport } from "./effort-resolution.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type {
@@ -177,13 +178,17 @@ export interface EngineAdapter {
    */
   createSession?(options: EngineTurnOptions): EngineWorkerSession;
   /**
-   * The engine's own per-model effort report, in canonical terms: the
-   * levels it says the model serves (the default model's for an unpinned
-   * dispatch), or null where it reports none or does not list the model.
-   * Optional by design: an engine with no such report leaves the served
-   * levels to the machine map and the built-in table.
+   * The engine's own per-model effort report: the model it describes (the
+   * engine's default for an unpinned dispatch) and the levels it says that
+   * model serves, in canonical terms; null where the engine cannot report
+   * or does not list the model. A report the engine cannot give is no
+   * report, never a thrown dispatch: the served levels fall to the built-in
+   * table, and a substrate that is down fails the dispatch itself, as a
+   * refusal the chain can advance past. Optional by design: an engine with
+   * no such report leaves the served levels to the machine map and the
+   * table.
    */
-  servedEffortLevels?(model: string | undefined): Promise<ServedEffortLevels | null>;
+  servedEffortReport?(model: string | undefined): Promise<ServedEffortReport | null>;
   /**
    * Tear the adapter down, cancelling active invocations. Contract: every
    * active invocation's attempt must settle (resolve or reject) as a
@@ -368,19 +373,47 @@ export class CodexEngineAdapter implements EngineAdapter {
     return new CodexWorkerSession({ options, transport: this.#transport });
   }
 
-  async servedEffortLevels(model: string | undefined): Promise<ServedEffortLevels | null> {
+  async servedEffortReport(model: string | undefined): Promise<ServedEffortReport | null> {
     const listModels = this.#transport.listModels;
     if (listModels === undefined) {
       return null;
     }
-    const listing = await listedCodexModels(this.#transport, listModels);
+    let listing: readonly CodexModelListing[];
+    try {
+      listing = await listedCodexModels(this.#transport, listModels);
+    } catch (error) {
+      // An app-server that will not start, or one without `model/list`
+      // (an older codex-cli, a malformed answer), gives no report. The
+      // dispatch goes on against the built-in table; a substrate that is
+      // down refuses the thread it then opens, which the chain advances past.
+      if (error instanceof AppServerStartupTimeoutError || error instanceof AppServerExitedError || error instanceof AppServerRequestError) {
+        return null;
+      }
+      throw error;
+    }
     const entry = listing.find((candidate) => (model === undefined ? candidate.isDefault : candidate.model === model));
-    return entry === undefined ? null : servedLevelsFromReport(entry.supportedReasoningEfforts);
+    return entry === undefined ? null : { model: entry.model, levels: servedLevelsFromReport(entry.supportedReasoningEfforts) };
   }
 
   async close(): Promise<void> {
     this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
+  }
+}
+
+/**
+ * The Claude CLI runs an unknown `--effort` at its default, so a name
+ * outside its set must fail here, pre-spawn, or not at all — the one guard
+ * a direct adapter caller meets, where the runtime's resolution and the
+ * machine map's validation have not already kept such a name away.
+ */
+function assertClaudeCliEffort(effort: string | undefined): void {
+  if (effort !== undefined && !isClaudeCliEffort(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CLAUDE_CLI_EFFORT_LEVELS.join(" | ")} (the levels the Claude CLI accepts; it runs an unknown value at its default)`
+    );
   }
 }
 
@@ -588,12 +621,11 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
-    // `options.effort` is already the CLI's native level, resolved by the
-    // runtime against the built-in Claude row or a machine map; the CLI
-    // silently runs an unknown value at its default, which is why nothing
-    // unresolved reaches here. The run record's `resolved_effort` is not
-    // this value: it is the level the CLI's own transcript reports serving
-    // (claude-transcript's `effortSince`).
+    // `options.effort` is the CLI's native level, resolved by the runtime
+    // against the built-in Claude row or a machine map. The run record's
+    // `resolved_effort` is not this value: it is the level the CLI's own
+    // transcript reports serving (claude-transcript's `effortSince`).
+    assertClaudeCliEffort(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -616,6 +648,7 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     // one-shot invocation so adapter close() tears held workers down too.
     // Effort is fixed at creation, resolved once by the runtime as for an
     // invocation.
+    assertClaudeCliEffort(options.effort);
     const session = new ClaudeEngineInvocation({
       prompt: "",
       cwd: options.cwd ?? this.#cwd,

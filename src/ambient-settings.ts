@@ -9,10 +9,10 @@ import {
 } from "./concurrency-defaults.js";
 
 import { HOLD_SCOPE_ENV } from "./holds.js";
-import { CANONICAL_EFFORT_DOMAIN, isCanonicalEffort } from "./effort-resolution.js";
+import { assertEffortSettings } from "./effort-resolution.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
-import type { EffortSettings, EffortTargetSettings, ServedEffortLevels } from "./effort-resolution.js";
+import type { EffortSettings, EffortTargetSettings } from "./effort-resolution.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
@@ -134,8 +134,6 @@ interface MachineConfig {
   opencode_models?: Record<string, OpenCodeModelDeclaration>;
   effort?: Record<string, EffortTargetSettings>;
 }
-
-const EFFORT_TARGET_KEYS = ["ceiling", "floor", "levels"];
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
 
@@ -396,69 +394,16 @@ function validateOpenCodeModelDeclaration(key: string, declaration: unknown, con
 /**
  * `effort` maps each target key — `*`, an engine, or `engine:model` — to
  * its bounds and served-level map, an open set of keys like
- * `opencode_models`, so it takes its own validator. Each value is judged as
- * `resolveEffort` will read it: bounds in the canonical vocabulary with the
- * floor no higher than the ceiling, and `levels` a non-empty map from
- * canonical level to the native name the engine is dispatched with, on an
- * engine or model key only — a native name is an engine's, so a `*` map
- * could name nothing that every engine accepts.
+ * `opencode_models`, so it takes the resolver's own validator rather than
+ * the fixed-key one; a library caller's `effortSettings` passes the same.
  */
 function validateEffortSection(root: Record<string, unknown>, configFile: string): void {
-  const section = root.effort;
-  if (section === undefined) {
+  if (root.effort === undefined) {
     return;
   }
-  if (!isObject(section) || Array.isArray(section)) {
-    throw fileValueError(configFile, "effort", "must be a JSON object of target keys (\"*\", an engine, or engine:model) to settings");
-  }
-  for (const [key, settings] of Object.entries(section)) {
-    const qualified = `effort.${key}`;
-    const engine = key === "*" ? null : key.includes(":") ? key.slice(0, key.indexOf(":")) : key;
-    const model = key.includes(":") ? key.slice(key.indexOf(":") + 1) : undefined;
-    if (engine !== null && !(ENGINES as readonly string[]).includes(engine)) {
-      throw fileValueError(configFile, qualified, `target keys are "*", an engine (${ENGINES.join(" | ")}), or engine:model`);
-    }
-    if (model !== undefined && model.trim().length === 0) {
-      throw fileValueError(configFile, qualified, "an engine:model key must name its model");
-    }
-    if (!isObject(settings) || Array.isArray(settings)) {
-      throw fileValueError(configFile, qualified, "must be a JSON object");
-    }
-    assertKnownKeys(settings, EFFORT_TARGET_KEYS, configFile, qualified);
-    const { ceiling, floor, levels } = settings;
-    for (const [field, value] of [["ceiling", ceiling], ["floor", floor]] as const) {
-      if (value !== undefined && !isCanonicalEffort(value)) {
-        throw fileValueError(configFile, `${qualified}.${field}`, `must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-      }
-    }
-    if (
-      isCanonicalEffort(ceiling) &&
-      isCanonicalEffort(floor) &&
-      CANONICAL_EFFORT_DOMAIN.indexOf(floor) > CANONICAL_EFFORT_DOMAIN.indexOf(ceiling)
-    ) {
-      throw fileValueError(configFile, qualified, `floor ${floor} is above ceiling ${ceiling}`);
-    }
-    if (levels !== undefined) {
-      validateServedLevels(levels, engine, `${qualified}.levels`, configFile);
-    }
-  }
-}
-
-function validateServedLevels(levels: unknown, engine: string | null, qualified: string, configFile: string): asserts levels is ServedEffortLevels {
-  if (engine === null) {
-    throw fileValueError(configFile, qualified, "served levels belong to an engine or engine:model key, not \"*\"");
-  }
-  if (!isObject(levels) || Array.isArray(levels) || Object.keys(levels).length === 0) {
-    throw fileValueError(configFile, qualified, "must be a non-empty JSON object of canonical levels to the engine's native names");
-  }
-  for (const [level, native] of Object.entries(levels)) {
-    if (!isCanonicalEffort(level)) {
-      throw fileValueError(configFile, `${qualified}.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-    }
-    if (typeof native !== "string" || native.trim().length === 0) {
-      throw fileValueError(configFile, `${qualified}.${level}`, "must be the non-empty native name the engine is dispatched with");
-    }
-  }
+  assertEffortSettings(root.effort, (path, detail) => {
+    throw fileValueError(configFile, path === "" ? "effort" : `effort.${path}`, detail);
+  });
 }
 
 function openCodeModelEntries(

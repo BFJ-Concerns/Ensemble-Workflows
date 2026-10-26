@@ -129,7 +129,7 @@ export type {
   Resolved,
   SettingLayer
 } from "./ambient-settings.js";
-export { BUILT_IN_SERVED_LEVELS, CANONICAL_EFFORT_DOMAIN, resolveEffort } from "./effort-resolution.js";
+export { assertEffortSettings, BUILT_IN_SERVED_LEVELS, CANONICAL_EFFORT_DOMAIN, CLAUDE_CLI_EFFORT_LEVELS, resolveEffort } from "./effort-resolution.js";
 export type {
   CanonicalEffort,
   EffortResolution,

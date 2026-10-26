@@ -131,7 +131,7 @@ function codexRuntime(
 test("a codex session holds one thread across turns, and each turn rides it", async () => {
   const transport = new ScriptedTransport([turnResult("first answer"), turnResult("second answer")]);
   const runtime = codexRuntime(transport);
-  const session = runtime.createWorkerSession({ engine: "codex", model: "gpt-5.6-terra", effort: "low" });
+  const session = runtime.createWorkerSession({ engine: "codex", model: "gpt-5.6-terra", effort: "minimal" });
 
   assert.equal(await session.send("first prompt"), "first answer");
   assert.equal(await session.send("second prompt"), "second answer");
@@ -146,9 +146,11 @@ test("a codex session holds one thread across turns, and each turn rides it", as
     transport.turns.map((turn) => turn.prompt),
     ["first prompt", "second prompt"]
   );
-  // Model and effort are fixed at creation: the effort rides the one
-  // thread/start (whose answer confirms the served level), the model pin
-  // rides every turn as well.
+  // Model and effort are fixed at creation: the effort, resolved once for
+  // the creating target (`minimal` clamps to the `low` the model's built-in
+  // row serves, so the dispatched name is not an echo of the request),
+  // rides the one thread/start (whose answer confirms the served level);
+  // the model pin rides every turn as well.
   assert.equal(transport.openedThreads[0]?.effort, "low");
   for (const turn of transport.turns) {
     assert.equal(turn.options.model, "gpt-5.6-terra");

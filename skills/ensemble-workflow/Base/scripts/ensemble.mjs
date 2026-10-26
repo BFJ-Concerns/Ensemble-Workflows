@@ -13878,6 +13878,8 @@ var AgentOptionRejectedError = class extends PreSpawnAuthorError {
 };
 var AgentPromptRejectedError = class extends PreSpawnAuthorError {
 };
+var EffortSettingsRejectedError = class extends PreSpawnAuthorError {
+};
 var AgentCwdRejectedError = class extends PreSpawnAuthorError {
 };
 var WorkflowScriptReadError = class extends PreSpawnAuthorError {
@@ -14313,8 +14315,12 @@ var CANONICAL_EFFORT_DOMAIN = ["none", "minimal", "low", "medium", "high", "xhig
 function isCanonicalEffort(value) {
   return CANONICAL_EFFORT_DOMAIN.includes(value);
 }
+var CLAUDE_CLI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+function isClaudeCliEffort(value) {
+  return CLAUDE_CLI_EFFORT_LEVELS.includes(value);
+}
 var BUILT_IN_SERVED_LEVELS = {
-  claude: { levels: { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" } },
+  claude: { levels: Object.fromEntries(CLAUDE_CLI_EFFORT_LEVELS.map((level) => [level, level])) },
   "codex:gpt-6.1-sol": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
   "codex:gpt-6-astra": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
   "codex:gpt-6-sol": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
@@ -14334,10 +14340,19 @@ function servedLevelsFromReport(reported) {
 function effortTargetKeys(engine, model) {
   return [...model !== void 0 ? [`${engine}:${model}`] : [], engine, "*"];
 }
-function resolveEffort(input) {
-  const keys = effortTargetKeys(input.engine, input.model);
+async function resolveEffort(input) {
+  let keys = effortTargetKeys(input.engine, input.model);
+  let machine = machineLevelsFor(keys, input.settings);
+  let report = null;
+  if (input.model === void 0 || machine === void 0) {
+    report = await input.engineReport();
+    if (input.model === void 0 && report !== null) {
+      keys = effortTargetKeys(input.engine, report.model);
+      machine = machineLevelsFor(keys, input.settings);
+    }
+  }
   const bounded2 = applyMachineBounds(input.requested, keys, input.settings);
-  const served = servedLevelsFor(keys, input.settings, input.engineReport, input.builtIn ?? BUILT_IN_SERVED_LEVELS);
+  const served = servedLevelsFor(keys, machine, report, input.builtIn ?? BUILT_IN_SERVED_LEVELS);
   if (served === null) {
     return { requested: input.requested, bound: bounded2.bound, served: { source: "none", level: null }, dispatched: bounded2.level };
   }
@@ -14363,16 +14378,17 @@ function applyMachineBounds(requested, keys, settings) {
   }
   return { level: requested, bound: null };
 }
-function servedLevelsFor(keys, settings, engineReport, builtIn) {
-  const targetKeys = keys.filter((key) => key !== "*");
-  const machine = targetKeys.map((key) => settings[key]?.levels).find((levels) => levels !== void 0);
+function machineLevelsFor(keys, settings) {
+  return keys.filter((key) => key !== "*").map((key) => settings[key]?.levels).find((levels) => levels !== void 0);
+}
+function servedLevelsFor(keys, machine, report, builtIn) {
   if (machine !== void 0) {
     return { source: "machine", levels: machine };
   }
-  if (engineReport !== null && Object.keys(engineReport).length > 0) {
-    return { source: "engine", levels: engineReport };
+  if (report !== null && report.levels !== null) {
+    return { source: "engine", levels: report.levels };
   }
-  const shipped = targetKeys.map((key) => builtIn[key]?.levels).find((levels) => levels !== void 0);
+  const shipped = machineLevelsFor(keys, builtIn);
   return shipped === void 0 ? null : { source: "built-in", levels: shipped };
 }
 function nearestServedLevel(level, served) {
@@ -14391,6 +14407,71 @@ function nearestServedLevel(level, served) {
 }
 function rank(level) {
   return CANONICAL_EFFORT_DOMAIN.indexOf(level);
+}
+var ENGINE_NAMES = ["codex", "claude", "opencode"];
+var EFFORT_TARGET_FIELDS = /* @__PURE__ */ new Set(["ceiling", "floor", "levels"]);
+function assertEffortSettings(section, fail) {
+  if (!isObject(section) || Array.isArray(section)) {
+    fail("", 'must be an object of target keys ("*", an engine, or engine:model) to settings');
+  }
+  for (const [key, settings] of Object.entries(section)) {
+    const engine = key === "*" ? null : key.includes(":") ? key.slice(0, key.indexOf(":")) : key;
+    const model = key.includes(":") ? key.slice(key.indexOf(":") + 1) : void 0;
+    if (engine !== null && !ENGINE_NAMES.includes(engine)) {
+      fail(key, `target keys are "*", an engine (${ENGINE_NAMES.join(" | ")}), or engine:model`);
+    }
+    if (engine === "opencode") {
+      fail(key, "opencode dispatches are not resolved: their effort names a declared variant and is sent as given");
+    }
+    if (model !== void 0 && model.trim().length === 0) {
+      fail(key, "an engine:model key must name its model");
+    }
+    if (!isObject(settings) || Array.isArray(settings)) {
+      fail(key, "must be an object");
+    }
+    for (const field of Object.keys(settings)) {
+      if (!EFFORT_TARGET_FIELDS.has(field)) {
+        fail(`${key}.${field}`, `unknown field; the fields are ${[...EFFORT_TARGET_FIELDS].join(", ")}`);
+      }
+    }
+    const { ceiling, floor, levels } = settings;
+    for (const [field, value] of [["ceiling", ceiling], ["floor", floor]]) {
+      if (value !== void 0 && !isCanonicalEffort(value)) {
+        fail(`${key}.${field}`, `must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+      }
+    }
+    if (isCanonicalEffort(ceiling) && isCanonicalEffort(floor) && rank(floor) > rank(ceiling)) {
+      fail(key, `floor ${floor} is above ceiling ${ceiling}`);
+    }
+    if (levels !== void 0) {
+      assertServedLevels(levels, engine, `${key}.levels`, fail);
+    }
+  }
+}
+function assertServedLevels(levels, engine, path15, fail) {
+  if (engine === null) {
+    fail(path15, 'served levels belong to an engine or engine:model key, not "*"');
+  }
+  if (!isObject(levels) || Array.isArray(levels) || Object.keys(levels).length === 0) {
+    fail(path15, "must be a non-empty object of canonical levels to the engine's native names");
+  }
+  for (const [level, native] of Object.entries(levels)) {
+    if (!isCanonicalEffort(level)) {
+      fail(`${path15}.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    }
+    if (typeof native !== "string" || native.trim().length === 0) {
+      fail(`${path15}.${level}`, "must be the non-empty native name the engine is dispatched with");
+    }
+    if (engine === "claude" && !isClaudeCliEffort(native)) {
+      fail(
+        `${path15}.${level}`,
+        `the Claude CLI runs an unknown --effort at its default, so a claude map names only ${CLAUDE_CLI_EFFORT_LEVELS.join(" | ")}`
+      );
+    }
+  }
+}
+function isObject(value) {
+  return typeof value === "object" && value !== null;
 }
 
 // src/opencode-model-registry.ts
@@ -15289,7 +15370,6 @@ var AmbientConfigError = class extends Error {
     this.name = new.target.name;
   }
 };
-var EFFORT_TARGET_KEYS = ["ceiling", "floor", "levels"];
 var OPENCODE_MODEL_DECLARATION_KEYS = ["provider_model", "display_name", "family", "vision", "billing", "variants"];
 var OPENCODE_BILLING_MODES = ["pay-as-you-go", "self-hosted"];
 var ENGINES = ["codex", "claude", "opencode"];
@@ -15353,7 +15433,7 @@ function readMachineConfig(configFile) {
   } catch (error) {
     throw new AmbientConfigError(`Cannot parse JSON machine configuration ${configFile}: ${errorMessage(error)}`);
   }
-  if (!isObject(parsed) || Array.isArray(parsed)) {
+  if (!isObject2(parsed) || Array.isArray(parsed)) {
     throw fileValueError(configFile, "<root>", "must be a JSON object");
   }
   assertKnownKeys(
@@ -15380,7 +15460,7 @@ function validateSection(root, key, knownKeys, configFile, validate) {
   if (value === void 0) {
     return;
   }
-  if (!isObject(value) || Array.isArray(value)) {
+  if (!isObject2(value) || Array.isArray(value)) {
     throw fileValueError(configFile, key, "must be a JSON object");
   }
   assertKnownKeys(value, knownKeys, configFile, key);
@@ -15406,7 +15486,7 @@ function validateWorkerEnvironment(root, configFile) {
   if (section === void 0) {
     return;
   }
-  if (!isObject(section) || Array.isArray(section)) {
+  if (!isObject2(section) || Array.isArray(section)) {
     throw fileValueError(configFile, "worker_environment", "must be a JSON object");
   }
   assertKnownKeys(section, ENGINES, configFile, "worker_environment");
@@ -15416,7 +15496,7 @@ function validateWorkerEnvironment(root, configFile) {
       continue;
     }
     const qualified = `worker_environment.${engine}`;
-    if (!isObject(variables) || Array.isArray(variables)) {
+    if (!isObject2(variables) || Array.isArray(variables)) {
       throw fileValueError(configFile, qualified, "must be a JSON object of variable names to string values");
     }
     for (const [name, value] of Object.entries(variables)) {
@@ -15434,7 +15514,7 @@ function validateOpenCodeModels(root, configFile) {
   if (section === void 0) {
     return;
   }
-  if (!isObject(section) || Array.isArray(section)) {
+  if (!isObject2(section) || Array.isArray(section)) {
     throw fileValueError(configFile, "opencode_models", "must be a JSON object of model keys to declarations");
   }
   for (const [key, declaration] of Object.entries(section)) {
@@ -15451,7 +15531,7 @@ function validateOpenCodeModelDeclaration(key, declaration, configFile) {
     throw fileValueError(configFile, "opencode_models", "model keys must be non-empty");
   }
   const qualified = `opencode_models.${key}`;
-  if (!isObject(declaration) || Array.isArray(declaration)) {
+  if (!isObject2(declaration) || Array.isArray(declaration)) {
     throw fileValueError(configFile, qualified, "must be a JSON object");
   }
   assertKnownKeys(declaration, OPENCODE_MODEL_DECLARATION_KEYS, configFile, qualified);
@@ -15477,56 +15557,12 @@ function validateOpenCodeModelDeclaration(key, declaration, configFile) {
   }
 }
 function validateEffortSection(root, configFile) {
-  const section = root.effort;
-  if (section === void 0) {
+  if (root.effort === void 0) {
     return;
   }
-  if (!isObject(section) || Array.isArray(section)) {
-    throw fileValueError(configFile, "effort", 'must be a JSON object of target keys ("*", an engine, or engine:model) to settings');
-  }
-  for (const [key, settings] of Object.entries(section)) {
-    const qualified = `effort.${key}`;
-    const engine = key === "*" ? null : key.includes(":") ? key.slice(0, key.indexOf(":")) : key;
-    const model = key.includes(":") ? key.slice(key.indexOf(":") + 1) : void 0;
-    if (engine !== null && !ENGINES.includes(engine)) {
-      throw fileValueError(configFile, qualified, `target keys are "*", an engine (${ENGINES.join(" | ")}), or engine:model`);
-    }
-    if (model !== void 0 && model.trim().length === 0) {
-      throw fileValueError(configFile, qualified, "an engine:model key must name its model");
-    }
-    if (!isObject(settings) || Array.isArray(settings)) {
-      throw fileValueError(configFile, qualified, "must be a JSON object");
-    }
-    assertKnownKeys(settings, EFFORT_TARGET_KEYS, configFile, qualified);
-    const { ceiling, floor, levels } = settings;
-    for (const [field, value] of [["ceiling", ceiling], ["floor", floor]]) {
-      if (value !== void 0 && !isCanonicalEffort(value)) {
-        throw fileValueError(configFile, `${qualified}.${field}`, `must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-      }
-    }
-    if (isCanonicalEffort(ceiling) && isCanonicalEffort(floor) && CANONICAL_EFFORT_DOMAIN.indexOf(floor) > CANONICAL_EFFORT_DOMAIN.indexOf(ceiling)) {
-      throw fileValueError(configFile, qualified, `floor ${floor} is above ceiling ${ceiling}`);
-    }
-    if (levels !== void 0) {
-      validateServedLevels(levels, engine, `${qualified}.levels`, configFile);
-    }
-  }
-}
-function validateServedLevels(levels, engine, qualified, configFile) {
-  if (engine === null) {
-    throw fileValueError(configFile, qualified, 'served levels belong to an engine or engine:model key, not "*"');
-  }
-  if (!isObject(levels) || Array.isArray(levels) || Object.keys(levels).length === 0) {
-    throw fileValueError(configFile, qualified, "must be a non-empty JSON object of canonical levels to the engine's native names");
-  }
-  for (const [level, native] of Object.entries(levels)) {
-    if (!isCanonicalEffort(level)) {
-      throw fileValueError(configFile, `${qualified}.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
-    }
-    if (typeof native !== "string" || native.trim().length === 0) {
-      throw fileValueError(configFile, `${qualified}.${level}`, "must be the non-empty native name the engine is dispatched with");
-    }
-  }
+  assertEffortSettings(root.effort, (path15, detail) => {
+    throw fileValueError(configFile, path15 === "" ? "effort" : `effort.${path15}`, detail);
+  });
 }
 function openCodeModelEntries(section) {
   return Object.entries(section ?? {}).map(([key, declaration]) => ({
@@ -15694,7 +15730,7 @@ function isDirectory(candidate) {
     return false;
   }
 }
-function isObject(value) {
+function isObject2(value) {
   return typeof value === "object" && value !== null;
 }
 function isNodeError2(error, code) {
@@ -19374,6 +19410,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
    */
   async listModels() {
     const listed = [];
+    const cursors = /* @__PURE__ */ new Set();
     let cursor = null;
     do {
       const result = asJsonObject(await this.#request("model/list", { includeHidden: true, ...cursor !== null ? { cursor } : {} }));
@@ -19402,6 +19439,15 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       const next = result?.nextCursor;
       cursor = typeof next === "string" && next.length > 0 ? next : null;
+      if (cursor !== null && cursors.has(cursor)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: `pagination repeated the cursor ${JSON.stringify(cursor)}`
+        });
+      }
+      if (cursor !== null) {
+        cursors.add(cursor);
+      }
     } while (cursor !== null);
     return listed;
   }
@@ -21530,20 +21576,37 @@ var CodexEngineAdapter = class {
   createSession(options) {
     return new CodexWorkerSession({ options, transport: this.#transport });
   }
-  async servedEffortLevels(model) {
+  async servedEffortReport(model) {
     const listModels = this.#transport.listModels;
     if (listModels === void 0) {
       return null;
     }
-    const listing = await listedCodexModels(this.#transport, listModels);
+    let listing;
+    try {
+      listing = await listedCodexModels(this.#transport, listModels);
+    } catch (error) {
+      if (error instanceof AppServerStartupTimeoutError || error instanceof AppServerExitedError || error instanceof AppServerRequestError) {
+        return null;
+      }
+      throw error;
+    }
     const entry = listing.find((candidate) => model === void 0 ? candidate.isDefault : candidate.model === model);
-    return entry === void 0 ? null : servedLevelsFromReport(entry.supportedReasoningEfforts);
+    return entry === void 0 ? null : { model: entry.model, levels: servedLevelsFromReport(entry.supportedReasoningEfforts) };
   }
   async close() {
     this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
   }
 };
+function assertClaudeCliEffort(effort) {
+  if (effort !== void 0 && !isClaudeCliEffort(effort)) {
+    throw new InvalidAgentOptionValueError(
+      "effort",
+      effort,
+      `one of ${CLAUDE_CLI_EFFORT_LEVELS.join(" | ")} (the levels the Claude CLI accepts; it runs an unknown value at its default)`
+    );
+  }
+}
 var codexModelListingCache = /* @__PURE__ */ new WeakMap();
 function listedCodexModels(transport, listModels) {
   const cached = codexModelListingCache.get(transport);
@@ -21675,6 +21738,7 @@ var ClaudeEngineAdapter = class {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
+    assertClaudeCliEffort(options.effort);
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
@@ -21691,6 +21755,7 @@ var ClaudeEngineAdapter = class {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
+    assertClaudeCliEffort(options.effort);
     const session = new ClaudeEngineInvocation({
       prompt: "",
       cwd: options.cwd ?? this.#cwd,
@@ -22046,6 +22111,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
       assertValidStripOption(options.strip);
     }
     this.#strip = options.strip ?? [];
+    if (options.effortSettings !== void 0) {
+      assertEffortSettings(options.effortSettings, (path15, detail) => {
+        throw new EffortSettingsRejectedError(`effortSettings${path15 === "" ? "" : `.${path15}`}: ${detail}`);
+      });
+    }
     this.#effortSettings = options.effortSettings ?? {};
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
@@ -23097,6 +23167,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
+    agentRecord.resolvedModel = null;
+    agentRecord.resolvedEffort = null;
+    agentRecord.effortResolution = null;
     let invocation;
     let completion;
     const attempts = { target, ledger, chainRemains };
@@ -23557,10 +23630,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
    * Resolves the target's canonical effort to the name its engine is
    * dispatched with (`resolveEffort`): the machine's bounds, then the clamp
    * to the nearest level the model serves, the served levels from the
-   * machine map, else the engine's own report, else the built-in table.
-   * Judged per target, so a chain entry or a remapped call takes its own
-   * target's; written onto the target so every attempt record carries it,
-   * and onto the agent record last-write-wins as `resolvedEffort` is.
+   * machine map, else the engine's own report (asked for only where the
+   * map has not answered, or to learn an unpinned dispatch's model), else
+   * the built-in table. Judged per target, so a chain entry or a remapped
+   * call takes its own target's; written onto the target so every attempt
+   * record carries it, and onto the agent record as the last target's.
    * opencode is exempt — its effort names a registry variant, judged by
    * its adapter — and a target with no effort has nothing to resolve.
    */
@@ -23568,15 +23642,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (target.effort === void 0 || engine.name === "opencode") {
       return target.effort;
     }
-    const engineReport = engine.servedEffortLevels === void 0 ? null : await engine.servedEffortLevels(target.model);
-    target.resolution = resolveEffort({
+    target.resolution = await resolveEffort({
       // Validated pre-spawn: anything outside the canonical set was refused
       // before the call was admitted.
       requested: target.effort,
       engine: engine.name,
       model: target.model,
       settings: this.#effortSettings,
-      engineReport
+      engineReport: () => engine.servedEffortReport === void 0 ? Promise.resolve(null) : engine.servedEffortReport(target.model)
     });
     agentRecord.effortResolution = target.resolution;
     return target.resolution.dispatched;

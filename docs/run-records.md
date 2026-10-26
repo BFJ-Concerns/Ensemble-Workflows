@@ -440,11 +440,13 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   engine reported it — Codex's `thread/start` answer, or the `model` and
   `effort` fields Claude Code writes on each assistant transcript entry —
   and `null` when the engine reported none, never an echo of the request.
-  opencode reports no served identity, so its `resolved_model` is the
-  configured `provider_model` the worker was launched with.
+  At the agent level they describe the last target dispatched: a fallback
+  advance clears what the refused target reported, and each attempt keeps
+  its own. opencode reports no served identity, so its `resolved_model` is
+  the configured `provider_model` the worker was launched with.
 - `effort_resolution`: how the requested `effort` was resolved for the last
-  target dispatched (last write wins across attempts; each attempt carries
-  its own) — `{ requested, bound, served, dispatched }`, where `requested` is
+  target dispatched (each attempt carries its own) —
+  `{ requested, bound, served, dispatched }`, where `requested` is
   the canonical level asked for, `bound` is `{ rule, key, level }` naming
   the machine ceiling or floor that moved it (or `null`), `served` is
   `{ source, level }` naming where the model's served levels came from

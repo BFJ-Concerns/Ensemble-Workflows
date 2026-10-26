@@ -30,6 +30,18 @@ export function isCanonicalEffort(value: unknown): value is CanonicalEffort {
 export type ServedEffortLevels = Readonly<Partial<Record<CanonicalEffort, string>>>;
 
 /**
+ * An engine's own per-model effort report: the model it describes — the
+ * engine's default for an unpinned dispatch, so the resolution can take
+ * that model's keys — and its served levels in canonical terms, null where
+ * the engine lists the model but names no level the vocabulary can ask
+ * for.
+ */
+export interface ServedEffortReport {
+  model: string;
+  levels: ServedEffortLevels | null;
+}
+
+/**
  * One entry of the machine configuration's `effort` section, keyed by
  * target: `*` (every dispatch), `<engine>` (every model on that engine) or
  * `<engine>:<model>`. `ceiling` and `floor` bound the requested level —
@@ -69,6 +81,20 @@ export interface EffortResolution {
 }
 
 /**
+ * The `--effort` values the Claude CLI accepts, which are the canonical
+ * levels of the same name (Claude Code 2.1.283, its `--effort` help and the
+ * `effort` its transcripts report serving, 2026-09-27). The CLI silently
+ * runs an unknown value at its default (witnessed 2026-08-30), so this set
+ * is enforced twice: a machine `claude` map may name only these, and the
+ * Claude adapter refuses any other name pre-spawn.
+ */
+export const CLAUDE_CLI_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const satisfies readonly CanonicalEffort[];
+
+export function isClaudeCliEffort(value: string): value is (typeof CLAUDE_CLI_EFFORT_LEVELS)[number] {
+  return (CLAUDE_CLI_EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
+/**
  * The served levels Ensemble ships for well-known models, keyed as the
  * `effort` section is, so a common setup needs no effort configuration. A
  * machine map overrides a row; an engine's own per-model report outranks
@@ -77,13 +103,8 @@ export interface EffortResolution {
  *
  * Every row is a dated measurement, re-pointed when the engine moves:
  *
- * - `claude`: the Claude CLI serves `low | medium | high | xhigh | max`,
- *   a domain of the CLI rather than the model (Claude Code 2.1.283, its
- *   `--effort` help and the `effort` its transcripts report serving,
- *   2026-09-27). The CLI silently runs an unknown `--effort` value at its
- *   default (witnessed 2026-08-30), so this row is what keeps a
- *   non-native name off its command line: `none` and `minimal` clamp to
- *   `low`.
+ * - `claude`: `CLAUDE_CLI_EFFORT_LEVELS`, engine-wide — the CLI's domain,
+ *   not a model's — so `none` and `minimal` clamp to `low`.
  * - The Codex rows are `model/list`'s `supportedReasoningEfforts` as
  *   codex-cli 0.162.1 reported them on 2026-10-26. No listed model served
  *   `none` or `minimal`; `gpt-5.5` stopped at `xhigh`; several listed an
@@ -91,7 +112,7 @@ export interface EffortResolution {
  *   until the contract names it.
  */
 export const BUILT_IN_SERVED_LEVELS: EffortSettings = {
-  claude: { levels: { low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" } },
+  claude: { levels: Object.fromEntries(CLAUDE_CLI_EFFORT_LEVELS.map((level) => [level, level])) as ServedEffortLevels },
   "codex:gpt-6.1-sol": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
   "codex:gpt-6-astra": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
   "codex:gpt-6-sol": { levels: codexLevels("low", "medium", "high", "xhigh", "max") },
@@ -134,20 +155,34 @@ export function effortTargetKeys(engine: EngineName, model: string | undefined):
  * first source that knows the model: the machine's `effort` section, the
  * engine's own per-model report, the built-in table; a model in none of
  * them has its bounded level passed through for the engine to judge.
- * Pure: the engine's report is the caller's to fetch, so the function is
+ *
+ * The engine's report is fetched only where its answer can matter: for an
+ * unpinned target, to learn which model the dispatch runs on, so that
+ * model's keys bound and map it; for a pinned one, only when no machine map
+ * covers it. A machine map therefore resolves a pinned model without a
+ * round trip to the engine. The fetch is the caller's, so the function is
  * the same whichever adapter the target names.
  */
-export function resolveEffort(input: {
+export async function resolveEffort(input: {
   requested: CanonicalEffort;
   engine: EngineName;
   model: string | undefined;
   settings: EffortSettings;
-  engineReport: ServedEffortLevels | null;
+  engineReport: () => Promise<ServedEffortReport | null>;
   builtIn?: EffortSettings;
-}): EffortResolution {
-  const keys = effortTargetKeys(input.engine, input.model);
+}): Promise<EffortResolution> {
+  let keys = effortTargetKeys(input.engine, input.model);
+  let machine = machineLevelsFor(keys, input.settings);
+  let report: ServedEffortReport | null = null;
+  if (input.model === undefined || machine === undefined) {
+    report = await input.engineReport();
+    if (input.model === undefined && report !== null) {
+      keys = effortTargetKeys(input.engine, report.model);
+      machine = machineLevelsFor(keys, input.settings);
+    }
+  }
   const bounded = applyMachineBounds(input.requested, keys, input.settings);
-  const served = servedLevelsFor(keys, input.settings, input.engineReport, input.builtIn ?? BUILT_IN_SERVED_LEVELS);
+  const served = servedLevelsFor(keys, machine, report, input.builtIn ?? BUILT_IN_SERVED_LEVELS);
   if (served === null) {
     return { requested: input.requested, bound: bounded.bound, served: { source: "none", level: null }, dispatched: bounded.level };
   }
@@ -179,22 +214,24 @@ function applyMachineBounds(
   return { level: requested, bound: null };
 }
 
+/** The first `levels` map among the target's keys; `*` carries none, so it is skipped. */
+function machineLevelsFor(keys: readonly string[], settings: EffortSettings): ServedEffortLevels | undefined {
+  return keys.filter((key) => key !== "*").map((key) => settings[key]?.levels).find((levels) => levels !== undefined);
+}
+
 function servedLevelsFor(
   keys: readonly string[],
-  settings: EffortSettings,
-  engineReport: ServedEffortLevels | null,
+  machine: ServedEffortLevels | undefined,
+  report: ServedEffortReport | null,
   builtIn: EffortSettings
 ): { source: ServedLevelSource; levels: ServedEffortLevels } | null {
-  // `levels` never sits on `*`, so the wildcard key is skipped here.
-  const targetKeys = keys.filter((key) => key !== "*");
-  const machine = targetKeys.map((key) => settings[key]?.levels).find((levels) => levels !== undefined);
   if (machine !== undefined) {
     return { source: "machine", levels: machine };
   }
-  if (engineReport !== null && Object.keys(engineReport).length > 0) {
-    return { source: "engine", levels: engineReport };
+  if (report !== null && report.levels !== null) {
+    return { source: "engine", levels: report.levels };
   }
-  const shipped = targetKeys.map((key) => builtIn[key]?.levels).find((levels) => levels !== undefined);
+  const shipped = machineLevelsFor(keys, builtIn);
   return shipped === undefined ? null : { source: "built-in", levels: shipped };
 }
 
@@ -220,4 +257,94 @@ export function nearestServedLevel(level: CanonicalEffort, served: ServedEffortL
 
 function rank(level: CanonicalEffort): number {
   return CANONICAL_EFFORT_DOMAIN.indexOf(level);
+}
+
+const ENGINE_NAMES = ["codex", "claude", "opencode"] as const satisfies readonly EngineName[];
+const EFFORT_TARGET_FIELDS = new Set(["ceiling", "floor", "levels"]);
+
+/**
+ * Judges an `effort` section as `resolveEffort` will read it, whichever
+ * door it came through — the machine configuration file or a library
+ * caller's `effortSettings`: target keys are `*`, an engine, or
+ * `engine:model`; bounds are canonical levels with the floor no higher than
+ * the ceiling; `levels` is a non-empty map from canonical level to the
+ * engine's native name, on an engine or model key only (a native name is an
+ * engine's, so a `*` map could name nothing every engine accepts), and on
+ * `claude` only names the CLI accepts. opencode takes no key: its effort
+ * names a declared variant and is dispatched as given, unresolved. `fail`
+ * is called with the offending path, relative to the section, and the
+ * reason, and must throw.
+ */
+export function assertEffortSettings(
+  section: unknown,
+  fail: (path: string, message: string) => never
+): asserts section is EffortSettings {
+  if (!isObject(section) || Array.isArray(section)) {
+    fail("", "must be an object of target keys (\"*\", an engine, or engine:model) to settings");
+  }
+  for (const [key, settings] of Object.entries(section)) {
+    const engine = key === "*" ? null : key.includes(":") ? key.slice(0, key.indexOf(":")) : key;
+    const model = key.includes(":") ? key.slice(key.indexOf(":") + 1) : undefined;
+    if (engine !== null && !(ENGINE_NAMES as readonly string[]).includes(engine)) {
+      fail(key, `target keys are "*", an engine (${ENGINE_NAMES.join(" | ")}), or engine:model`);
+    }
+    if (engine === "opencode") {
+      fail(key, "opencode dispatches are not resolved: their effort names a declared variant and is sent as given");
+    }
+    if (model !== undefined && model.trim().length === 0) {
+      fail(key, "an engine:model key must name its model");
+    }
+    if (!isObject(settings) || Array.isArray(settings)) {
+      fail(key, "must be an object");
+    }
+    for (const field of Object.keys(settings)) {
+      if (!EFFORT_TARGET_FIELDS.has(field)) {
+        fail(`${key}.${field}`, `unknown field; the fields are ${[...EFFORT_TARGET_FIELDS].join(", ")}`);
+      }
+    }
+    const { ceiling, floor, levels } = settings;
+    for (const [field, value] of [["ceiling", ceiling], ["floor", floor]] as const) {
+      if (value !== undefined && !isCanonicalEffort(value)) {
+        fail(`${key}.${field}`, `must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+      }
+    }
+    if (isCanonicalEffort(ceiling) && isCanonicalEffort(floor) && rank(floor) > rank(ceiling)) {
+      fail(key, `floor ${floor} is above ceiling ${ceiling}`);
+    }
+    if (levels !== undefined) {
+      assertServedLevels(levels, engine, `${key}.levels`, fail);
+    }
+  }
+}
+
+function assertServedLevels(
+  levels: unknown,
+  engine: string | null,
+  path: string,
+  fail: (path: string, message: string) => never
+): asserts levels is ServedEffortLevels {
+  if (engine === null) {
+    fail(path, "served levels belong to an engine or engine:model key, not \"*\"");
+  }
+  if (!isObject(levels) || Array.isArray(levels) || Object.keys(levels).length === 0) {
+    fail(path, "must be a non-empty object of canonical levels to the engine's native names");
+  }
+  for (const [level, native] of Object.entries(levels)) {
+    if (!isCanonicalEffort(level)) {
+      fail(`${path}.${level}`, `levels are keyed by canonical level: ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    }
+    if (typeof native !== "string" || native.trim().length === 0) {
+      fail(`${path}.${level}`, "must be the non-empty native name the engine is dispatched with");
+    }
+    if (engine === "claude" && !isClaudeCliEffort(native)) {
+      fail(
+        `${path}.${level}`,
+        `the Claude CLI runs an unknown --effort at its default, so a claude map names only ${CLAUDE_CLI_EFFORT_LEVELS.join(" | ")}`
+      );
+    }
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

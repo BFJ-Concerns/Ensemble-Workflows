@@ -15,14 +15,16 @@ import {
   AppServerExitedError,
   AppServerFirstOutputTimeoutError,
   AppServerOverloadedError,
+  AppServerRequestError,
   AppServerStartupTimeoutError,
   AppServerSystemError,
   BudgetExceededError,
+  CapabilityStripUnsupportedError,
   ClaudeDispatchError,
   CodexSchemaSubsetUnsupportedError,
   CodexSubstrateRefusedError,
+  EffortSettingsRejectedError,
   EngineShutdownError,
-  CapabilityStripUnsupportedError,
   FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
   InvalidAgentSchemaError,
@@ -81,6 +83,15 @@ class FakeTransport implements RuntimeTransport {
     this.listModels = async () => {
       this.modelListings += 1;
       return this.#models ?? [];
+    };
+    return this;
+  }
+
+  /** A listing the server cannot give: every request fails with the error. */
+  withFailingModelListing(error: Error): this {
+    this.listModels = async () => {
+      this.modelListings += 1;
+      throw error;
     };
     return this;
   }
@@ -647,23 +658,140 @@ test("a level the Codex model does not serve clamps to the engine's own report, 
 });
 
 test("a machine ceiling moves a dispatch down before the model's clamp, and a chain entry takes its own target's", async () => {
-  const transport = new FakeTransport([turn("ok")]);
+  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded")]);
+  const claude = new ChainEngine("claude", [answers("from claude")]);
   const runtime = new EnsembleRuntime({
-    transport,
-    concurrencyCaps: { codex: 1 },
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
     defaultMaxAttempts: 1,
     effortSettings: { "*": { ceiling: "high" }, "codex:gpt-6-luna": { ceiling: "medium" } }
   });
   const records = recordedAgents(runtime);
 
-  await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", effort: "max" });
+  // The model key bounds the call's own target; the chain entry, on another
+  // engine, is judged afresh under the wildcard: each attempt's record
+  // carries its own resolution, and the agent's is the answering target's.
+  assert.equal(
+    await runtime.agent("go", {
+      engine: "codex",
+      model: "gpt-6-luna",
+      effort: "max",
+      fallback: [{ engine: "claude", model: "opus", effort: "max" }]
+    }),
+    "from claude"
+  );
+  assert.equal(codex.dispatches[0]?.effort, "medium");
+  assert.equal(claude.dispatches[0]?.effort, "high");
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => attempt.effortResolution),
+    [
+      {
+        requested: "max",
+        bound: { rule: "ceiling", key: "codex:gpt-6-luna", level: "medium" },
+        served: { source: "built-in", level: "medium" },
+        dispatched: "medium"
+      },
+      {
+        requested: "max",
+        bound: { rule: "ceiling", key: "*", level: "high" },
+        served: { source: "built-in", level: "high" },
+        dispatched: "high"
+      }
+    ]
+  );
+  assert.deepEqual(settled.effortResolution, settled.attempts[1]?.effortResolution);
+  await runtime.close();
+});
+
+test("a chain advance clears the refused target's served effort from the agent header", async () => {
+  // Claude's refusal arrives with the effort its transcript reported; the
+  // answering Codex target reports none. The header pairs the answering
+  // target's resolution with its own served effort — none — never with the
+  // refused target's; the refused attempt keeps its own on its record.
+  const claude = new ChainEngine("claude", [async () => ({ ...(await claudeRefusal(429, "rate_limit")()), resolvedEffort: "high" })]);
+  const codex = new ChainEngine("codex", [answers("from codex")]);
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([claude, codex]), cwd: "/fake/repo", defaultMaxAttempts: 1 });
+  const records = recordedAgents(runtime);
+
+  assert.equal(
+    await runtime.agent("go", { engine: "claude", model: "opus", effort: "high", fallback: [{ engine: "codex", model: "gpt-6-luna" }] }),
+    "from codex"
+  );
+  const settled = records.at(-1)!;
+  assert.equal(settled.answeredBy?.engine, "codex");
+  assert.equal(settled.attempts[0]?.resolvedEffort, "high");
+  assert.equal(settled.attempts[1]?.resolvedEffort, null);
+  assert.equal(settled.resolvedEffort, null);
+  // The chain entry inherited the call's `high` and resolved it for its
+  // own target; that resolution, not Claude's, is the header's.
+  assert.deepEqual(settled.effortResolution, settled.attempts[1]?.effortResolution);
+  assert.deepEqual(settled.effortResolution?.served, { source: "built-in", level: "high" });
+  await runtime.close();
+});
+
+test("a machine map resolves a pinned model without asking the engine for its listing", async () => {
+  const transport = new FakeTransport([turn("ok")], [], [
+    { model: "gpt-6-luna", isDefault: true, supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] }
+  ]).withModelListing();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    effortSettings: { "codex:gpt-6-luna": { levels: { none: "none", low: "low" } } }
+  });
+  const records = recordedAgents(runtime);
+
+  // The map names `none`, which the listing would not: the map wins, and
+  // the listing is not fetched to be outranked.
+  assert.equal(await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", effort: "none" }), "ok");
+  assert.equal(transport.openedThreads[0]?.effort, "none");
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution?.served, { source: "machine", level: "none" });
+  assert.equal(transport.modelListings, 0);
+});
+
+test("a model listing the server cannot give is no report: the dispatch resolves against the table and runs", async () => {
+  const transport = new FakeTransport([turn("ok"), turn("ok again")]).withFailingModelListing(
+    new AppServerRequestError("model/list", { code: "methodNotFound", message: "no such method" })
+  );
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const records = recordedAgents(runtime);
+
+  assert.equal(await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", effort: "minimal" }), "ok");
+  assert.equal(transport.openedThreads[0]?.effort, "low");
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution?.served, { source: "built-in", level: "low" });
+  // The failure is not cached: the next dispatch asks again.
+  assert.equal(await runtime.agent("again", { engine: "codex", model: "gpt-6-luna", effort: "minimal" }), "ok again");
+  assert.equal(transport.modelListings, 2);
+});
+
+test("an unpinned dispatch is bound by the key of the model the listing names as the default", async () => {
+  const transport = new FakeTransport([turn("ok")], [], [
+    { model: "gpt-6-luna", isDefault: true, supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] }
+  ]).withModelListing();
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    effortSettings: { "codex:gpt-6-luna": { ceiling: "medium" } }
+  });
+  const records = recordedAgents(runtime);
+
+  assert.equal(await runtime.agent("go", { engine: "codex", effort: "max" }), "ok");
   assert.equal(transport.openedThreads[0]?.effort, "medium");
   assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution, {
     requested: "max",
     bound: { rule: "ceiling", key: "codex:gpt-6-luna", level: "medium" },
-    served: { source: "built-in", level: "medium" },
+    served: { source: "engine", level: "medium" },
     dispatched: "medium"
   });
+});
+
+test("effort settings a library caller hands the runtime are judged at construction", () => {
+  assert.throws(
+    () => new EnsembleRuntime({ transport: new FakeTransport([]), concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1, effortSettings: { claude: { levels: { high: "bogus" } } } }),
+    (error: Error) => error instanceof EffortSettingsRejectedError && /^effortSettings\.claude\.levels\.high: /.test(error.message)
+  );
 });
 
 test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {

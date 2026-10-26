@@ -78,8 +78,8 @@ version 1:
   },
   "effort": {
     "*": { "ceiling": "xhigh" },
-    "codex:gpt-6-luna": { "floor": "low" },
-    "opencode:glm-5.2": { "levels": { "low": "fast", "high": "deep" } }
+    "claude": { "floor": "low" },
+    "codex:gpt-6-luna": { "levels": { "none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" } }
   }
 }
 ```
@@ -180,9 +180,14 @@ serves, per target. Like `worker_environment`, it exists only in the file: a
 limit a script, flag or variable could lift would protect nothing. Ensemble
 ships no bounds.
 
-Each key names a target: `"*"` for every dispatch, an engine name for every
-model on that engine, or `engine:model` for one model. A dispatch is judged
-by the most specific key that applies to it.
+Each key names a target: `"*"` for every dispatch, an engine name (`codex`
+or `claude`) for every model on that engine, or `engine:model` for one
+model. A dispatch is judged by the most specific key that applies to it. A
+dispatch that pins no model is judged by the model the engine reports as its
+default (Codex's model listing), so that model's key applies to it; where the
+engine reports none, only the engine and `"*"` keys do. opencode takes no
+key: its `effort` names one of the model's declared `variants` and is sent
+as given, so a key for it is refused.
 
 | Field | Description |
 |---|---|
@@ -197,12 +202,16 @@ ceiling. The most specific key carrying either bound supplies both, so a
 combining with it.
 
 `levels` declares a model's served levels for a model Ensemble's built-in
-table does not know, such as a self-hosted route, or to correct a table entry
-before a release catches up. A requested level the map does not name is
-moved to the nearest level it does. A map wins over the engine's own report
-and the built-in table; see [`effort` in the script
-reference](workflow-scripts.md#effort) for how a dispatch's level is
-resolved and recorded.
+table does not know, or to correct a table entry or the engine's own report
+before a release catches up — a Codex model the listing says serves no
+`none`, for instance, where the provider accepts it. A requested level the
+map does not name is moved to the nearest level it does. A map wins over the
+engine's own report and the built-in table, and a pinned model the map
+covers is not looked up with the engine at all. A `claude` map names only
+the levels the CLI accepts (`low`, `medium`, `high`, `xhigh`, `max`),
+because the CLI runs an unknown `--effort` at its default rather than
+refusing it. See [`effort` in the script reference](workflow-scripts.md#effort)
+for how a dispatch's level is resolved and recorded.
 
 ## Environment variables
 

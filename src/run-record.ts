@@ -234,9 +234,9 @@ export interface RuntimeAgentRecord {
    */
   answeredBy: { entry: number; engine: EngineName; model: string | null } | null;
   resolvedModel: string | null;
-  /** The served effort, last write wins across attempts; see the attempt field. */
+  /** The last target's served effort as its attempts reported it, null where they reported none; see the attempt field. */
   resolvedEffort: string | null;
-  /** The last target's effort resolution, last write wins across attempts; see the attempt field. */
+  /** The last target's effort resolution; see the attempt field. */
   effortResolution: EffortResolution | null;
   resolvedCwd: string;
   isolation: "worktree" | null;

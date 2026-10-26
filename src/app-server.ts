@@ -381,6 +381,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
    */
   async listModels(): Promise<readonly CodexModelListing[]> {
     const listed: CodexModelListing[] = [];
+    const cursors = new Set<string>();
     let cursor: string | null = null;
     do {
       const result = asJsonObject(await this.#request("model/list", { includeHidden: true, ...(cursor !== null ? { cursor } : {}) }));
@@ -411,6 +412,17 @@ export class CodexAppServerTransport implements RuntimeTransport {
       }
       const next = result?.nextCursor;
       cursor = typeof next === "string" && next.length > 0 ? next : null;
+      // A server that hands back a cursor it already answered would page
+      // forever; the per-request timeout bounds each page, not the loop.
+      if (cursor !== null && cursors.has(cursor)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: `pagination repeated the cursor ${JSON.stringify(cursor)}`
+        });
+      }
+      if (cursor !== null) {
+        cursors.add(cursor);
+      }
     } while (cursor !== null);
     return listed;
   }

@@ -5,7 +5,7 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
-import { resolveEffort } from "./effort-resolution.js";
+import { assertEffortSettings, resolveEffort } from "./effort-resolution.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import type { CanonicalEffort, EffortResolution, EffortSettings } from "./effort-resolution.js";
@@ -17,26 +17,27 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import {
-  AppServerExitedError,
   AgentPromptRejectedError,
+  appServerDiagnosticOf,
+  AppServerExitedError,
+  attachAgentIdentity,
+  CodexSchemaSubsetUnsupportedError,
+  describeError,
+  EffortSettingsRejectedError,
   EngineShutdownError,
+  failedTurnResultOf,
   FallbackTargetRejectedError,
+  firstDeltaMsOf,
   HoldRejectedError,
   MissingEngineError,
   MultiTurnUnsupportedError,
-  CodexSchemaSubsetUnsupportedError,
+  partialTranscriptOf,
+  partialWorkerTextOf,
   PreSpawnAuthorError,
   SessionBusyError,
   SessionClosedError,
-  TallyRejectedError,
-  appServerDiagnosticOf,
-  attachAgentIdentity,
-  describeError,
-  failedTurnResultOf,
-  firstDeltaMsOf,
-  partialWorkerTextOf,
-  partialTranscriptOf,
   SubstrateRefusedError,
+  TallyRejectedError,
   TurnTimeoutError,
   UnknownEngineError,
   workerExitStatusOf
@@ -535,6 +536,14 @@ export class EnsembleRuntime {
       assertValidStripOption(options.strip);
     }
     this.#strip = options.strip ?? [];
+    if (options.effortSettings !== undefined) {
+      // Judged at construction as the config file's section is at its
+      // read: a map that names a level the engine would silently default
+      // on fails here, before any dispatch pays for it.
+      assertEffortSettings(options.effortSettings, (path, detail) => {
+        throw new EffortSettingsRejectedError(`effortSettings${path === "" ? "" : `.${path}`}: ${detail}`);
+      });
+    }
     this.#effortSettings = options.effortSettings ?? {};
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
@@ -1946,6 +1955,13 @@ export class EnsembleRuntime {
     agentRecord.resolvedCwd = placement.cwd;
     agentRecord.isolation = options.isolation ?? null;
     this.#recordStripRoutesFor(agentRecord, engine, options.strip);
+    // The agent-level served identity and resolution are the last target's:
+    // a chain advance clears what the refused target reported and resolved,
+    // so the header never pairs one target's served effort with another's
+    // resolution. Each attempt keeps its own on its record.
+    agentRecord.resolvedModel = null;
+    agentRecord.resolvedEffort = null;
+    agentRecord.effortResolution = null;
     let invocation: EngineInvocation | undefined;
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
@@ -2526,10 +2542,11 @@ export class EnsembleRuntime {
    * Resolves the target's canonical effort to the name its engine is
    * dispatched with (`resolveEffort`): the machine's bounds, then the clamp
    * to the nearest level the model serves, the served levels from the
-   * machine map, else the engine's own report, else the built-in table.
-   * Judged per target, so a chain entry or a remapped call takes its own
-   * target's; written onto the target so every attempt record carries it,
-   * and onto the agent record last-write-wins as `resolvedEffort` is.
+   * machine map, else the engine's own report (asked for only where the
+   * map has not answered, or to learn an unpinned dispatch's model), else
+   * the built-in table. Judged per target, so a chain entry or a remapped
+   * call takes its own target's; written onto the target so every attempt
+   * record carries it, and onto the agent record as the last target's.
    * opencode is exempt — its effort names a registry variant, judged by
    * its adapter — and a target with no effort has nothing to resolve.
    */
@@ -2541,15 +2558,14 @@ export class EnsembleRuntime {
     if (target.effort === undefined || engine.name === "opencode") {
       return target.effort;
     }
-    const engineReport = engine.servedEffortLevels === undefined ? null : await engine.servedEffortLevels(target.model);
-    target.resolution = resolveEffort({
+    target.resolution = await resolveEffort({
       // Validated pre-spawn: anything outside the canonical set was refused
       // before the call was admitted.
       requested: target.effort as CanonicalEffort,
       engine: engine.name,
       model: target.model,
       settings: this.#effortSettings,
-      engineReport
+      engineReport: () => (engine.servedEffortReport === undefined ? Promise.resolve(null) : engine.servedEffortReport(target.model))
     });
     agentRecord.effortResolution = target.resolution;
     return target.resolution.dispatched;

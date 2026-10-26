@@ -367,6 +367,19 @@ test("Claude dispatches the effort it is handed and reports the level its transc
   );
 });
 
+test("Claude refuses a native effort its CLI would silently run at the default", async () => {
+  await withControlPlane([], async (controlPlane) => {
+    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
+    // The runtime's resolution and the machine map's validation keep such a
+    // name away; a direct caller of the adapter meets this guard instead of
+    // a worker quietly running at the default.
+    assert.throws(() => adapter.createInvocation("work", { effort: "minimal" }), /low \| medium \| high \| xhigh \| max/);
+    assert.throws(() => adapter.createSession({ effort: "bogus" }), /runs an unknown value at its default/);
+    assert.equal(controlPlane.dispatched.length, 0);
+    await adapter.close();
+  });
+});
+
 test("Claude adapter close stops an active session and winds down its poll loop", async () => {
   await withControlPlane([{ busyPolls: Number.MAX_SAFE_INTEGER, assistant: { text: "partial from Claude", stop: "tool_use" } }], async (controlPlane) => {
     // A long poll interval: without the abortable delay, close() would sit

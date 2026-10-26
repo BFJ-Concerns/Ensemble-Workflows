@@ -1204,7 +1204,7 @@ test("Codex app-server missing binary rejects start instead of crashing", async 
 });
 
 test("Codex app-server gives every reused-thread turn a fresh transcript buffer", async () => {
-  const codexBin = await fakeCodexTurnServer();
+  const codexBin = await fakeCodexTurnServer({ confirmedEffort: "xhigh" });
   const transport = await CodexAppServerTransport.start({
     cwd: process.cwd(),
     codexBin,
@@ -1253,13 +1253,14 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
     assert.doesNotMatch(results[1]?.transcripts?.[0]?.content ?? "", /first turn/);
 
     // A pinned effort rides thread/start as a config overlay, and the served
-    // value is the server's confirmation in that answer — the discriminating
-    // case is a thread whose default (medium) differs from the pin.
+    // value is the server's confirmation in that answer. The fake confirms a
+    // level other than the pin, so the record can only have read the
+    // answer: an echo of the request would say `high`.
     const pinnedThread = await transport.openThread({ effort: "high" });
     const pinned = await transport.runTurn(pinnedThread, "pinned effort", {});
-    assert.equal(pinned.resolvedEffort, "high");
+    assert.equal(pinned.resolvedEffort, "xhigh");
     assert.match(pinned.transcripts?.[0]?.content ?? "", /"model_reasoning_effort":"high"/);
-    assert.match(pinned.transcripts?.[0]?.content ?? "", /"reasoningEffort":"high"/);
+    assert.match(pinned.transcripts?.[0]?.content ?? "", /"reasoningEffort":"xhigh"/);
   } finally {
     await transport.close();
   }
@@ -1641,6 +1642,8 @@ async function fakeCodexTurnServer(
     capturePath?: string;
     envCapturePath?: string;
     servedModel?: string | null;
+    /** What a pinned thread's start confirms as its reasoning effort; unset echoes the pin, as the live server does. */
+    confirmedEffort?: string;
     skillResponses?: string[][];
     skillErrors?: boolean;
     /** The pages `model/list` answers with, in order; one empty page by default. */
@@ -1664,6 +1667,7 @@ const returnPromptBase64 = ${JSON.stringify(options.returnPromptBase64 ?? false)
 const capturePath = ${JSON.stringify(options.capturePath ?? null)};
 const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
+const confirmedEffort = ${JSON.stringify(options.confirmedEffort ?? null)};
 const skillResponses = ${JSON.stringify(options.skillResponses ?? [[]])};
 const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
 const modelListingPages = ${JSON.stringify(options.modelListingPages ?? [[]])};
@@ -1692,7 +1696,9 @@ reader.on("line", (line) => {
         ...(servedModel === null ? {} : { model: servedModel }),
         // Like the live server: a thread-start config overlay's
         // model_reasoning_effort is confirmed back; otherwise the default.
-        reasoningEffort: (message.params.config && message.params.config.model_reasoning_effort) || "medium"
+        reasoningEffort: (message.params.config && message.params.config.model_reasoning_effort)
+          ? (confirmedEffort || message.params.config.model_reasoning_effort)
+          : "medium"
       }
     });
     return;

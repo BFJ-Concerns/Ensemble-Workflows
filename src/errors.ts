@@ -28,6 +28,9 @@ export class AgentOptionRejectedError extends PreSpawnAuthorError {}
 /** An agent prompt that cannot be meaningfully sent to a worker. */
 export class AgentPromptRejectedError extends PreSpawnAuthorError {}
 
+/** A library caller's `effortSettings` that the resolver cannot read; the message names the path. */
+export class EffortSettingsRejectedError extends PreSpawnAuthorError {}
+
 /**
  * A per-call working directory that cannot be used for worker placement.
  * This is pre-spawn: accepting it would let the engine substitute an

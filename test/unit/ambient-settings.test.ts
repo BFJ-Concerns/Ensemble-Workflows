@@ -408,7 +408,7 @@ test("the effort section is read as the resolution reads it", async () => {
     effort: {
       "*": { ceiling: "xhigh" },
       "codex:gpt-6-luna": { floor: "low", ceiling: "high" },
-      opencode: { levels: { low: "fast", high: "deep" } }
+      claude: { levels: { low: "low", max: "max" } }
     }
   });
   try {
@@ -416,7 +416,7 @@ test("the effort section is read as the resolution reads it", async () => {
     assert.deepEqual(settings.effort, {
       "*": { ceiling: "xhigh" },
       "codex:gpt-6-luna": { floor: "low", ceiling: "high" },
-      opencode: { levels: { low: "fast", high: "deep" } }
+      claude: { levels: { low: "low", max: "max" } }
     });
   } finally {
     await fixture.cleanup();
@@ -434,19 +434,25 @@ test("an absent effort section sets no bounds and no served-level maps", async (
 
 test("the effort section fails loud on malformed targets, bounds and maps", async () => {
   const cases: Array<{ effort: unknown; pattern: RegExp }> = [
-    { effort: [], pattern: /effort .*JSON object of target keys/ },
+    { effort: [], pattern: /effort .*object of target keys/ },
     { effort: { gemini: {} }, pattern: /effort\.gemini .*target keys are "\*", an engine/ },
     { effort: { "codex:": {} }, pattern: /effort\.codex: .*must name its model/ },
-    { effort: { codex: "high" }, pattern: /effort\.codex .*must be a JSON object/ },
-    { effort: { codex: { cap: "high" } }, pattern: /Unknown machine configuration key effort\.codex\.cap/ },
+    { effort: { codex: "high" }, pattern: /effort\.codex .*must be an object/ },
+    { effort: { codex: { cap: "high" } }, pattern: /effort\.codex\.cap .*unknown field/ },
     { effort: { codex: { ceiling: "extreme" } }, pattern: /effort\.codex\.ceiling .*none \| minimal \| low \| medium \| high \| xhigh \| max/ },
     { effort: { "*": { floor: 2 } }, pattern: /effort\.\*\.floor .*none \| minimal/ },
     { effort: { "*": { floor: "high", ceiling: "low" } }, pattern: /effort\.\* .*floor high is above ceiling low/ },
     { effort: { "*": { levels: { low: "low" } } }, pattern: /effort\.\*\.levels .*not "\*"/ },
-    { effort: { claude: { levels: {} } }, pattern: /effort\.claude\.levels .*non-empty JSON object/ },
-    { effort: { claude: { levels: ["low"] } }, pattern: /effort\.claude\.levels .*non-empty JSON object/ },
+    { effort: { claude: { levels: {} } }, pattern: /effort\.claude\.levels .*non-empty object/ },
+    { effort: { claude: { levels: ["low"] } }, pattern: /effort\.claude\.levels .*non-empty object/ },
     { effort: { claude: { levels: { ultra: "ultra" } } }, pattern: /effort\.claude\.levels\.ultra .*keyed by canonical level/ },
-    { effort: { "claude:opus": { levels: { low: "" } } }, pattern: /effort\.claude:opus\.levels\.low .*non-empty native name/ }
+    { effort: { "claude:opus": { levels: { low: "" } } }, pattern: /effort\.claude:opus\.levels\.low .*non-empty native name/ },
+    // The Claude CLI runs an unknown --effort at its default, so a map may
+    // not send it one; opencode is dispatched as given, so a key for it
+    // would configure nothing.
+    { effort: { claude: { levels: { high: "bogus" } } }, pattern: /effort\.claude\.levels\.high .*Claude CLI runs an unknown --effort at its default/ },
+    { effort: { opencode: { ceiling: "high" } }, pattern: /effort\.opencode .*opencode dispatches are not resolved/ },
+    { effort: { "opencode:glm": { levels: { low: "fast" } } }, pattern: /effort\.opencode:glm .*opencode dispatches are not resolved/ }
   ];
 
   for (const entry of cases) {

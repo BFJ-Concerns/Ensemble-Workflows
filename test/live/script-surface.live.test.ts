@@ -72,8 +72,7 @@ test("live CLI runs a fan-out then compiler workflow and splits stdout from stde
     `
   );
 
-  const cliPath = path.resolve("dist/src/cli/ensemble.js");
-  const result = await runNode([cliPath, script]);
+  const result = await runNode([bundledCliPath, script]);
 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stderr, /\[phase\] draft/);
@@ -245,8 +244,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
       `
     );
 
-    const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script], {
+    const result = await runNode([bundledCliPath, script], {
       env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
     });
 
@@ -278,7 +276,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
 test("live CLI accepts prose-wrapped schema output from a real Claude worker", { skip: !isLive, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-tolerant-parse-"));
   const script = path.join(directory, "workflow.js");
-  const recordStore = path.join(directory, "records");
+  const maxProseRuns = 3;
 
   try {
     await writeFile(
@@ -314,31 +312,38 @@ test("live CLI accepts prose-wrapped schema output from a real Claude worker", {
       `
     );
 
-    const cliPath = path.resolve("dist/src/cli/ensemble.js");
-    const result = await runNode([cliPath, script], {
-      env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
-    });
+    // Whether Claude wraps its object in prose is the model's choice, so the
+    // run is repeated until a reply arrives wrapped; only then is the claim
+    // exercised. For a wrapped reply the product decides the rest: the run
+    // succeeds, the archive records the object-fallback parse route, and the
+    // validated value stdout returns is the object inside the raw reply.
+    for (let run = 1; run <= maxProseRuns; run += 1) {
+      const recordStore = path.join(directory, `records-${run}`);
+      const result = await runNode([bundledCliPath, script], {
+        env: { ...process.env, ENSEMBLE_RUN_RECORD_DIR: recordStore }
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stderr, /\[phase\] prose-wrapped-claude/);
 
-    // The product determines that the object inside Claude's raw reply is the
-    // validated value stdout returns. Whether Claude wrapped it in prose this
-    // time is the model's choice, so a bare reply is reported, not failed.
-    assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stderr, /\[phase\] prose-wrapped-claude/);
-    const returned: unknown = JSON.parse(result.stdout);
+      const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
+      const rawOutput = agent.raw_output ?? "";
+      const objectStart = rawOutput.indexOf("{");
+      if (objectStart >= 0 && rawOutput.slice(0, objectStart).trim().length === 0) {
+        t.diagnostic(`run ${run}: Claude replied without prose before its object, so the run is repeated`);
+        continue;
+      }
 
-    const { agent } = await recordedAgent(recordStore, "prose-wrapped-claude");
-    assert.equal(agent.attempts.length, 1);
-    assert.equal(agent.attempts[0]?.status, "complete");
-    assert.deepEqual(agent.validated_output, returned);
-    assert.equal(typeof agent.raw_output, "string", "the archive did not keep Claude's raw reply");
-    const rawOutput = agent.raw_output ?? "";
-    const objectStart = rawOutput.indexOf("{");
-    const objectEnd = rawOutput.lastIndexOf("}") + 1;
-    assert.ok(objectStart >= 0 && objectEnd > objectStart, `the archived raw reply holds no JSON object: ${rawOutput}`);
-    assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned);
-    if (rawOutput.slice(0, objectStart).trim().length === 0) {
-      t.diagnostic("Claude replied with bare JSON this run, so the prose-tolerant parse was not exercised");
+      const returned: unknown = JSON.parse(result.stdout);
+      assert.equal(agent.attempts.length, 1);
+      assert.equal(agent.attempts[0]?.status, "complete", `the prose-wrapped reply was not accepted: ${rawOutput}`);
+      assert.equal(agent.parse_route, "object-fallback");
+      assert.deepEqual(agent.validated_output, returned);
+      const objectEnd = rawOutput.lastIndexOf("}") + 1;
+      assert.ok(objectStart >= 0 && objectEnd > objectStart, `the archived raw reply holds no JSON object: ${rawOutput}`);
+      assert.deepEqual(JSON.parse(rawOutput.slice(objectStart, objectEnd)), returned);
+      return;
     }
+    t.skip(`Claude replied without prose in all ${maxProseRuns} runs, so the prose-tolerant parse was not exercised`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -609,6 +614,7 @@ interface RecordedAgent {
   engine: string;
   status: string;
   prompt: string;
+  parse_route: string | null;
   resolved_cwd: string;
   isolation: "worktree" | null;
   worktree: {

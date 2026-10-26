@@ -20285,6 +20285,19 @@ var OpenCodeEngineInvocation = class {
         { exitCode: run.exitCode, signal: run.signal }
       );
     }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(
+          new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs: this.#options.timeoutMs,
+            threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+          }),
+          fallback
+        ),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
+    }
     let exportData = null;
     let exportDiagnostic;
     if (parsedRun.sessionId === null) {
@@ -20472,6 +20485,7 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let deadlineExpired = false;
     let killEscalation;
     const terminate = () => {
       if (settled || killEscalation !== void 0) {
@@ -20483,7 +20497,12 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       }, killGraceMs);
       killEscalation.unref();
     };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
+      if (!settled) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
     if (abortSignal?.aborted === true) {
       terminate();
     } else {
@@ -20530,7 +20549,8 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });

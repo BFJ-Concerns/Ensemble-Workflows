@@ -216,6 +216,46 @@ test("a worker killed by signal leaves its exit evidence in the attempt record",
   }
 });
 
+test("an opencode subprocess stopped by its turn deadline records a timeout", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-deadline-"));
+  const bin = path.join(directory, "opencode");
+  const records: RuntimeAgentRecord[] = [];
+  await writeFile(bin, "#!/bin/sh\nexec sleep 2\n");
+  await chmod(bin, 0o755);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([
+      new OpenCodeEngineAdapter({
+        cwd: directory,
+        runner: new OpenCodeCliRunner(bin, { killGraceMs: 20 }),
+        modelRegistry: testOpenCodeModelRegistry
+      })
+    ]),
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({
+    recordAgent: async (record: RuntimeAgentRecord) => records.push(structuredClone(record))
+  } as unknown as RunRecordWriter);
+
+  try {
+    assert.equal(await runtime.agent("outlast the deadline", {
+      engine: "opencode",
+      model: "glm-5.2",
+      timeoutMs: 50,
+      maxAttempts: 1
+    }), null);
+    const record = records.at(-1);
+    assert.equal(record?.status, "timed-out");
+    assert.equal(record.terminationCause?.kind, "turn-timeout");
+    assert.match(record.terminationCause.message, /50ms/);
+    assert.equal(record.attempts[0]?.failure?.kind, "TurnTimeoutError");
+    assert.match(record.attempts[0]?.failure?.message ?? "", /50ms/);
+    assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: null, signal: "SIGTERM" });
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("an opencode run failure consumes an attempt and the retry redispatches with the failure", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-opencode-retry-cwd-"));
   // First dispatch dies operationally; the second succeeds. The documented

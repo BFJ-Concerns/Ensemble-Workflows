@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
-import { EngineShutdownError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
+import { EngineShutdownError, TurnTimeoutError, attachPartialWorkerText, attachWorkerExitStatus } from "./errors.js";
 import { subtractUsage } from "./usage-summary.js";
 
 import type {
@@ -48,6 +48,8 @@ export interface OpenCodeRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  /** The runner's own per-turn timer fired before the subprocess settled. */
+  deadlineExpired?: boolean;
 }
 
 export interface OpenCodeEngineInvocationOptions {
@@ -232,6 +234,19 @@ export class OpenCodeEngineInvocation implements EngineInvocation {
       // to learn what its killed run had said.
       throw attachWorkerExitStatus(
         attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
+        { exitCode: run.exitCode, signal: run.signal }
+      );
+    }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== undefined) {
+      throw attachWorkerExitStatus(
+        attachPartialWorkerText(
+          new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
+            kind: "turn",
+            timeoutMs: this.#options.timeoutMs,
+            threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+          }),
+          fallback
+        ),
         { exitCode: run.exitCode, signal: run.signal }
       );
     }
@@ -470,6 +485,7 @@ function runProcess(
     const stdout: string[] = [];
     const stderr: string[] = [];
     let settled = false;
+    let deadlineExpired = false;
     let killEscalation: NodeJS.Timeout | undefined;
     // Shared by the deadline and the abort signal: SIGTERM first, and a
     // worker that ignores it is SIGKILLed after the grace period.
@@ -484,7 +500,12 @@ function runProcess(
       killEscalation.unref();
     };
     // No timeoutMs → the subprocess is not killed on a deadline; it runs to completion.
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
+      if (!settled) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
 
     if (abortSignal?.aborted === true) {
       terminate();
@@ -536,7 +557,8 @@ function runProcess(
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });

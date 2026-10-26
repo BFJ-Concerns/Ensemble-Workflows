@@ -14606,7 +14606,7 @@ function isStatusFileName(name) {
   return name.startsWith(STATUS_FILE_PREFIX) && name.endsWith(STATUS_FILE_SUFFIX) && name.length > STATUS_FILE_PREFIX.length + STATUS_FILE_SUFFIX.length;
 }
 var DEFAULT_HEARTBEAT_MS = 1e4;
-var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
+var STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
 async function snapshotOwnerGone(owner, procDir = "/proc", host = hostname()) {
   if (owner === void 0 || typeof owner.pid !== "number" || owner.host !== host) {
     return false;
@@ -14636,6 +14636,7 @@ var StatusFileWriter = class {
   #tmpSeq = 0;
   #heartbeat;
   #initialSweep;
+  #initialPublication;
   #ownerEvidence;
   #procDir;
   constructor(options) {
@@ -14655,10 +14656,15 @@ var StatusFileWriter = class {
     this.#heartbeat = setInterval(() => this.#progress.markChanged(), options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.#heartbeat.unref();
     this.#request();
+    this.#initialPublication = this.#writing ?? Promise.resolve();
   }
   /** The path this run publishes to. */
   get path() {
     return this.#target;
+  }
+  /** Waits until the first publication has settled, including a reported write failure. */
+  async ready() {
+    await this.#initialPublication;
   }
   /** Flushes any in-flight write, removes this run's file, and stops listening. */
   async close() {
@@ -14704,8 +14710,9 @@ var StatusFileWriter = class {
   }
   async #writeAtomic(snapshot) {
     await this.#initialSweep;
-    const tmp = `${this.#target}.${process.pid}.${this.#tmpSeq += 1}.tmp`;
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    const owner = await this.#ownerEvidence;
+    const tmp = `${this.#target}.${process.pid}.${owner.start_ticks ?? "unknown"}.${this.#tmpSeq += 1}.tmp`;
+    const published = { ...snapshot, owner };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}
 `, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
@@ -14714,7 +14721,7 @@ var StatusFileWriter = class {
    * The new-writer trigger for what a killed run left behind (the same
    * discipline as the archive reaper): every status file in the directory
    * whose owner is *provably* gone is removed, and a temp file whose writer
-   * pid is dead with it. The judgement is the owner evidence, never age —
+   * pid and start ticks are refuted with it. The judgement is owner evidence, never age —
    * a slow run is not an orphan, an unparseable file is not this writer's
    * to destroy, and a file with no evidence is left for its owner.
    */
@@ -14733,7 +14740,7 @@ var StatusFileWriter = class {
       const temp = STATUS_TEMP_SUFFIX_PATTERN.exec(entry);
       if (temp !== null) {
         const ownerPid = Number(temp[1]);
-        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid)) {
+        if (isStatusFileName(entry.slice(0, -temp[0].length)) && Number.isSafeInteger(ownerPid) && await this.#writerGone(ownerPid, temp[2])) {
           await this.#unlinkQuietly(file);
         }
         continue;
@@ -14753,15 +14760,11 @@ var StatusFileWriter = class {
     }
   }
   /**
-   * A temp file names only its writer's pid, so the judgement is the proc
-   * filesystem's: the pid absent where this process can read its own stat
-   * is death evidence; an unreadable proc filesystem decides nothing.
+   * A temp file carries the writer's process identity. Apply the same
+   * refutation rule as a published snapshot, including the own-stat guard.
    */
-  async #writerGone(pid) {
-    if (await readProcessStartTicks(this.#procDir, pid) !== null) {
-      return false;
-    }
-    return await readProcessStartTicks(this.#procDir, process.pid) !== null;
+  async #writerGone(pid, startTicks) {
+    return snapshotOwnerGone({ host: hostname(), pid, start_ticks: startTicks }, this.#procDir);
   }
   async #unlinkQuietly(file) {
     try {
@@ -30626,6 +30629,18 @@ async function runEnsembleCli(argv, options = {}) {
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
+    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
+    if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
+      statusWriter = new StatusFileWriter({
+        progress,
+        dir: statusDir,
+        onError: (error) => {
+          stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
+`);
+        }
+      });
+      await statusWriter.ready();
+    }
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
@@ -30656,17 +30671,6 @@ async function runEnsembleCli(argv, options = {}) {
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
-    }
-    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
-    if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
-      statusWriter = new StatusFileWriter({
-        progress,
-        dir: statusDir,
-        onError: (error) => {
-          stderr.write(`[status] failed to write progress snapshot: ${formatError2(error)}
-`);
-        }
-      });
     }
     runtime.onEvent((event) => {
       if (event.method === "claude/unpinnedModel") {
@@ -30848,9 +30852,6 @@ async function runEnsembleCli(argv, options = {}) {
     try {
       try {
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           await runtime.close(
@@ -30895,6 +30896,9 @@ async function runEnsembleCli(argv, options = {}) {
           manifest: manifestAttestation(runRecordWriter, recordingEnabled)
         });
       } finally {
+        if (statusWriter !== null) {
+          await statusWriter.close();
+        }
         ending.dispose();
       }
     }

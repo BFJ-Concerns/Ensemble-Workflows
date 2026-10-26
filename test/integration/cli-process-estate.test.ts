@@ -1118,11 +1118,11 @@ test("status file sweep removes dead runs' files and temp files without touching
   const deadFile = path.join(directory, statusFileName("dead-run"));
   const liveFile = path.join(directory, statusFileName("live-run"));
   const legacyFile = path.join(directory, LEGACY_STATUS_FILENAME);
-  const staleTmp = `${deadFile}.${deadPid}.1.tmp`;
-  const liveTmp = `${liveFile}.${livePid}.1.tmp`;
-  const lookalike = `${deadFile}.${deadPid}.1.tmp.backup`;
+  const staleTmp = `${deadFile}.${deadPid}.12345.1.tmp`;
+  const liveTmp = `${liveFile}.${livePid}.${liveTicks}.1.tmp`;
+  const lookalike = `${deadFile}.${deadPid}.12345.1.tmp.backup`;
   const foreign = path.join(directory, "settings.local.json");
-  const postStartupTmp = `${deadFile}.${deadPid}.2.tmp`;
+  const postStartupTmp = `${deadFile}.${deadPid}.12345.2.tmp`;
 
   try {
     await Promise.all([

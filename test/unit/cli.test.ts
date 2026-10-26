@@ -12,6 +12,7 @@ import { promisify } from "node:util";
 
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { programNameFor, runEnsembleCli } from "../../src/cli.js";
+import { CompletionSentinel } from "../../src/completion-sentinel.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 import { EngineRegistry } from "../../src/engines.js";
 import { AppServerSystemError, EngineShutdownError } from "../../src/errors.js";
@@ -2832,6 +2833,73 @@ test("CLI removes the live status snapshot after a run", async () => {
   assert.equal(exitCode, 0, stderr.text());
   // The run's own file is gone: nothing published remains in the directory.
   assert.deepEqual((await readdir(statusDir)).filter(isStatusFileName), []);
+});
+
+test("CLI publishes the run's status before the first worker dispatch", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-start-"));
+  const statusDir = path.join(directory, "status");
+  await mkdir(statusDir);
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, 'export const meta = { name: "status-start" }; await agent("work", { engine: "codex" }); return "ok";');
+
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([new ScheduledTextEngine("codex", 1)]),
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+  const dispatch = runtime.agent.bind(runtime);
+  let statusAtDispatch = false;
+  runtime.agent = (async (...args: Parameters<EnsembleRuntime["agent"]>) => {
+    statusAtDispatch = (await readdir(statusDir)).some(isStatusFileName);
+    return dispatch(...args);
+  }) as EnsembleRuntime["agent"];
+
+  const stderr = new CaptureStream();
+  const exitCode = await runEnsembleCli([script], {
+    cwd: directory,
+    statusDir,
+    runRecordDir: null,
+    stderr,
+    createRuntime: async () => runtime
+  });
+  assert.equal(exitCode, 0, stderr.text());
+  assert.equal(statusAtDispatch, true, "the worker observed its run's published file before dispatch");
+});
+
+test("CLI retains the run's status while writing its terminal sentinel", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-status-ending-"));
+  const statusDir = path.join(directory, "status");
+  await mkdir(statusDir);
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, 'export const meta = { name: "status-ending" }; return "ok";');
+
+  const original = CompletionSentinel.prototype.writeTerminal;
+  let reachedWrite!: () => void;
+  let continueWrite!: () => void;
+  const writing = new Promise<void>((resolve) => { reachedWrite = resolve; });
+  const released = new Promise<void>((resolve) => { continueWrite = resolve; });
+  CompletionSentinel.prototype.writeTerminal = async function (...args) {
+    reachedWrite();
+    await released;
+    return original.apply(this, args);
+  };
+
+  const stderr = new CaptureStream();
+  let run: Promise<number> | undefined;
+  try {
+    run = runEnsembleCli([script], { cwd: directory, statusDir, stderr });
+    await writing;
+    const entries = (await readdir(statusDir)).filter(isStatusFileName);
+    assert.equal(entries.length, 1, "the live file must remain until the sentinel lands");
+    continueWrite();
+    assert.equal(await run, 0, stderr.text());
+    assert.deepEqual((await readdir(statusDir)).filter(isStatusFileName), []);
+    assert.match(stderr.text(), /\[sentinel\] will write /);
+  } finally {
+    continueWrite();
+    await run?.catch(() => undefined);
+    CompletionSentinel.prototype.writeTerminal = original;
+  }
 });
 
 test("CLI leaves a missing status namespace absent and silent", async () => {

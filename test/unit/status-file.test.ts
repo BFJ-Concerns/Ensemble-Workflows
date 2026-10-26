@@ -95,7 +95,7 @@ test("the status file is named by the run, under the local-file convention", () 
   // prefix-and-suffix with no run between them is not a status file.
   assert.equal(isStatusFileName(LEGACY_STATUS_FILENAME), true);
   assert.equal(isStatusFileName("ensemble..local.json"), false);
-  assert.equal(isStatusFileName("ensemble.run-a.local.json.4242.1.tmp"), false);
+  assert.equal(isStatusFileName("ensemble.run-a.local.json.4242.99999.1.tmp"), false);
   assert.equal(isStatusFileName("settings.local.json"), false);
 });
 
@@ -165,10 +165,11 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
   const noEvidence = path.join(dir, statusFileName("run-no-evidence"));
   const unparseable = path.join(dir, statusFileName("run-garbled"));
   const foreign = path.join(dir, "settings.local.json");
-  // Temp files are judged by their writer pid against the same proc root:
-  // 555555 has no stat entry, 4242 has one.
-  const deadTemp = `${dead}.555555.3.tmp`;
-  const liveTemp = `${live}.4242.1.tmp`;
+  // The proc root identifies both the pid and its original process instance.
+  const deadTemp = `${dead}.555555.12345.3.tmp`;
+  const reusedPidTemp = `${dead}.4242.11111.4.tmp`;
+  const liveTemp = `${live}.4242.99999.1.tmp`;
+  const unparseableTemp = `${live}.4242.unknown.2.tmp`;
   await Promise.all([
     // A SIGKILLed run's leftover: state "running", owner provably dead.
     writeFile(dead, `${JSON.stringify({ runId: "run-dead", state: "running", owner: { host, pid: 555_555, start_ticks: "1" } })}\n`),
@@ -182,7 +183,9 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
     writeFile(foreign, "{}\n"),
     // Temp files: attributable to a dead writer, or to a live one.
     writeFile(deadTemp, "half-written\n"),
-    writeFile(liveTemp, "half-written\n")
+    writeFile(liveTemp, "half-written\n"),
+    writeFile(reusedPidTemp, "half-written\n"),
+    writeFile(unparseableTemp, "half-written\n")
   ]);
 
   const writer = new StatusFileWriter({ progress: newProgress("run-new"), dir, procDir });
@@ -195,6 +198,7 @@ test("a new writer's startup sweep removes the files of runs whose owner is prov
   const survivors = (await readdir(dir)).sort();
   assert.deepEqual(survivors, [
     path.basename(liveTemp),
+    path.basename(unparseableTemp),
     path.basename(live),
     path.basename(unparseable),
     path.basename(noEvidence),

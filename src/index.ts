@@ -92,7 +92,8 @@ export {
   partialWorkerTextOf,
   attachWorkerExitStatus,
   workerExitStatusOf,
-  DispatchRemapRejectedError
+  DispatchRemapRejectedError,
+  NamedTargetRejectedError
 } from "./errors.js";
 export type { WorkerExitStatus } from "./errors.js";
 export {
@@ -175,6 +176,16 @@ export type {
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 export { DispatchRemapLedger, globMatches, parseDispatchRemap, parseDispatchRemapRule, splitDispatchRemapVariable } from "./dispatch-remap.js";
 export type { DispatchRemapKey, DispatchRemapMove, DispatchRemapRule, DispatchRemapTarget, DispatchRequest } from "./dispatch-remap.js";
+export { resolveNamedTargets } from "./named-targets.js";
+export type {
+  DeclaredDispatch,
+  NamedTargetBinding,
+  NamedTargetBindings,
+  NamedTargetEvidence,
+  NamedTargets,
+  ResolvedDispatch,
+  SettledTarget
+} from "./named-targets.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
 export { classifyAttemptFailure } from "./failure-classification.js";
 export type { AttemptFailureEvidence, FailureClass, FailureClassification } from "./failure-classification.js";

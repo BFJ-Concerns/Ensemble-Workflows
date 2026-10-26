@@ -26,6 +26,7 @@ test("caller identity has a named environment route without widening ambient set
       "agentCeiling",
       "concurrencyCaps",
       "configFile",
+      "namedTargets",
       "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",
@@ -372,6 +373,68 @@ test("the record store directory resolves even when recording is disabled", asyn
     assert.deepEqual(settings.runRecordStoreDir, { value: "/file/records", layer: "config-file" });
   } finally {
     await fixture.cleanup();
+  }
+});
+
+test("targets binds the machine's names to an engine with or without a model, from the config file alone, the layer saying so", async () => {
+  const fixture = await configFixture({
+    schema_version: 1,
+    targets: {
+      doer: { engine: "codex", model: "gpt-6.1-sol" },
+      grunt: { engine: "claude" },
+      // A name may spell an engine's name: the names are their own namespace.
+      codex: { engine: "claude", model: "opus" }
+    }
+  });
+  try {
+    const settings = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd });
+    assert.deepEqual(settings.namedTargets, {
+      value: {
+        doer: { engine: "codex", model: "gpt-6.1-sol" },
+        grunt: { engine: "claude" },
+        codex: { engine: "claude", model: "opus" }
+      },
+      layer: "config-file"
+    });
+    // Config-file only, like worker_environment: no variable and no flag to
+    // assert layers against. An empty section is still the file's layer.
+    const empty = await configFixture({ schema_version: 1, targets: {} });
+    try {
+      assert.deepEqual(resolveAmbientSettings({ env: { XDG_CONFIG_HOME: empty.configHome }, cwd: empty.cwd }).namedTargets, { value: {}, layer: "config-file" });
+    } finally {
+      await empty.cleanup();
+    }
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("an absent targets section binds nothing, in the default layer", async () => {
+  const fixture = await configFixture({ schema_version: 1 });
+  try {
+    assert.deepEqual(resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }).namedTargets, { value: {}, layer: "default" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("targets fails loud on malformed bindings, naming the key", async () => {
+  const cases: Array<{ targets: unknown; pattern: RegExp }> = [
+    { targets: [], pattern: /targets.*JSON object of target names/ },
+    { targets: { " ": { engine: "codex" } }, pattern: /targets.*target names must be non-empty/ },
+    { targets: { doer: "codex" }, pattern: /targets\.doer .*must be a JSON object/ },
+    { targets: { doer: {} }, pattern: /targets\.doer\.engine.*codex \| claude \| opencode/ },
+    { targets: { doer: { engine: "gemini" } }, pattern: /targets\.doer\.engine.*codex \| claude \| opencode/ },
+    { targets: { doer: { engine: "codex", model: "" } }, pattern: /targets\.doer\.model.*non-empty string/ },
+    { targets: { doer: { engine: "codex", effort: "low" } }, pattern: /Unknown machine configuration key targets\.doer\.effort/ }
+  ];
+  for (const entry of cases) {
+    const fixture = await configFixture({ schema_version: 1, targets: entry.targets });
+    try {
+      assert.throws(() => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }), entry.pattern);
+    } finally {
+      await fixture.cleanup();
+    }
   }
 });
 

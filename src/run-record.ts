@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
+import type { NamedTargetEvidence } from "./named-targets.js";
 import type {
   BackgroundTaskWait,
   EngineName,
@@ -105,7 +106,12 @@ export interface EffectiveRunSettingsRecord {
   runTimeoutMs: Resolved<number | null>;
   /** The dispatch remap's rules as written, with the layer that supplied them (`flag`, `env`, or `default` for none). */
   dispatchRemap?: Resolved<string[] | null>;
+  /** The named targets in force — each name's engine and model (`null` for the engine's default) — with the layer that supplied them (`config-file`, or `default` for none). */
+  namedTargets?: Resolved<NamedTargetBindingsRecord>;
 }
+
+/** The manifest's view of the `targets` map: every binding's engine and model, the model `null` where the binding leaves it to the engine's default. */
+export type NamedTargetBindingsRecord = Record<string, { engine: EngineName; model: string | null }>;
 
 /**
  * The harness's decision after a failed attempt under a declared chain:
@@ -130,6 +136,8 @@ export interface RuntimeAgentAttemptRecord {
    * `resolvedModel` beside it is what the engine served.
    */
   target: { engine: EngineName; model: string | null };
+  /** The named target this attempt's target was declared through, or null where the call or entry named its engine literally. */
+  namedTarget: string | null;
   failure: { kind: string; message: string } | null;
   /**
    * How the harness classified this failed attempt: the class and the
@@ -238,6 +246,14 @@ export interface RuntimeAgentRecord {
    * target; the requested ones are here. Null when nothing moved.
    */
   remap: DispatchRemapEvidence[] | null;
+  /**
+   * The named targets the call declared — its own and any chain entry's —
+   * each with the engine and model it resolved to before the remap looked
+   * at it. `engine` and `model` above are the resolved call target (then the
+   * remap's, where it moved); `fallback` stays the chain as declared, names
+   * included. Null when the call named none.
+   */
+  namedTargets: NamedTargetEvidence[] | null;
   /**
    * Which target answered: `entry` is -1 for the call's own target and
    * the chain index thereafter, beside that target's engine and model. Null
@@ -479,6 +495,8 @@ interface Manifest {
    * in force; `[]` when every rule caught something.
    */
   dispatch_remap_unmatched: string[] | null;
+  /** The named targets in force when the run started: each name's engine and model, with the layer that supplied the map (`config-file`, or `default` with an empty map). */
+  named_targets: Resolved<NamedTargetBindingsRecord>;
   git: {
     start: GitState;
     end: GitState | null;
@@ -702,6 +720,7 @@ export class RunRecordWriter {
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
       dispatch_remap_unmatched: null,
+      named_targets: options.effectiveSettings?.namedTargets ?? { value: {}, layer: "default" },
       git: {
         start: gitStart,
         end: null
@@ -965,6 +984,7 @@ export class RunRecordWriter {
       effort: record.effort,
       fallback: record.fallback,
       remap: record.remap,
+      named_targets: record.namedTargets,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -1010,6 +1030,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         target: attempt.target,
+        named_target: attempt.namedTarget,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,

@@ -23,6 +23,7 @@
     "integrity",
     "kind",
     "meta",
+    "named_targets",
     "namespace",
     "owner",
     "result",

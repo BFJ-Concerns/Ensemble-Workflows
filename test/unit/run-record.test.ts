@@ -109,6 +109,45 @@ test("a rejected hold event preserves its submitted verdict, or explicitly says 
   ]);
 });
 
+test("the manifest carries the named targets in force with the layer that supplied them, and an empty map in the default layer when none", async () => {
+  const cwd = await gitRepo("ensemble-record-targets-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-targets-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-targets",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false },
+    effectiveSettings: {
+      budgetCeilings: {},
+      runTimeoutMs: { value: null, layer: "default" },
+      namedTargets: { value: { doer: { engine: "codex", model: "gpt-6.1-sol" }, grunt: { engine: "claude", model: null } }, layer: "config-file" }
+    }
+  });
+  await writer.finish({ status: "complete", exitCode: 0, result: null });
+  // Ledger's read across a rebinding: what each name meant when this run started.
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as { named_targets: unknown };
+  assert.deepEqual(manifest.named_targets, {
+    value: { doer: { engine: "codex", model: "gpt-6.1-sol" }, grunt: { engine: "claude", model: null } },
+    layer: "config-file"
+  });
+
+  const bare = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-targets-bare",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'x' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  await bare.finish({ status: "complete", exitCode: 0, result: null });
+  const bareManifest = JSON.parse(await readFile(path.join(bare.archiveDir, "manifest.json"), "utf8")) as { named_targets: unknown };
+  assert.deepEqual(bareManifest.named_targets, { value: {}, layer: "default" });
+});
+
 test("the manifest attributes budget ceilings and the run timeout to their winning layers", async () => {
   const cwd = await gitRepo("ensemble-record-effective-");
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-effective-store-"));
@@ -1137,6 +1176,7 @@ function agentRecord(
     effort: null,
     fallback: null,
     remap: null,
+    namedTargets: null,
     answeredBy: null,
     resolvedModel: null,
     resolvedEffort: null,
@@ -1163,6 +1203,7 @@ function agentRecord(
         attempt: 1,
         status: "complete" as const,
         target: { engine, model: null },
+        namedTarget: null,
         failure: null,
         classification: null,
         chainDecision: null,

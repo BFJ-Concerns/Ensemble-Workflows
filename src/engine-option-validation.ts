@@ -3,6 +3,7 @@ import {
   InvalidAgentOptionsError,
   AgentOptionRejectedError,
   InvalidAgentOptionValueError,
+  NamedTargetRejectedError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
   UnreadableAgentOptionError,
@@ -50,6 +51,7 @@ interface EngineDefaultOptions {
 
 const AGENT_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   schema: true,
   model: true,
   effort: true,
@@ -126,9 +128,12 @@ export function assertValidAgentOptions(options: object): void {
       throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
     }
   });
+  collect(() => assertValidDispatchTarget(values));
   // Harness-owned domain, judged before any worker spawns; opencode's
   // effort is the registry entry's served variants, judged by its adapter.
-  if (values.engine !== "opencode") {
+  // A call naming a target has no engine yet: the runtime judges its effort
+  // once the name resolves, under the same rule.
+  if (values.engine !== "opencode" && values.target === undefined) {
     collect(() => assertCanonicalEffortSupported(values.effort));
   }
   collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
@@ -152,6 +157,7 @@ export function assertValidAgentOptions(options: object): void {
 
 const WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   model: true,
   effort: true,
   fallback: true,
@@ -186,11 +192,13 @@ export function assertValidWorkerSessionOptions(options: object): void {
   if (values.isolation !== undefined && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
+  assertValidDispatchTarget(values);
   // Same canonical-effort judgement as agent(): sessions fix effort at
   // creation, so an out-of-domain level must fail before the held worker
   // spawns. opencode sessions are refused pre-spawn elsewhere; the
   // exemption here keeps the two rejections from racing to name the error.
-  if (values.engine !== "opencode") {
+  // A session naming a target is judged once the name resolves, as a call is.
+  if (values.engine !== "opencode" && values.target === undefined) {
     assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
@@ -202,6 +210,29 @@ export function assertValidWorkerSessionOptions(options: object): void {
     assertValidStripOption(values.strip);
   }
   assertValidFallbackChain(values.fallback);
+}
+
+/**
+ * A dispatch names where it goes one way: a literal `engine` (with or
+ * without `model`), or a named `target` the machine configuration binds —
+ * never both, so the names stay a namespace of their own and a name may
+ * spell an engine's without shadowing it. Which engine a name binds to is
+ * the runtime's to resolve, against the bindings it was given; this judges
+ * the declaration's shape alone.
+ */
+export function assertValidDispatchTarget(values: Record<string, unknown>): void {
+  if (values.target === undefined) {
+    return;
+  }
+  if (typeof values.target !== "string" || values.target.length === 0) {
+    throw new InvalidAgentOptionValueError("target", values.target, "a non-empty string naming a target the machine configuration binds");
+  }
+  if (values.engine !== undefined || values.model !== undefined) {
+    const literal = values.engine !== undefined ? `engine ${JSON.stringify(values.engine)}` : `model ${JSON.stringify(values.model)}`;
+    throw new NamedTargetRejectedError(
+      `a call names a target or a literal engine and model, never both — ${JSON.stringify(values.target)} beside ${literal}`
+    );
+  }
 }
 
 const SESSION_TURN_OPTION_KEYS = ["schema"];
@@ -218,20 +249,22 @@ export function assertValidSessionTurnOptions(options: object): void {
 
 /**
  * A fallback chain is judged whole, pre-spawn, wherever it is declared — a
- * call site, a session, or an engine's `defaults` block: an array of full
- * targets, each naming an engine and a model, Codex or Claude only (opencode
- * is held at its existing surface and skips new capability by default, so an
- * opencode entry throws here rather than failing unnoticed on the day the
- * chain first advances), with any effort in the canonical vocabulary. The
- * chain's own engine is never consulted: a Codex block may name a Claude
- * target — that cross-family step is the motivating case.
+ * call site, a session, or an engine's `defaults` block: an array of
+ * targets, each a full literal target naming an engine and a model, Codex or
+ * Claude only (opencode is held at its existing surface and skips new
+ * capability by default, so an opencode entry throws here rather than
+ * failing unnoticed on the day the chain first advances), or a named target
+ * the machine configuration binds — whose engine the runtime judges once the
+ * name resolves — with any effort in the canonical vocabulary. The chain's
+ * own engine is never consulted: a Codex block may name a Claude target —
+ * that cross-family step is the motivating case.
  */
 export function assertValidFallbackChain(chain: unknown): asserts chain is FallbackTarget[] | undefined {
   if (chain === undefined) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } or { target, effort? } targets");
   }
   if (chain.length === 0) {
     throw new FallbackTargetRejectedError("the chain must not be empty");
@@ -239,12 +272,24 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model, or a target`);
     }
     for (const key of Object.keys(target)) {
-      if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      if (key !== "engine" && key !== "model" && key !== "effort" && key !== "target") {
+        throw new FallbackTargetRejectedError(
+          `entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort, or a named target and optionally effort`
+        );
       }
+    }
+    if (target.target !== undefined) {
+      if (typeof target.target !== "string" || target.target.length === 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
+      }
+      if (target.engine !== undefined || target.model !== undefined) {
+        throw new FallbackTargetRejectedError(`entry ${index} names target ${JSON.stringify(target.target)} beside a literal engine or model; an entry names one or the other`);
+      }
+      assertChainEntryEffort(target, index);
+      return;
     }
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
@@ -255,10 +300,14 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
     }
-    if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
-    }
+    assertChainEntryEffort(target, index);
   });
+}
+
+function assertChainEntryEffort(target: Record<string, unknown>, index: number): void {
+  if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
+    throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+  }
 }
 
 export function requireRegisteredOpenCodeModel(

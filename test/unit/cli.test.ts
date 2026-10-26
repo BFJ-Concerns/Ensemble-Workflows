@@ -3972,6 +3972,104 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
   }
 });
 
+test("a script naming targets dispatches as the machine configuration binds them, the manifest carrying the bindings in force and each record the name beside its resolution", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-targets-"));
+  const configHome = path.join(directory, "config");
+  const configFile = path.join(configHome, "ensemble", "config.json");
+  await mkdir(path.dirname(configFile), { recursive: true });
+  await writeFile(
+    configFile,
+    JSON.stringify({ schema_version: 1, targets: { doer: { engine: "codex", model: "gpt-6.1-sol" }, reviewer: { engine: "claude" } } })
+  );
+  const script = path.join(directory, "targets.workflow.js");
+  await writeFile(
+    script,
+    `
+      export const meta = { name: "targets-probe" };
+      export const defaults = { claude: { model: "opus" } };
+      const a = await agent("first", { target: "doer", label: "writer" });
+      const b = await agent("second", { target: "reviewer", label: "critic" });
+      return [a, b];
+    `
+  );
+  try {
+    const codex = new FixedResponseEngine("codex", "from codex");
+    const claude = new FixedResponseEngine("claude", "from claude");
+    const captured: unknown[] = [];
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+    const exitCode = await runEnsembleCli([script], {
+      cwd: directory,
+      stdout,
+      stderr,
+      runRecordDir: path.join(directory, "records"),
+      env: { XDG_CONFIG_HOME: configHome },
+      createRuntime: async (options = {}) => {
+        captured.push(options.namedTargets);
+        return new EnsembleRuntime({
+          engines: new EngineRegistry([codex, claude]),
+          defaultMaxAttempts: 1,
+          cwd: directory,
+          ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {})
+        });
+      }
+    });
+    assert.equal(exitCode, 0, stderr.text());
+    assert.deepEqual(JSON.parse(stdout.text()), ["from codex", "from claude"]);
+    // The bindings reach the runtime with the file they came from, so a refusal can name it.
+    assert.deepEqual(captured, [{ bindings: { doer: { engine: "codex", model: "gpt-6.1-sol" }, reviewer: { engine: "claude" } }, source: configFile }]);
+    // The model-less binding took the script's declared Claude model.
+    assert.deepEqual(codex.turnOptions.map((options) => options.model), ["gpt-6.1-sol"]);
+    assert.deepEqual(claude.turnOptions.map((options) => options.model), ["opus"]);
+    assert.doesNotMatch(stderr.text(), /runs unpinned/);
+    const announced = announcedRunRecord(stderr.text());
+    const manifest = JSON.parse(await readFile(path.join(announced.archive_path, "manifest.json"), "utf8")) as { named_targets: unknown };
+    assert.deepEqual(manifest.named_targets, {
+      value: { doer: { engine: "codex", model: "gpt-6.1-sol" }, reviewer: { engine: "claude", model: null } },
+      layer: "config-file"
+    });
+    const writer = JSON.parse(await readFile(path.join(announced.archive_path, "agents/000001/agent.json"), "utf8")) as {
+      engine: string;
+      model: string;
+      named_targets: unknown;
+      attempts: Array<{ named_target: string | null; target: unknown }>;
+    };
+    assert.equal(writer.engine, "codex");
+    assert.equal(writer.model, "gpt-6.1-sol");
+    assert.deepEqual(writer.named_targets, [{ name: "doer", entry: -1, resolved: { engine: "codex", model: "gpt-6.1-sol" } }]);
+    assert.deepEqual(writer.attempts.map((attempt) => [attempt.named_target, attempt.target]), [["doer", { engine: "codex", model: "gpt-6.1-sol" }]]);
+    const critic = JSON.parse(await readFile(path.join(announced.archive_path, "agents/000002/agent.json"), "utf8")) as { model: string; named_targets: unknown };
+    assert.equal(critic.model, "opus");
+    assert.deepEqual(critic.named_targets, [{ name: "reviewer", entry: -1, resolved: { engine: "claude", model: "opus" } }]);
+
+    // With no file binding the name, the call is refused before any worker
+    // spawns, naming the name and the file that would bind it.
+    {
+      const engine = new FixedResponseEngine("codex", "never");
+      const failed = new CaptureStream();
+      const code = await runEnsembleCli([script], {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr: failed,
+        runRecordDir: path.join(directory, "unbound-records"),
+        env: { XDG_CONFIG_HOME: path.join(directory, "missing-config") },
+        createRuntime: async (options = {}) =>
+          new EnsembleRuntime({
+            engines: new EngineRegistry([engine]),
+            defaultMaxAttempts: 1,
+            cwd: directory,
+            ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {})
+          })
+      });
+      assert.notEqual(code, 0);
+      assert.match(failed.text(), /Invalid named target: "doer" is not bound: .*missing-config.*config\.json binds no targets/);
+      assert.equal(engine.attempts, 0);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("--remap and ENSEMBLE_DISPATCH_REMAP move the matching dispatches, the flag outranking the variable whole, each move noticed and archived, and an unmatched rule reported at the end", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-remap-"));
   const script = path.join(directory, "remap.workflow.js");

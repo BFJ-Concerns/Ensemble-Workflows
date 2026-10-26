@@ -30,7 +30,8 @@ import {
   MissingEngineError,
   RemovedAgentOptionError,
   TurnTimeoutError,
-  WorktreePlacementRejectedError
+  WorktreePlacementRejectedError,
+  NamedTargetRejectedError
 } from "../../src/errors.js";
 
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
@@ -4428,5 +4429,165 @@ test("a moved call resolves its model against the defaults of the body that made
     assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["parent-model", "child-model", "parent-model"]);
   } finally {
     await runtime.close();
+  }
+});
+
+test("a call naming a target dispatches on its binding, takes the resolved engine's declared defaults for what it left unsaid, and the record and attempt name the target", async () => {
+  const codex = new ChainEngine("codex", [answers("sol answered"), answers("sol again")]);
+  const claude = new ChainEngine("claude", [answers("opus answered")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: {
+      bindings: { doer: { engine: "codex" }, reviewer: { engine: "claude", model: "opus" } },
+      source: "/fake/config.json"
+    }
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  // The script's defaults block: a model-less binding takes the resolved
+  // engine's declared model, and the block supplies the effort the call left
+  // unsaid — the merge the hooks apply when a call names its engine.
+  const defaults = { codex: { model: "gpt-6.1-sol", effort: "medium" }, claude: { model: "sonnet" } };
+  try {
+    assert.equal(
+      await runtime.runWithWorkflowDefaults(defaults, () => runtime.agent("review", { target: "doer", effort: "low", label: "critic" })),
+      "sol answered"
+    );
+    assert.deepEqual(codex.dispatches, [{ model: "gpt-6.1-sol", effort: "low", prompt: "review" }], "the stated effort is kept");
+    const stated = records.at(-1)!;
+    assert.equal(stated.engine, "codex");
+    assert.equal(stated.model, "gpt-6.1-sol");
+    assert.equal(stated.effort, "low");
+    assert.deepEqual(stated.namedTargets, [{ name: "doer", entry: -1, resolved: { engine: "codex", model: "gpt-6.1-sol" } }]);
+    assert.equal(stated.remap, null);
+    assert.deepEqual(
+      stated.attempts.map((attempt) => [attempt.namedTarget, attempt.target]),
+      [["doer", { engine: "codex", model: "gpt-6.1-sol" }]]
+    );
+
+    assert.equal(await runtime.runWithWorkflowDefaults(defaults, () => runtime.agent("build", { target: "doer" })), "sol again");
+    assert.deepEqual(codex.dispatches.at(-1), { model: "gpt-6.1-sol", effort: "medium", prompt: "build" }, "the block's effort fills the unsaid one");
+    assert.equal(records.at(-1)?.effort, "medium");
+
+    // A binding with a model dispatches that model, whatever the block declares.
+    assert.equal(await runtime.runWithWorkflowDefaults(defaults, () => runtime.agent("judge", { target: "reviewer" })), "opus answered");
+    assert.deepEqual(claude.dispatches, [{ model: "opus", effort: undefined, prompt: "judge" }]);
+    assert.deepEqual(records.at(-1)?.namedTargets, [{ name: "reviewer", entry: -1, resolved: { engine: "claude", model: "opus" } }]);
+    // A call naming no target records none.
+    assert.equal(await runtime.agent("plain", { engine: "codex", model: "gpt-6-luna" }), null, "the fake has no third codex answer");
+    assert.equal(records.at(-1)?.namedTargets, null);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.namedTarget), [null]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("the remap acts on the resolved pair, and a named chain entry and a session by name resolve like a call target, the record keeping the chain as declared", async () => {
+  const codex = new SessionEngine("codex", [codexRefusal("usageLimitExceeded"), answers("session turn 1"), answers("session turn 2")]);
+  const claude = new SessionEngine("claude", [answers("moved onto claude"), answers("reviewer answered")]);
+  const records: RuntimeAgentRecord[] = [];
+  const bindings = { doer: { engine: "codex" as const, model: "gpt-6-luna" }, reviewer: { engine: "claude" as const, model: "opus" } };
+  const remapped = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: { bindings, source: "/fake/config.json" },
+    dispatchRemap: parseDispatchRemap(["codex:gpt-6-luna=claude:opus"])
+  });
+  remapped.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    // An `engine:model` key matches what the name resolved to; the record
+    // names the name, its resolution, and the move, in that order.
+    assert.equal(await remapped.agent("go", { target: "doer", label: "writer" }), "moved onto claude");
+    const moved = records.at(-1)!;
+    assert.equal(moved.engine, "claude");
+    assert.equal(moved.model, "opus");
+    assert.deepEqual(moved.namedTargets, [{ name: "doer", entry: -1, resolved: { engine: "codex", model: "gpt-6-luna" } }]);
+    assert.deepEqual(moved.remap, [
+      { key: "codex:gpt-6-luna=claude:opus", entry: -1, requested: { engine: "codex", model: "gpt-6-luna" }, dispatched: { engine: "claude", model: "opus" } }
+    ]);
+    assert.deepEqual(moved.attempts.map((attempt) => [attempt.namedTarget, attempt.target]), [["doer", { engine: "claude", model: "opus" }]]);
+  } finally {
+    await remapped.close();
+  }
+
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: { bindings, source: "/fake/config.json" }
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    // The chain: Codex refuses, the named entry resolves to Claude and answers.
+    assert.equal(
+      await runtime.agent("go", { engine: "codex", model: "gpt-6-astra", fallback: [{ target: "reviewer", effort: "high" }] }),
+      "reviewer answered"
+    );
+    const chained = records.at(-1)!;
+    assert.deepEqual(chained.fallback, [{ target: "reviewer", effort: "high" }], "the chain as declared, name included");
+    assert.deepEqual(chained.namedTargets, [{ name: "reviewer", entry: 0, resolved: { engine: "claude", model: "opus" } }]);
+    assert.deepEqual(chained.attempts.map((attempt) => [attempt.namedTarget, attempt.target]), [
+      [null, { engine: "codex", model: "gpt-6-astra" }],
+      ["reviewer", { engine: "claude", model: "opus" }]
+    ]);
+    assert.deepEqual(chained.answeredBy, { entry: 0, engine: "claude", model: null });
+    assert.deepEqual(claude.dispatches.at(-1), { model: "opus", effort: "high", prompt: "go" });
+
+    // A session by name is created on its binding, once, for its life; every turn's record names it.
+    const session = runtime.createWorkerSession({ target: "doer", label: "builder" });
+    assert.equal(session.engine, "codex");
+    assert.equal(await session.send("one"), "session turn 1");
+    assert.equal(await session.send("two"), "session turn 2");
+    await session.close();
+    assert.deepEqual(codex.sessionsCreated, [{ model: "gpt-6-luna" }]);
+    const turns = [...new Map(records.filter((record) => record.session !== null).map((record) => [record.id, record])).values()];
+    assert.equal(turns.length, 2);
+    for (const turnRecord of turns) {
+      assert.equal(turnRecord.engine, "codex");
+      assert.equal(turnRecord.model, "gpt-6-luna");
+      assert.deepEqual(turnRecord.namedTargets, [{ name: "doer", entry: -1, resolved: { engine: "codex", model: "gpt-6-luna" } }]);
+      assert.deepEqual(turnRecord.attempts.map((attempt) => attempt.namedTarget), ["doer"]);
+    }
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("an unbound name, a target beside a literal engine, a bad effort on a named target, and an opencode-bound chain entry are each refused before any worker spawns", async () => {
+  const codex = new ChainEngine("codex", [answers("never")]);
+  const claude = new ChainEngine("claude", [answers("never")]);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: { bindings: { doer: { engine: "codex" }, local: { engine: "opencode", model: "glm-5.2" } }, source: "/fake/config.json" }
+  });
+  const unbound = new EnsembleRuntime({ engines: new EngineRegistry([codex, claude]), cwd: "/fake/repo", defaultMaxAttempts: 1 });
+  try {
+    await assert.rejects(
+      runtime.agent("x", { target: "nobody" }),
+      (error: unknown) =>
+        error instanceof NamedTargetRejectedError && error.message === 'Invalid named target: "nobody" is not bound: /fake/config.json binds "doer", "local"'
+    );
+    await assert.rejects(
+      runtime.agent("x", { target: "doer", engine: "codex" } as unknown as Partial<AgentOptions>),
+      (error: unknown) => error instanceof NamedTargetRejectedError && /never both — "doer" beside engine "codex"/.test(error.message)
+    );
+    await assert.rejects(runtime.agent("x", { target: "" }), { name: "InvalidAgentOptionValueError" });
+    // The effort is judged once the name resolves, against the resolved engine's domain.
+    await assert.rejects(runtime.agent("x", { target: "doer", effort: "bogus" }), { name: "InvalidAgentOptionValueError" });
+    await assert.rejects(
+      runtime.agent("x", { engine: "codex", model: "gpt-6-luna", fallback: [{ target: "local" }] }),
+      (error: unknown) => error instanceof FallbackTargetRejectedError && /entry 0 names target "local", bound to the opencode engine/.test(error.message)
+    );
+    assert.throws(() => runtime.createWorkerSession({ target: "nobody" }), NamedTargetRejectedError);
+    await assert.rejects(unbound.agent("x", { target: "doer" }), /"doer" is not bound: this run has no targets map/);
+    assert.equal(codex.dispatches.length + claude.dispatches.length, 0, "nothing reached an engine");
+  } finally {
+    await runtime.close();
+    await unbound.close();
   }
 });

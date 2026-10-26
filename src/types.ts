@@ -1,5 +1,6 @@
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { DispatchRemapRule } from "./dispatch-remap.js";
+import type { NamedTargets } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -19,21 +20,35 @@ export type EngineConcurrencyCaps = Partial<Record<EngineName, number>>;
 export type EngineWorkerEnvironment = Partial<Record<EngineName, Record<string, string>>>;
 
 /**
- * One entry of a fallback chain: a full target — engine and model
+ * One entry of a fallback chain: a full literal target — engine and model
  * both named, because a fallback that inherits an ambient default is a
- * substitution nobody chose — with an optional effort that otherwise takes
- * the call's own canonical level, clamped to this engine as any dispatch is.
+ * substitution nobody chose — or a named target the machine configuration
+ * binds (its binding's model, else the bound engine's declared default, is
+ * the operator's own choice); either with an optional effort that otherwise
+ * takes the call's own canonical level, clamped to its engine as any
+ * dispatch is.
  */
-export interface FallbackTarget {
-  engine: EngineName;
-  model: string;
-  effort?: string;
-}
+export type FallbackTarget =
+  | { engine: EngineName; model: string; effort?: string; target?: undefined }
+  | { target: string; effort?: string; engine?: undefined; model?: undefined };
 
-export interface AgentOptions {
-  engine: EngineName;
+/**
+ * Where a dispatch goes, declared one of two ways: a literal `engine` with
+ * an optional `model`, or a named `target` the machine configuration's
+ * `targets` map binds to an engine and model — resolved by the harness
+ * before any worker spawns. Never both: the names are a namespace of their
+ * own, so one may spell an engine's name without shadowing it, and a
+ * declaration naming both is refused pre-spawn.
+ */
+export type DispatchTargetOptions =
+  | { engine: EngineName; model?: string; target?: undefined }
+  | { target: string; engine?: undefined; model?: undefined };
+
+export type AgentOptions = AgentCallOptions & DispatchTargetOptions;
+
+/** Every `agent()` option but the dispatch target (`engine`/`model` or `target`), which {@link DispatchTargetOptions} declares. */
+export interface AgentCallOptions {
   schema?: JsonSchema;
-  model?: string;
   /**
    * Canonical effort level — `minimal | low | medium | high | xhigh` —
    * validated pre-spawn as a harness-owned domain and converted to the
@@ -80,12 +95,14 @@ export interface AgentOptions {
  * model, and effort never vary per turn — changing them would invalidate the
  * session's prompt cache, the asset the capability exists to exploit — and
  * escalation is a fresh dispatch. Everything here is resolved once, at
- * creation; the only per-turn variation is `schema` on `send()`.
+ * creation; the only per-turn variation is `schema` on `send()`. The engine
+ * — named literally or through a named target — is `claude` or `codex`; an
+ * engine held at its one-shot surface throws before spawn.
  */
-export interface WorkerSessionOptions {
-  /** `claude` or `codex`; an engine held at its one-shot surface throws before spawn. */
-  engine: EngineName;
-  model?: string;
+export type WorkerSessionOptions = WorkerSessionCallOptions & DispatchTargetOptions;
+
+/** Every `session()` option but the dispatch target, which {@link DispatchTargetOptions} declares. */
+export interface WorkerSessionCallOptions {
   /** Canonical effort level, as for `agent()`; converted once, at creation. */
   effort?: string;
   /**
@@ -175,6 +192,13 @@ export interface RuntimeOptions {
    * `ENSEMBLE_DISPATCH_REMAP`; never a configuration-file setting.
    */
   dispatchRemap?: readonly DispatchRemapRule[];
+  /**
+   * The machine's named targets (C40) — the config file's `targets` map and
+   * the file it was read from, which every refusal names. A call, session,
+   * or chain entry naming a target resolves against them before any worker
+   * spawns; omitted, every named target is refused as unbound.
+   */
+  namedTargets?: NamedTargets;
   codexBin?: string;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;

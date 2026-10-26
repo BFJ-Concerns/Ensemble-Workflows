@@ -11,6 +11,7 @@ import {
 import { HOLD_SCOPE_ENV } from "./holds.js";
 import { createOpenCodeModelRegistry } from "./opencode-model-registry.js";
 
+import type { NamedTargetBinding, NamedTargetBindings } from "./named-targets.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type { EngineConcurrencyCaps, EngineName, EngineWorkerEnvironment } from "./types.js";
 
@@ -98,6 +99,15 @@ export interface AmbientSettings {
    * here. Config-file only, like `workerEnvironment`.
    */
   openCodeModels: OpenCodeModelRegistryEntry[];
+  /**
+   * The named targets this machine binds (the config file's `targets`
+   * section): the operator's own names for the engine-and-model pairs its
+   * workflows dispatch to, resolved by the harness before any worker
+   * spawns. Config-file only, like `workerEnvironment`; the layer is
+   * `config-file` when the section is present (even empty) and `default`
+   * when it is not, which the manifest records as the bindings in force.
+   */
+  namedTargets: Resolved<NamedTargetBindings>;
 }
 
 export interface AmbientSettingFlags {
@@ -126,6 +136,7 @@ interface MachineConfig {
   };
   worker_environment?: Partial<Record<EngineName, Record<string, string>>>;
   opencode_models?: Record<string, OpenCodeModelDeclaration>;
+  targets?: Record<string, NamedTargetBinding>;
 }
 
 type OpenCodeBillingMode = NonNullable<OpenCodeModelRegistryEntry["billing"]>["mode"];
@@ -185,7 +196,9 @@ export function resolveAmbientSettings(input: {
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd),
     workerEnvironment: config?.worker_environment ?? {},
-    openCodeModels: openCodeModelEntries(config?.opencode_models)
+    openCodeModels: openCodeModelEntries(config?.opencode_models),
+    namedTargets:
+      config?.targets === undefined ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" }
   };
 }
 
@@ -230,7 +243,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
 
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -244,6 +257,7 @@ function readMachineConfig(configFile: string): MachineConfig | null {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateTargets(parsed, configFile);
   return parsed as unknown as MachineConfig;
 }
 
@@ -378,6 +392,41 @@ function validateOpenCodeModelDeclaration(key: string, declaration: unknown, con
       new Set(variants).size !== variants.length
     ) {
       throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+
+/**
+ * `targets` maps the operator's own names to a binding — an open set of
+ * names, like `opencode_models`' keys, so it takes its own validator. Each
+ * binding names an engine and optionally a model; a name may spell an
+ * engine's name, since the names are their own namespace, reached through
+ * a call's `target` and never its `engine`. Whether an opencode binding's
+ * model is one the registry declares is the dispatch's judgement, exactly
+ * as for a literal opencode call.
+ */
+function validateTargets(root: Record<string, unknown>, configFile: string): void {
+  const section = root.targets;
+  if (section === undefined) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "targets", "must be a JSON object of target names to { engine, model? } bindings");
+  }
+  for (const [name, binding] of Object.entries(section)) {
+    if (name.trim().length === 0) {
+      throw fileValueError(configFile, "targets", "target names must be non-empty");
+    }
+    const qualified = `targets.${name}`;
+    if (!isObject(binding) || Array.isArray(binding)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object naming engine and optionally model");
+    }
+    assertKnownKeys(binding, ["engine", "model"], configFile, qualified);
+    if (!(ENGINES as readonly unknown[]).includes(binding.engine)) {
+      throw fileValueError(configFile, `${qualified}.engine`, `must be one of ${ENGINES.join(" | ")}`);
+    }
+    if (binding.model !== undefined && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
     }
   }
 }

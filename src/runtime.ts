@@ -12,11 +12,15 @@ import type { DispatchRemapRule } from "./dispatch-remap.js";
 import type { DischargedEnforcement } from "./capability-stripping.js";
 import { harnessVersion } from "./harness-version.js";
 import {
+  assertCanonicalEffortSupported,
   assertValidAgentOptions,
   assertValidSessionTurnOptions,
   assertValidWorkerSessionOptions,
   snapshotAgentCwd
 } from "./engine-option-validation.js";
+import { resolveNamedTargets } from "./named-targets.js";
+import type { NamedTargetEvidence, NamedTargets, SettledTarget } from "./named-targets.js";
+import type { WorkflowDefaults } from "./hooks.js";
 import {
   AppServerExitedError,
   AgentPromptRejectedError,
@@ -157,6 +161,8 @@ interface ChainTarget {
   engine: EngineName;
   model: string | undefined;
   effort: string | undefined;
+  /** The named target this target was declared through, or null where the call or entry named its engine literally. */
+  name: string | null;
 }
 
 /**
@@ -189,32 +195,48 @@ class ChainAdvance {
   constructor(readonly engine: EngineName) {}
 }
 
-/** Where the dispatch remap sent a chain entry: its index to the engine and model dispatched (undefined model: the engine's own default). */
-type ChainEntryMoves = ReadonlyMap<number, { engine: EngineName; model: string | undefined }>;
+/**
+ * Where each chain entry dispatches: its index to the settled engine and
+ * model (undefined model: the engine's own default) — a named entry's
+ * binding, a literal entry as declared, and over either the remap's move
+ * where one applied. Every entry is present: the named-target resolution
+ * writes the map whole, and the remap rewrites the entries it moves.
+ */
+type ChainEntryTargets = ReadonlyMap<number, SettledTarget>;
 
 /**
  * The call's own target followed by its declared chain, an omitted entry
- * effort taking the call's own. The remap's moves apply here, per entry,
- * so the record's `fallback` stays the chain as declared while every
- * dispatch — and every attempt's `target` — is where the operator sent it.
+ * effort taking the call's own. The settled entries apply here, so the
+ * record's `fallback` stays the chain as declared — names included — while
+ * every dispatch, and every attempt's `target`, is where the entry resolved
+ * and the operator sent it.
  */
 function chainTargets(
   engine: EngineName,
-  options: { model?: string; effort?: string; fallback?: FallbackTarget[] },
-  moves: ChainEntryMoves = new Map()
+  options: { model?: string | undefined; effort?: string | undefined; target?: string | undefined; fallback?: FallbackTarget[] | undefined },
+  entryTargets: ChainEntryTargets = new Map()
 ): ChainTarget[] {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort },
+    { entry: -1, engine, model: options.model, effort: options.effort, name: options.target ?? null },
     ...(options.fallback ?? []).map((target, index) => {
-      const moved = moves.get(index);
+      const settled = entryTargets.get(index) ?? literalEntry(target, index);
       return {
         entry: index,
-        engine: moved?.engine ?? target.engine,
-        model: moved === undefined ? target.model : moved.model,
-        effort: target.effort ?? options.effort
+        engine: settled.engine,
+        model: settled.model,
+        effort: target.effort ?? options.effort,
+        name: target.target ?? null
       };
     })
   ];
+}
+
+/** A literal chain entry's own pair, for a chain handed over without its settled map; a named entry has none to read. */
+function literalEntry(target: FallbackTarget, index: number): SettledTarget {
+  if (target.target !== undefined) {
+    throw new Error(`fallback entry ${index} names target ${JSON.stringify(target.target)} but reached dispatch unresolved`);
+  }
+  return { engine: target.engine, model: target.model };
 }
 
 /**
@@ -239,11 +261,14 @@ function withoutChain<T extends { fallback?: FallbackTarget[] }>(options: T): T 
  * `snapshotAgentCwd`), and `in`/`ownKeys` keep answering as the author's
  * object does.
  */
-function optionsForTarget<T extends { engine?: EngineName; model?: string; effort?: string }>(options: T, target: ChainTarget): T {
+function optionsForTarget<T extends { engine?: EngineName | undefined; model?: string | undefined; effort?: string | undefined }>(
+  options: T,
+  target: ChainTarget
+): T {
   if (target.entry === -1) {
     return options;
   }
-  const overrides: Record<string, unknown> = { engine: target.engine, model: target.model, effort: target.effort };
+  const overrides: Record<string, unknown> = { engine: target.engine, model: target.model, effort: target.effort, target: target.name ?? undefined };
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
@@ -256,13 +281,28 @@ interface UnsettledAgentRecord {
   stage: "dispatching" | "admitting";
 }
 
-/** The script's per-engine model defaults, as the remap resolves a model-less target against them. */
-type RemapModelDefaults = Partial<Record<EngineName, { model?: string | undefined }>>;
+/** The options a dispatch resolves: its own target, declared literally or by name, and its chain. */
+interface DispatchDeclaration {
+  engine?: EngineName | undefined;
+  model?: string | undefined;
+  target?: string | undefined;
+  effort?: string | undefined;
+  fallback?: FallbackTarget[] | undefined;
+  label?: string | undefined;
+  phase?: string | undefined;
+}
 
-/** A dispatch after the remap: the options as dispatched, the chain entries' moves, and the moves the record and the notices name. */
+/** A dispatch after its named targets resolved: the options with the resolved engine and model laid over them, every chain entry settled, and the resolutions the record names. */
+interface ResolvedNamedDispatch<T> {
+  options: T;
+  entryTargets: ChainEntryTargets;
+  resolutions: NamedTargetEvidence[];
+}
+
+/** A dispatch after the remap: the options as dispatched, the chain entries settled with the moves applied, and the moves the record and the notices name. */
 interface RemappedDispatch<T> {
   options: T;
-  entryMoves: ChainEntryMoves;
+  entryTargets: ChainEntryTargets;
   moves: DispatchRemapEvidence[];
 }
 
@@ -382,8 +422,10 @@ interface WorkerSessionState {
   engine: EngineAdapter;
   /** The targets the remap moved at creation — the creating turn's call target and chain entries — named on every turn's record. */
   remapMoves: DispatchRemapEvidence[];
-  /** Where the remap sent each of the creating turn's chain entries. */
-  remapEntryMoves: ChainEntryMoves;
+  /** The named targets resolved at creation — the session's own and the creating turn's chain entries — named on every turn's record. */
+  namedTargets: NamedTargetEvidence[];
+  /** Where each of the creating turn's chain entries settled: its resolution, and the remap's move over it. */
+  entryTargets: ChainEntryTargets;
   /**
    * The served identity learned when this held session first reaches its
    * engine. Codex keeps one thread across turns, so later records inherit
@@ -437,7 +479,7 @@ export class WorkerSession {
   }
 
   get engine(): EngineName {
-    return this.#state.options.engine;
+    return this.#state.engine.name;
   }
 
   /** Completed turns so far (a settled send, whatever its outcome). */
@@ -506,14 +548,16 @@ export class EnsembleRuntime {
   #strip: StrippableCapability[];
   /** The launch-time dispatch remap, or null when the run has none. */
   #remap: DispatchRemapLedger | null;
+  /** The machine's named targets and the file they came from, or null when the run was given none (every name then unbound). */
+  #namedTargets: NamedTargets | null;
   /**
-   * The script's per-engine defaults a moved target's model resolves
-   * against, scoped to the workflow body that declared them: a composed
-   * child runs inside its own scope and the parent's continuation returns
-   * to the parent's, so concurrent and nested bodies never read each
-   * other's block.
+   * The script's per-engine defaults — the block a moved target's model and
+   * a named target's unsaid options resolve against — scoped to the workflow
+   * body that declared them: a composed child runs inside its own scope and
+   * the parent's continuation returns to the parent's, so concurrent and
+   * nested bodies never read each other's block.
    */
-  #workflowDefaults = new AsyncLocalStorage<RemapModelDefaults>();
+  #workflowDefaults = new AsyncLocalStorage<WorkflowDefaults>();
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -576,6 +620,7 @@ export class EnsembleRuntime {
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
     dispatchRemap?: readonly DispatchRemapRule[];
+    namedTargets?: NamedTargets;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -588,6 +633,9 @@ export class EnsembleRuntime {
     // The remap is the launcher's per-run tuning, parsed before the runtime
     // exists; an empty list is no remap, and the report then says nothing.
     this.#remap = options.dispatchRemap !== undefined && options.dispatchRemap.length > 0 ? new DispatchRemapLedger(options.dispatchRemap) : null;
+    // The bindings are read once, when the run starts, like every ambient
+    // setting: a rebinding reaches the next run, never one in flight.
+    this.#namedTargets = options.namedTargets ?? null;
     if (options.strip !== undefined) {
       // A malformed run-wide strip fails at construction, before any call
       // pays for a worker — same boundary as a malformed per-call value.
@@ -700,6 +748,7 @@ export class EnsembleRuntime {
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
       ...(options.dispatchRemap !== undefined ? { dispatchRemap: options.dispatchRemap } : {}),
+      ...(options.namedTargets !== undefined ? { namedTargets: options.namedTargets } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -731,10 +780,12 @@ export class EnsembleRuntime {
   /**
    * Runs a workflow body under its own `export const defaults`, so a call
    * the remap moves to another engine with no model named takes that
-   * engine's declared model, as an unpinned call on it would — the
-   * declaring body's block, however the bodies nest or interleave.
+   * engine's declared model, as an unpinned call on it would, and a call
+   * naming a target takes the resolved engine's block for what it left
+   * unsaid — the declaring body's block, however the bodies nest or
+   * interleave.
    */
-  runWithWorkflowDefaults<T>(defaults: RemapModelDefaults, body: () => T): T {
+  runWithWorkflowDefaults<T>(defaults: WorkflowDefaults, body: () => T): T {
     return this.#workflowDefaults.run(defaults, body);
   }
 
@@ -752,25 +803,68 @@ export class EnsembleRuntime {
   }
 
   /**
-   * Every dispatch resolves through here before its engine is looked up:
-   * the call's own target and each fallback-chain entry are matched against
-   * the remap (label, phase, `engine:model`, engine — most specific key
-   * wins), a moved target taking the rule's model, else the target engine's
-   * declared default, else that engine's own; effort rides unchanged. The
-   * phase a key matches is the call's own, else the run's current one.
+   * Every dispatch resolves its named targets here first, before the remap
+   * or anything else reads its engine: a call naming a target takes the
+   * binding's engine and model (the binding's, else the resolved engine's
+   * declared default, else that engine's own), and the resolved engine's
+   * `defaults` block for the effort and chain it left unsaid — the block the
+   * hooks' merge would have applied had the call named its engine — with
+   * the effort it did state kept and judged against the resolved engine;
+   * each chain entry naming a target settles to its binding the same way,
+   * and a literal entry settles as declared. An unbound name, or an entry
+   * bound to opencode, is refused here, before any worker spawns. A call
+   * naming no target passes through with its chain settled as declared.
    */
-  #remapDispatch<T extends { engine?: EngineName; model?: string; fallback?: FallbackTarget[]; label?: string; phase?: string }>(
-    options: T
-  ): RemappedDispatch<T> {
+  #resolveNamedTargets<T extends DispatchDeclaration>(options: T): ResolvedNamedDispatch<T> {
+    const defaults = this.#workflowDefaults.getStore() ?? {};
+    const resolved = resolveNamedTargets(this.#namedTargets, options, (engine) => defaults[engine]?.model);
+    if (options.target === undefined || resolved.own.engine === undefined) {
+      return { options, entryTargets: resolved.entries, resolutions: resolved.resolutions };
+    }
+    const engineDefaults = defaults[resolved.own.engine] ?? {};
+    const overrides: Record<string, unknown> = { engine: resolved.own.engine, model: resolved.own.model };
+    if (options.effort === undefined && engineDefaults.effort !== undefined) {
+      overrides.effort = engineDefaults.effort;
+    }
+    if (options.fallback === undefined && engineDefaults.fallback !== undefined) {
+      overrides.fallback = engineDefaults.fallback;
+    }
+    const view = withOptionOverrides(options, overrides);
+    // The validator deferred this judgement: a target call had no engine to
+    // judge its effort against until now. opencode's effort is its registry
+    // entry's variants, judged by its adapter.
+    if (view.engine !== "opencode") {
+      assertCanonicalEffortSupported(view.effort);
+    }
+    // A chain the defaults supplied was not in the declaration the resolver
+    // read: settle its entries now, under the same bindings.
+    const entryTargets =
+      overrides.fallback === undefined
+        ? resolved.entries
+        : resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model).entries;
+    return { options: view, entryTargets, resolutions: resolved.resolutions };
+  }
+
+  /**
+   * Every dispatch resolves through here before its engine is looked up, its
+   * named targets already settled: the call's own target and each
+   * fallback-chain entry are matched against the remap (label, phase,
+   * `engine:model`, engine — most specific key wins), a moved target taking
+   * the rule's model, else the target engine's declared default, else that
+   * engine's own; effort rides unchanged. The phase a key matches is the
+   * call's own, else the run's current one. A named target has resolved by
+   * now, so an `engine:model` key matches what the name resolved to.
+   */
+  #remapDispatch<T extends DispatchDeclaration>(options: T, settled: ChainEntryTargets): RemappedDispatch<T> {
     const ledger = this.#remap;
     if (ledger === null || typeof options.engine !== "string") {
-      return { options, entryMoves: new Map(), moves: [] };
+      return { options, entryTargets: settled, moves: [] };
     }
     const defaults = this.#workflowDefaults.getStore() ?? {};
     const label = options.label ?? null;
     const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const moves: DispatchRemapEvidence[] = [];
-    const entryMoves = new Map<number, { engine: EngineName; model: string | undefined }>();
+    const entryTargets = new Map<number, SettledTarget>(settled);
     const overrides: Record<string, unknown> = {};
     const own = ledger.resolve({ engine: options.engine, model: options.model, label, phase });
     if (own !== null) {
@@ -785,22 +879,23 @@ export class EnsembleRuntime {
       });
     }
     (options.fallback ?? []).forEach((target, index) => {
-      const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
+      const declared = settled.get(index) ?? literalEntry(target, index);
+      const move = ledger.resolve({ engine: declared.engine, model: declared.model, label, phase });
       if (move === null) {
         return;
       }
       const model = move.model ?? defaults[move.engine]?.model;
-      entryMoves.set(index, { engine: move.engine, model });
+      entryTargets.set(index, { engine: move.engine, model });
       moves.push({
         key: move.rule.source,
         entry: index,
-        requested: { engine: target.engine, model: target.model },
+        requested: { engine: declared.engine, model: declared.model ?? null },
         dispatched: { engine: move.engine, model: model ?? null }
       });
     });
     return {
       options: own === null ? options : withOptionOverrides(options, overrides),
-      entryMoves,
+      entryTargets,
       moves
     };
   }
@@ -910,10 +1005,12 @@ export class EnsembleRuntime {
     // judges is the value the dispatch record and the opened placement use.
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
-    // The remap moves the call before anything reads its engine: strip
-    // enforcement, admission, the budget and the record all see the
-    // dispatched target. The moves are announced once the leg has an id.
-    const remapped = this.#remapDispatch(options);
+    // A named target resolves first, then the remap moves the call, before
+    // anything reads its engine: strip enforcement, admission, the budget
+    // and the record all see the dispatched target. The moves are announced
+    // once the leg has an id.
+    const named = this.#resolveNamedTargets(options);
+    const remapped = this.#remapDispatch(named.options, named.entryTargets);
     options = remapped.options;
     if (options.schema !== undefined) {
       // A malformed schema would otherwise surface only after the first paid turn.
@@ -941,7 +1038,7 @@ export class EnsembleRuntime {
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
     // Each chain entry is judged where the remap sent it, not where the
     // script declared it.
-    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
+    for (const target of chainTargets(engine.name, options, remapped.entryTargets).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
@@ -981,7 +1078,7 @@ export class EnsembleRuntime {
       });
     }
     this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, remapped.moves);
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves, named.resolutions);
     const unsettled: UnsettledAgentRecord = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     // Dispatch-time record: persisted in-progress before the engine is
@@ -990,7 +1087,7 @@ export class EnsembleRuntime {
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryMoves);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryTargets);
       if (options.identity === true) {
         // Identified resolution (opt-in): the envelope wraps every
         // resolution, a schema call's null collapse included, so a fan-in
@@ -1088,9 +1185,11 @@ export class EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
-    // A session's engine is fixed at creation, so the remap moves it here,
-    // once, for its whole life — the creating turn's chain entries with it.
-    const remapped = this.#remapDispatch(options);
+    // A session's engine is fixed at creation, so its named target resolves
+    // and the remap moves it here, once, for its whole life — the creating
+    // turn's chain entries with it.
+    const named = this.#resolveNamedTargets(options);
+    const remapped = this.#remapDispatch(named.options, named.entryTargets);
     options = remapped.options;
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === undefined) {
@@ -1101,7 +1200,7 @@ export class EnsembleRuntime {
     // The creating turn's chain targets are dispatches of their own:
     // each must hold sessions and enforce the strip, judged now, where the
     // remap sent it.
-    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
+    for (const target of chainTargets(engine.name, options, remapped.entryTargets).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === undefined) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -1118,7 +1217,8 @@ export class EnsembleRuntime {
       options: sessionOptions,
       engine,
       remapMoves: remapped.moves,
-      remapEntryMoves: remapped.entryMoves,
+      namedTargets: named.resolutions,
+      entryTargets: remapped.entryTargets,
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
@@ -1208,7 +1308,7 @@ export class EnsembleRuntime {
       if (state.turnCount === 0) {
         this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
       }
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves);
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, state.namedTargets);
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
       // observed session identity into its dispatch-time record rather than
@@ -1233,7 +1333,7 @@ export class EnsembleRuntime {
           const targets = chainTargets(
             engine.name,
             state.turnCount === 0 ? options : withoutChain(options),
-            state.turnCount === 0 ? state.remapEntryMoves : undefined
+            state.turnCount === 0 ? state.entryTargets : undefined
           );
           const output = await this.#runChained(
             engine,
@@ -1445,11 +1545,11 @@ export class EnsembleRuntime {
     agentId: number,
     agentRecord: RuntimeAgentRecord,
     queuedAt: number,
-    entryMoves: ChainEntryMoves
+    entryTargets: ChainEntryTargets
   ): Promise<unknown> {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, entryMoves),
+      chainTargets(engine.name, options, entryTargets),
       { label: options.label ?? null, phase: options.phase ?? null },
       options.maxAttempts,
       agentId,
@@ -2700,7 +2800,8 @@ export class EnsembleRuntime {
     prompt: string,
     options: Partial<AgentOptions>,
     stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null = null,
-    remapMoves: DispatchRemapEvidence[] = []
+    remapMoves: DispatchRemapEvidence[] = [],
+    namedTargets: NamedTargetEvidence[] = []
   ): RuntimeAgentRecord {
     return {
       id,
@@ -2715,6 +2816,7 @@ export class EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === undefined ? null : options.fallback.map((target) => ({ ...target })),
       remap: remapMoves.length === 0 ? null : remapMoves.map((move) => ({ ...move, requested: { ...move.requested }, dispatched: { ...move.dispatched } })),
+      namedTargets: namedTargets.length === 0 ? null : namedTargets.map((resolution) => ({ ...resolution, resolved: { ...resolution.resolved } })),
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -2827,6 +2929,7 @@ function attemptRecord(
     attempt,
     status,
     target: { engine: target.engine, model: target.model ?? null },
+    namedTarget: target.name,
     failure,
     classification,
     chainDecision,

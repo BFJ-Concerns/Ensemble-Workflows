@@ -17,9 +17,12 @@ first:
    (normally `~/.config/ensemble/config.json`).
 4. The built-in default.
 
+The three map-valued sections — `worker_environment`, `opencode_models`, and
+`targets` — live in the file alone, with no flag or variable layer.
+
 The run record's manifest records the effective agent ceiling and
 concurrency caps with the layer that supplied each (`flag`, `env`,
-`config-file`, or `default`).
+`config-file`, or `default`), and the named targets in force.
 
 ## Defaults
 
@@ -75,6 +78,10 @@ version 1:
       "family": "glm",
       "billing": "pay-as-you-go"
     }
+  },
+  "targets": {
+    "doer": { "engine": "codex", "model": "gpt-6.1-sol" },
+    "reviewer": { "engine": "claude" }
   }
 }
 ```
@@ -90,6 +97,7 @@ version 1:
 | `status.dir` | string | Directory for live status files; must already exist while status is on |
 | `worker_environment.<engine>` | object of strings | Environment variables injected into that engine's workers |
 | `opencode_models` | object | The models opencode workers may use |
+| `targets.<name>` | object | A named target: the engine, and optionally the model, that a call naming `<name>` dispatches to |
 
 Every numeric value must be an integer of at least 1. The file is strict: an
 unsupported `schema_version`, an unknown key, an invalid value, an unreadable
@@ -166,6 +174,33 @@ the entry by its route. A key or route that would name two entries is invalid.
 With no `variants` declared, any `effort` on that model throws before the
 worker spawns. Take variants from the provider's own listing: `opencode run`
 forwards an unknown variant without complaint.
+
+### `targets`
+
+Binds names of your own choosing — `doer`, `reviewer`, `grunt`, whatever your
+routing vocabulary is — to an engine with or without a model. A workflow
+script's `agent()` and `session()` calls and its fallback-chain entries then
+name the target in place of a literal engine and model (see
+[Named targets](workflow-scripts.md#named-targets)), so one edit to this file
+moves every workflow on the machine that uses the name: to a new model when
+one is released, or onto the other family when one is misbehaving. Ensemble
+ships no names; the vocabulary is yours.
+
+| Field | Required | Description |
+|---|---|---|
+| `engine` | Yes | `codex`, `claude`, or `opencode` |
+| `model` | No | The model to dispatch. Without it the call runs the engine's model from the script's `defaults`, else the engine's own default, as an unpinned call does |
+
+A name may spell an engine's name without shadowing it: targets are reached
+through a call's `target` option and never through `engine`. The bindings are
+read when a run starts, like every other setting here, so a rebinding reaches
+the next run and never one in flight. A name no binding declares, a binding
+to an unknown engine, or a malformed binding stops the run before any worker
+starts, naming the key. Like the other maps, this section exists only in the
+file. The run record's manifest carries the bindings in force under
+`named_targets`, and each agent record names the target beside the engine
+and model it resolved to, so a reader comparing runs across a rebinding sees
+what was asked for as well as what ran.
 
 ## Environment variables
 

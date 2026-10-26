@@ -18,11 +18,11 @@ import { readWorkflowMeta, readWorkflowScript, runWorkflowScript, WorkflowTimeou
 import { StatusFileWriter } from "./status-file.js";
 import { RunRecordWriter } from "./run-record.js";
 
-import type { EffectiveRunSettingsRecord, RuntimeAgentRecord } from "./run-record.js";
+import type { EffectiveRunSettingsRecord, NamedTargetBindingsRecord, RuntimeAgentRecord } from "./run-record.js";
 import { defaultWorkflowRegistryDirs, listSavedWorkflows } from "./workflow-registry.js";
 import { harnessVersion } from "./harness-version.js";
 
-import type { AmbientSettings } from "./ambient-settings.js";
+import type { AmbientSettings, Resolved } from "./ambient-settings.js";
 import type { RunProgress } from "./progress.js";
 import type { CompletedAgentOutput, EnsembleRuntime, ShutdownTally, UnfinishedLeg } from "./runtime.js";
 import type { StrippableCapability } from "./capability-stripping.js";
@@ -373,6 +373,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
       ...(ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {}),
+      // Always passed, bindings or none: a refusal names the file that
+      // binds nothing as readily as the one that binds the wrong names.
+      namedTargets: { bindings: ambientSettings.namedTargets.value, source: ambientSettings.configFile },
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -422,7 +425,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         effectiveSettings: {
           ...recordEffectiveSettings(invocation, options.timeoutMs),
           dispatchRemap:
-            dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer }
+            dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer },
+          namedTargets: recordNamedTargets(ambientSettings)
         }
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
@@ -1027,6 +1031,16 @@ function recordEffectiveSettings(
   return {
     budgetCeilings,
     runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== undefined ? "flag" : "default" }
+  };
+}
+
+/** The bindings in force as the manifest records them: the file's layer, every binding's model `null` where it leaves the engine's default to decide. */
+function recordNamedTargets(ambientSettings: AmbientSettings): Resolved<NamedTargetBindingsRecord> {
+  return {
+    value: Object.fromEntries(
+      Object.entries(ambientSettings.namedTargets.value).map(([name, binding]) => [name, { engine: binding.engine, model: binding.model ?? null }])
+    ),
+    layer: ambientSettings.namedTargets.layer
   };
 }
 

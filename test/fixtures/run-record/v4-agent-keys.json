@@ -14,6 +14,7 @@
   "kind",
   "label",
   "model",
+  "named_targets",
   "options",
   "parse_route",
   "phase",

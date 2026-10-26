@@ -14178,6 +14178,11 @@ var FallbackTargetRejectedError = class extends AgentOptionRejectedError {
     super(`Invalid fallback chain: ${detail}`);
   }
 };
+var NamedTargetRejectedError = class extends AgentOptionRejectedError {
+  constructor(detail) {
+    super(`Invalid named target: ${detail}`);
+  }
+};
 var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
   constructor(engine, capability, detail) {
     super(
@@ -14354,6 +14359,7 @@ function assertCanonicalEffortSupported(effort) {
 }
 var AGENT_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   schema: true,
   model: true,
   effort: true,
@@ -14412,7 +14418,8 @@ function assertValidAgentOptions(options) {
       throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
     }
   });
-  if (values.engine !== "opencode") {
+  collect(() => assertValidDispatchTarget(values));
+  if (values.engine !== "opencode" && values.target === void 0) {
     collect(() => assertCanonicalEffortSupported(values.effort));
   }
   collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
@@ -14435,6 +14442,7 @@ function assertValidAgentOptions(options) {
 }
 var WORKER_SESSION_OPTION_KEYS = Object.keys({
   engine: true,
+  target: true,
   model: true,
   effort: true,
   fallback: true,
@@ -14461,7 +14469,8 @@ function assertValidWorkerSessionOptions(options) {
   if (values.isolation !== void 0 && values.isolation !== "worktree") {
     throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
   }
-  if (values.engine !== "opencode") {
+  assertValidDispatchTarget(values);
+  if (values.engine !== "opencode" && values.target === void 0) {
     assertCanonicalEffortSupported(values.effort);
   }
   assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS);
@@ -14473,6 +14482,20 @@ function assertValidWorkerSessionOptions(options) {
     assertValidStripOption(values.strip);
   }
   assertValidFallbackChain(values.fallback);
+}
+function assertValidDispatchTarget(values) {
+  if (values.target === void 0) {
+    return;
+  }
+  if (typeof values.target !== "string" || values.target.length === 0) {
+    throw new InvalidAgentOptionValueError("target", values.target, "a non-empty string naming a target the machine configuration binds");
+  }
+  if (values.engine !== void 0 || values.model !== void 0) {
+    const literal2 = values.engine !== void 0 ? `engine ${JSON.stringify(values.engine)}` : `model ${JSON.stringify(values.model)}`;
+    throw new NamedTargetRejectedError(
+      `a call names a target or a literal engine and model, never both \u2014 ${JSON.stringify(values.target)} beside ${literal2}`
+    );
+  }
 }
 var SESSION_TURN_OPTION_KEYS = ["schema"];
 var SESSION_TURN_OPTION_KEY_SET = new Set(SESSION_TURN_OPTION_KEYS);
@@ -14488,7 +14511,7 @@ function assertValidFallbackChain(chain) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } or { target, effort? } targets");
   }
   if (chain.length === 0) {
     throw new FallbackTargetRejectedError("the chain must not be empty");
@@ -14496,12 +14519,24 @@ function assertValidFallbackChain(chain) {
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model, or a target`);
     }
     for (const key of Object.keys(target)) {
-      if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+      if (key !== "engine" && key !== "model" && key !== "effort" && key !== "target") {
+        throw new FallbackTargetRejectedError(
+          `entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort, or a named target and optionally effort`
+        );
       }
+    }
+    if (target.target !== void 0) {
+      if (typeof target.target !== "string" || target.target.length === 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
+      }
+      if (target.engine !== void 0 || target.model !== void 0) {
+        throw new FallbackTargetRejectedError(`entry ${index} names target ${JSON.stringify(target.target)} beside a literal engine or model; an entry names one or the other`);
+      }
+      assertChainEntryEffort(target, index);
+      return;
     }
     if (target.engine === "opencode") {
       throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
@@ -14512,10 +14547,13 @@ function assertValidFallbackChain(chain) {
     if (typeof target.model !== "string" || target.model.length === 0) {
       throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
     }
-    if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
-    }
+    assertChainEntryEffort(target, index);
   });
+}
+function assertChainEntryEffort(target, index) {
+  if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
+    throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+  }
 }
 function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRegistry) {
   const registered = registry.get(model);
@@ -15248,7 +15286,8 @@ function resolveAmbientSettings(input) {
     runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
     statusDir: resolveStatus(config, input.env, input.cwd),
     workerEnvironment: config?.worker_environment ?? {},
-    openCodeModels: openCodeModelEntries(config?.opencode_models)
+    openCodeModels: openCodeModelEntries(config?.opencode_models),
+    namedTargets: config?.targets === void 0 ? { value: {}, layer: "default" } : { value: config.targets, layer: "config-file" }
   };
 }
 function machineConfigPath(env) {
@@ -15276,7 +15315,7 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models", "targets"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
@@ -15290,6 +15329,7 @@ function readMachineConfig(configFile) {
   validateSection(parsed, "status", ["enabled", "dir"], configFile, validateRunSetting);
   validateWorkerEnvironment(parsed, configFile);
   validateOpenCodeModels(parsed, configFile);
+  validateTargets(parsed, configFile);
   return parsed;
 }
 function validateSection(root, key, knownKeys, configFile, validate) {
@@ -15390,6 +15430,31 @@ function validateOpenCodeModelDeclaration(key, declaration, configFile) {
   if (variants !== void 0) {
     if (!Array.isArray(variants) || variants.some((variant) => typeof variant !== "string" || variant.trim().length === 0) || new Set(variants).size !== variants.length) {
       throw fileValueError(configFile, `${qualified}.variants`, "must be an array of distinct non-empty strings");
+    }
+  }
+}
+function validateTargets(root, configFile) {
+  const section = root.targets;
+  if (section === void 0) {
+    return;
+  }
+  if (!isObject(section) || Array.isArray(section)) {
+    throw fileValueError(configFile, "targets", "must be a JSON object of target names to { engine, model? } bindings");
+  }
+  for (const [name, binding] of Object.entries(section)) {
+    if (name.trim().length === 0) {
+      throw fileValueError(configFile, "targets", "target names must be non-empty");
+    }
+    const qualified = `targets.${name}`;
+    if (!isObject(binding) || Array.isArray(binding)) {
+      throw fileValueError(configFile, qualified, "must be a JSON object naming engine and optionally model");
+    }
+    assertKnownKeys(binding, ["engine", "model"], configFile, qualified);
+    if (!ENGINES.includes(binding.engine)) {
+      throw fileValueError(configFile, `${qualified}.engine`, `must be one of ${ENGINES.join(" | ")}`);
+    }
+    if (binding.model !== void 0 && (typeof binding.model !== "string" || binding.model.trim().length === 0)) {
+      throw fileValueError(configFile, `${qualified}.model`, "must be a non-empty string");
     }
   }
 }
@@ -15987,6 +16052,7 @@ var RunRecordWriter = class _RunRecordWriter {
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
       dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
       dispatch_remap_unmatched: null,
+      named_targets: options.effectiveSettings?.namedTargets ?? { value: {}, layer: "default" },
       git: {
         start: gitStart,
         end: null
@@ -16212,6 +16278,7 @@ var RunRecordWriter = class _RunRecordWriter {
       effort: record.effort,
       fallback: record.fallback,
       remap: record.remap,
+      named_targets: record.namedTargets,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -16251,6 +16318,7 @@ var RunRecordWriter = class _RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         target: attempt.target,
+        named_target: attempt.namedTarget,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,
@@ -17434,6 +17502,42 @@ function claudeApiErrorOf(diagnostics) {
     status: typeof record.status === "number" ? record.status : null,
     code: typeof record.code === "string" ? record.code : null
   };
+}
+
+// src/named-targets.ts
+function resolveNamedTargets(targets, declared, declaredModel) {
+  const resolutions = [];
+  const resolve = (name, entry) => {
+    const binding = bindingFor(targets, name);
+    const model = binding.model ?? declaredModel(binding.engine);
+    resolutions.push({ name, entry, resolved: { engine: binding.engine, model: model ?? null } });
+    return { engine: binding.engine, model };
+  };
+  const own = declared.target === void 0 ? { engine: declared.engine, model: declared.model } : resolve(declared.target, -1);
+  const entries = /* @__PURE__ */ new Map();
+  (declared.fallback ?? []).forEach((entry, index) => {
+    if (entry.target === void 0) {
+      entries.set(index, { engine: entry.engine, model: entry.model });
+      return;
+    }
+    const settled = resolve(entry.target, index);
+    if (settled.engine === "opencode") {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(entry.target)}, bound to the opencode engine, which is held at its one-shot surface and takes no chain entries`
+      );
+    }
+    entries.set(index, settled);
+  });
+  return { own, entries, resolutions };
+}
+function bindingFor(targets, name) {
+  const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
+  if (binding !== void 0) {
+    return binding;
+  }
+  const bound = targets === null ? [] : Object.keys(targets.bindings);
+  const where = targets === null ? `this run has no targets map (the machine configuration's "targets" section binds names to an engine and model)` : bound.length === 0 ? `${targets.source} binds no targets` : `${targets.source} binds ${bound.map((other) => JSON.stringify(other)).join(", ")}`;
+  throw new NamedTargetRejectedError(`${JSON.stringify(name)} is not bound: ${where}`);
 }
 
 // src/claude-control-plane.ts
@@ -21832,19 +21936,26 @@ var ChainAdvance = class {
   }
   engine;
 };
-function chainTargets(engine, options, moves = /* @__PURE__ */ new Map()) {
+function chainTargets(engine, options, entryTargets = /* @__PURE__ */ new Map()) {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort },
+    { entry: -1, engine, model: options.model, effort: options.effort, name: options.target ?? null },
     ...(options.fallback ?? []).map((target, index) => {
-      const moved = moves.get(index);
+      const settled = entryTargets.get(index) ?? literalEntry(target, index);
       return {
         entry: index,
-        engine: moved?.engine ?? target.engine,
-        model: moved === void 0 ? target.model : moved.model,
-        effort: target.effort ?? options.effort
+        engine: settled.engine,
+        model: settled.model,
+        effort: target.effort ?? options.effort,
+        name: target.target ?? null
       };
     })
   ];
+}
+function literalEntry(target, index) {
+  if (target.target !== void 0) {
+    throw new Error(`fallback entry ${index} names target ${JSON.stringify(target.target)} but reached dispatch unresolved`);
+  }
+  return { engine: target.engine, model: target.model };
 }
 function withoutChain(options) {
   return new Proxy(options, {
@@ -21857,7 +21968,7 @@ function optionsForTarget(options, target) {
   if (target.entry === -1) {
     return options;
   }
-  const overrides = { engine: target.engine, model: target.model, effort: target.effort };
+  const overrides = { engine: target.engine, model: target.model, effort: target.effort, target: target.name ?? void 0 };
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
@@ -21910,7 +22021,7 @@ var WorkerSession = class {
     return this.#state.id;
   }
   get engine() {
-    return this.#state.options.engine;
+    return this.#state.engine.name;
   }
   /** Completed turns so far (a settled send, whatever its outcome). */
   get turns() {
@@ -21968,12 +22079,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #strip;
   /** The launch-time dispatch remap, or null when the run has none. */
   #remap;
+  /** The machine's named targets and the file they came from, or null when the run was given none (every name then unbound). */
+  #namedTargets;
   /**
-   * The script's per-engine defaults a moved target's model resolves
-   * against, scoped to the workflow body that declared them: a composed
-   * child runs inside its own scope and the parent's continuation returns
-   * to the parent's, so concurrent and nested bodies never read each
-   * other's block.
+   * The script's per-engine defaults — the block a moved target's model and
+   * a named target's unsaid options resolve against — scoped to the workflow
+   * body that declared them: a composed child runs inside its own scope and
+   * the parent's continuation returns to the parent's, so concurrent and
+   * nested bodies never read each other's block.
    */
   #workflowDefaults = new AsyncLocalStorage();
   #eventListeners = /* @__PURE__ */ new Set();
@@ -22028,6 +22141,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #codexSessionStaleAfterMs;
   constructor(options) {
     this.#remap = options.dispatchRemap !== void 0 && options.dispatchRemap.length > 0 ? new DispatchRemapLedger(options.dispatchRemap) : null;
+    this.#namedTargets = options.namedTargets ?? null;
     if (options.strip !== void 0) {
       assertValidStripOption(options.strip);
     }
@@ -22120,6 +22234,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
       ...options.dispatchRemap !== void 0 ? { dispatchRemap: options.dispatchRemap } : {},
+      ...options.namedTargets !== void 0 ? { namedTargets: options.namedTargets } : {},
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -22141,8 +22256,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
   /**
    * Runs a workflow body under its own `export const defaults`, so a call
    * the remap moves to another engine with no model named takes that
-   * engine's declared model, as an unpinned call on it would — the
-   * declaring body's block, however the bodies nest or interleave.
+   * engine's declared model, as an unpinned call on it would, and a call
+   * naming a target takes the resolved engine's block for what it left
+   * unsaid — the declaring body's block, however the bodies nest or
+   * interleave.
    */
   runWithWorkflowDefaults(defaults, body) {
     return this.#workflowDefaults.run(defaults, body);
@@ -22160,23 +22277,59 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return { rules: this.#remap.rules.map((rule) => rule.source), unmatched: this.#remap.unmatched() };
   }
   /**
-   * Every dispatch resolves through here before its engine is looked up:
-   * the call's own target and each fallback-chain entry are matched against
-   * the remap (label, phase, `engine:model`, engine — most specific key
-   * wins), a moved target taking the rule's model, else the target engine's
-   * declared default, else that engine's own; effort rides unchanged. The
-   * phase a key matches is the call's own, else the run's current one.
+   * Every dispatch resolves its named targets here first, before the remap
+   * or anything else reads its engine: a call naming a target takes the
+   * binding's engine and model (the binding's, else the resolved engine's
+   * declared default, else that engine's own), and the resolved engine's
+   * `defaults` block for the effort and chain it left unsaid — the block the
+   * hooks' merge would have applied had the call named its engine — with
+   * the effort it did state kept and judged against the resolved engine;
+   * each chain entry naming a target settles to its binding the same way,
+   * and a literal entry settles as declared. An unbound name, or an entry
+   * bound to opencode, is refused here, before any worker spawns. A call
+   * naming no target passes through with its chain settled as declared.
    */
-  #remapDispatch(options) {
+  #resolveNamedTargets(options) {
+    const defaults = this.#workflowDefaults.getStore() ?? {};
+    const resolved = resolveNamedTargets(this.#namedTargets, options, (engine) => defaults[engine]?.model);
+    if (options.target === void 0 || resolved.own.engine === void 0) {
+      return { options, entryTargets: resolved.entries, resolutions: resolved.resolutions };
+    }
+    const engineDefaults = defaults[resolved.own.engine] ?? {};
+    const overrides = { engine: resolved.own.engine, model: resolved.own.model };
+    if (options.effort === void 0 && engineDefaults.effort !== void 0) {
+      overrides.effort = engineDefaults.effort;
+    }
+    if (options.fallback === void 0 && engineDefaults.fallback !== void 0) {
+      overrides.fallback = engineDefaults.fallback;
+    }
+    const view = withOptionOverrides(options, overrides);
+    if (view.engine !== "opencode") {
+      assertCanonicalEffortSupported(view.effort);
+    }
+    const entryTargets = overrides.fallback === void 0 ? resolved.entries : resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model).entries;
+    return { options: view, entryTargets, resolutions: resolved.resolutions };
+  }
+  /**
+   * Every dispatch resolves through here before its engine is looked up, its
+   * named targets already settled: the call's own target and each
+   * fallback-chain entry are matched against the remap (label, phase,
+   * `engine:model`, engine — most specific key wins), a moved target taking
+   * the rule's model, else the target engine's declared default, else that
+   * engine's own; effort rides unchanged. The phase a key matches is the
+   * call's own, else the run's current one. A named target has resolved by
+   * now, so an `engine:model` key matches what the name resolved to.
+   */
+  #remapDispatch(options, settled) {
     const ledger = this.#remap;
     if (ledger === null || typeof options.engine !== "string") {
-      return { options, entryMoves: /* @__PURE__ */ new Map(), moves: [] };
+      return { options, entryTargets: settled, moves: [] };
     }
     const defaults = this.#workflowDefaults.getStore() ?? {};
     const label = options.label ?? null;
     const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const moves = [];
-    const entryMoves = /* @__PURE__ */ new Map();
+    const entryTargets = new Map(settled);
     const overrides = {};
     const own = ledger.resolve({ engine: options.engine, model: options.model, label, phase });
     if (own !== null) {
@@ -22191,22 +22344,23 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     (options.fallback ?? []).forEach((target, index) => {
-      const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
+      const declared = settled.get(index) ?? literalEntry(target, index);
+      const move = ledger.resolve({ engine: declared.engine, model: declared.model, label, phase });
       if (move === null) {
         return;
       }
       const model = move.model ?? defaults[move.engine]?.model;
-      entryMoves.set(index, { engine: move.engine, model });
+      entryTargets.set(index, { engine: move.engine, model });
       moves.push({
         key: move.rule.source,
         entry: index,
-        requested: { engine: target.engine, model: target.model },
+        requested: { engine: declared.engine, model: declared.model ?? null },
         dispatched: { engine: move.engine, model: model ?? null }
       });
     });
     return {
       options: own === null ? options : withOptionOverrides(options, overrides),
-      entryMoves,
+      entryTargets,
       moves
     };
   }
@@ -22285,7 +22439,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     assertValidAgentPrompt(prompt);
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
-    const remapped = this.#remapDispatch(options);
+    const named = this.#resolveNamedTargets(options);
+    const remapped = this.#remapDispatch(named.options, named.entryTargets);
     options = remapped.options;
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
@@ -22296,7 +22451,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
+    for (const target of chainTargets(engine.name, options, remapped.entryTargets).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
@@ -22318,13 +22473,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
     this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, remapped.moves);
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves, named.resolutions);
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryMoves);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryTargets);
       if (options.identity === true) {
         const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
@@ -22404,7 +22559,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
-    const remapped = this.#remapDispatch(options);
+    const named = this.#resolveNamedTargets(options);
+    const remapped = this.#remapDispatch(named.options, named.entryTargets);
     options = remapped.options;
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
@@ -22412,7 +22568,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
+    for (const target of chainTargets(engine.name, options, remapped.entryTargets).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -22428,7 +22584,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       options: sessionOptions,
       engine,
       remapMoves: remapped.moves,
-      remapEntryMoves: remapped.entryMoves,
+      namedTargets: named.resolutions,
+      entryTargets: remapped.entryTargets,
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
@@ -22513,7 +22670,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (state.turnCount === 0) {
         this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
       }
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves);
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, state.namedTargets);
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -22526,7 +22683,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const targets = chainTargets(
             engine.name,
             state.turnCount === 0 ? options : withoutChain(options),
-            state.turnCount === 0 ? state.remapEntryMoves : void 0
+            state.turnCount === 0 ? state.entryTargets : void 0
           );
           const output = await this.#runChained(
             engine,
@@ -22678,10 +22835,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt, entryMoves) {
+  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt, entryTargets) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options, entryMoves),
+      chainTargets(engine.name, options, entryTargets),
       { label: options.label ?? null, phase: options.phase ?? null },
       options.maxAttempts,
       agentId,
@@ -23636,7 +23793,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null, remapMoves = []) {
+  #newAgentRecord(id, engine, prompt, options, stripRoutes = null, remapMoves = [], namedTargets = []) {
     return {
       id,
       engine,
@@ -23650,6 +23807,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
       remap: remapMoves.length === 0 ? null : remapMoves.map((move) => ({ ...move, requested: { ...move.requested }, dispatched: { ...move.dispatched } })),
+      namedTargets: namedTargets.length === 0 ? null : namedTargets.map((resolution) => ({ ...resolution, resolved: { ...resolution.resolved } })),
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -23710,6 +23868,7 @@ function attemptRecord(attempt, target, status, failure, rawOutput, validatedOut
     attempt,
     status,
     target: { engine: target.engine, model: target.model ?? null },
+    namedTarget: target.name,
     failure,
     classification,
     chainDecision,
@@ -30898,6 +31057,9 @@ async function runEnsembleCli(argv, options = {}) {
       ...dispatchRemap !== null ? { dispatchRemap: dispatchRemap.rules } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {},
+      // Always passed, bindings or none: a refusal names the file that
+      // binds nothing as readily as the one that binds the wrong names.
+      namedTargets: { bindings: ambientSettings.namedTargets.value, source: ambientSettings.configFile },
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
@@ -30930,7 +31092,8 @@ async function runEnsembleCli(argv, options = {}) {
         concurrency: recordConcurrency(ambientSettings, progress),
         effectiveSettings: {
           ...recordEffectiveSettings(invocation, options.timeoutMs),
-          dispatchRemap: dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer }
+          dispatchRemap: dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer },
+          namedTargets: recordNamedTargets(ambientSettings)
         }
       });
       runtime.setRunRecorder?.(runRecordWriter);
@@ -31328,6 +31491,14 @@ function recordEffectiveSettings(invocation, injectedTimeoutMs) {
   return {
     budgetCeilings,
     runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== void 0 ? "flag" : "default" }
+  };
+}
+function recordNamedTargets(ambientSettings) {
+  return {
+    value: Object.fromEntries(
+      Object.entries(ambientSettings.namedTargets.value).map(([name, binding]) => [name, { engine: binding.engine, model: binding.model ?? null }])
+    ),
+    layer: ambientSettings.namedTargets.layer
   };
 }
 var CliUsageError = class extends Error {

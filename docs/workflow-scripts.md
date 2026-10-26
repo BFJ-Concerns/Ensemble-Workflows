@@ -78,8 +78,9 @@ constrain what a worker does, not what it can do.
 ### `agent()`
 
 `agent(prompt, options)` runs one worker on `options.engine` — `"codex"`,
-`"claude"`, or `"opencode"`. There is no default engine. The prompt must be a
-non-empty string.
+`"claude"`, or `"opencode"` — or on the engine and model a named target binds
+(`options.target`; see [Named targets](#named-targets)). There is no default
+engine. The prompt must be a non-empty string.
 
 - With `options.schema`, it returns a value that validates against the
   schema, or `null` once its attempts are exhausted.
@@ -92,7 +93,9 @@ A failed call returns `null` rather than throwing; see
 ### Fallback chains
 
 `fallback` declares an ordered chain of other targets for a call —
-`[{ engine, model, effort? }, …]`, each a Codex or Claude target. Ensemble
+`[{ engine, model, effort? }, …]`, each a Codex or Claude target, or
+`{ target, effort? }` naming a [named target](#named-targets) bound to one.
+Ensemble
 moves the call to the next target when the current one fails for
 **availability**: the allowance is exhausted, the provider is overloaded past
 its own retries, or the engine's process died or never started. Output
@@ -108,9 +111,10 @@ target and never advance the chain.
   budget.
 - A chain whose every target refuses fails with the last target's own
   failure.
-- An empty or malformed chain, an opencode entry, or an engine the run does
-  not have throws `FallbackTargetRejectedError` before any worker spawns. An
-  opencode call may declare a chain of Codex and Claude targets.
+- An empty or malformed chain, an opencode entry (literal, or a named target
+  bound to opencode), or an engine the run does not have throws
+  `FallbackTargetRejectedError` before any worker spawns. An opencode call may
+  declare a chain of Codex and Claude targets.
 
 Every step is a dispatch Ensemble makes and records itself. The run record
 shows each attempt's target and which entry answered, and stderr says when a
@@ -169,6 +173,43 @@ ENSEMBLE_DISPATCH_REMAP='claude=codex:gpt-6.1-sol' ensemble review.js
 
 A run whose coder and reviewer both land on one family has bought throughput,
 not the cross-engine check; the record keeps that visible.
+
+### Named targets
+
+The machine configuration's `targets` map (see
+[Configuration](configuration.md#targets)) binds the operator's own names to
+an engine with or without a model. A script names the target where it would
+have named an engine and model:
+
+```js
+const plan = await agent("Plan the change", { target: "top_tier", effort: "high" });
+const diff = await agent("Implement it", { target: "doer", fallback: [{ target: "reviewer" }] });
+const held = session({ target: "reviewer", label: "critic" });
+```
+
+- **`target` replaces `engine` and `model`.** A call names one or the other:
+  a `target` beside an `engine` or `model` throws before any worker spawns.
+  The names are a namespace of their own, so a name may spell an engine's
+  name without shadowing it.
+- **Resolution happens before the worker spawns.** The bindings are read when
+  the run starts; a name the file does not bind throws
+  `NamedTargetRejectedError` naming the name and the file, so a script that
+  uses names needs the machine to bind them, and a script meant to travel
+  keeps literal engines and models. Ensemble ships no names.
+- **The resolved engine's `defaults` apply.** A binding with no model takes
+  the script's `defaults` model for the resolved engine, else that engine's
+  own default, as an unpinned call would; the block's `effort` and `fallback`
+  fill what the call left unsaid, and an `effort` the call states is kept.
+- **Every script dispatch resolves names**: a call's own target, a
+  fallback-chain entry (`{ target, effort? }`), and a session's creation,
+  once, for its life. The dispatch remap acts on the resolved pair, so an
+  `engine:model` key matches what the name resolved to.
+- **The record says so**: the manifest's `named_targets` carries the
+  bindings in force, each agent record's `named_targets` names each target
+  the call declared beside the engine and model it resolved to, and every
+  attempt's `named_target` names the target it was dispatched through (see
+  [Run records](run-records.md#agent-records)). `fallback` stays the chain as
+  declared, names included.
 
 ### `parallel()` and `pipeline()`
 
@@ -243,16 +284,19 @@ the parsed value of `--json-args` (a JSON `null` arrives as an empty array).
 
 ## `agent()` options
 
-`engine` is required: `"codex"`, `"claude"`, or `"opencode"`. An omitted or
-unknown engine throws before any worker spawns.
+`engine` is required — `"codex"`, `"claude"`, or `"opencode"` — unless
+`target` names a target the machine configuration binds; one or the other,
+never both. An omitted or unknown engine, or an unbound target, throws before
+any worker spawns.
 
 | Option | Description |
 |---|---|
 | `engine` | Engine to run on |
+| `target` | A named target bound in the machine configuration, in place of `engine` and `model` (see [Named targets](#named-targets)) |
 | `model` | Model to run (see per-engine notes below) |
 | `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
 | `schema` | JSON Schema the answer must satisfy |
-| `fallback` | Ordered chain of `{ engine, model, effort? }` targets (see [Fallback chains](#fallback-chains)) |
+| `fallback` | Ordered chain of `{ engine, model, effort? }` or `{ target, effort? }` targets (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
 | `isolation` | `"worktree"` to run in a fresh git worktree (see [Worktree isolation](#worktree-isolation)) |
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |
@@ -261,9 +305,9 @@ unknown engine throws before any worker spawns.
 | `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
 | `label`, `phase` | Bookkeeping shown in progress output and the run record |
 
-An unrecognised option, or an invalid value for `effort`, `isolation`,
-`timeoutMs`, `maxAttempts`, `identity`, or `strip`, throws before the worker
-spawns. `model`, `label`, and `phase` pass through unchecked. A `timeoutMs`
+An unrecognised option, or an invalid value for `target`, `effort`,
+`isolation`, `timeoutMs`, `maxAttempts`, `identity`, or `strip`, throws before
+the worker spawns. `model`, `label`, and `phase` pass through unchecked. A `timeoutMs`
 above the maximum is rejected rather than silently shortened.
 
 Schemas are JSON Schema draft-07 (the default when `$schema` is omitted) or

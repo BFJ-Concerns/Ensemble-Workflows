@@ -375,6 +375,11 @@ families with their own schema versions (`3` and `2`), described above.
 - `dispatch_remap_unmatched`: the rules that matched no dispatch by the run's
   end, as written; `[]` when every rule caught something, `null` while the
   run is open or where no remap was in force.
+- `named_targets`: the machine configuration's named targets in force when
+  the run started, as `{ value, layer }` — `value` maps each name to
+  `{ engine, model }` (`model` `null` where the binding leaves it to the
+  engine's default), with layer `config-file`; `{}` with layer `default` when
+  the file declares none.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -440,8 +445,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   and `null` when the engine reported none, never an echo of the request.
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with.
-- `fallback`: the declared fallback chain (`[{ engine, model, effort? }]`, as
-  the call or its engine defaults declared it), or `null`.
+- `fallback`: the declared fallback chain, as the call or its engine defaults
+  declared it — each entry `{ engine, model, effort? }` or, for a named
+  target, `{ target, effort? }` — or `null`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, where
   `entry` is `-1` for the call's own target and the chain index after that,
   and `model` is the answering attempt's served model (`null` if unreported) —
@@ -454,6 +460,11 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   `model` are the dispatched target; `fallback` stays the chain as declared,
   each attempt's `target` says where the entry went, and the script's own
   request is under `remap`.
+- `named_targets`: the named targets the call declared, each
+  `{ name, entry, resolved: { engine, model } }` (`entry` as for `remap`;
+  `resolved` is the engine and model the name bound to, before any remap) —
+  `null` when the call named none. The top-level `engine` and `model` are the
+  resolved call target; `fallback` keeps the names it declared.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).
@@ -502,6 +513,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   - `status` and `target` (`{ engine, model }`: the engine and requested
     model this attempt was dispatched to — the call's own until a fallback
     chain advances).
+  - `named_target`: the named target this attempt's target was declared
+    through, or `null` where the call or chain entry named its engine
+    literally.
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
     where it reports one, otherwise the attempt's recorded endpoints, so an
     attempt that ran never has a `null` duration), and `first_delta_ms`.

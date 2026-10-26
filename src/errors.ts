@@ -765,12 +765,16 @@ function formatAgentOptionValue(value: unknown): string {
  * The durable run record could not start: its directory could not be
  * created or its opening artefacts could not be written. An operational
  * failure of the run (recording was enabled, so the run has no archive),
- * rendered cause-first in one line; the filesystem error rides `cause`.
+ * rendered cause-first in one line; the message also reaches the stdout
+ * envelope, while the filesystem error rides `cause`.
  */
+export const RUN_RECORD_START_REMEDIES =
+  "run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>";
+
 export class RunRecordStartError extends EnsembleError {
   constructor(readonly storeDir: string, cause: unknown) {
     super(
-      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)} — ${RUN_RECORD_START_REMEDIES}`,
       { cause }
     );
   }

@@ -14260,10 +14260,11 @@ function formatAgentOptionValue(value) {
     }
   }
 }
+var RUN_RECORD_START_REMEDIES = "run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>";
 var RunRecordStartError = class extends EnsembleError {
   constructor(storeDir, cause) {
     super(
-      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)} \u2014 ${RUN_RECORD_START_REMEDIES}`,
       { cause }
     );
     this.storeDir = storeDir;
@@ -16706,10 +16707,12 @@ function presentOperationalError(error) {
 var UNWRITABLE_LOCATION_CODES = /* @__PURE__ */ new Set(["EACCES", "EPERM", "EROFS", "ENOENT", "ENOTDIR"]);
 function runRecordStartDiagnosis(error) {
   const { syscall, code } = error.filesystemFailure;
-  const cause = code !== null && UNWRITABLE_LOCATION_CODES.has(code) ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} \u2014 the location is not writable or creatable for this caller (${code})` : error.message;
-  return [
-    `${cause} \u2014 run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
-  ];
+  if (code !== null && UNWRITABLE_LOCATION_CODES.has(code)) {
+    return [
+      `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} \u2014 the location is not writable or creatable for this caller (${code}) \u2014 ${RUN_RECORD_START_REMEDIES}`
+    ];
+  }
+  return [error.message];
 }
 function diagnose(error, context) {
   if (isInterrupt(error)) {

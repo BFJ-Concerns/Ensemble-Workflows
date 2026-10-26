@@ -455,10 +455,14 @@ test("a store the launcher cannot create announces no sentinel path and names th
     assert.doesNotMatch(stderr.text(), /\[sentinel\] will write /, "no path may be announced under a store that cannot be created");
     assert.ok(lines.some((line) => line.startsWith("the durable run record could not start: cannot create ")), stderr.text());
     assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
-    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string } };
+    const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string; message: string } };
     assert.equal(envelope.partial, true);
     assert.equal(envelope.reason, "failed");
     assert.equal(envelope.error.kind, "RunRecordStartError");
+    assert.match(envelope.error.message, /the durable run record could not start under .*store-blocker/);
+    assert.match(envelope.error.message, /ENSEMBLE_RUN_RECORD=off/);
+    assert.match(envelope.error.message, /ENSEMBLE_RUN_RECORD_DIR=<a writable data home>/);
+    assert.doesNotMatch(envelope.error.message, /\n/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

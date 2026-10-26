@@ -5,6 +5,7 @@ import {
   EngineShutdownError,
   HoldTimeoutError,
   PreSpawnAuthorError,
+  RUN_RECORD_START_REMEDIES,
   RunRecordStartError,
   TurnTimeoutError,
   agentIdentityOf,
@@ -70,13 +71,12 @@ const UNWRITABLE_LOCATION_CODES = new Set(["EACCES", "EPERM", "EROFS", "ENOENT",
  */
 function runRecordStartDiagnosis(error: RunRecordStartError): string[] {
   const { syscall, code } = error.filesystemFailure;
-  const cause =
-    code !== null && UNWRITABLE_LOCATION_CODES.has(code)
-      ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} — the location is not writable or creatable for this caller (${code})`
-      : error.message;
-  return [
-    `${cause} — run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
-  ];
+  if (code !== null && UNWRITABLE_LOCATION_CODES.has(code)) {
+    return [
+      `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} — the location is not writable or creatable for this caller (${code}) — ${RUN_RECORD_START_REMEDIES}`
+    ];
+  }
+  return [error.message];
 }
 
 function diagnose(error: unknown, context: TerminalPresentationContext): string[] | null {

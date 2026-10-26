@@ -143,8 +143,8 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
   assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
   assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
 
-  // A writer given no effective settings still publishes the honest default
-  // shape rather than omitting the keys.
+  // A writer given no effective settings retains the keys without claiming
+  // that the CLI resolved a layer it never consulted.
   const bare = await RunRecordWriter.start({
     storeDir: store,
     cwd,
@@ -161,10 +161,10 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
   };
   assert.deepEqual(bareManifest.budget_ceilings, {});
   assert.deepEqual(bareManifest.run_timeout_ms, { value: null, layer: "default" });
-  assert.deepEqual((bareManifest as Record<string, unknown>).run_record_enabled, { value: true, layer: "default" });
-  assert.deepEqual((bareManifest as Record<string, unknown>).run_record_dir, { value: store, layer: "default" });
-  assert.deepEqual((bareManifest as Record<string, unknown>).status_enabled, { value: true, layer: "default" });
-  assert.deepEqual((bareManifest as Record<string, unknown>).status_dir, { value: null, layer: "default" });
+  assert.equal((bareManifest as Record<string, unknown>).run_record_enabled, null);
+  assert.equal((bareManifest as Record<string, unknown>).run_record_dir, null);
+  assert.equal((bareManifest as Record<string, unknown>).status_enabled, null);
+  assert.equal((bareManifest as Record<string, unknown>).status_dir, null);
   assert.equal((bareManifest as Record<string, unknown>).caller_identity_setting, null);
 });
 
@@ -387,6 +387,29 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   assert.deepEqual(manifest.status_enabled, { value: true, layer: "env" });
   assert.deepEqual(manifest.status_dir, { value: statusDir, layer: "env" });
   assert.deepEqual(manifest.caller_identity_setting, { value: "flag:accounting", layer: "flag" });
+});
+
+test("CLI attributes environment caller identity without a flag", async () => {
+  const cwd = await gitRepo("ensemble-record-caller-env-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-caller-env-store-"));
+  const script = path.join(cwd, "workflow.js");
+  await writeFile(script, "export const meta = { name: 'caller-env' }; return true;\n");
+
+  const exitCode = await runEnsembleCli([script], {
+    cwd,
+    env: { ENSEMBLE_RUN_RECORD_DIR: store, ENSEMBLE_CALLER_IDENTITY: "env:accounting" },
+    stdout: new CaptureStream(),
+    stderr: new CaptureStream()
+  });
+  assert.equal(exitCode, 0);
+  const runDirectories = await readdir(path.join(store, "runs", "cwd"), { recursive: true });
+  const manifestRelative = runDirectories.find((entry) => entry.endsWith("manifest.json"));
+  assert.ok(manifestRelative);
+  const manifest = JSON.parse(
+    await readFile(path.join(store, "runs", "cwd", manifestRelative), "utf8")
+  ) as Record<string, unknown>;
+  assert.equal(manifest.caller_identity, "env:accounting");
+  assert.deepEqual(manifest.caller_identity_setting, { value: "env:accounting", layer: "env" });
 });
 
 test("a dispatched worker with no usage has an unresolved roll-up reason", async () => {

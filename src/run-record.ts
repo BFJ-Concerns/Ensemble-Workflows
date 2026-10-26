@@ -451,10 +451,10 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
-  run_record_enabled: Resolved<boolean>;
-  run_record_dir: Resolved<string | null>;
-  status_enabled: Resolved<boolean>;
-  status_dir: Resolved<string | null>;
+  run_record_enabled: Resolved<boolean> | null;
+  run_record_dir: Resolved<string | null> | null;
+  status_enabled: Resolved<boolean> | null;
+  status_dir: Resolved<string | null> | null;
   caller_identity_setting: Resolved<string> | null;
   git: {
     start: GitState;
@@ -677,10 +677,10 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
-      run_record_enabled: options.effectiveSettings?.runRecordEnabled ?? { value: true, layer: "default" },
-      run_record_dir: options.effectiveSettings?.runRecordDir ?? { value: options.storeDir, layer: "default" },
-      status_enabled: options.effectiveSettings?.statusEnabled ?? { value: true, layer: "default" },
-      status_dir: options.effectiveSettings?.statusDir ?? { value: null, layer: "default" },
+      run_record_enabled: options.effectiveSettings?.runRecordEnabled ?? null,
+      run_record_dir: options.effectiveSettings?.runRecordDir ?? null,
+      status_enabled: options.effectiveSettings?.statusEnabled ?? null,
+      status_dir: options.effectiveSettings?.statusDir ?? null,
       caller_identity_setting: options.effectiveSettings?.callerIdentity ?? null,
       git: {
         start: gitStart,

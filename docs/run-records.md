@@ -371,10 +371,12 @@ families with their own schema versions (`3` and `2`), described above.
   flag only, so their layers are `flag` or `default`.
 - `run_record_enabled` / `run_record_dir` and `status_enabled` /
   `status_dir`: the effective recording and status-file switches and
-  directories, each as `{ value, layer }`. Their ambient layers are
-  `env`, `config-file`, or `default`. A library override is recorded as
-  the run's `default` baseline. A disabled switch or unusable default
-  status directory gives the effective directory a `null` value.
+  directories, each as `{ value, layer }` when resolved by the CLI, or
+  `null` when a library caller starts the writer without effective settings.
+  Their ambient layers are `env`, `config-file`, or `default`. A library
+  override passed through the CLI is recorded as the run's `default`
+  baseline. A disabled switch or unusable default status directory gives
+  a resolved effective directory a `null` value.
 - `caller_identity_setting`: `{ value, layer }` when the CLI received an
   identity from its flag or environment, or `null` when neither supplied
   one. Its only layers are `flag` and `env`; a library-supplied identity

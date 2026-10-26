@@ -60,9 +60,10 @@ node <absolute path to this skill's directory>/scripts/ensemble.mjs <script.js> 
 On Claude Code the skill text itself carries the path:
 `${CLAUDE_PLUGIN_ROOT}/skills/ensemble-workflow/scripts/ensemble.mjs` (Claude
 Code fills in the plugin root when it loads this file, so what you read here
-is already the absolute path). On Codex and opencode, take the directory from
-where the tool says this skill was loaded. The examples below write `ensemble` for brevity: read it as that
-full `node …/scripts/ensemble.mjs` command, because **there is no `ensemble`
+is already the absolute path). Codex and opencode list each skill with the
+directory it was loaded from; the launcher is `scripts/ensemble.mjs` under
+that directory. The examples below write `ensemble` for brevity: read it as
+that full `node …/scripts/ensemble.mjs` command, because **there is no `ensemble`
 on `PATH`** unless the user has put one there themselves.
 
 ## The loop: write a script, run it
@@ -104,7 +105,7 @@ precedes the script path. All are optional:
 
 | Flag | Effect |
 | --- | --- |
-| `--json-args '<json>|@file'` | Hand the script a parsed JSON value as `args` instead of the positional `string[]` (nesting capped at 256 levels). |
+| `--json-args '<json>\|@file'` | Hand the script a parsed JSON value as `args` instead of the positional `string[]` (nesting capped at 256 levels). |
 | `--budget engine=N` | Token ceiling for one engine (repeatable). See `budget` in [references/script-api.md](references/script-api.md). |
 | `--concurrency engine=N` | Override one engine's concurrency cap (repeatable). |
 | `--agent-ceiling N\|null` | Cap concurrent workers across **all** engines; `null` lifts a ceiling the environment or configuration file set. |
@@ -161,7 +162,7 @@ write or edit a script. The contracts below cause silent damage when missed:
   per-engine `model`, `effort` and `fallback` once. Pin model and effort on
   every engine a script uses, even when they match today's defaults: defaults
   shift, and a pinned pair makes the policy auditable in the script; an
-  unpinned call is announced on stderr as running `unpinned`. A kept script —
+  unpinned call is announced on stderr as `runs unpinned`. A kept script —
   one other sessions will dispatch — also carries `// INPUT`, `// OUTPUT`
   and `// RUN` blocks after its exports, in the shape fixed in
   [references/script-api.md](references/script-api.md).
@@ -337,11 +338,13 @@ cross-engine but is not.
 
 **The dispatching session itself must be able to write.** A worker is never
 sandboxed, but the session that launches it may be: the launcher writes run
-records under the data home, Codex writes its own home, and the Claude daemon
-listens on a socket under the system temporary directory. A Codex session in
-its default read-only sandbox cannot reach these, so one that is going to
-delegate starts with `codex --sandbox danger-full-access`; Claude Code and
-opencode sessions impose no such sandbox. Engine substrates start lazily, so a
+records under the data home, Codex writes its own home, and the Claude control
+plane keeps its per-dispatch settings and tmux sockets under the system
+temporary directory. A Codex session in its default read-only sandbox cannot
+reach these, so one that is going to delegate starts with
+`codex --sandbox danger-full-access` — a session already running sandboxed
+cannot change this itself, so it says so and the user relaunches it; Claude
+Code and opencode sessions impose no such sandbox. Engine substrates start lazily, so a
 Claude-only script runs without the `codex` CLI installed; a substrate refusing
 a dispatch outright is a **pre-spawn rejection that throws**
 (`CodexSubstrateRefusedError`, `ClaudeDispatchError`) after advancing any

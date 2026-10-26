@@ -45,10 +45,11 @@ Ensemble is developed and tested on Linux.
 Ensemble ships as a plugin carrying one skill, `ensemble-workflow`, and the
 runtime's launcher beside it. Install it on the tool your agent runs in:
 
-- **Claude Code:** `/plugin install ensemble --marketplace BFJ-Concerns/Ensemble-Workflows`
-  in a session (or `claude plugin marketplace add BFJ-Concerns/Ensemble-Workflows`
-  then `claude plugin install ensemble@ensemble-workflows` from a shell). The
-  skill is listed as `/ensemble:ensemble-workflow`.
+- **Claude Code:** `claude plugin install ensemble --marketplace BFJ-Concerns/Ensemble-Workflows`
+  from a shell adds the marketplace and installs the plugin in one step; in a
+  session, `/plugin marketplace add BFJ-Concerns/Ensemble-Workflows` then
+  `/plugin install ensemble@ensemble-workflows`. The skill is listed as
+  `/ensemble:ensemble-workflow`.
 - **Codex:** `codex plugin marketplace add BFJ-Concerns/Ensemble-Workflows`
   then `codex plugin add ensemble@ensemble-workflows`; the skill is listed as
   `ensemble:ensemble-workflow` in a new session.

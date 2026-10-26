@@ -515,10 +515,11 @@ orchestrator's go/no-go — without burning a worker on the wait.
 - **Timeout:** an optional `timeoutMs` bounds an unanswered hold; expiry
   rejects the awaiting `hold()` with `HoldTimeoutError` — catch it to treat
   expiry as an outcome rather than a run failure.
-- **Observability:** raise, answer, rejected answer, timeout, and
-  retirement each land in the archive manifest's `hold_events` list, with
-  who answered (`answered_by`, `null` when the decision file named no one)
-  and their `note`. A hold whose raiser is provably dead — judged from the
+- **Observability:** raise, answer, rejected answer and timeout each land in
+  the archive manifest's `hold_events` list, with who answered
+  (`answered_by`, `null` when the decision file named no one) and their
+  `note`; a retirement lands there only when the raising run's own startup
+  sweep observed it — one a listing observes is not recorded. A hold whose raiser is provably dead — judged from the
   liveness evidence the record carries, never guessed — is retired by the
   enumeration or sweep that observes it, so the listing only ever shows
   answerable holds.

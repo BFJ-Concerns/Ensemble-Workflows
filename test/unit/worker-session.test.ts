@@ -497,7 +497,7 @@ test("an identified held session distinguishes a failed schema turn from a valid
   const runtime = codexRuntime(transport);
   let session: ReturnType<EnsembleRuntime["createWorkerSession"]> | undefined;
   assert.doesNotThrow(() => {
-    session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 } as never);
+    session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 });
   });
   assert.ok(session);
   const first = await session.send("fail", { schema: { type: "null" } }) as {
@@ -519,8 +519,15 @@ test("a fresh handle reports whether staleness marking is enabled", async () => 
   const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
   assert.equal(marked.stale, false);
   assert.equal(disabled.stale, false);
-  assert.equal((marked as unknown as { stalenessMark?: boolean }).stalenessMark, true);
-  assert.equal((disabled as unknown as { stalenessMark?: boolean }).stalenessMark, false);
+  assert.equal(marked.stalenessMark, true);
+  assert.equal(disabled.stalenessMark, false);
+  await runtime.close();
+});
+
+test("a disabled staleness mark has no active threshold on its handle", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(disabled.staleAfterMs, null);
   await runtime.close();
 });
 

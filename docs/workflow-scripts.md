@@ -166,6 +166,13 @@ result. `nameOrRef` is a workflow name or `{ scriptPath }`:
 - `{ scriptPath }` resolves like the script path on the command line:
   relative to the run's working directory unless absolute.
 
+A literal `workflow("name")` is checked against the saved registries when the
+script loads, including calls in branches and callbacks. A missing name
+reports the script's line and column before the body can dispatch a worker.
+Names computed at runtime and `{ scriptPath }` references are resolved when
+their calls execute. A local binding named `workflow` is a JavaScript call,
+not a saved-workflow lookup.
+
 The child shares the parent's runtime: the same concurrency caps, budgets,
 worktrees, and run record. Nesting is one level only; calling `workflow()`
 inside a child throws. Both registries start empty; saved workflows in the
@@ -491,8 +498,8 @@ await builder.close();
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
   for that session. `handle.stalenessMark` reports whether the mark is enabled,
-  including before the first turn, and `handle.staleAfterMs` gives the
-  threshold in use.
+  including before the first turn. `handle.staleAfterMs` gives the active
+  threshold, or `null` when marking is disabled.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

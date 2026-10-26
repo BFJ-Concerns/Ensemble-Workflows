@@ -318,6 +318,15 @@ type AgentExecutionCompletion =
   | { ok: true; execution: AgentExecutionOutcome }
   | { ok: false; error: unknown };
 
+function identifiedResult(options: { label?: string; phase?: string }, output: unknown, record: RuntimeAgentRecord): IdentifiedAgentResult {
+  return {
+    label: options.label ?? null,
+    phase: options.phase ?? null,
+    output,
+    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+  };
+}
+
 /** A worker session's runtime-internal state, owned by EnsembleRuntime. */
 interface WorkerSessionState {
   id: number;
@@ -352,7 +361,7 @@ interface WorkerSessionState {
  * here — computed by the runtime, acted on only by the script: a send to a
  * stale-marked session still executes.
  */
-export class WorkerSession {
+export class WorkerSession<Identified extends boolean = false> {
   #state: WorkerSessionState;
   #now: () => number;
   #sendTurn: (prompt: string, turn: SessionTurnOptions) => Promise<unknown>;
@@ -396,8 +405,8 @@ export class WorkerSession {
    * overrides the injected default, so the mark and the cache expire on
    * one clock.
    */
-  get staleAfterMs(): number {
-    return this.#state.stalenessThresholdMs;
+  get staleAfterMs(): number | null {
+    return this.#state.markStaleness ? this.#state.stalenessThresholdMs : null;
   }
 
   /** Whether this session reports staleness after its idle threshold. */
@@ -422,8 +431,8 @@ export class WorkerSession {
     return this.#now() - state.lastTurnEndedAt >= state.stalenessThresholdMs;
   }
 
-  send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string | null | IdentifiedAgentResult>;
+  send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<Identified extends true ? IdentifiedAgentResult : unknown | null>;
+  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<Identified extends true ? IdentifiedAgentResult : string | null>;
   send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
   send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
     return this.#sendTurn(prompt, turn);
@@ -829,9 +838,7 @@ export class EnsembleRuntime {
         // completed, so a worker's genuine null answer and an exhausted
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
-        const failure =
-          agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return identifiedResult(options, output, agentRecord);
       }
       return output;
     } catch (error) {
@@ -913,7 +920,10 @@ export class EnsembleRuntime {
    * worker itself starts at the first `send()`. An engine that does not
    * hold sessions (opencode) throws before any worker exists.
    */
-  createWorkerSession(options: WorkerSessionOptions): WorkerSession {
+  createWorkerSession(options: WorkerSessionOptions & { identity: true }): WorkerSession<true>;
+  createWorkerSession(options: WorkerSessionOptions & { identity?: false }): WorkerSession<false>;
+  createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean>;
+  createWorkerSession(options: WorkerSessionOptions): WorkerSession<boolean> {
     if (this.#closed) {
       throw new SessionClosedError();
     }
@@ -959,7 +969,7 @@ export class EnsembleRuntime {
       pendingTurn: null,
       closed: false
     };
-    const session = new WorkerSession({
+    const session = new WorkerSession<boolean>({
       state,
       now: this.#now,
       sendTurn: (prompt, turn) => {
@@ -1067,12 +1077,7 @@ export class EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return {
-              label: options.label ?? null,
-              phase: options.phase ?? null,
-              output,
-              failure: agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) }
-            } satisfies IdentifiedAgentResult;
+            return identifiedResult(options, output, agentRecord);
           }
           return output;
         } catch (error) {

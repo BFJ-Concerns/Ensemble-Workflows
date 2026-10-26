@@ -21767,6 +21767,14 @@ var BODY_RETURNED_LEG = {
   dispatching: "its dispatch record was still landing, so no outcome was observed"
 };
 var BODY_RETURNED = "the script returned without awaiting this worker";
+function identifiedResult(options, output, record) {
+  return {
+    label: options.label ?? null,
+    phase: options.phase ?? null,
+    output,
+    failure: record.status === "complete" ? null : { message: settledFailureMessage(record) }
+  };
+}
 var WorkerSession = class {
   #state;
   #now;
@@ -21801,7 +21809,7 @@ var WorkerSession = class {
    * one clock.
    */
   get staleAfterMs() {
-    return this.#state.stalenessThresholdMs;
+    return this.#state.markStaleness ? this.#state.stalenessThresholdMs : null;
   }
   /** Whether this session reports staleness after its idle threshold. */
   get stalenessMark() {
@@ -22106,8 +22114,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return identifiedResult(options, output, agentRecord);
       }
       return output;
     } catch (error) {
@@ -22172,13 +22179,6 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
-  /**
-   * Open a multi-turn worker session: one worker, held across turns,
-   * with engine, model, and effort fixed for its life. Creation spawns
-   * nothing — validation and strip enforcement run here, pre-spawn, and the
-   * worker itself starts at the first `send()`. An engine that does not
-   * hold sessions (opencode) throws before any worker exists.
-   */
   createWorkerSession(options) {
     if (this.#closed) {
       throw new SessionClosedError();
@@ -22310,12 +22310,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
           if (options.identity === true) {
-            return {
-              label: options.label ?? null,
-              phase: options.phase ?? null,
-              output,
-              failure: agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) }
-            };
+            return identifiedResult(options, output, agentRecord);
           }
           return output;
         } catch (error) {
@@ -23612,13 +23607,13 @@ function createWorkflowHooks(options) {
   }
   return {
     agent: agentWithDefaults,
-    session: (sessionOptions) => {
+    session: ((sessionOptions) => {
       const createWorkerSession = options.runtime.createWorkerSession;
       if (createWorkerSession === void 0) {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
+    }),
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
       if (raiseHold === void 0) {
@@ -29946,6 +29941,15 @@ ${workflow.bodySource}${WORKFLOW_WRAPPER_SUFFIX}`;
 }
 var registeredWorkflowModules = /* @__PURE__ */ new Map();
 var workflowModuleLoaderRegistered = false;
+function workflowModuleOrigin(workflow, filename) {
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  return {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+}
 var workflowModuleOrigins = /* @__PURE__ */ new Map();
 function positionAt(source, offset2) {
   let line = 1;
@@ -30006,13 +30010,7 @@ async function importWrappedModule(wrappedSource, filename, workflow) {
   const digest = createHash3("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  workflowModuleOrigins.set(url, {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  });
+  workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
   return await import(url);
 }
 async function importWorkflowBody(workflow, filename) {
@@ -30055,13 +30053,8 @@ async function importWorkflowBody(workflow, filename) {
 }
 function workflowSyntaxError(error, workflow, filename) {
   const wrappedSource = buildWrappedSource(workflow);
+  const origin = workflowModuleOrigin(workflow, filename);
   const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  };
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
@@ -30313,42 +30306,28 @@ async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
     return;
   }
   const literalCalls = [];
-  const inspectExpression = (node) => {
-    if (typeof node !== "object" || node === null || !("type" in node)) {
+  const inspectNode = (node) => {
+    if (typeof node !== "object" || node === null) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(inspectNode);
       return;
     }
     const expression = node;
-    if (expression.type === "AwaitExpression") {
-      inspectExpression(expression.argument);
-    } else if (expression.type === "CallExpression") {
+    if (expression.type === "CallExpression") {
       const callee = expression.callee;
       const first = expression.arguments?.[0];
       if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
-        literalCalls.push({ name: first.value, offset: expression.start });
+        literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
       }
     }
-  };
-  for (const statement of body.body) {
-    if (statement.type === "ExpressionStatement" || statement.type === "ReturnStatement") {
-      inspectExpression(statement.type === "ExpressionStatement" ? statement.expression : statement.argument);
-      if (statement.type === "ReturnStatement") {
-        break;
-      }
-    } else if (statement.type === "VariableDeclaration") {
-      for (const declaration2 of statement.declarations) {
-        inspectExpression(declaration2.init);
-      }
-    } else if (statement.type !== "EmptyStatement") {
-      break;
+    for (const [key, value] of Object.entries(expression)) {
+      if (key !== "start" && key !== "end") inspectNode(value);
     }
-  }
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
   };
+  inspectNode(body);
+  const origin = workflowModuleOrigin(workflow, filename);
   for (const call of literalCalls) {
     try {
       await resolveWorkflowReference(call.name, {

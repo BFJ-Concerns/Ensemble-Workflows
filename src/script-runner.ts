@@ -603,6 +603,15 @@ interface WorkflowModuleOrigin {
   bodyLine: number;
   bodyColumn: number;
 }
+function workflowModuleOrigin(workflow: ExtractedWorkflow, filename: string): WorkflowModuleOrigin {
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  return {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+}
 /**
  * The module URL is content-keyed on the wrapped body alone
  * (`content-keyed-workflow-modules` — the key covers the served source
@@ -710,13 +719,7 @@ async function importWrappedModule(
   const digest = createHash("sha256").update(wrappedSource).digest("hex");
   const url = `${pathToFileURL(filename).href}?ensemble-workflow-body=${digest}`;
   registeredWorkflowModules.set(url, wrappedSource);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  workflowModuleOrigins.set(url, {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  });
+  workflowModuleOrigins.set(url, workflowModuleOrigin(workflow, filename));
   return (await import(url)) as Record<string, unknown>;
 }
 
@@ -781,13 +784,8 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
  */
 function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, filename: string): WorkflowScriptError {
   const wrappedSource = buildWrappedSource(workflow);
+  const origin = workflowModuleOrigin(workflow, filename);
   const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin: WorkflowModuleOrigin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
-  };
 
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   // An unfinished expression or an extra author `}` can make V8 reject the
@@ -1197,43 +1195,28 @@ async function assertKnownWorkflowReferences(
     return;
   }
   const literalCalls: Array<{ name: string; offset: number }> = [];
-  const inspectExpression = (node: unknown): void => {
-    if (typeof node !== "object" || node === null || !("type" in node)) {
+  const inspectNode = (node: unknown): void => {
+    if (typeof node !== "object" || node === null) {
       return;
     }
-    const expression = node as { type: string; start: number; argument?: unknown; callee?: unknown; arguments?: unknown[]; value?: unknown };
-    if (expression.type === "AwaitExpression") {
-      inspectExpression(expression.argument);
-    } else if (expression.type === "CallExpression") {
+    if (Array.isArray(node)) {
+      node.forEach(inspectNode);
+      return;
+    }
+    const expression = node as { type?: string; start?: number; callee?: unknown; arguments?: unknown[]; [key: string]: unknown };
+    if (expression.type === "CallExpression") {
       const callee = expression.callee as { type?: string; name?: string } | undefined;
       const first = expression.arguments?.[0] as { type?: string; value?: unknown } | undefined;
       if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
-        literalCalls.push({ name: first.value, offset: expression.start });
+        literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
       }
     }
-  };
-  for (const statement of body.body) {
-    if (statement.type === "ExpressionStatement" || statement.type === "ReturnStatement") {
-      inspectExpression(statement.type === "ExpressionStatement" ? statement.expression : statement.argument);
-      if (statement.type === "ReturnStatement") {
-        break;
-      }
-    } else if (statement.type === "VariableDeclaration") {
-      for (const declaration of statement.declarations) {
-        inspectExpression(declaration.init);
-      }
-    } else if (statement.type !== "EmptyStatement") {
-      // A branch, loop, try block or throw can make later calls unreachable.
-      break;
+    for (const [key, value] of Object.entries(expression)) {
+      if (key !== "start" && key !== "end") inspectNode(value);
     }
-  }
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
-  const origin: WorkflowModuleOrigin = {
-    authorPath: filename,
-    source: workflow.source,
-    bodyLine: bodyPosition.line,
-    bodyColumn: bodyPosition.column
   };
+  inspectNode(body);
+  const origin = workflowModuleOrigin(workflow, filename);
   for (const call of literalCalls) {
     try {
       await resolveWorkflowReference(call.name, {

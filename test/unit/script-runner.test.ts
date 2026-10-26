@@ -68,15 +68,15 @@ test("pre-spawn validation errors pass through combinators and real agent() call
 test("a collected option fault survives a later throwing getter before dispatch", async () => {
   const validationRuntime = new EnsembleRuntime({ transport: { close: async () => {} } as never, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
   const source = `export const meta = { name: "getter" };
-    const options = { engine: "codex", identity: "yes" };
-    Object.defineProperty(options, "maxAttempts", { enumerable: true, get() { throw new Error("getter failed"); } });
+    const options = { engine: "codex", cwd: 5 };
+    Object.defineProperty(options, "fallback", { enumerable: true, get() { throw new Error("getter failed"); } });
     return await agent("go", options);`;
   await assert.rejects(
     runWorkflowScript({ filename: "getter.js", runtime: validationRuntime, log: () => {}, source }),
     (error: unknown) => {
       assert.ok(error instanceof InvalidAgentOptionsError);
-      assert.match(error.message, /Invalid agent\(\) option "identity" value "yes"/);
-      assert.match(error.message, /Invalid agent\(\) option "maxAttempts": reading its value threw/);
+      assert.match(error.message, /Invalid agent\(\) option "cwd" value 5/);
+      assert.match(error.message, /Invalid agent\(\) option "fallback": reading its value threw/);
       return true;
     }
   );
@@ -319,6 +319,30 @@ return await workflow("there-is-no-such-workflow");`;
     (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.match(error.message, /parent\.js:3:14: workflow\("there-is-no-such-workflow"\) was not found/);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
+});
+
+test("a literal workflow inside a branch callback is checked before dispatch", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-branch-workflow-"));
+  let calls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      calls += 1;
+      return "paid answer";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+  const source = `export const meta = { name: "branch-literal" };
+await agent("first", { engine: "codex" });
+if (true) return await parallel([() => workflow("there-is-no-such-workflow")]);`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "branch.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /branch\.js:3:40: workflow\("there-is-no-such-workflow"\) was not found/);
       return true;
     }
   );

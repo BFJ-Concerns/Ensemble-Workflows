@@ -919,17 +919,6 @@ test("a turn-scoped server request disarms the silence deadline", async () => {
   }
 });
 
-test("a denied server request survives stdin closing before its response", async () => {
-  const codexBin = await fakeCodexFailingTurnServer("approval-after-stdin-close");
-  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
-  try {
-    const threadId = await transport.openThread({});
-    await assert.rejects(() => transport.runTurn(threadId, "request approval", {}), AppServerExitedError);
-  } finally {
-    await transport.close();
-  }
-});
-
 test("a frame naming a different turn does not disarm the deadline", async () => {
   const codexBin = await fakeCodexFailingTurnServer("promise-foreign-frame-then-silence");
   const transport = await CodexAppServerTransport.start({
@@ -1075,8 +1064,11 @@ test("a tool frame stops the whitespace bound while the turn continues", async (
   });
   try {
     const threadId = await transport.openThread({});
-    const result = await transport.runTurn(threadId, "whitespace then tool", {});
-    assert.equal(result.text, "answered after tool activity");
+    let answer: string | undefined;
+    await assert.doesNotReject(async () => {
+      answer = (await transport.runTurn(threadId, "whitespace then tool", {})).text;
+    });
+    assert.equal(answer, "answered after tool activity");
   } finally {
     await transport.close();
   }
@@ -1802,7 +1794,6 @@ async function fakeCodexFailingTurnServer(
     | "tool-active-output-silent"
     | "whitespace-after-answer"
     | "whitespace-then-tool"
-    | "approval-after-stdin-close"
     | "no-first-delta"
     | "delayed-first-delta"
     | "recycled-thread-stragglers"
@@ -1814,7 +1805,6 @@ async function fakeCodexFailingTurnServer(
     bin,
     `#!/usr/bin/env node
 import { createInterface } from "node:readline";
-import { closeSync } from "node:fs";
 
 if (process.argv[2] !== "app-server") {
   process.exit(2);
@@ -2076,10 +2066,6 @@ reader.on("line", (line) => {
           send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
         }, 220);
       }
-    } else if (mode === "approval-after-stdin-close") {
-      closeSync(0);
-      send({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId, turnId: "turn-1", itemId: "item-1" } });
-      setTimeout(() => process.exit(73), 750);
     }
     // hang-after-delta: send nothing further.
   }

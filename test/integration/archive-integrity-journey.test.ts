@@ -12,6 +12,60 @@ import { findOnlyFile, hermeticEstateEnvironment, runNode } from "./estate-proce
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const consumerPath = path.resolve("test/consumers/read-archive-integrity.mjs");
 const archivedAgentsConsumerPath = path.resolve("test/consumers/read-archived-agents.mjs");
+
+async function withSingleAgentArchive(journey: (archiveDir: string, store: string) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archived-agents-"));
+  const store = path.join(directory, "records");
+  const workflowPath = path.join(directory, "workflow.js");
+  const unplaceable = path.join(directory, "not-a-repository");
+  try {
+    await mkdir(unplaceable);
+    await writeFile(workflowPath,
+      `export const meta = { name: "agent-record-reader" };\n` +
+      `await agent("unplaceable", ${JSON.stringify({ engine: "codex", isolation: "worktree", cwd: unplaceable, maxAttempts: 1 })});\n`
+    );
+    const run = await runNode([bundledCliPath, workflowPath], { ENSEMBLE_RUN_RECORD_DIR: store });
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /requires cwd to be inside a git repository/);
+    await journey(path.dirname(await findOnlyFile(store, "manifest.json")), store);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("the cold agent reader classifies a normalised manifest record path", async () => {
+  await withSingleAgentArchive(async (archiveDir, store) => {
+    const manifestPath = path.join(archiveDir, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      files: Array<{ path: string }>;
+      integrity: { files_lost: Array<{ path: string; reason: string }> };
+    };
+    const originalPath = "agents/000001/agent.json";
+    const alias = "agents/000001/../000001/agent.json";
+    assert.ok(manifest.files.some((file) => file.path === originalPath));
+    manifest.files.find((file) => file.path === originalPath)!.path = alias;
+    manifest.integrity.files_lost = [{ path: alias, reason: "missing" }];
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+    const read = await runNode([archivedAgentsConsumerPath, store]);
+    assert.notEqual(read.code, 0, "a lost agent named through a normalised path must not read as sound");
+    assert.match(read.stderr, /agent record agents\/000001\/\.\.\/000001\/agent\.json is named by .* but recorded lost/);
+    const integrityRead = await runNode([consumerPath, archiveDir]);
+    assert.notEqual(integrityRead.code, 0);
+    assert.match(integrityRead.stderr, /agent record agents\/000001\/\.\.\/000001\/agent\.json is named by the manifest but recorded lost/);
+  });
+});
+
+test("the cold agent reader names the missing record in an empty archive", async () => {
+  await withSingleAgentArchive(async (archiveDir, store) => {
+    await rm(path.join(archiveDir, "agents"), { recursive: true });
+    const read = await runNode([archivedAgentsConsumerPath, store]);
+    assert.notEqual(read.code, 0);
+    assert.match(read.stderr, /agent record agents\/000001\/agent\.json is named by .* but is not a file/);
+    const integrityRead = await runNode([consumerPath, archiveDir]);
+    assert.notEqual(integrityRead.code, 0);
+    assert.match(integrityRead.stderr, /agent record agents\/000001\/agent\.json is named by the manifest but missing from the archive/);
+  });
+});
 test("a sealed archive attests itself and its sentinel attests it back", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archive-attested-"));
   const store = path.join(directory, "records");

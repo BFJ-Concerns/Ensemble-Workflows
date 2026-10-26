@@ -3616,22 +3616,32 @@ test("a cross-engine advance re-resolves the capability strip against the answer
 });
 
 test("a chained leg's queued and execution times accumulate across the re-admission, never overwriting each other", async () => {
-  const codex = new ChainEngine("codex", [codexRefusal("serverOverloaded")]);
+  // The record measures elapsed time through Date.now(). Move that clock at
+  // the two engine boundaries, so host scheduling cannot become queue time.
+  const actualNow = Date.now;
+  let now = 10_000;
+  Date.now = () => now;
+  const codex = new ChainEngine("codex", [async () => {
+    now += 17;
+    return codexRefusal("serverOverloaded")();
+  }]);
   const claude = new ChainEngine("claude", [
     async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      now += 31;
       return turn("from claude");
     }
   ]);
   const { runtime, records } = chainRuntime([codex, claude], 1);
 
-  await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
-  const settled = records.at(-1)!;
-  // Execution spans both engines' work (at least the Claude step's 30ms);
-  // queued time is only the waits, never a re-count of earlier execution.
-  assert.ok(settled.executionMs >= 30, `executionMs ${settled.executionMs}`);
-  assert.ok(settled.queuedMs < settled.executionMs, `queuedMs ${settled.queuedMs} should not absorb execution`);
-  await runtime.close();
+  try {
+    await runtime.agent("timed", { engine: "codex", model: "gpt-5.6-sol", fallback: [{ engine: "claude", model: "opus" }] });
+    const settled = records.at(-1)!;
+    assert.equal(settled.executionMs, 48);
+    assert.equal(settled.queuedMs, 0);
+  } finally {
+    Date.now = actualNow;
+    await runtime.close();
+  }
 });
 
 // ---------------------------------------------------------------------------

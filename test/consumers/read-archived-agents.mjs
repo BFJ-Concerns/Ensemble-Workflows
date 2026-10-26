@@ -1,7 +1,7 @@
 /* global process */
 
 import assert from "node:assert/strict";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { URL } from "node:url";
 
@@ -14,7 +14,6 @@ const entries = await readdir(dataHome, { recursive: true });
 const agentPaths = entries
   .filter((entry) => path.basename(entry) === "agent.json")
   .map((entry) => path.join(dataHome, entry));
-assert.ok(agentPaths.length > 0, `expected at least one agent.json below ${dataHome}`);
 
 // The walk above finds the records that are there; only the manifest says
 // which ones the run wrote. Without this comparison an archive whose records
@@ -32,22 +31,44 @@ const manifestPaths = entries
 for (const manifestPath of manifestPaths) {
   const manifest = await readJson(manifestPath);
   const archiveRoot = path.dirname(manifestPath);
+  const resolvedRoot = await realpath(archiveRoot);
+  async function containedArchivePath(relativePath) {
+    assert.ok(!path.isAbsolute(relativePath), `${relativePath} escapes the archive: absolute path`);
+    const joined = path.join(resolvedRoot, relativePath);
+    assert.ok(
+      joined === resolvedRoot || joined.startsWith(resolvedRoot + path.sep),
+      `${relativePath} escapes the archive directory`
+    );
+    const entryStat = await lstat(joined).catch(() => null);
+    if (entryStat !== null) {
+      assert.ok(!entryStat.isSymbolicLink(), `${relativePath} is a symlink; the archive attests only its own bytes`);
+      const real = await realpath(joined);
+      assert.ok(
+        real === resolvedRoot || real.startsWith(resolvedRoot + path.sep),
+        `${relativePath} resolves outside the archive directory`
+      );
+    }
+    return joined;
+  }
   const lost = new Set((manifest.integrity?.files_lost ?? []).map((entry) => entry.path));
   const namedRecords = (manifest.files ?? [])
     .map((file) => file.path)
-    .filter((filePath) => /^agents\/[^/]+\/agent\.json$/.test(filePath));
+    .filter((filePath) => /^agents\/[^/]+\/agent\.json$/.test(path.posix.normalize(filePath)));
   for (const recordPath of namedRecords) {
     assert.ok(
       !lost.has(recordPath),
       `agent record ${recordPath} is named by ${manifestPath} but recorded lost; an archive cannot describe a run whose agent records are missing`
     );
-    const record = await lstat(path.join(archiveRoot, recordPath)).catch(() => null);
+    const containedPath = await containedArchivePath(recordPath);
+    const record = await lstat(containedPath).catch(() => null);
     assert.ok(
       record !== null && record.isFile(),
       `agent record ${recordPath} is named by ${manifestPath} but is not a file in the archive`
     );
   }
 }
+
+assert.ok(agentPaths.length > 0, `expected at least one agent.json below ${dataHome}`);
 
 const agents = await Promise.all(agentPaths.map((agentPath) => readJson(agentPath)));
 const v3AgentKeys = await readJson(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url));

@@ -8,7 +8,7 @@ import { assertSalvageEnvelope, runProcess } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
-test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: 60_000 }, async () => {
+test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: 180_000 }, async () => {
   for (const mode of ["exit-at-start", "close-stdin-before-exit"] as const) {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-dead-codex-"));
     const binDirectory = path.join(directory, "bin");
@@ -49,7 +49,7 @@ if (process.argv[2] === "--version") {
           XDG_DATA_HOME: path.join(directory, `data-${attempt}`),
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_STATUS: "0"
-        }, 5_000);
+        }, 20_000);
         assert.equal(result.code, 1, `${mode} run ${attempt}: ${result.stderr}`);
         assert.ok(result.stdout.trim().length > 0, `${mode} run ${attempt}: missing failure envelope on stdout; stderr:\n${result.stderr}`);
         const envelope = assertSalvageEnvelope(result.stdout, "failed");

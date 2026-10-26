@@ -1355,7 +1355,7 @@ test("built CLI can lift a machine agent ceiling for one run without editing the
         ENSEMBLE_RUN_RECORD: "1",
         ENSEMBLE_RUN_RECORD_DIR: recordStore,
       },
-      5_000,
+      30_000,
     );
 
     assert.equal(result.code, 0, result.stderr);

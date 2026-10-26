@@ -1557,7 +1557,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       exitCode: 1,
       stdout: { reason: "failed" as const },
       outcome: "failed",
-      error: /The worker was not dispatched/,
+      error: /so the worker was not dispatched\. Remove "skills" from strip/,
       agentStatus: null
     },
     {

@@ -433,7 +433,7 @@ export class WorkerSession<Identified extends boolean = false> {
 
   send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<Identified extends true ? IdentifiedAgentResult : unknown | null>;
   send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<Identified extends true ? IdentifiedAgentResult : string | null>;
-  send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
+  send(prompt: string, turn?: SessionTurnOptions): Promise<Identified extends true ? IdentifiedAgentResult : unknown>;
   send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
     return this.#sendTurn(prompt, turn);
   }

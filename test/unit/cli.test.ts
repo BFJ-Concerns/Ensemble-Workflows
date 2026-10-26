@@ -20,6 +20,7 @@ import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
 import { isStatusFileName } from "../../src/status-file.js";
+import { ChainEngine, claudeRefusal } from "./chain-engine-fakes.js";
 
 import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeEvent, RuntimeOptions, TurnResult } from "../../src/types.js";
@@ -3499,47 +3500,6 @@ test("a workflow's failed worker is announced on stderr under its engine tag, wi
   assert.match(directStderr.text(), /Agent exhausted its attempts without producing a result/);
 });
 
-/** An engine whose turns follow a script in dispatch order — a chain's targets on one engine share it. */
-class ScriptedTurnsEngine implements EngineAdapter {
-  readonly concurrency = 1;
-  readonly scheduler = new Scheduler(1);
-  #steps: Array<() => Promise<EngineAttemptResult>>;
-
-  constructor(
-    readonly name: EngineName,
-    steps: Array<() => Promise<EngineAttemptResult>>
-  ) {
-    this.#steps = [...steps];
-  }
-
-  schedule<T>(task: () => Promise<T>): Promise<T> {
-    return this.scheduler.schedule(task);
-  }
-
-  createInvocation(): EngineInvocation {
-    return {
-      runAttempt: async () => {
-        const step = this.#steps.shift();
-        assert.ok(step, `${this.name} engine ran out of scripted turns`);
-        return step();
-      }
-    };
-  }
-
-  async close(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
-/** A Claude API refusal as the engine returns it: a failed turn carrying the status the classifier reads as availability. */
-function claudeApiRefusal(status: number, message: string): () => Promise<EngineAttemptResult> {
-  return async () => ({
-    ...turn(""),
-    attemptFailure: { kind: "claude-worker-diagnostic", message },
-    diagnostics: { apiError: { status, code: null } }
-  });
-}
-
 async function runChainScript(
   source: string,
   engines: EngineAdapter[],
@@ -3572,12 +3532,12 @@ test("an answer from a fallback entry is announced naming the refused declared t
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("claude", [
+      new ChainEngine("claude", [
         // Worker-controlled text: flattened to one line on the notice.
-        claudeApiRefusal(429, "API Error: Request rejected (429)\n\tslow down"),
-        claudeApiRefusal(529, "API Error: Request rejected (529)"),
+        claudeRefusal(429, null, "API Error: Request rejected (429)\n\tslow down"),
+        claudeRefusal(529, null, "API Error: Request rejected (529)"),
         async () => ({ ...turn("from opus"), resolvedModel: "opus" })
-      ])
+      ], 1)
     ],
     1
   );
@@ -3605,8 +3565,8 @@ test("a declared chain left unconsulted by an unrecognised failure says so once,
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("codex", [threadFailed, threadFailed, async () => turn("in place")]),
-      new ScriptedTurnsEngine("claude", [])
+      new ChainEngine("codex", [threadFailed, threadFailed, async () => turn("in place")], 1),
+      new ChainEngine("claude", [], 1)
     ],
     3
   );
@@ -3632,10 +3592,10 @@ test("an exhausted chain's failure notice names the last target's own failure an
       return { answer };
     `,
     [
-      new ScriptedTurnsEngine("claude", [
-        claudeApiRefusal(429, "API Error: Request rejected (429)"),
-        claudeApiRefusal(529, "API Error: Request rejected (529)")
-      ])
+      new ChainEngine("claude", [
+        claudeRefusal(429, null, "API Error: Request rejected (429)"),
+        claudeRefusal(529, null, "API Error: Request rejected (529)")
+      ], 1)
     ],
     1
   );

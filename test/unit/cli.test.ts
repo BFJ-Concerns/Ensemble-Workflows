@@ -4141,6 +4141,7 @@ test("a run whose two workers resolved onto one family says so on stderr and in 
       export const meta = { name: "pair-probe" };
       const a = await agent("write", { target: "doer" });
       const b = await agent("review", { target: "reviewer" });
+      log("both workers answered");
       return [a, b];
     `
   );
@@ -4172,7 +4173,13 @@ test("a run whose two workers resolved onto one family says so on stderr and in 
   const codexPair = { doer: { engine: "codex", model: "gpt-6-luna" }, reviewer: { engine: "codex", model: "gpt-6-astra" } };
   try {
     const single = await launch({ targets: codexPair });
-    assert.match(single.stderr, /\n\[single-family\] all 2 workers ran on one model family: codex\n/);
+    // One line, at the end: after everything the workers and the body wrote.
+    const lines = single.stderr.split("\n");
+    const notices = lines.flatMap((line, index) => (line.startsWith("[single-family]") ? [index] : []));
+    assert.equal(notices.length, 1, single.stderr);
+    assert.equal(lines[notices[0]!], "[single-family] all 2 workers ran on one model family: codex");
+    const bodyLog = lines.findIndex((line) => line.includes("both workers answered"));
+    assert.ok(bodyLog !== -1 && bodyLog < notices[0]!, single.stderr);
     assert.deepEqual(single.manifest.single_family, { family: "codex", workers: 2 });
     assert.deepEqual(single.manifest.single_family_notice, { value: true, layer: "default" });
 

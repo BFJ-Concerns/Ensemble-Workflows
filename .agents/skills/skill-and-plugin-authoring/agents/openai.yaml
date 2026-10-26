@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill and Plugin Authoring"
+  short_description: "Author agent skills and package them as plugins for Claude Code and Codex"
+  default_prompt: "Use $skill-and-plugin-authoring to write a new skill, fix one that misfires, or package skills as a plugin with a marketplace for Claude Code and Codex."

@@ -5,8 +5,10 @@ import { AdmissionController } from "./admission.js";
 import { TokenBudget, tokenUsageEventFromParams } from "./budget.js";
 import { assertValidStripOption, effectiveStrip, resolveStripEnforcement } from "./capability-stripping.js";
 import { classifyAttemptFailure } from "./failure-classification.js";
+import { resolveEffort } from "./effort-resolution.js";
 
 import type { DischargedEnforcement } from "./capability-stripping.js";
+import type { CanonicalEffort, EffortResolution, EffortSettings } from "./effort-resolution.js";
 import { harnessVersion } from "./harness-version.js";
 import {
   assertValidAgentOptions,
@@ -152,7 +154,15 @@ interface ChainTarget {
   entry: number;
   engine: EngineName;
   model: string | undefined;
+  /** The canonical level this target was asked for (the entry's own, else the call's). */
   effort: string | undefined;
+  /**
+   * How `effort` was resolved for this target, written by the dispatch
+   * that resolved it so every attempt record on the target carries it:
+   * null until then, or where the target pinned no effort or its engine
+   * is exempt (opencode, judged against its registry variants).
+   */
+  resolution: EffortResolution | null;
 }
 
 /**
@@ -191,12 +201,13 @@ function chainTargets(
   options: { model?: string; effort?: string; fallback?: FallbackTarget[] }
 ): ChainTarget[] {
   return [
-    { entry: -1, engine, model: options.model, effort: options.effort },
+    { entry: -1, engine, model: options.model, effort: options.effort, resolution: null },
     ...(options.fallback ?? []).map((target, index) => ({
       entry: index,
       engine: target.engine,
       model: target.model,
-      effort: target.effort ?? options.effort
+      effort: target.effort ?? options.effort,
+      resolution: null
     }))
   ];
 }
@@ -331,6 +342,8 @@ interface WorkerSessionState {
    */
   resolvedModel: string | null;
   resolvedEffort: string | null;
+  /** The resolution the session's effort was dispatched under, fixed at its creation. */
+  effortResolution: EffortResolution | null;
   stripRoutes: Partial<Record<StrippableCapability, DischargedEnforcement>> | null;
   stalenessThresholdMs: number;
   markStaleness: boolean;
@@ -443,6 +456,8 @@ export class EnsembleRuntime {
   #defaultMaxAttempts: number;
   /** Run-wide capability strip, united with each call's own list. */
   #strip: StrippableCapability[];
+  /** The machine's effort bounds and served-level maps, applied per dispatch. */
+  #effortSettings: EffortSettings;
   #eventListeners = new Set<RuntimeEventListener>();
   #completed: CompletedAgentOutput[] = [];
   #runRecorder: RunRecordWriter | null = null;
@@ -504,6 +519,7 @@ export class EnsembleRuntime {
     defaultTurnTimeoutMs?: number;
     defaultMaxAttempts: number;
     strip?: StrippableCapability[];
+    effortSettings?: EffortSettings;
     claudeSessionStaleAfterMs?: number;
     codexSessionStaleAfterMs?: number;
     holdsDir?: string;
@@ -519,6 +535,7 @@ export class EnsembleRuntime {
       assertValidStripOption(options.strip);
     }
     this.#strip = options.strip ?? [];
+    this.#effortSettings = options.effortSettings ?? {};
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
       runId: options.runId ?? randomUUID(),
@@ -624,6 +641,7 @@ export class EnsembleRuntime {
       ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
       ...(options.holdPollIntervalMs !== undefined ? { holdPollIntervalMs: options.holdPollIntervalMs } : {}),
       ...(options.strip !== undefined ? { strip: options.strip } : {}),
+      ...(options.effortSettings !== undefined ? { effortSettings: options.effortSettings } : {}),
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -939,6 +957,7 @@ export class EnsembleRuntime {
       engine,
       resolvedModel: null,
       resolvedEffort: null,
+      effortResolution: null,
       stripRoutes,
       // The mark's threshold is per engine shape: Claude's is the cliff at
       // its configured (injected) cache TTL, Codex's the measured coin-flip
@@ -1124,19 +1143,29 @@ export class EnsembleRuntime {
     if (createSession === undefined) {
       throw new MultiTurnUnsupportedError(state.engine.name);
     }
-    state.engineSession ??= createSession.call(
-      state.engine,
-      this.#engineTurnOptions(
-        {
-          engine: state.engine.name,
-          ...(options.model !== undefined ? { model: options.model } : {}),
-          ...(options.effort !== undefined ? { effort: options.effort } : {}),
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {})
-        },
-        state.placement.cwd
-      )
-    );
+    if (state.engineSession === null) {
+      // Effort is fixed at the session's creation: resolved once, for the
+      // target that creates the worker, and carried by every later turn's
+      // record as the resolution its turn ran under.
+      const effort = await this.#resolveTargetEffort(targetEngine, target, agentRecord);
+      state.effortResolution = target.resolution;
+      state.engineSession = createSession.call(
+        state.engine,
+        this.#engineTurnOptions(
+          {
+            engine: state.engine.name,
+            ...(options.model !== undefined ? { model: options.model } : {}),
+            ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+            ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {})
+          },
+          state.placement.cwd,
+          effort
+        )
+      );
+    } else {
+      target.resolution = state.effortResolution;
+      agentRecord.effortResolution = state.effortResolution;
+    }
     const turnInvocation = state.engineSession.beginTurn(prompt, {
       ...(turn.schema !== undefined ? { schema: turn.schema } : {})
     });
@@ -1921,7 +1950,8 @@ export class EnsembleRuntime {
     let completion: AgentExecutionCompletion | undefined;
     const attempts = { target, ledger, chainRemains };
     try {
-      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd));
+      const effort = await this.#resolveTargetEffort(engine, target, agentRecord);
+      invocation = engine.createInvocation(prompt, this.#engineTurnOptions(options, placement.cwd, effort));
       if (options.schema !== undefined) {
         completion = {
           ok: true,
@@ -2492,13 +2522,46 @@ export class EnsembleRuntime {
     return adapter;
   }
 
-  #engineTurnOptions(options: Partial<AgentOptions>, cwd: string): EngineTurnOptions {
+  /**
+   * Resolves the target's canonical effort to the name its engine is
+   * dispatched with (`resolveEffort`): the machine's bounds, then the clamp
+   * to the nearest level the model serves, the served levels from the
+   * machine map, else the engine's own report, else the built-in table.
+   * Judged per target, so a chain entry or a remapped call takes its own
+   * target's; written onto the target so every attempt record carries it,
+   * and onto the agent record last-write-wins as `resolvedEffort` is.
+   * opencode is exempt — its effort names a registry variant, judged by
+   * its adapter — and a target with no effort has nothing to resolve.
+   */
+  async #resolveTargetEffort(
+    engine: EngineAdapter,
+    target: ChainTarget,
+    agentRecord: RuntimeAgentRecord
+  ): Promise<string | undefined> {
+    if (target.effort === undefined || engine.name === "opencode") {
+      return target.effort;
+    }
+    const engineReport = engine.servedEffortLevels === undefined ? null : await engine.servedEffortLevels(target.model);
+    target.resolution = resolveEffort({
+      // Validated pre-spawn: anything outside the canonical set was refused
+      // before the call was admitted.
+      requested: target.effort as CanonicalEffort,
+      engine: engine.name,
+      model: target.model,
+      settings: this.#effortSettings,
+      engineReport
+    });
+    agentRecord.effortResolution = target.resolution;
+    return target.resolution.dispatched;
+  }
+
+  #engineTurnOptions(options: Partial<AgentOptions>, cwd: string, effort: string | undefined): EngineTurnOptions {
     const resolvedTimeoutMs = options.timeoutMs ?? this.#defaultTurnTimeoutMs;
     return {
       ...(resolvedTimeoutMs !== undefined ? { timeoutMs: resolvedTimeoutMs } : {}),
       ...(options.schema !== undefined ? { schema: options.schema } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
-      ...(options.effort !== undefined ? { effort: options.effort } : {}),
+      ...(effort !== undefined ? { effort } : {}),
       ...(options.strip !== undefined && options.strip.length > 0 ? { strip: options.strip } : {}),
       cwd
     };
@@ -2526,6 +2589,7 @@ export class EnsembleRuntime {
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
+      effortResolution: null,
       resolvedCwd: resolveAgentCwd(this.#placement.baseCwd, options.cwd),
       isolation: options.isolation ?? null,
       worktree: null,
@@ -2635,6 +2699,7 @@ function attemptRecord(
     attempt,
     status,
     target: { engine: target.engine, model: target.model ?? null },
+    effortResolution: target.resolution,
     failure,
     classification,
     chainDecision,

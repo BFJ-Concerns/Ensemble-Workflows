@@ -1,3 +1,4 @@
+import type { EffortSettings } from "./effort-resolution.js";
 import type { StrippableCapability } from "./capability-stripping.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
@@ -34,11 +35,14 @@ export interface AgentOptions {
   schema?: JsonSchema;
   model?: string;
   /**
-   * Canonical effort level — `minimal | low | medium | high | xhigh` —
-   * validated pre-spawn as a harness-owned domain and converted to the
-   * engine's native form, clamping to the nearest level the engine
-   * offers; the resolved native value lands in the run record. opencode
-   * is exempt: its effort names the registry entry's served variants.
+   * Canonical effort level — `none | minimal | low | medium | high | xhigh
+   * | max` — validated pre-spawn as a harness-owned domain and resolved
+   * per dispatch for its target: held within the machine's bounds, then
+   * clamped to the nearest level the dispatched model serves and converted
+   * to that model's native name (`resolveEffort`). The resolution lands on
+   * the attempt record beside the level the engine reports serving.
+   * opencode is exempt: its effort names the registry entry's served
+   * variants.
    */
   effort?: string;
   /**
@@ -207,6 +211,12 @@ export interface RuntimeOptions {
    * reach another's workers.
    */
   workerEnvironment?: EngineWorkerEnvironment;
+  /**
+   * The machine's effort bounds and per-model served-level maps (the
+   * config file's `effort` section). Omitted, no bound applies and served
+   * levels come from the engine's own report or the built-in table.
+   */
+  effortSettings?: EffortSettings;
   /**
    * The models opencode workers may name (the config file's
    * `opencode_models` section, or the library caller's own list). Omitted,
@@ -389,10 +399,23 @@ export interface ThreadStartOptions {
   threadConfig?: Record<string, unknown>;
 }
 
+/**
+ * One model as the Codex app-server lists it (`model/list`): the name a
+ * dispatch pins, whether it is the server's default for an unpinned
+ * thread, and the reasoning levels it advertises serving.
+ */
+export interface CodexModelListing {
+  model: string;
+  isDefault: boolean;
+  supportedReasoningEfforts: readonly string[];
+}
+
 export interface RuntimeTransport {
   readonly cwd: string;
   /** The Codex app-server's stabilised skill discovery result for a worker cwd. */
   listSkills?(cwd?: string): Promise<readonly string[]>;
+  /** The Codex app-server's model listing, hidden models included — the engine's own per-model effort report. */
+  listModels?(): Promise<readonly CodexModelListing[]>;
   openThread(options: ThreadStartOptions): Promise<string>;
   runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult>;
   close(): Promise<void>;

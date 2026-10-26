@@ -21,6 +21,7 @@ import {
 import type { WorkerExitStatus } from "./errors.js";
 
 import type {
+  CodexModelListing,
   JsonObject,
   RuntimeEvent,
   RuntimeTransport,
@@ -189,6 +190,11 @@ export class LazyCodexAppServerTransport implements RuntimeTransport {
   async listSkills(cwd?: string): Promise<readonly string[]> {
     const transport = await this.#transport();
     return transport.listSkills(cwd);
+  }
+
+  async listModels(): Promise<readonly CodexModelListing[]> {
+    const transport = await this.#transport();
+    return transport.listModels();
   }
 
   async runTurn(threadId: string, prompt: string, options: TurnStartOptions): Promise<TurnResult> {
@@ -364,6 +370,49 @@ export class CodexAppServerTransport implements RuntimeTransport {
       message: "response did not contain result.thread.id or result.threadId",
       data: result
     });
+  }
+
+  /**
+   * The server's model listing, hidden models included, followed through
+   * its pagination cursor: each model's name, whether it is the default an
+   * unpinned thread runs on, and the reasoning levels it advertises — the
+   * engine's own per-model effort report that `resolveEffort` consults
+   * ahead of the built-in table.
+   */
+  async listModels(): Promise<readonly CodexModelListing[]> {
+    const listed: CodexModelListing[] = [];
+    let cursor: string | null = null;
+    do {
+      const result = asJsonObject(await this.#request("model/list", { includeHidden: true, ...(cursor !== null ? { cursor } : {}) }));
+      const entries = result?.data;
+      if (!Array.isArray(entries)) {
+        throw new AppServerRequestError("model/list", {
+          code: "invalid_response",
+          message: "response omitted the model entries"
+        });
+      }
+      for (const entry of entries) {
+        const model = asJsonObject(entry);
+        const name = model?.model;
+        const efforts = model?.supportedReasoningEfforts;
+        if (typeof name !== "string" || name.length === 0 || !Array.isArray(efforts)) {
+          throw new AppServerRequestError("model/list", {
+            code: "invalid_response",
+            message: "a model entry omitted its name or its supported reasoning efforts"
+          });
+        }
+        listed.push({
+          model: name,
+          isDefault: model?.isDefault === true,
+          supportedReasoningEfforts: efforts
+            .map((effort) => asJsonObject(effort)?.reasoningEffort)
+            .filter((effort): effort is string => typeof effort === "string" && effort.length > 0)
+        });
+      }
+      const next = result?.nextCursor;
+      cursor = typeof next === "string" && next.length > 0 ? next : null;
+    } while (cursor !== null);
+    return listed;
   }
 
   async listSkills(cwd = this.cwd): Promise<readonly string[]> {

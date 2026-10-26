@@ -22,6 +22,7 @@ import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js
 import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 
 import type { Resolved } from "./ambient-settings.js";
+import type { EffortResolution, EffortSettings } from "./effort-resolution.js";
 import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
 import type { FailureClassification } from "./failure-classification.js";
@@ -78,6 +79,8 @@ export interface RunRecordStartOptions {
   cliFlags: CliFlagsRecord;
   concurrency?: EffectiveConcurrencyRecord;
   effectiveSettings?: EffectiveRunSettingsRecord;
+  /** The machine's `effort` section in force for the run, as configured; `{}` when none. */
+  effortSettings?: EffortSettings;
   /** Opaque identity supplied by the process that invoked this run, if any. */
   callerIdentity?: string;
   startedAt?: string;
@@ -127,6 +130,14 @@ export interface RuntimeAgentAttemptRecord {
    * `resolvedModel` beside it is what the engine served.
    */
   target: { engine: EngineName; model: string | null };
+  /**
+   * How the requested effort was resolved for this attempt's target
+   * (`resolveEffort`): the machine bound and served-level clamp that
+   * produced the dispatched name. Null where the call pinned no effort or
+   * the engine is exempt (opencode). `resolvedEffort` beside it is what
+   * the engine then reported serving, never derived from this.
+   */
+  effortResolution: EffortResolution | null;
   failure: { kind: string; message: string } | null;
   /**
    * How the harness classified this failed attempt: the class and the
@@ -225,6 +236,8 @@ export interface RuntimeAgentRecord {
   resolvedModel: string | null;
   /** The served effort, last write wins across attempts; see the attempt field. */
   resolvedEffort: string | null;
+  /** The last target's effort resolution, last write wins across attempts; see the attempt field. */
+  effortResolution: EffortResolution | null;
   resolvedCwd: string;
   isolation: "worktree" | null;
   worktree: {
@@ -446,6 +459,8 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
+  /** The machine's `effort` section in force, keyed by target as configured. */
+  effort_settings: EffortSettings;
   git: {
     start: GitState;
     end: GitState | null;
@@ -667,6 +682,7 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      effort_settings: options.effortSettings ?? {},
       git: {
         start: gitStart,
         end: null
@@ -932,6 +948,7 @@ export class RunRecordWriter {
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
+      effort_resolution: record.effortResolution,
       resolved_cwd: record.resolvedCwd,
       isolation: record.isolation,
       worktree:
@@ -974,6 +991,7 @@ export class RunRecordWriter {
         attempt: attempt.attempt,
         status: attempt.status,
         target: attempt.target,
+        effort_resolution: attempt.effortResolution,
         failure: attempt.failure,
         classification: attempt.classification,
         chain_decision: attempt.chainDecision,

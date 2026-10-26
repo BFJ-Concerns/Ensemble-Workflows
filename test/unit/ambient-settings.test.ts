@@ -19,6 +19,7 @@ test("caller identity has a named environment route without widening ambient set
       "agentCeiling",
       "concurrencyCaps",
       "configFile",
+      "effort",
       "openCodeModels",
       "runRecordDir",
       "runRecordStoreDir",
@@ -399,4 +400,64 @@ test("a configured status directory that does not exist is refused quoting the p
     () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: "/definitely/absent", ENSEMBLE_STATUS_DIR: missing }, cwd: "/tmp" }),
     (error: Error) => error.message.includes(`not a directory: ${JSON.stringify(missing)} (from the ENSEMBLE_STATUS_DIR`)
   );
+});
+
+test("the effort section is read as the resolution reads it", async () => {
+  const fixture = await configFixture({
+    schema_version: 1,
+    effort: {
+      "*": { ceiling: "xhigh" },
+      "codex:gpt-6-luna": { floor: "low", ceiling: "high" },
+      opencode: { levels: { low: "fast", high: "deep" } }
+    }
+  });
+  try {
+    const settings = resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd });
+    assert.deepEqual(settings.effort, {
+      "*": { ceiling: "xhigh" },
+      "codex:gpt-6-luna": { floor: "low", ceiling: "high" },
+      opencode: { levels: { low: "fast", high: "deep" } }
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("an absent effort section sets no bounds and no served-level maps", async () => {
+  const fixture = await configFixture({ schema_version: 1 });
+  try {
+    assert.deepEqual(resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }).effort, {});
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("the effort section fails loud on malformed targets, bounds and maps", async () => {
+  const cases: Array<{ effort: unknown; pattern: RegExp }> = [
+    { effort: [], pattern: /effort .*JSON object of target keys/ },
+    { effort: { gemini: {} }, pattern: /effort\.gemini .*target keys are "\*", an engine/ },
+    { effort: { "codex:": {} }, pattern: /effort\.codex: .*must name its model/ },
+    { effort: { codex: "high" }, pattern: /effort\.codex .*must be a JSON object/ },
+    { effort: { codex: { cap: "high" } }, pattern: /Unknown machine configuration key effort\.codex\.cap/ },
+    { effort: { codex: { ceiling: "extreme" } }, pattern: /effort\.codex\.ceiling .*none \| minimal \| low \| medium \| high \| xhigh \| max/ },
+    { effort: { "*": { floor: 2 } }, pattern: /effort\.\*\.floor .*none \| minimal/ },
+    { effort: { "*": { floor: "high", ceiling: "low" } }, pattern: /effort\.\* .*floor high is above ceiling low/ },
+    { effort: { "*": { levels: { low: "low" } } }, pattern: /effort\.\*\.levels .*not "\*"/ },
+    { effort: { claude: { levels: {} } }, pattern: /effort\.claude\.levels .*non-empty JSON object/ },
+    { effort: { claude: { levels: ["low"] } }, pattern: /effort\.claude\.levels .*non-empty JSON object/ },
+    { effort: { claude: { levels: { ultra: "ultra" } } }, pattern: /effort\.claude\.levels\.ultra .*keyed by canonical level/ },
+    { effort: { "claude:opus": { levels: { low: "" } } }, pattern: /effort\.claude:opus\.levels\.low .*non-empty native name/ }
+  ];
+
+  for (const entry of cases) {
+    const fixture = await configFixture({ schema_version: 1, effort: entry.effort });
+    try {
+      assert.throws(
+        () => resolveAmbientSettings({ env: { XDG_CONFIG_HOME: fixture.configHome }, cwd: fixture.cwd }),
+        entry.pattern
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  }
 });

@@ -6,6 +6,7 @@
   "classification",
   "diagnostics",
   "duration_ms",
+  "effort_resolution",
   "ended_at",
   "failure",
   "first_delta_ms",

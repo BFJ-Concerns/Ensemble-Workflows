@@ -30,6 +30,10 @@ const responseText = process.env.ENSEMBLE_FAKE_CODEX_RESPONSE ?? "worker-ok";
 const responseTexts = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_RESPONSES ?? "[]");
 const servedModel = process.env.ENSEMBLE_FAKE_CODEX_SERVED_MODEL ?? "gpt-estate-recorder";
 const threadResolutions = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_THREAD_RESOLUTIONS ?? "[]");
+// The models `model/list` answers with, each `{ model, efforts, default? }`:
+// the engine's own per-model effort report. Empty by default, so a dispatch
+// finds no listing for its model and falls back to the built-in table.
+const modelListing = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_MODEL_LISTING ?? "[]");
 const requiredThreadModel = process.env.ENSEMBLE_FAKE_CODEX_REQUIRE_THREAD_MODEL;
 const barrierSize = Number(process.env.ENSEMBLE_FAKE_CODEX_BARRIER ?? "1");
 const errorSequence = JSON.parse(process.env.ENSEMBLE_FAKE_CODEX_ERROR_SEQUENCE ?? "[]");
@@ -219,6 +223,25 @@ const handleLine = (line) => {
     if (signalAfterInitialise !== undefined) {
       process.kill(process.pid, signalAfterInitialise);
     }
+    return;
+  }
+  if (message.method === "model/list") {
+    // As the live server answers (codex-cli 0.162.1): one page per call,
+    // each model carrying the reasoning levels it advertises serving.
+    const result = {
+      data: modelListing.map((entry) => ({
+        id: entry.model,
+        model: entry.model,
+        displayName: entry.model,
+        description: `fixture model ${entry.model}`,
+        hidden: false,
+        isDefault: entry.default === true,
+        defaultReasoningEffort: entry.efforts[0] ?? "medium",
+        supportedReasoningEfforts: entry.efforts.map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} (fixture)` })),
+      })),
+      nextCursor: null
+    };
+    send({ id: message.id, result }, "v2/ModelListResponse.json", result);
     return;
   }
   if (message.method === "thread/start") {

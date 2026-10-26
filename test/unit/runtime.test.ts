@@ -39,6 +39,7 @@ import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOp
 
 import type {
   AgentOptions,
+  CodexModelListing,
   EngineName,
   JsonSchema,
   RuntimeTransport,
@@ -57,17 +58,31 @@ class FakeTransport implements RuntimeTransport {
   openedThreads: ThreadStartOptions[] = [];
   turns: Array<{ threadId: string; prompt: string; options: TurnStartOptions }> = [];
   discoveredSkillCwds: Array<string | undefined> = [];
+  modelListings = 0;
   #responses: TurnResult[];
   #skills: readonly string[];
+  #models: readonly CodexModelListing[] | undefined;
 
-  constructor(responses: TurnResult[], skills: readonly string[] = []) {
+  constructor(responses: TurnResult[], skills: readonly string[] = [], models?: readonly CodexModelListing[]) {
     this.#responses = responses;
     this.#skills = skills;
+    this.#models = models;
   }
 
   async listSkills(cwd?: string): Promise<readonly string[]> {
     this.discoveredSkillCwds.push(cwd);
     return this.#skills;
+  }
+
+  /** Present only when the fake was given a listing: a transport with none reports no served levels. */
+  listModels?: () => Promise<readonly CodexModelListing[]>;
+
+  withModelListing(): this {
+    this.listModels = async () => {
+      this.modelListings += 1;
+      return this.#models ?? [];
+    };
+    return this;
   }
 
   async openThread(options: ThreadStartOptions): Promise<string> {
@@ -85,6 +100,17 @@ class FakeTransport implements RuntimeTransport {
   async close(): Promise<void> {
     return Promise.resolve();
   }
+}
+
+/** Every agent record the runtime writes, in order; the last is the settlement. */
+function recordedAgents(runtime: EnsembleRuntime): RuntimeAgentRecord[] {
+  const records: RuntimeAgentRecord[] = [];
+  runtime.setRunRecorder({
+    recordAgent: async (record) => {
+      records.push(structuredClone(record));
+    }
+  } as RunRecordWriter);
+  return records;
 }
 
 class ErrorTransport implements RuntimeTransport {
@@ -569,16 +595,75 @@ test("an effort outside the canonical vocabulary is rejected before any worker s
   assert.equal(transport.turns.length, 0);
 });
 
-test("a canonical effort passes through to the Codex thread natively", async () => {
-  // Codex speaks the canonical vocabulary natively, so conversion is the
-  // identity. The level rides thread/start (whose answer confirms the
-  // served effort), never the turn, whose override the server does not echo.
+test("a level no source knows passes through to the Codex thread, and the record says so", async () => {
+  // A transport with no model listing and a model the built-in table does
+  // not know: the level reaches thread/start as asked (whose answer confirms
+  // the served effort), never the turn, whose override the server does not
+  // echo — and the record states that no served-level source applied.
   const transport = new FakeTransport([turn("ok")]);
   const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const records = recordedAgents(runtime);
 
-  assert.equal(await runtime.agent("go", { engine: "codex", effort: "xhigh" }), "ok");
+  assert.equal(await runtime.agent("go", { engine: "codex", model: "gpt-unlisted", effort: "xhigh" }), "ok");
   assert.equal(transport.openedThreads[0]?.effort, "xhigh");
   assert.equal("effort" in (transport.turns[0]?.options ?? {}), false);
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution, {
+    requested: "xhigh",
+    bound: null,
+    served: { source: "none", level: null },
+    dispatched: "xhigh"
+  });
+  assert.deepEqual(records.at(-1)?.effortResolution, records.at(-1)?.attempts[0]?.effortResolution);
+});
+
+test("a level the Codex model does not serve clamps to the engine's own report, recorded on the attempt", async () => {
+  // The engine's report (`model/list`) outranks the built-in table: the
+  // listing says gpt-6-luna serves low through max, so `minimal` is
+  // dispatched as `low` and the record names the source and the clamp. The
+  // discriminating arm is the table alone, which would have said the same —
+  // so the listing deliberately omits `max`, which the table carries.
+  const transport = new FakeTransport([turn("ok"), turn("ok")], [], [
+    { model: "gpt-6-luna", isDefault: true, supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] }
+  ]).withModelListing();
+  const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const records = recordedAgents(runtime);
+
+  await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", effort: "minimal" });
+  assert.equal(transport.openedThreads[0]?.effort, "low");
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution, {
+    requested: "minimal",
+    bound: null,
+    served: { source: "engine", level: "low" },
+    dispatched: "low"
+  });
+
+  // `max` is in the table's row but not the listing's: the listing wins.
+  // The unpinned dispatch resolves against the listing's default model.
+  await runtime.agent("go", { engine: "codex", effort: "max" });
+  assert.equal(transport.openedThreads[1]?.effort, "xhigh");
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution?.served, { source: "engine", level: "xhigh" });
+  // One listing serves the run: the second dispatch did not ask again.
+  assert.equal(transport.modelListings, 1);
+});
+
+test("a machine ceiling moves a dispatch down before the model's clamp, and a chain entry takes its own target's", async () => {
+  const transport = new FakeTransport([turn("ok")]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultMaxAttempts: 1,
+    effortSettings: { "*": { ceiling: "high" }, "codex:gpt-6-luna": { ceiling: "medium" } }
+  });
+  const records = recordedAgents(runtime);
+
+  await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", effort: "max" });
+  assert.equal(transport.openedThreads[0]?.effort, "medium");
+  assert.deepEqual(records.at(-1)?.attempts[0]?.effortResolution, {
+    requested: "max",
+    bound: { rule: "ceiling", key: "codex:gpt-6-luna", level: "medium" },
+    served: { source: "built-in", level: "medium" },
+    dispatched: "medium"
+  });
 });
 
 test("schema-valid null settles as complete while retry exhaustion remains failed", async () => {

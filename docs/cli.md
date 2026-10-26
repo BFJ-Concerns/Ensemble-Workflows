@@ -82,7 +82,7 @@ the prompt.
 |---|---|
 | `--engine <engine>` | Required. `codex`, `claude`, or `opencode` |
 | `--model <model>` | Model to run. Required for opencode |
-| `--effort <effort>` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; on opencode, one of the model's declared variants |
+| `--effort <effort>` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (see [Effort](workflow-scripts.md#effort)); on opencode, one of the model's declared variants |
 | `--schema '<json>'`, `--schema @file` | JSON Schema the answer must satisfy; the validated value is printed |
 | `--identity` | Print the identified result `{ label, phase, output, failure }` instead of the bare output |
 | `--max-attempts N` | Attempt bound (default 3), as `maxAttempts` in a script |

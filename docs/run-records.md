@@ -369,6 +369,10 @@ families with their own schema versions (`3` and `2`), described above.
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `effort_settings`: the machine configuration's `effort` section in force
+  for the run, keyed by target as configured (`{}` when the machine sets
+  none), so a consumer can tell which bounds and served-level maps every
+  dispatch was resolved under.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -438,6 +442,17 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   and `null` when the engine reported none, never an echo of the request.
   opencode reports no served identity, so its `resolved_model` is the
   configured `provider_model` the worker was launched with.
+- `effort_resolution`: how the requested `effort` was resolved for the last
+  target dispatched (last write wins across attempts; each attempt carries
+  its own) — `{ requested, bound, served, dispatched }`, where `requested` is
+  the canonical level asked for, `bound` is `{ rule, key, level }` naming
+  the machine ceiling or floor that moved it (or `null`), `served` is
+  `{ source, level }` naming where the model's served levels came from
+  (`machine`, `engine`, or `built-in`) and the level the clamp settled on,
+  or `{ source: "none", level: null }` where no source knew the model and
+  the level was passed through, and `dispatched` is the name the engine was
+  given. `null` where the call pinned no effort or the engine is opencode.
+  `resolved_effort` is never derived from it.
 - `fallback`: the declared fallback chain (`[{ engine, model, effort? }]`, as
   the call or its engine defaults declared it), or `null`.
 - `answered_by`: which target answered — `{ entry, engine, model }`, where
@@ -493,6 +508,8 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   - `status` and `target` (`{ engine, model }`: the engine and requested
     model this attempt was dispatched to — the call's own until a fallback
     chain advances).
+  - `effort_resolution`: this attempt's own resolution, in the agent-level
+    field's shape, or `null`.
   - `started_at`, `ended_at`, `duration_ms` (the engine's own measurement
     where it reports one, otherwise the attempt's recorded endpoints, so an
     attempt that ran never has a `null` duration), and `first_delta_ms`.

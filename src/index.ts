@@ -129,6 +129,15 @@ export type {
   Resolved,
   SettingLayer
 } from "./ambient-settings.js";
+export { BUILT_IN_SERVED_LEVELS, CANONICAL_EFFORT_DOMAIN, resolveEffort } from "./effort-resolution.js";
+export type {
+  CanonicalEffort,
+  EffortResolution,
+  EffortSettings,
+  EffortTargetSettings,
+  ServedEffortLevels,
+  ServedLevelSource
+} from "./effort-resolution.js";
 export type {
   AgentState,
   BudgetView,

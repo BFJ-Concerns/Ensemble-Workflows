@@ -326,39 +326,10 @@ test("claudeCacheTtlToMs parses the settings value formats and refuses the rest"
   assert.equal(claudeCacheTtlToMs("0m"), null);
 });
 
-test("Claude rejects an out-of-domain effort before any worker spawns", async () => {
-  await withControlPlane([{ assistant: { text: "ran at medium" } }], async (controlPlane) => {
-    const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
-
-    // The CLI silently runs an unknown effort at its default (measured
-    // 2026-08-30), so the adapter's conversion is the only loud boundary
-    // an author gets — nothing outside the canonical vocabulary may pass.
-    assert.throws(
-      () => adapter.createInvocation("work", { effort: "definitely-invalid" }),
-      (error: unknown) => {
-        assert.ok(error instanceof InvalidAgentOptionValueError);
-        assert.match(error.message, /minimal \| low \| medium \| high \| xhigh/);
-        return true;
-      }
-    );
-    assert.throws(
-      () => adapter.createSession({ effort: "definitely-invalid" }),
-      InvalidAgentOptionValueError
-    );
-    assert.equal(controlPlane.dispatchCount, 0);
-
-    // The discriminating positive arm: a canonical level still dispatches.
-    const invocation = adapter.createInvocation("work", { effort: "medium" });
-    assert.equal((await invocation.runAttempt({ attempt: 1 })).text, "ran at medium");
-    assert.equal(controlPlane.dispatched[0]?.effort, "medium");
-    await adapter.close();
-  });
-});
-
-test("a canonical level outside Claude's native domain clamps to the nearest native level, and the served level is read from the transcript", async () => {
+test("Claude dispatches the effort it is handed and reports the level its transcript says was served", async () => {
   await withControlPlane(
     [
-      { assistant: { text: "ran clamped low" } },
+      { assistant: { text: "ran at low" } },
       { assistant: { text: "ran at xhigh" } },
       { assistant: { text: "ran at the default", effort: "medium" } },
       { assistant: { text: "older build", effort: null } }
@@ -366,16 +337,17 @@ test("a canonical level outside Claude's native domain clamps to the nearest nat
     async (controlPlane) => {
       const adapter = new ClaudeEngineAdapter({ controlPlane, config: fastConfig });
 
-      // minimal → low: the one canonical level the CLI lacks. The worker is
-      // dispatched with the native value, and the result reports the level
-      // the CLI's transcript says it served — here the same value, so a
-      // clamped dispatch is observable in the record as what ran.
-      const floor = adapter.createInvocation("work", { effort: "minimal" });
-      const floorResult = await floor.runAttempt({ attempt: 1 });
+      // The runtime resolves the canonical level to the CLI's native name
+      // before the adapter sees it (`resolveEffort`, the built-in Claude
+      // row), so the adapter dispatches the value as given, and the result
+      // reports the level the CLI's transcript says it served — here the
+      // same value, so a clamped dispatch is observable in the record as
+      // what ran.
+      const low = adapter.createInvocation("work", { effort: "low" });
+      const lowResult = await low.runAttempt({ attempt: 1 });
       assert.equal(controlPlane.dispatched[0]?.effort, "low");
-      assert.equal(floorResult.resolvedEffort, "low");
+      assert.equal(lowResult.resolvedEffort, "low");
 
-      // xhigh is native (Claude Code 2.1.283): dispatched unchanged.
       const ceiling = adapter.createInvocation("work", { effort: "xhigh" });
       assert.equal((await ceiling.runAttempt({ attempt: 1 })).resolvedEffort, "xhigh");
       assert.equal(controlPlane.dispatched[1]?.effort, "xhigh");

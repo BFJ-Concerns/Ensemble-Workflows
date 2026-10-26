@@ -1,7 +1,8 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
-import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
+import { ClaudeEngineInvocation } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
+import { servedLevelsFromReport } from "./effort-resolution.js";
 import {
   AppServerExitedError,
   AppServerStartupTimeoutError,
@@ -28,10 +29,12 @@ import type { EngineCapabilityTable, StrippableCapability } from "./capability-s
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
+import type { ServedEffortLevels } from "./effort-resolution.js";
 import type { OpenCodeRunner } from "./opencode-engine.js";
 import type { OpenCodeModelRegistry, OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 import type {
   AgentWaitSnapshot,
+  CodexModelListing,
   EngineName,
   EngineConcurrencyCaps,
   EngineWorkerEnvironment,
@@ -44,6 +47,12 @@ import type {
 export interface EngineTurnOptions {
   schema?: JsonSchema;
   model?: string;
+  /**
+   * The effort the engine is dispatched with, already resolved by the
+   * runtime to a name the target serves (`resolveEffort`): an adapter
+   * passes it to its engine as given. opencode's is the registry entry's
+   * raw variant, judged by its adapter.
+   */
   effort?: string;
   cwd?: string;
   // Omitted → unbounded per turn. No default; see the runtime's resolution below.
@@ -167,6 +176,14 @@ export interface EngineAdapter {
    * `beginTurn`.
    */
   createSession?(options: EngineTurnOptions): EngineWorkerSession;
+  /**
+   * The engine's own per-model effort report, in canonical terms: the
+   * levels it says the model serves (the default model's for an unpinned
+   * dispatch), or null where it reports none or does not list the model.
+   * Optional by design: an engine with no such report leaves the served
+   * levels to the machine map and the built-in table.
+   */
+  servedEffortLevels?(model: string | undefined): Promise<ServedEffortLevels | null>;
   /**
    * Tear the adapter down, cancelling active invocations. Contract: every
    * active invocation's attempt must settle (resolve or reject) as a
@@ -351,10 +368,42 @@ export class CodexEngineAdapter implements EngineAdapter {
     return new CodexWorkerSession({ options, transport: this.#transport });
   }
 
+  async servedEffortLevels(model: string | undefined): Promise<ServedEffortLevels | null> {
+    const listModels = this.#transport.listModels;
+    if (listModels === undefined) {
+      return null;
+    }
+    const listing = await listedCodexModels(this.#transport, listModels);
+    const entry = listing.find((candidate) => (model === undefined ? candidate.isDefault : candidate.model === model));
+    return entry === undefined ? null : servedLevelsFromReport(entry.supportedReasoningEfforts);
+  }
+
   async close(): Promise<void> {
     this.#scheduler.close(new EngineShutdownError(this.name));
     await this.#transport.close();
   }
+}
+
+/**
+ * The model listing cached per transport for the run's life, like skill
+ * discovery: one `model/list` round trip serves every dispatch, retry and
+ * sibling, and a failed listing clears its entry so the next dispatch asks
+ * again rather than inheriting the failure.
+ */
+const codexModelListingCache = new WeakMap<RuntimeTransport, Promise<readonly CodexModelListing[]>>();
+
+function listedCodexModels(
+  transport: RuntimeTransport,
+  listModels: NonNullable<RuntimeTransport["listModels"]>
+): Promise<readonly CodexModelListing[]> {
+  const cached = codexModelListingCache.get(transport);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const listing = listModels.call(transport);
+  codexModelListingCache.set(transport, listing);
+  listing.catch(() => codexModelListingCache.delete(transport));
+  return listing;
 }
 
 /**
@@ -539,16 +588,16 @@ export class ClaudeEngineAdapter implements EngineAdapter {
       // register into a set nothing will ever cancel again.
       throw new EngineShutdownError(this.name);
     }
-    // The canonical level clamps to the CLI's nearest native level here,
-    // pre-spawn: the CLI silently runs an unknown value at its default, so
-    // only the converted native value may reach it. The run record's
-    // `resolved_effort` is not this value: it is the level the CLI's own
-    // transcript reports serving (claude-transcript's `effortSince`).
-    const effort = claudeNativeEffort(options.effort);
+    // `options.effort` is already the CLI's native level, resolved by the
+    // runtime against the built-in Claude row or a machine map; the CLI
+    // silently runs an unknown value at its default, which is why nothing
+    // unresolved reaches here. The run record's `resolved_effort` is not
+    // this value: it is the level the CLI's own transcript reports serving
+    // (claude-transcript's `effortSince`).
     const invocation = new ClaudeEngineInvocation({
       prompt,
       cwd: options.cwd ?? this.#cwd,
-      options: effort === undefined ? options : { ...options, effort },
+      options,
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),
       ...(this.#config !== undefined ? { config: this.#config } : {}),
@@ -562,16 +611,15 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     if (this.#closed) {
       throw new EngineShutdownError(this.name);
     }
-    // Same canonical clamp as createInvocation: a session fixes effort at
-    // creation, so the conversion happens once, here.
-    const effort = claudeNativeEffort(options.effort);
     // A session is the invocation generalised across turns: same dispatch,
     // valve, and collection machinery, registered for cancellation like any
     // one-shot invocation so adapter close() tears held workers down too.
+    // Effort is fixed at creation, resolved once by the runtime as for an
+    // invocation.
     const session = new ClaudeEngineInvocation({
       prompt: "",
       cwd: options.cwd ?? this.#cwd,
-      options: effort === undefined ? options : { ...options, effort },
+      options,
       multiTurn: true,
       controlPlane: this.#controlPlane,
       ...(this.#onEvent !== undefined ? { onEvent: this.#onEvent } : {}),

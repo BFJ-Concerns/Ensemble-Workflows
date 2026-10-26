@@ -209,7 +209,7 @@ unknown engine throws before any worker spawns.
 |---|---|
 | `engine` | Engine to run on |
 | `model` | Model to run (see per-engine notes below) |
-| `effort` | Reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| `effort` | Reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (see [Effort](#effort)) |
 | `schema` | JSON Schema the answer must satisfy |
 | `fallback` | Ordered chain of `{ engine, model, effort? }` targets (see [Fallback chains](#fallback-chains)) |
 | `cwd` | Worker working directory; must exist. Defaults to the run's working directory |
@@ -236,7 +236,7 @@ schemas that compile are accepted.
 | | Codex | Claude | opencode |
 |---|---|---|---|
 | `model` | Optional; without one the engine's default is used and noted on stderr | Optional; without one a warning is printed on stderr | **Required**: a key or route declared in [`opencode_models`](configuration.md#opencode_models) |
-| `effort` | Sent to the engine as the thread's effort | Mapped to the nearest level Claude Code supports (`minimal` becomes `low`) | Must name one of the model's declared `variants` |
+| `effort` | Resolved to the nearest level the model serves and sent as the thread's effort | Resolved to the nearest level Claude Code serves (`none` and `minimal` become `low`) | Must name one of the model's declared `variants` |
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
 | `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
@@ -248,6 +248,31 @@ The run record shows what each engine actually served: `resolved_model` and
 thread starts, Claude Code's transcript — and are `null` when it reports none.
 opencode reports no served model, so its `resolved_model` is the configured
 `provider_model`.
+
+### Effort
+
+`effort` is one vocabulary on every engine — `none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max` — so a script moves between engines without
+respelling it. A value outside the set throws before the worker spawns. Each
+dispatch then resolves its level for the target it goes to, in two steps:
+
+1. **The machine's bounds.** A `ceiling` or `floor` the machine
+   configuration's [`effort` section](configuration.md#effort) sets for the
+   target moves the request to the bound. A script cannot lift it.
+2. **The model's served levels.** The level is moved to the nearest level
+   the dispatched model serves (a tie goes to the lower) and converted to
+   the engine's native name. The served levels come from the first source
+   that knows the model: a `levels` map in the `effort` section, then the
+   engine's own per-model report (Codex lists each model's levels), then
+   the table Ensemble ships for well-known models on both engines. A model
+   none of them knows has its level passed through for the engine to judge.
+
+A fallback-chain entry or a remapped call resolves against its own target.
+The attempt record's `effort_resolution` states the requested level, the
+bound that applied, the source and level the clamp settled on, and the name
+dispatched; `resolved_effort` beside it is the level the engine reported
+serving. opencode is exempt: its `effort` names one of the model's declared
+`variants` and is sent as given.
 
 Codex supports only a subset of JSON Schema for backend enforcement. A schema
 outside that subset is rejected before generation: the call returns `null`

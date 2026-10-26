@@ -364,6 +364,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         ? { workerEnvironment: ambientSettings.workerEnvironment }
         : {}),
       ...(ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {}),
+      ...(Object.keys(ambientSettings.effort).length > 0 ? { effortSettings: ambientSettings.effort } : {}),
       ...runtimeConcurrencyOptions(ambientSettings)
     });
     // The CLI `--timeout` flag wins over a programmatically injected one; both
@@ -410,7 +411,8 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         cliFlags: cliFlags(invocation),
         ...(callerIdentity !== undefined ? { callerIdentity } : {}),
         concurrency: recordConcurrency(ambientSettings, progress),
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs),
+        effortSettings: ambientSettings.effort
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);

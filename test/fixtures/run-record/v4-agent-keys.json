@@ -5,6 +5,7 @@
   "creation_order",
   "decode_failure",
   "effort",
+  "effort_resolution",
   "engine",
   "execution_ms",
   "fallback",

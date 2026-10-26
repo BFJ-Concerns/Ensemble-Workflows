@@ -1265,6 +1265,37 @@ test("Codex app-server gives every reused-thread turn a fresh transcript buffer"
   }
 });
 
+test("Codex app-server lists every model's supported reasoning efforts, hidden models included, across pages", async () => {
+  const capturePath = path.join(await mkdtemp(path.join(tmpdir(), "ensemble-model-list-")), "requests.jsonl");
+  const codexBin = await fakeCodexTurnServer({
+    capturePath,
+    modelListingPages: [
+      [{ model: "gpt-6-luna", efforts: ["low", "medium", "high", "xhigh", "max"], default: true }],
+      [{ model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"] }]
+    ]
+  });
+  const transport = await CodexAppServerTransport.start(defaultTransportOptions(codexBin));
+  try {
+    // The listing is the engine's own per-model effort report: each model's
+    // name, whether it is the default, and the levels it advertises — read
+    // whole by following the server's cursor, so a model on a later page is
+    // not mistaken for one the server does not serve.
+    assert.deepEqual(await transport.listModels(), [
+      { model: "gpt-6-luna", isDefault: true, supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"] },
+      { model: "gpt-5.5", isDefault: false, supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] }
+    ]);
+    const requests = (await readFile(capturePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> })
+      .filter((request) => request.method === "model/list");
+    // Hidden models are asked for: a hidden model is still one a dispatch can pin.
+    assert.deepEqual(requests.map((request) => request.params), [{ includeHidden: true }, { includeHidden: true, cursor: "1" }]);
+  } finally {
+    await transport.close();
+  }
+});
+
 test("Codex app-server keeps the server-reported model when a turn requests a different pin", async () => {
   const codexBin = await fakeCodexTurnServer({ servedModel: "gpt-served" });
   const transport = await CodexAppServerTransport.start({
@@ -1612,6 +1643,8 @@ async function fakeCodexTurnServer(
     servedModel?: string | null;
     skillResponses?: string[][];
     skillErrors?: boolean;
+    /** The pages `model/list` answers with, in order; one empty page by default. */
+    modelListingPages?: Array<Array<{ model: string; efforts: string[]; default?: boolean }>>;
   } = {}
 ): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-fake-codex-"));
@@ -1633,6 +1666,7 @@ const envCapturePath = ${JSON.stringify(options.envCapturePath ?? null)};
 const servedModel = ${JSON.stringify(options.servedModel === undefined ? "gpt-test-default" : options.servedModel)};
 const skillResponses = ${JSON.stringify(options.skillResponses ?? [[]])};
 const skillErrors = ${JSON.stringify(options.skillErrors ?? false)};
+const modelListingPages = ${JSON.stringify(options.modelListingPages ?? [[]])};
 let skillResponseIndex = 0;
 if (envCapturePath !== null) {
   writeFileSync(envCapturePath, process.env.ENSEMBLE_TEST_SCOPED ?? "__ABSENT__");
@@ -1659,6 +1693,28 @@ reader.on("line", (line) => {
         // Like the live server: a thread-start config overlay's
         // model_reasoning_effort is confirmed back; otherwise the default.
         reasoningEffort: (message.params.config && message.params.config.model_reasoning_effort) || "medium"
+      }
+    });
+    return;
+  }
+  if (message.method === "model/list") {
+    // Paginated like the live server: the cursor names the next page.
+    const page = Number(message.params.cursor ?? 0);
+    const entries = modelListingPages[page] ?? [];
+    send({
+      id: message.id,
+      result: {
+        data: entries.map((entry) => ({
+          id: entry.model,
+          model: entry.model,
+          displayName: entry.model,
+          description: "fake",
+          hidden: false,
+          isDefault: entry.default === true,
+          defaultReasoningEffort: entry.efforts[0] ?? "medium",
+          supportedReasoningEfforts: entry.efforts.map((reasoningEffort) => ({ reasoningEffort, description: "fake" }))
+        })),
+        nextCursor: page + 1 < modelListingPages.length ? String(page + 1) : null
       }
     });
     return;

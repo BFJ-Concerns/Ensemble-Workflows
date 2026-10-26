@@ -154,6 +154,11 @@ reader.on("line", (line) => {
       platformOs: "linux",
       userAgent: "ensemble-post-promise-fixture"
     });
+  } else if (message.method === "model/list") {
+    // No models listed: a dispatch's served levels then come from the
+    // built-in table, which is not what this fixture exercises.
+    const result = { data: [], nextCursor: null };
+    send({ id: message.id, result }, "v2/ModelListResponse.json", result);
   } else if (message.method === "thread/start") {
     threadCounter += 1;
     const result = {

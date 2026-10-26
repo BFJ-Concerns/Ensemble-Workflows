@@ -127,7 +127,8 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
         opencode: { value: null, layer: "default" }
       },
       runTimeoutMs: { value: 90_000, layer: "flag" }
-    }
+    },
+    effortSettings: { "*": { ceiling: "xhigh" } }
   });
   await writer.finish({ status: "complete", exitCode: 0, result: null });
 
@@ -136,8 +137,12 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
   const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
     budget_ceilings: Record<string, { value: number | null; layer: string }>;
     run_timeout_ms: { value: number | null; layer: string };
+    effort_settings: Record<string, unknown>;
   };
   assert.deepEqual(manifest.budget_ceilings.codex, { value: 50_000, layer: "flag" });
+  // The effort section in force rides the manifest as configured, so a
+  // consumer can tell what every dispatch's level was bounded by.
+  assert.deepEqual(manifest.effort_settings, { "*": { ceiling: "xhigh" } });
   assert.deepEqual(manifest.budget_ceilings.claude, { value: null, layer: "default" });
   assert.deepEqual(manifest.run_timeout_ms, { value: 90_000, layer: "flag" });
 
@@ -156,9 +161,11 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
   const bareManifest = JSON.parse(await readFile(path.join(bare.archiveDir, "manifest.json"), "utf8")) as {
     budget_ceilings: Record<string, unknown>;
     run_timeout_ms: { value: number | null; layer: string };
+    effort_settings: Record<string, unknown>;
   };
   assert.deepEqual(bareManifest.budget_ceilings, {});
   assert.deepEqual(bareManifest.run_timeout_ms, { value: null, layer: "default" });
+  assert.deepEqual(bareManifest.effort_settings, {});
 });
 
 test("run record manifest and agent schemas are fixture-locked", async () => {
@@ -1139,6 +1146,7 @@ function agentRecord(
     answeredBy: null,
     resolvedModel: null,
     resolvedEffort: null,
+      effortResolution: null,
     resolvedCwd: "/fixture/repo",
     isolation: null,
     worktree: null,
@@ -1173,6 +1181,7 @@ function agentRecord(
         validatedOutput: "ok",
         resolvedModel: null,
         resolvedEffort: null,
+      effortResolution: null,
         startedAt: "2026-01-01T00:00:00.000Z",
         endedAt: "2026-01-01T00:00:01.000Z",
         durationMs: 1,

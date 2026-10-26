@@ -66,6 +66,25 @@ test("the cold agent reader names the missing record in an empty archive", async
     assert.match(integrityRead.stderr, /agent record agents\/000001\/agent\.json is named by the manifest but missing from the archive/);
   });
 });
+
+test("the cold agent reader refuses a manifest record reached through an escaping symlink", async () => {
+  await withSingleAgentArchive(async (archiveDir, store) => {
+    const manifestPath = path.join(archiveDir, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { files: Array<{ path: string }> };
+    const record = manifest.files.find((file) => file.path === "agents/000001/agent.json");
+    assert.ok(record, "the built CLI must write an agent record");
+    const externalDirectory = path.join(path.dirname(archiveDir), "external-agent");
+    await mkdir(externalDirectory);
+    await writeFile(path.join(externalDirectory, "agent.json"), await readFile(path.join(archiveDir, record.path)));
+    await symlink(externalDirectory, path.join(archiveDir, "agents", "escape"));
+    record.path = "agents/escape/agent.json";
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+
+    const read = await runNode([archivedAgentsConsumerPath, store]);
+    assert.notEqual(read.code, 0, "a record reached outside the archive must not read as sound");
+    assert.match(read.stderr, /agents\/escape\/agent\.json resolves outside the archive directory/);
+  });
+});
 test("a sealed archive attests itself and its sentinel attests it back", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-archive-attested-"));
   const store = path.join(directory, "records");

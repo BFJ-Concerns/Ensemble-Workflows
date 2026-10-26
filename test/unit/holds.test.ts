@@ -521,22 +521,26 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
     } as never);
 
     const decision = runtime.raiseHold({ content: "proceed?", verdicts: ["yes", "no"] });
-    const record = await publishedHold(dir);
-    assert.equal(record.scope, "runtime-scope");
-    // The open hold is visible to a status poller while the run waits.
-    const openSnapshot = runtime.progress.snapshot();
-    assert.equal(openSnapshot.holds.length, 1);
-    assert.equal(openSnapshot.holds[0]?.hold_id, record.hold_id);
-    assert.deepEqual(openSnapshot.holds[0]?.verdicts, ["yes", "no"]);
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      assert.equal(record.scope, "runtime-scope");
+      // The open hold is visible to a status poller while the run waits.
+      const openSnapshot = runtime.progress.snapshot();
+      assert.equal(openSnapshot.holds.length, 1);
+      assert.equal(openSnapshot.holds[0]?.hold_id, record.hold_id);
+      assert.deepEqual(openSnapshot.holds[0]?.verdicts, ["yes", "no"]);
 
-    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
-    assert.deepEqual(await decision, { verdict: "yes", note: null });
-    assert.equal(runtime.progress.snapshot().holds.length, 0);
-    assert.deepEqual(
-      holdEvents.map((event) => event.method),
-      ["hold/raised", "hold/answered"]
-    );
-    await runtime.close();
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+      assert.deepEqual(await decision, { verdict: "yes", note: null });
+      assert.equal(runtime.progress.snapshot().holds.length, 0);
+      assert.deepEqual(
+        holdEvents.map((event) => event.method),
+        ["hold/raised", "hold/answered"]
+      );
+    } finally {
+      await runtime.close();
+    }
   });
 });
 

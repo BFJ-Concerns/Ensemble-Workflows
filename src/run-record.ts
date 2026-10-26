@@ -524,10 +524,14 @@ interface HoldEventEntry {
 /** Append a retirement observed after the raising writer has died. */
 export async function recordRetiredHold(
   archiveDir: string,
-  retired: { hold_id: string; retired_at: string; retirement_reason: "dead-raiser" | "timed-out" }
+  retired: { run_id: string; hold_id: string; retired_at: string; retirement_reason: "dead-raiser" | "timed-out" }
 ): Promise<void> {
   const manifestPath = path.join(archiveDir, MANIFEST_PATH);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Manifest;
+  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id ||
+      !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
+    throw new Error("retired hold does not belong to the named run archive");
+  }
   if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
     return;
   }

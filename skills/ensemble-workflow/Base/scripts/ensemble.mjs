@@ -14995,6 +14995,9 @@ var MANIFEST_PATH = "manifest.json";
 async function recordRetiredHold(archiveDir, retired) {
   const manifestPath = path4.join(archiveDir, MANIFEST_PATH);
   const manifest = JSON.parse(await readFile3(manifestPath, "utf8"));
+  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id || !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
+    throw new Error("retired hold does not belong to the named run archive");
+  }
   if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
     return;
   }

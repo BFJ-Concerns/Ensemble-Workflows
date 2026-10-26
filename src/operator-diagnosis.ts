@@ -58,6 +58,29 @@ export function presentOperationalError(error: unknown): string | null {
   return presentTerminalError(error, { archiveDir: null, lastAgentRecord: null });
 }
 
+/** Filesystem codes that mean this caller may not create or write the store where it stands. */
+const UNWRITABLE_LOCATION_CODES = new Set(["EACCES", "EPERM", "EROFS", "ENOENT", "ENOTDIR"]);
+
+/**
+ * A run record that cannot start leaves the caller two ways on: run
+ * without a record, or point the store at a data home it can write. A
+ * location the caller may not create or write is named as such — the
+ * directory first, then the remedies; any other failure keeps its own
+ * message as the cause, with the same remedies beneath.
+ */
+function runRecordStartDiagnosis(error: RunRecordStartError): string[] {
+  const { syscall, code } = error.filesystemFailure;
+  const cause =
+    code !== null && UNWRITABLE_LOCATION_CODES.has(code)
+      ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} — the location is not writable or creatable for this caller (${code})`
+      : error.message;
+  return [
+    cause,
+    "to run without a record: ENSEMBLE_RUN_RECORD=off",
+    "to keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>"
+  ];
+}
+
 function diagnose(error: unknown, context: TerminalPresentationContext): string[] | null {
   if (isInterrupt(error)) {
     return [
@@ -76,7 +99,7 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     return [`${error.message} — partial result on stdout${recordSuffix(context)}`];
   }
   if (error instanceof RunRecordStartError) {
-    return [error.message];
+    return runRecordStartDiagnosis(error);
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
     // The archive holds precise per-attempt failures and the worker's own

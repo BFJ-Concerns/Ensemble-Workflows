@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.js";
+import { CALLER_IDENTITY_ENV, RUN_RECORD_DIR_ENV, resolveAmbientSettings } from "./ambient-settings.js";
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
@@ -93,18 +93,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   // any invocation parsing, and each subcommand's --help prints its own
   // usage at exit 0 rather than a usage *error* at exit 2.
   if (argv[0] === "--help" || argv[0] === "-h") {
-    // The help gesture answers with orientation, not just the flag grammar
-    // the bare usage error already shows.
-    stdout.write(usage(program));
-    stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\n" +
-        "or dispatches a single agent. Workflow and agent runs return JSON on stdout.\n" +
-        "workflows and holds list prose on stdout; holds --json lists JSON.\n" +
-        "Help and version print text on stdout; diagnostics go to stderr.\n" +
-        "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),\n" +
-        "workflows (list saved workflows), holds (list open decision holds),\n" +
-        "holds answer (answer one). Each subcommand answers its own --help.\n"
-    );
+    stdout.write(helpAnswer(program));
     return 0;
   }
   if (argv[0] === "--version") {
@@ -140,14 +129,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
   }
 
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
-    stdout.write(usage(program));
-    stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\n" +
-        "prints its result as JSON on stdout. The prompt is the single positional\n" +
-        "argument, or stdin when omitted; put flags before the prompt. --schema\n" +
-        "validates the reply against a JSON Schema; --identity wraps the result as\n" +
-        "{ label, phase, output, failure }.\n"
-    );
+    stdout.write(agentHelpAnswer(program));
     return 0;
   }
 
@@ -391,7 +373,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
-        reportSentinelError
+        recordingEnabled ? reportSentinelError : (error) => stderr.write(`[sentinel] ${unrecordedSentinelLine(error, sentinelStoreDir)}\n`)
       );
       if (sentinelPath !== null) {
         // The interrupt watch is already armed, so the published path is
@@ -1882,28 +1864,57 @@ async function answerHoldCommand(
   }
 }
 
+/**
+ * Why a run with recording off has no sentinel. The sentinel's directory
+ * sits in the record store, so its raw `mkdir` failure reads like the
+ * archive failing to start; with recording off nothing else is written
+ * there, and the line says so — the sentinel alone was skipped, and the
+ * data home it would need.
+ */
+function unrecordedSentinelLine(error: unknown, storeDir: string): string {
+  const cause = (error as { cause?: { path?: unknown; code?: unknown } }).cause;
+  const directory = typeof cause?.path === "string" ? cause.path : storeDir;
+  const code = typeof cause?.code === "string" ? ` (${cause.code})` : "";
+  return (
+    `no sentinel will be written for this run — recording is off, so only the sentinel uses the store, ` +
+    `and its directory ${directory} cannot be created${code}; ${RUN_RECORD_DIR_ENV} names a writable data home for it`
+  );
+}
+
 /** The command word usage lines lead with when the caller names none. */
 const DEFAULT_PROGRAM_NAME = "ensemble";
 
 /**
  * How the caller addresses the CLI, derived from the script path Node was
- * given (`process.argv[1]`): a bundle or compiled entry run through Node
- * reads `node <file>`, so the usage text tells the reader to type what they
- * typed — there is no `ensemble` on PATH unless a bin shim or symlink puts
- * one there, and such a shim (a file without a script extension) is named
- * as itself. No path: the default word.
+ * given (`process.argv[1]`) and the directory it was launched from: a bundle
+ * or compiled entry run through Node reads `node <path>`, the path relative
+ * to the launch directory, so typing the name the usage prints from that
+ * directory runs the launcher again — there is no `ensemble` on PATH unless
+ * a bin shim or symlink puts one there, and such a shim (a file without a
+ * script extension) is named as itself. No path: the default word.
  */
-export function programNameFor(scriptPath: string | undefined): string {
+export function programNameFor(scriptPath: string | undefined, cwd: string = process.cwd()): string {
   if (scriptPath === undefined || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
   const file = path.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  if (!/\.(?:mjs|cjs|js)$/.test(file)) {
+    return file;
+  }
+  return `node ${shellWord(path.relative(cwd, path.resolve(cwd, scriptPath)))}`;
+}
+
+/** A path as one shell word: bare when it needs no quoting, single-quoted otherwise. */
+function shellWord(text: string): string {
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
 }
 
 /** Every usage line fits a conventional terminal; longer lines wrap at a token. */
 const USAGE_WIDTH = 80;
 const USAGE_LEAD = "Usage: ";
+
+/** Where the reference documentation lives, whichever way the launcher was installed. */
+const DOCUMENTATION_URL = "https://github.com/BFJ-Concerns/Ensemble-Workflows/tree/main/docs";
 
 /** The tuning flags a workflow run accepts before the script path. */
 const RUN_OPTION_SYNOPSES: readonly string[] = [
@@ -1938,38 +1949,119 @@ const AGENT_OPTION_SYNOPSES: readonly string[] = [
   "--hold-scope <scope>"
 ];
 
+const AGENT_FORM: readonly string[] = ["agent", "--engine <engine>", "[agent options]", "[prompt]"];
+
+/** The worked agent dispatch both help answers show. */
+const AGENT_EXAMPLE: readonly string[] = ["agent", "--engine claude", "--model haiku", "'Summarise README.md'"];
+
 /**
  * The usage text: a synopsis of every invocation form naming the program
  * as the caller invoked it, the option groups, and the route to more help.
- * Printed on stdout as the head of the help answers and on stderr for the
- * one usage error that names no work at all. A new subcommand or flag
- * joins here in the same change that adds it.
+ * Printed on stderr for the one usage error that names no work at all. A
+ * new subcommand or flag joins here in the same change that adds it.
  */
 function usage(program: string): string {
+  return [
+    ...synopsisLines(program),
+    "",
+    ...optionLines(),
+    ...wrapWords(`Run \`${program} --help\` for orientation; each subcommand answers --help.`),
+    ""
+  ].join("\n");
+}
+
+/**
+ * The top-level help answer: what Ensemble is for, then the synopsis, a
+ * worked example of each mode, the option groups, what each command prints,
+ * and where the documentation lives — orientation before the option lists.
+ */
+function helpAnswer(program: string): string {
+  return [
+    "Runs a JavaScript workflow script that dispatches agents on the Codex, Claude,",
+    "and opencode engines, or dispatches a single agent with no script.",
+    "",
+    ...synopsisLines(program),
+    "",
+    "Example workflow script, saved as summary.js:",
+    "  export const meta = { name: \"summary\" };",
+    "  return agent(`Summarise ${args[0]} in three lines.`,",
+    "    { engine: \"claude\", model: \"haiku\" });",
+    "Run it with one argument:",
+    ...wrapTokens("  ", [program, "summary.js", "README.md"], "    ", " "),
+    "Dispatch one agent without a script:",
+    ...wrapTokens("  ", [program, ...AGENT_EXAMPLE], "    ", " "),
+    "",
+    ...optionLines(),
+    "",
+    "Workflow and agent runs return JSON on stdout.",
+    "workflows and holds list prose on stdout; holds --json lists JSON.",
+    "Help and version print text on stdout; diagnostics go to stderr.",
+    "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),",
+    "workflows (list saved workflows), holds (list open decision holds),",
+    "holds answer (answer one). Each subcommand answers its own --help.",
+    ...documentationLines(),
+    ""
+  ].join("\n");
+}
+
+/** `agent --help`: what a dispatch does, its synopsis, an example, and the options it accepts. */
+function agentHelpAnswer(program: string): string {
+  return [
+    "Dispatches one worker on the named engine and prints its result as JSON on",
+    "stdout. The prompt is the single positional argument, or stdin when omitted;",
+    "put flags before the prompt.",
+    "",
+    subcommandSynopsis(program, AGENT_FORM).trimEnd(),
+    "",
+    "Example:",
+    ...wrapTokens("  ", [program, ...AGENT_EXAMPLE], "    ", " "),
+    "",
+    "Agent options:",
+    ...wrapTokens("  ", ["--engine <codex|claude|opencode>", ...AGENT_OPTION_SYNOPSES], "  ", "  "),
+    "--engine is required; --model is required on opencode and otherwise defaults",
+    "to the engine's own. --schema validates the reply against a JSON Schema;",
+    "--identity wraps the result as { label, phase, output, failure }.",
+    "--timeout ms bounds the whole dispatch and has no default: without it the",
+    "command waits until the worker answers or uses up its attempts (--max-attempts,",
+    "default 3). When the deadline passes, a partial-result envelope is printed.",
+    ...documentationLines(),
+    ""
+  ].join("\n");
+}
+
+function documentationLines(): string[] {
+  return [
+    `Documentation: ${DOCUMENTATION_URL}`,
+    "A skill install also carries its guide, SKILL.md, in the skill's directory."
+  ];
+}
+
+/** Every invocation form, the program as invoked leading each. */
+function synopsisLines(program: string): string[] {
   const forms: readonly (readonly string[])[] = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    AGENT_FORM,
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = continuationFor(program, forms.flat());
   const lines: string[] = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
     lines.push(...wrapTokens(lead, tokens, continuation, " "));
   });
-  lines.push(
-    "",
+  return lines;
+}
+
+function optionLines(): string[] {
+  return [
     "Run options (before the script path):",
     ...wrapTokens("  ", RUN_OPTION_SYNOPSES, "  ", "  "),
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
-    "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
-    ""
-  );
-  return lines.join("\n");
+    "The prompt is the one positional argument, or stdin when omitted."
+  ];
 }
 
 /**
@@ -1979,8 +2071,25 @@ function usage(program: string): string {
  * subcommand prints comes through here.
  */
 function subcommandSynopsis(program: string, tokens: readonly string[]): string {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
-  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}\n`;
+  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuationFor(program, tokens), " ").join("\n")}\n`;
+}
+
+/**
+ * Where a wrapped synopsis line resumes: under the first token after the
+ * program, unless the program is so long that a token placed there would
+ * pass `USAGE_WIDTH` — a launcher named by a long path — in which case the
+ * continuation drops to a shallow indent so every line still fits.
+ */
+function continuationFor(program: string, tokens: readonly string[]): string {
+  const aligned = USAGE_LEAD.length + program.length + 1;
+  const widest = Math.max(...tokens.map((token) => token.length));
+  return " ".repeat(aligned + widest <= USAGE_WIDTH ? aligned : USAGE_LEAD.length + 2);
+}
+
+/** Prose that names the program, wrapped at a word so a long program name still fits. */
+function wrapWords(text: string): string[] {
+  const [first = "", ...rest] = text.match(/`[^`]*`\S*|\S+/g) ?? [];
+  return rest.length === 0 ? [first] : wrapTokens(first, rest, "", " ");
 }
 
 /**

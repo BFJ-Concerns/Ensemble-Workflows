@@ -453,7 +453,7 @@ test("a store the launcher cannot create announces no sentinel path and names th
     assert.equal(sentinelLines.length, 1, `expected exactly one sentinel line, got:\n${stderr.text()}`);
     assert.match(sentinelLines[0]!, /^\[sentinel\] no sentinel will be written for this run — cannot create \S.*: ENOTDIR/);
     assert.doesNotMatch(stderr.text(), /\[sentinel\] will write /, "no path may be announced under a store that cannot be created");
-    assert.ok(lines.some((line) => line.startsWith("the durable run record could not start under ")), stderr.text());
+    assert.ok(lines.some((line) => line.startsWith("the durable run record could not start: cannot create ")), stderr.text());
     assert.equal(lines.filter((line) => /^\s+at /.test(line)).length, 0, `stack frames on stderr:\n${stderr.text()}`);
     const envelope = JSON.parse(stdout.text()) as { partial: boolean; reason: string; error: { kind: string } };
     assert.equal(envelope.partial, true);
@@ -2383,14 +2383,21 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
 });
 
 test("usage names the program as the caller invoked it and keeps every line within 80 columns", async () => {
-  // The word comes from what Node was handed: a script file reads as the
-  // command the reader must type, a bin shim or symlink as itself.
+  // The word comes from what Node was handed and where it was launched: a
+  // script file reads as the command the reader must type from that
+  // directory, a bin shim or symlink as itself.
   assert.equal(programNameFor(undefined), "ensemble");
-  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs"), "node ensemble.mjs");
-  assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js"), "node ensemble.js");
-  assert.equal(programNameFor("/home/me/.local/bin/ensemble"), "ensemble");
+  assert.equal(programNameFor("/opt/skills/ensemble-workflow/scripts/ensemble.mjs", "/opt/skills/ensemble-workflow/scripts"), "node ensemble.mjs");
+  assert.equal(
+    programNameFor("/work/.claude/skills/ensemble-workflow/scripts/ensemble.mjs", "/work"),
+    "node .claude/skills/ensemble-workflow/scripts/ensemble.mjs"
+  );
+  assert.equal(programNameFor("/repo/dist/src/cli/ensemble.js", "/repo/test"), "node ../dist/src/cli/ensemble.js");
+  assert.equal(programNameFor("/work/my tools/ensemble.mjs", "/work"), "node 'my tools/ensemble.mjs'");
+  assert.equal(programNameFor("/home/me/.local/bin/ensemble", "/work"), "ensemble");
 
-  for (const programName of ["ensemble", "node ensemble.mjs"]) {
+  const longProgram = "node .claude/skills/ensemble-workflow/scripts/ensemble.mjs";
+  for (const programName of ["ensemble", "node ensemble.mjs", longProgram]) {
     const escaped = programName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const stderr = new CaptureStream();
     assert.equal(await runEnsembleCli([], { stdout: new CaptureStream(), stderr, programName }), 2);
@@ -2401,11 +2408,11 @@ test("usage names the program as the caller invoked it and keeps every line with
     for (const line of lines) {
       assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
     }
-    assert.match(lines[0] ?? "", new RegExp(`^Usage: ${escaped} \\[run options\\] <script\\.js>`));
-    for (const form of ["agent --engine <engine>", "workflows", "holds \\[--json\\]", "holds answer <hold-id>"]) {
+    assert.match(lines[0] ?? "", new RegExp(`^Usage: ${escaped} \\[run options\\]`));
+    for (const form of programName === longProgram ? [] : ["agent --engine <engine>", "workflows", "holds \\[--json\\]", "holds answer <hold-id>"]) {
       assert.match(text, new RegExp(`\\n {7}${escaped} ${form}`), `${programName}: ${form}`);
     }
-    assert.match(text, new RegExp(`Run \`${escaped} --help\` for orientation`));
+    assert.match(text, new RegExp(`Run \`${escaped} --help\` for\\s+orientation`));
     if (programName !== "ensemble") {
       assert.doesNotMatch(text, /(^|\s)ensemble (agent|workflows|holds|\[run options\])/);
     }
@@ -2419,7 +2426,7 @@ test("usage names the program as the caller invoked it and keeps every line with
       for (const line of help.text().split("\n")) {
         assert.ok(line.length <= 80, `${argv.join(" ")} (${programName}): ${line.length} columns: ${line}`);
       }
-      assert.match(help.text(), new RegExp(`^Usage: ${escaped} `), argv.join(" "));
+      assert.match(help.text(), new RegExp(`^Usage: ${escaped} `, "m"), argv.join(" "));
     }
 
     // The subcommand usage lines and the agent diagnostics name the same program.
@@ -2428,7 +2435,7 @@ test("usage names the program as the caller invoked it and keeps every line with
     assert.equal(workflowsErr.text(), `Usage: ${programName} workflows\n`);
     const answerHelp = new CaptureStream();
     assert.equal(await runEnsembleCli(["holds", "answer", "--help"], { stdout: answerHelp, stderr: new CaptureStream(), programName }), 0);
-    assert.match(answerHelp.text(), new RegExp(`^Usage: ${escaped} holds answer <hold-id>`));
+    assert.match(answerHelp.text(), new RegExp(`^Usage: ${escaped} holds answer\\s+<hold-id>`));
     const agentErr = new CaptureStream();
     assert.equal(
       await runEnsembleCli(["agent", "prompt"], { stdin: Readable.from([]), stdout: new CaptureStream(), stderr: agentErr, programName }),
@@ -2448,10 +2455,11 @@ test("CLI entrypoint keeps every exit-2 path on stderr", () => {
         "Unknown option '--unknown'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"--unknown\"\n"
     },
     { argv: ["--timeout"], stderr: "Option --timeout expects a value\n" },
-    // Spawned as `node ensemble.js`, so that is the program the lines name.
-    { argv: ["workflows", "extra"], stderr: "Usage: node ensemble.js workflows\n" },
-    { argv: ["holds", "--unknown"], stderr: "Unknown option for node ensemble.js holds: --unknown\n" },
-    { argv: ["holds", "extra"], stderr: "Unexpected argument for node ensemble.js holds: extra\n" },
+    // Spawned from the repository root as `node dist/src/cli/ensemble.js`,
+    // so that is the program the lines name.
+    { argv: ["workflows", "extra"], stderr: "Usage: node dist/src/cli/ensemble.js workflows\n" },
+    { argv: ["holds", "--unknown"], stderr: "Unknown option for node dist/src/cli/ensemble.js holds: --unknown\n" },
+    { argv: ["holds", "extra"], stderr: "Unexpected argument for node dist/src/cli/ensemble.js holds: extra\n" },
     { argv: ["holds", "--scope"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope=", "--all"], stderr: "--scope requires a non-empty value\n" },
     { argv: ["holds", "--scope", "named", "--all"], stderr: "--scope and --all cannot be used together\n" }
@@ -2524,7 +2532,7 @@ test("--help, -h, and --version answer a cold arrival at exit 0", async () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     assert.equal(await runEnsembleCli([flag], { stdout, stderr }), 0);
-    assert.match(stdout.text(), /^Usage: ensemble /);
+    assert.match(stdout.text(), /^Usage: ensemble /m);
     assert.equal(stderr.text(), "");
   }
 
@@ -2625,15 +2633,24 @@ test("ensemble holds serves the two listing contracts: one scope's view, and mac
 test("the help answers carry orientation beyond the bare usage grammar", async () => {
   const topLevel = new CaptureStream();
   assert.equal(await runEnsembleCli(["--help"], { stdout: topLevel, stderr: new CaptureStream() }), 0);
-  assert.match(topLevel.text(), /^Usage: ensemble /);
-  // Pre-fix, --help printed exactly the exit-2 usage screen and nothing more.
+  // What Ensemble is for comes first, before the synopsis and the option lists.
+  assert.match(topLevel.text(), /^Runs a JavaScript workflow script/);
+  assert.ok(topLevel.text().indexOf("Runs a JavaScript") < topLevel.text().indexOf("Usage: ensemble "));
   assert.match(topLevel.text(), /Subcommands: agent/);
   assert.match(topLevel.text(), /Each subcommand answers its own --help/);
+  assert.match(topLevel.text(), /\n {2}ensemble summary\.js README\.md\n/);
+  assert.match(topLevel.text(), /\n {2}ensemble agent --engine claude --model haiku 'Summarise README\.md'\n/);
 
   const agentHelp = new CaptureStream();
   assert.equal(await runEnsembleCli(["agent", "--help"], { stdout: agentHelp, stderr: new CaptureStream() }), 0);
+  assert.match(agentHelp.text(), /^Dispatches one worker on the named engine/);
   assert.match(agentHelp.text(), /prompt is the single positional\s+argument, or stdin when omitted/);
   assert.match(agentHelp.text(), /--identity wraps the result/);
+  assert.match(agentHelp.text(), /^Usage: ensemble agent --engine <engine> \[agent options\] \[prompt\]$/m);
+  assert.match(agentHelp.text(), /--engine <codex\|claude\|opencode>/);
+  assert.match(agentHelp.text(), /--timeout ms bounds the whole dispatch and has no default/);
+  // Only the agent form: no script synopsis, no run-only options.
+  assert.doesNotMatch(agentHelp.text(), /<script\.js>|--json-args|Run options/);
 });
 
 test("an agent flag placed after the prompt is rejected as a misplacement", async () => {

@@ -774,6 +774,21 @@ export class RunRecordStartError extends EnsembleError {
       { cause }
     );
   }
+
+  /** The path the store was creating or writing when it failed, as the filesystem error names it. */
+  get blockedPath(): string {
+    const named = (this.cause as { path?: unknown } | undefined)?.path;
+    return typeof named === "string" ? named : this.storeDir;
+  }
+
+  /** The failing filesystem call (`mkdir`, `open`, …) and its error code, where the cause carries them. */
+  get filesystemFailure(): { syscall: string | null; code: string | null } {
+    const cause = this.cause as { syscall?: unknown; code?: unknown } | undefined;
+    return {
+      syscall: typeof cause?.syscall === "string" ? cause.syscall : null,
+      code: typeof cause?.code === "string" ? cause.code : null
+    };
+  }
 }
 
 /**

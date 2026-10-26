@@ -177,10 +177,14 @@ path is announced only once its directory exists. If the launcher cannot create
 the directory (a regular file where the store should be, a read-only parent),
 it prints one `[sentinel] no sentinel will be written for this run — …` line
 naming the cause instead, so a supervisor never waits on a path that cannot be
-written. With recording enabled the run then fails to start, with a one-line
-`the durable run record could not start under …` diagnosis; with recording off
-it runs on without a sentinel. A write that fails later is reported as one
-`[sentinel]` line.
+written. With recording enabled the run then fails to start: the diagnosis
+`the durable run record could not start: cannot create <directory> — …` names
+the directory, and two indented lines beneath it name the ways on —
+`ENSEMBLE_RUN_RECORD=off` to run without a record, or `ENSEMBLE_RUN_RECORD_DIR`
+naming a writable data home. With recording off the run continues without a
+sentinel, and the line says that recording is off and only the sentinel used
+the store, naming its directory and `ENSEMBLE_RUN_RECORD_DIR`. A write that
+fails later is reported as one `[sentinel]` line.
 
 The sentinel is written on every ending the launcher can handle — success,
 failure, timeout, interruption, a partial result, a script's `process.exit`,

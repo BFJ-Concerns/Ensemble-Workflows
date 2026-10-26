@@ -14269,6 +14269,19 @@ var RunRecordStartError = class extends EnsembleError {
     this.storeDir = storeDir;
   }
   storeDir;
+  /** The path the store was creating or writing when it failed, as the filesystem error names it. */
+  get blockedPath() {
+    const named = this.cause?.path;
+    return typeof named === "string" ? named : this.storeDir;
+  }
+  /** The failing filesystem call (`mkdir`, `open`, …) and its error code, where the cause carries them. */
+  get filesystemFailure() {
+    const cause = this.cause;
+    return {
+      syscall: typeof cause?.syscall === "string" ? cause.syscall : null,
+      code: typeof cause?.code === "string" ? cause.code : null
+    };
+  }
 };
 function describeError(error) {
   if (error instanceof Error) {
@@ -16690,6 +16703,16 @@ function presentTerminalError(error, context) {
 function presentOperationalError(error) {
   return presentTerminalError(error, { archiveDir: null, lastAgentRecord: null });
 }
+var UNWRITABLE_LOCATION_CODES = /* @__PURE__ */ new Set(["EACCES", "EPERM", "EROFS", "ENOENT", "ENOTDIR"]);
+function runRecordStartDiagnosis(error) {
+  const { syscall, code } = error.filesystemFailure;
+  const cause = code !== null && UNWRITABLE_LOCATION_CODES.has(code) ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} \u2014 the location is not writable or creatable for this caller (${code})` : error.message;
+  return [
+    cause,
+    "to run without a record: ENSEMBLE_RUN_RECORD=off",
+    "to keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>"
+  ];
+}
 function diagnose(error, context) {
   if (isInterrupt(error)) {
     return [
@@ -16703,7 +16726,7 @@ function diagnose(error, context) {
     return [`${error.message} \u2014 partial result on stdout${recordSuffix(context)}`];
   }
   if (error instanceof RunRecordStartError) {
-    return [error.message];
+    return runRecordStartDiagnosis(error);
   }
   if (error instanceof Error && error.name === "SingleAgentFailedError") {
     const lines = [error.message];
@@ -30413,10 +30436,7 @@ async function runEnsembleCli(argv, options = {}) {
   const env = options.env ?? process.env;
   const program = options.programName ?? DEFAULT_PROGRAM_NAME;
   if (argv[0] === "--help" || argv[0] === "-h") {
-    stdout.write(usage(program));
-    stdout.write(
-      "\nRuns a JavaScript ensemble workflow over a fleet of engine-pinned agents,\nor dispatches a single agent. Workflow and agent runs return JSON on stdout.\nworkflows and holds list prose on stdout; holds --json lists JSON.\nHelp and version print text on stdout; diagnostics go to stderr.\nSubcommands: agent (one worker on a named engine; prompt from argv or stdin),\nworkflows (list saved workflows), holds (list open decision holds),\nholds answer (answer one). Each subcommand answers its own --help.\n"
-    );
+    stdout.write(helpAnswer(program));
     return 0;
   }
   if (argv[0] === "--version") {
@@ -30454,10 +30474,7 @@ async function runEnsembleCli(argv, options = {}) {
     return 0;
   }
   if (argv[0] === "agent" && (argv[1] === "--help" || argv[1] === "-h")) {
-    stdout.write(usage(program));
-    stdout.write(
-      "\nDispatches one worker on the named engine (--engine codex|claude|opencode) and\nprints its result as JSON on stdout. The prompt is the single positional\nargument, or stdin when omitted; put flags before the prompt. --schema\nvalidates the reply against a JSON Schema; --identity wraps the result as\n{ label, phase, output, failure }.\n"
-    );
+    stdout.write(agentHelpAnswer(program));
     return 0;
   }
   if (argv[0] === "holds" && argv[1] === "answer") {
@@ -30634,7 +30651,8 @@ async function runEnsembleCli(argv, options = {}) {
     if (sentinelStoreDir !== null && sentinelStoreDir.length > 0) {
       const sentinelPath = await sentinel.prepare(
         { storeDir: sentinelStoreDir, cwd, runUuid: runtimeRunId },
-        reportSentinelError
+        recordingEnabled ? reportSentinelError : (error) => stderr.write(`[sentinel] ${unrecordedSentinelLine(error, sentinelStoreDir)}
+`)
       );
       if (sentinelPath !== null) {
         stderr.write(`[sentinel] will write ${sentinelPath} when the run ends
@@ -31694,16 +31712,29 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
       return 5;
   }
 }
+function unrecordedSentinelLine(error, storeDir) {
+  const cause = error.cause;
+  const directory = typeof cause?.path === "string" ? cause.path : storeDir;
+  const code = typeof cause?.code === "string" ? ` (${cause.code})` : "";
+  return `no sentinel will be written for this run \u2014 recording is off, so only the sentinel uses the store, and its directory ${directory} cannot be created${code}; ${RUN_RECORD_DIR_ENV} names a writable data home for it`;
+}
 var DEFAULT_PROGRAM_NAME = "ensemble";
-function programNameFor(scriptPath) {
+function programNameFor(scriptPath, cwd = process.cwd()) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
   const file = path13.basename(scriptPath);
-  return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
+  if (!/\.(?:mjs|cjs|js)$/.test(file)) {
+    return file;
+  }
+  return `node ${shellWord(path13.relative(cwd, path13.resolve(cwd, scriptPath)))}`;
+}
+function shellWord(text) {
+  return /^[\w@%+=:,./-]+$/.test(text) ? text : `'${text.replaceAll("'", "'\\''")}'`;
 }
 var USAGE_WIDTH = 80;
 var USAGE_LEAD = "Usage: ";
+var DOCUMENTATION_URL = "https://github.com/BFJ-Concerns/Ensemble-Workflows/tree/main/docs";
 var RUN_OPTION_SYNOPSES = [
   "--json-args '<json>|@file'",
   "--budget engine=N",
@@ -31733,36 +31764,111 @@ var AGENT_OPTION_SYNOPSES = [
   "--caller-identity <identity>",
   "--hold-scope <scope>"
 ];
+var AGENT_FORM = ["agent", "--engine <engine>", "[agent options]", "[prompt]"];
+var AGENT_EXAMPLE = ["agent", "--engine claude", "--model haiku", "'Summarise README.md'"];
 function usage(program) {
+  return [
+    ...synopsisLines(program),
+    "",
+    ...optionLines(),
+    ...wrapWords(`Run \`${program} --help\` for orientation; each subcommand answers --help.`),
+    ""
+  ].join("\n");
+}
+function helpAnswer(program) {
+  return [
+    "Runs a JavaScript workflow script that dispatches agents on the Codex, Claude,",
+    "and opencode engines, or dispatches a single agent with no script.",
+    "",
+    ...synopsisLines(program),
+    "",
+    "Example workflow script, saved as summary.js:",
+    '  export const meta = { name: "summary" };',
+    "  return agent(`Summarise ${args[0]} in three lines.`,",
+    '    { engine: "claude", model: "haiku" });',
+    "Run it with one argument:",
+    ...wrapTokens("  ", [program, "summary.js", "README.md"], "    ", " "),
+    "Dispatch one agent without a script:",
+    ...wrapTokens("  ", [program, ...AGENT_EXAMPLE], "    ", " "),
+    "",
+    ...optionLines(),
+    "",
+    "Workflow and agent runs return JSON on stdout.",
+    "workflows and holds list prose on stdout; holds --json lists JSON.",
+    "Help and version print text on stdout; diagnostics go to stderr.",
+    "Subcommands: agent (one worker on a named engine; prompt from argv or stdin),",
+    "workflows (list saved workflows), holds (list open decision holds),",
+    "holds answer (answer one). Each subcommand answers its own --help.",
+    ...documentationLines(),
+    ""
+  ].join("\n");
+}
+function agentHelpAnswer(program) {
+  return [
+    "Dispatches one worker on the named engine and prints its result as JSON on",
+    "stdout. The prompt is the single positional argument, or stdin when omitted;",
+    "put flags before the prompt.",
+    "",
+    subcommandSynopsis(program, AGENT_FORM).trimEnd(),
+    "",
+    "Example:",
+    ...wrapTokens("  ", [program, ...AGENT_EXAMPLE], "    ", " "),
+    "",
+    "Agent options:",
+    ...wrapTokens("  ", ["--engine <codex|claude|opencode>", ...AGENT_OPTION_SYNOPSES], "  ", "  "),
+    "--engine is required; --model is required on opencode and otherwise defaults",
+    "to the engine's own. --schema validates the reply against a JSON Schema;",
+    "--identity wraps the result as { label, phase, output, failure }.",
+    "--timeout ms bounds the whole dispatch and has no default: without it the",
+    "command waits until the worker answers or uses up its attempts (--max-attempts,",
+    "default 3). When the deadline passes, a partial-result envelope is printed.",
+    ...documentationLines(),
+    ""
+  ].join("\n");
+}
+function documentationLines() {
+  return [
+    `Documentation: ${DOCUMENTATION_URL}`,
+    "A skill install also carries its guide, SKILL.md, in the skill's directory."
+  ];
+}
+function synopsisLines(program) {
   const forms = [
     ["[run options]", "<script.js>", "[args...]"],
-    ["agent", "--engine <engine>", "[agent options]", "[prompt]"],
+    AGENT_FORM,
     ["workflows"],
     ["holds", "[--json]", "[--scope <scope> | --all]"],
     ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]
   ];
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
+  const continuation = continuationFor(program, forms.flat());
   const lines = [];
   forms.forEach((tokens, index) => {
     const lead = `${index === 0 ? USAGE_LEAD : " ".repeat(USAGE_LEAD.length)}${program}`;
     lines.push(...wrapTokens(lead, tokens, continuation, " "));
   });
-  lines.push(
-    "",
+  return lines;
+}
+function optionLines() {
+  return [
     "Run options (before the script path):",
     ...wrapTokens("  ", RUN_OPTION_SYNOPSES, "  ", "  "),
     "Agent options (after agent, before the prompt):",
     ...wrapTokens("  ", AGENT_OPTION_SYNOPSES, "  ", "  "),
-    "The prompt is the one positional argument, or stdin when omitted.",
-    `Run \`${program} --help\` for orientation; each subcommand answers --help.`,
-    ""
-  );
-  return lines.join("\n");
+    "The prompt is the one positional argument, or stdin when omitted."
+  ];
 }
 function subcommandSynopsis(program, tokens) {
-  const continuation = " ".repeat(USAGE_LEAD.length + program.length + 1);
-  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuation, " ").join("\n")}
+  return `${wrapTokens(`${USAGE_LEAD}${program}`, tokens, continuationFor(program, tokens), " ").join("\n")}
 `;
+}
+function continuationFor(program, tokens) {
+  const aligned = USAGE_LEAD.length + program.length + 1;
+  const widest = Math.max(...tokens.map((token) => token.length));
+  return " ".repeat(aligned + widest <= USAGE_WIDTH ? aligned : USAGE_LEAD.length + 2);
+}
+function wrapWords(text) {
+  const [first = "", ...rest] = text.match(/`[^`]*`\S*|\S+/g) ?? [];
+  return rest.length === 0 ? [first] : wrapTokens(first, rest, "", " ");
 }
 function wrapTokens(lead, tokens, indent, separator) {
   const lines = [];
@@ -31811,7 +31917,14 @@ function flushed(stream) {
     stream.write("", () => resolve());
   });
 }
+function ignoreClosedReader(error) {
+  if (error.code !== "EPIPE") {
+    throw error;
+  }
+}
 if (isMain) {
+  process.stdout.on("error", ignoreClosedReader);
+  process.stderr.on("error", ignoreClosedReader);
   const versionError = nodeVersionError();
   if (versionError !== null) {
     process.stderr.write(`${versionError}
@@ -31821,7 +31934,7 @@ if (isMain) {
     const cwd = process.cwd();
     const exitCode = await runEnsembleCli(process.argv.slice(2), {
       cwd,
-      programName: programNameFor(process.argv[1])
+      programName: programNameFor(process.argv[1], cwd)
     });
     process.exitCode = exitCode;
     await Promise.all([flushed(process.stdout), flushed(process.stderr)]);

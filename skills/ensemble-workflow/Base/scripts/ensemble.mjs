@@ -15438,7 +15438,12 @@ var RunRecordWriter = class _RunRecordWriter {
   async #writeManifest() {
     this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
     const destination = path4.join(this.archiveDir, MANIFEST_PATH);
-    await writeAttestedManifest(destination, this.manifest, true);
+    await writeAttestedManifest(
+      destination,
+      this.manifest,
+      true,
+      path4.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`)
+    );
   }
   // pid + sequence keeps names unique within the process; Date.now() alone
   // collided when two agents settled in the same millisecond.
@@ -15785,18 +15790,18 @@ async function hashFile(filePath) {
   const text = await readFile3(filePath);
   return createHash2("sha256").update(text).digest("hex");
 }
-async function writeAttestedManifest(destination, manifest, initialise = false) {
+async function writeAttestedManifest(destination, manifest, initialise = false, temporary) {
   if (manifest.integrity !== void 0 && manifest.integrity !== null && (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
     manifest.integrity.manifest_sha256 = null;
     manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
   }
   await writeStandaloneText(destination, `${canonicalJson(manifest)}
-`);
+`, temporary);
 }
-async function writeStandaloneText(destination, content) {
+async function writeStandaloneText(destination, content, temporary) {
   await mkdir(path4.dirname(destination), { recursive: true });
-  const temporary = path4.join(path4.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(temporary, destination, content);
+  const staging = temporary ?? path4.join(path4.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(staging, destination, content);
 }
 async function writeAndRename(temporary, destination, content) {
   try {
@@ -18914,7 +18919,7 @@ var RunProgress = class {
   /** An open hold joins the snapshot the moment it is raised. */
   noteHoldRaised(hold) {
     this.#openHolds.set(hold.id, {
-      id: hold.id,
+      hold_id: hold.id,
       content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
       verdicts: [...hold.verdicts],
       raisedAtMs: this.#now()
@@ -19110,7 +19115,7 @@ var RunProgress = class {
       totals.failed += counters.failed;
     }
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
       workflow: this.#workflow,

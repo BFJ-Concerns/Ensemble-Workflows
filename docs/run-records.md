@@ -51,7 +51,7 @@ rules, and a token on one engine does not cost the same as on another.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `2`.
+- `schema`: `3`. Version 3 names open holds by `hold_id`; version 2 used `id`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `workflow`: string or `null`, from `meta.name` when present.
@@ -86,7 +86,7 @@ Each status file contains one JSON object with these fields:
   first observed. That distinguishes a stuck background task from a worker
   that is still generating.
 - `holds`: array of open decision holds, empty when the run is not waiting.
-  Each object has string `id`, string `content` (cut to 500 characters plus
+  Each object has string `hold_id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
   `verdicts`, and numeric `raisedAtMs` (Unix epoch milliseconds).
 
@@ -98,7 +98,7 @@ Example:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "workflow": "verify-findings",

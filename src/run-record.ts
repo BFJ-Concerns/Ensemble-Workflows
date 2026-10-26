@@ -1114,7 +1114,8 @@ export class RunRecordWriter {
     // the canonical form, then write. Computed on every manifest write, not
     // only at seal, so a manifest read mid-run is verifiable too.
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
-    await writeAttestedManifest(destination, this.manifest, true);
+    await writeAttestedManifest(destination, this.manifest, true,
+      path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`));
   }
 
   // pid + sequence keeps names unique within the process; Date.now() alone
@@ -1663,20 +1664,21 @@ async function hashFile(filePath: string): Promise<string> {
 async function writeAttestedManifest(
   destination: string,
   manifest: { integrity?: { manifest_sha256?: string | null } | null },
-  initialise = false
+  initialise = false,
+  temporary?: string
 ): Promise<void> {
   if (manifest.integrity !== undefined && manifest.integrity !== null &&
       (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
     manifest.integrity.manifest_sha256 = null;
     manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
   }
-  await writeStandaloneText(destination, `${canonicalJson(manifest)}\n`);
+  await writeStandaloneText(destination, `${canonicalJson(manifest)}\n`, temporary);
 }
 
-async function writeStandaloneText(destination: string, content: string): Promise<void> {
+async function writeStandaloneText(destination: string, content: string, temporary?: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
-  const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(temporary, destination, content);
+  const staging = temporary ?? path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(staging, destination, content);
 }
 
 /** Atomic temp-then-rename write; a failed write never leaves its temp file behind. */

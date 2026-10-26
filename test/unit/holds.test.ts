@@ -528,7 +528,7 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
       // The open hold is visible to a status poller while the run waits.
       const openSnapshot = runtime.progress.snapshot();
       assert.equal(openSnapshot.holds.length, 1);
-      assert.equal(openSnapshot.holds[0]?.id, record.hold_id);
+      assert.equal(openSnapshot.holds[0]?.hold_id, record.hold_id);
       assert.deepEqual(openSnapshot.holds[0]?.verdicts, ["yes", "no"]);
 
       await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));

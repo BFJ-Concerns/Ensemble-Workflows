@@ -573,6 +573,10 @@ provably dead is retired by whichever listing or run observes it and reported
 as `retired`, so the listing only shows holds that can still be answered.
 
 Every raise, answer, rejected answer, timeout and retirement is recorded in
-the raising run's `hold_events`, including the submitter and note when the
-decision names them. Retired entries remain visible in scoped and machine-wide
-listings with their state, time and reason.
+the raising run's `hold_events` when its archive can be updated, including the
+submitter and note when the decision names them. A retired hold remains visible
+in scoped and machine-wide listings even if its archive is missing or has not
+yet recorded the raise. A retired JSON listing entry then carries
+`archive_error` with the reason its archive could not record retirement; the
+field clears if a later listing records it successfully. Retired entries also
+carry their state, time and retirement reason.

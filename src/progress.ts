@@ -59,7 +59,7 @@ export interface EngineProgressSnapshot {
 
 /** An open hold as the snapshot shows it: what a poller needs to see the run is waiting. */
 export interface OpenHoldSnapshot {
-  id: string;
+  hold_id: string;
   /** Bounded to keep the snapshot small; the hold file carries the full text. */
   content: string;
   verdicts: string[];
@@ -68,11 +68,11 @@ export interface OpenHoldSnapshot {
 
 export interface ProgressSnapshot {
   /**
-   * Snapshot schema version. 2: one file per run in the status directory
-   * (`ensemble.<run-uuid>.local.json`), each carrying its writer's owner
-   * evidence; 1 was the single-slot `ensemble.local.json`.
+   * Snapshot schema version. 3: open holds use `hold_id`; 2 introduced one
+   * file per run in the status directory (`ensemble.<run-uuid>.local.json`),
+   * each with owner evidence; 1 used `ensemble.local.json`.
    */
-  schema: 2;
+  schema: 3;
   runId: string;
   pid: number;
   workflow: string | null;
@@ -162,7 +162,7 @@ export class RunProgress {
   /** An open hold joins the snapshot the moment it is raised. */
   noteHoldRaised(hold: { id: string; content: string; verdicts: string[] }): void {
     this.#openHolds.set(hold.id, {
-      id: hold.id,
+      hold_id: hold.id,
       content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}…` : hold.content,
       verdicts: [...hold.verdicts],
       raisedAtMs: this.#now()
@@ -375,7 +375,7 @@ export class RunProgress {
     }
 
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
       workflow: this.#workflow,

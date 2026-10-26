@@ -16708,9 +16708,7 @@ function runRecordStartDiagnosis(error) {
   const { syscall, code } = error.filesystemFailure;
   const cause = code !== null && UNWRITABLE_LOCATION_CODES.has(code) ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} \u2014 the location is not writable or creatable for this caller (${code})` : error.message;
   return [
-    cause,
-    "to run without a record: ENSEMBLE_RUN_RECORD=off",
-    "to keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>"
+    `${cause} \u2014 run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
   ];
 }
 function diagnose(error, context) {

@@ -3118,7 +3118,7 @@ function runIn(
   });
 }
 
-test("built CLI names a program that runs when typed literally from the launch directory", async () => {
+test("built CLI names a program that runs from a short shipped path", async () => {
   const { workspace, launcher } = await shippedWorkspace("ensemble-literal-program-");
   try {
     for (const argv of [[], ["--help"]]) {
@@ -3127,13 +3127,32 @@ test("built CLI names a program that runs when typed literally from the launch d
       const program = text.match(/^Usage: (.+?) \[run options\]/m)?.[1];
       assert.ok(program, `no usage line in:\n${text}`);
       for (const line of text.split("\n")) {
-        assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
+        assert.ok(line.length <= 80, `short shipped path: ${line.length} columns: ${line}`);
       }
       // Typed exactly as printed, from the same directory, the name must
       // reach the launcher again — not a file name Node cannot find there.
       const typed = await runIn(workspace, "/bin/sh", ["-c", `${program} --version`]);
       assert.equal(typed.code, 0, `${program} --version: ${typed.stderr}`);
       assert.doesNotMatch(typed.stderr, /MODULE_NOT_FOUND/);
+      assert.match(typed.stdout, /^\d+\.\d+\.\d+/);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("built CLI keeps a distant shipped invocation runnable when its name exceeds the usage width", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "ensemble-distant-program-"));
+  try {
+    for (const argv of [[], ["--help"]]) {
+      const shown = await runIn(workspace, process.execPath, [bundledCliPath, ...argv]);
+      const output = argv.length === 0 ? shown.stderr : shown.stdout;
+      const usageLine = output.split("\n").find((line) => line.startsWith("Usage: "));
+      const program = usageLine?.match(/^Usage: (.+?) \[run options\]/)?.[1];
+      assert.ok(program, `no usage line in:\n${output}`);
+      assert.ok(usageLine!.length > 80, `expected the distant path to exceed the width: ${usageLine}`);
+      const typed = await runIn(workspace, "/bin/sh", ["-c", `${program} --version`]);
+      assert.equal(typed.code, 0, `${program} --version: ${typed.stderr}`);
       assert.match(typed.stdout, /^\d+\.\d+\.\d+/);
     }
   } finally {
@@ -3272,14 +3291,13 @@ test("built CLI names an unwritable data home and both ways on", async () => {
     });
     assert.equal(result.code, 1, result.stderr);
     const store = path.join(dataHome, "ensemble");
-    assert.ok(
-      result.stderr.includes(
-        `the durable run record could not start: cannot create ${store} — the location is not writable or creatable for this caller (EACCES)\n` +
-          "  to run without a record: ENSEMBLE_RUN_RECORD=off\n" +
-          "  to keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>\n"
-      ),
-      result.stderr
+    const diagnosis = result.stderr.split("\n").filter((line) => line.startsWith("the durable run record could not start:"));
+    assert.equal(diagnosis.length, 1, result.stderr);
+    assert.equal(
+      diagnosis[0],
+      `the durable run record could not start: cannot create ${store} — the location is not writable or creatable for this caller (EACCES) — run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
     );
+    assert.doesNotMatch(result.stderr, /^ {2}(?:to run without a record|to keep one):/m);
     assert.doesNotMatch(result.stderr, /^\s+at /m);
   } finally {
     await chmod(dataHome, 0o700);

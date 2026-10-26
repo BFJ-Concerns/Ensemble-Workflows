@@ -2382,7 +2382,7 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
   );
 });
 
-test("usage names the program as the caller invoked it and keeps every line within 80 columns", async () => {
+test("usage names short invocation paths and keeps their lines within 80 columns", async () => {
   // The word comes from what Node was handed and where it was launched: a
   // script file reads as the command the reader must type from that
   // directory, a bin shim or symlink as itself.

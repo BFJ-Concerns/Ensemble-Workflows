@@ -65,8 +65,8 @@ const UNWRITABLE_LOCATION_CODES = new Set(["EACCES", "EPERM", "EROFS", "ENOENT",
  * A run record that cannot start leaves the caller two ways on: run
  * without a record, or point the store at a data home it can write. A
  * location the caller may not create or write is named as such — the
- * directory first, then the remedies; any other failure keeps its own
- * message as the cause, with the same remedies beneath.
+ * directory first, then both remedies on the same line; any other failure
+ * keeps its own message as the cause with the same remedies.
  */
 function runRecordStartDiagnosis(error: RunRecordStartError): string[] {
   const { syscall, code } = error.filesystemFailure;
@@ -75,9 +75,7 @@ function runRecordStartDiagnosis(error: RunRecordStartError): string[] {
       ? `the durable run record could not start: cannot ${syscall === "mkdir" ? "create" : "write"} ${error.blockedPath} — the location is not writable or creatable for this caller (${code})`
       : error.message;
   return [
-    cause,
-    "to run without a record: ENSEMBLE_RUN_RECORD=off",
-    "to keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>"
+    `${cause} — run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>`
   ];
 }
 

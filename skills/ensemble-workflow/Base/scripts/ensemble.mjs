@@ -17239,6 +17239,10 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
+var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
+]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
@@ -17256,7 +17260,7 @@ function classifyAttemptFailure(evidence) {
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error" ? { class: "unclassified", rule: "opencode.run-error" } : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 function classifyCodexFailure(kind, diagnostic) {

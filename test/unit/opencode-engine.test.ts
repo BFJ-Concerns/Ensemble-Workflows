@@ -250,6 +250,7 @@ test("an opencode subprocess stopped by its turn deadline records a timeout", as
     assert.equal(record.attempts[0]?.failure?.kind, "TurnTimeoutError");
     assert.match(record.attempts[0]?.failure?.message ?? "", /50ms/);
     assert.deepEqual(record.attempts[0]?.workerExit, { exitCode: null, signal: "SIGTERM" });
+    assert.deepEqual(record.attempts[0]?.classification, { class: "unclassified", rule: "opencode.deadline" });
   } finally {
     await runtime.close();
     await rm(directory, { recursive: true, force: true });

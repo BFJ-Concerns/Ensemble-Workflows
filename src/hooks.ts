@@ -1,5 +1,5 @@
 import { assertValidAgentOptions } from "./engine-option-validation.js";
-import { PreSpawnAuthorError, agentIdentityOf } from "./errors.js";
+import { PreSpawnAuthorError, agentIdentityOf, describeError } from "./errors.js";
 import { presentOperationalError } from "./operator-diagnosis.js";
 
 import type {
@@ -204,7 +204,7 @@ export async function parallel<T>(
             label: identity.label,
             phase: identity.phase,
             output: null,
-            failure: { message: error instanceof Error ? error.message : String(error) }
+            failure: describeError(error)
           } as Awaited<T>;
         }
         return null;
@@ -247,7 +247,7 @@ export async function pipeline<Item>(
               label: identity.label,
               phase: identity.phase,
               output: null,
-              failure: { message: error instanceof Error ? error.message : String(error) }
+              failure: describeError(error)
             };
           }
           return null;

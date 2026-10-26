@@ -440,7 +440,7 @@ export class BudgetExceededError extends EnsembleError {
     super(
       total === 0
         ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started`
-        : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
+        : `Token budget for ${engine} reached: ${spent} tokens spent against a threshold of ${total}, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)`
     );
     this.engine = engine;
     this.total = total;
@@ -515,7 +515,7 @@ export class CodexSubstrateRefusedError extends SubstrateRefusedError {
    * notice would have.
    */
   constructor(cwd: string | undefined, cause: Error, detail: string = cause.message) {
-    super(`Codex app-server could not serve a thread${cwd === undefined ? "" : ` in ${cwd}`}: ${detail}`, { cause });
+    super(`A Codex worker could not run${cwd === undefined ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
 }
 
@@ -621,8 +621,9 @@ export class TurnTimeoutError extends EnsembleError {
  * invariant forbids.
  */
 export class FallbackTargetRejectedError extends AgentOptionRejectedError {
-  constructor(detail: string) {
-    super(`Invalid fallback chain: ${detail}`);
+  /** `declaredAt` names which declaration holds the bad chain — the call's own option or an engine default. */
+  constructor(detail: string, declaredAt: string = "the call's fallback option") {
+    super(`Invalid fallback chain in ${declaredAt}: ${detail}`);
   }
 }
 
@@ -634,11 +635,18 @@ export class FallbackTargetRejectedError extends AgentOptionRejectedError {
  * dispatch unrestricted.
  */
 export class CapabilityStripUnsupportedError extends AgentOptionRejectedError {
-  constructor(engine: string, capability: string, detail: string) {
+  /**
+   * The enforcement table's own note on why the route is unsupported —
+   * maintainer evidence, kept off the author-facing message.
+   */
+  readonly enforcementNote: string;
+
+  constructor(engine: string, capability: string, enforcementNote: string) {
     super(
-      `the ${engine} engine cannot strip the ${JSON.stringify(capability)} capability: ${detail}. ` +
-        "The worker was not dispatched. Remove the strip request, or use an engine that can enforce it."
+      `the ${engine} engine cannot enforce stripping the ${JSON.stringify(capability)} capability, so the worker was not dispatched. ` +
+        `Remove ${JSON.stringify(capability)} from strip, or run this call on an engine that can enforce it.`
     );
+    this.enforcementNote = enforcementNote;
   }
 }
 
@@ -656,11 +664,25 @@ export class RemovedAgentOptionError extends AgentOptionRejectedError {
 }
 
 export class UnrecognisedAgentOptionError extends AgentOptionRejectedError {
-  constructor(option: string, recognised: readonly string[]) {
+  constructor(option: string, recognised: readonly string[], callee: string = "agent()") {
     super(
-      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised
+      `Unrecognised ${callee} option ${JSON.stringify(option)}; expected one of ${recognised
         .map((name) => JSON.stringify(name))
         .join(", ")}`
+    );
+  }
+}
+
+/**
+ * A held session's `send()` was given an option that is fixed when the
+ * session is created (model, effort, …): the session keeps its creation
+ * settings for every turn, so the option belongs on `session()`.
+ */
+export class SessionCreationOptionError extends AgentOptionRejectedError {
+  constructor(option: string, perTurn: readonly string[]) {
+    super(
+      `send() option ${JSON.stringify(option)} is fixed when the session is created; pass it to session() instead. ` +
+        `send() accepts only ${perTurn.map((name) => JSON.stringify(name)).join(", ")}`
     );
   }
 }
@@ -673,10 +695,23 @@ export class InvalidAgentOptionValueError extends AgentOptionRejectedError {
   }
 }
 
-/** One pre-spawn rejection for all option faults found on a single agent() call. */
+/**
+ * The one pre-spawn rejection for every option fault found on a single
+ * agent() call, whether it found one fault or several: a mistake reports
+ * the same kind alone or among others, so a script or reader switching on
+ * the kind never sees it change with what else was wrong. `errors` keeps
+ * each fault's own class.
+ */
 export class InvalidAgentOptionsError extends AgentOptionRejectedError {
+  readonly errors: readonly AgentOptionRejectedError[];
+
   constructor(errors: readonly AgentOptionRejectedError[]) {
-    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+    super(
+      errors.length === 1
+        ? errors[0]!.message
+        : `Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`
+    );
+    this.errors = errors;
   }
 }
 

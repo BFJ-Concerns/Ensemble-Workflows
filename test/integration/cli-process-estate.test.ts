@@ -250,7 +250,7 @@ test("built CLI rejects a removed agent option with its removal reason", async (
 
     assert.equal(result.code, 1);
     assertSalvageEnvelope(result.stdout, "failed");
-    assert.match(result.stderr, /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/);
+    assert.match(result.stderr, /^agent\(\) option "sandbox" was removed/m);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -773,7 +773,7 @@ test("built CLI rejects a per-turn timeout above Node's timer limit on every aff
       assertSalvageEnvelope(result.stdout, "failed");
       assert.equal(
         withoutSentinelAnnouncement(result.stderr),
-        'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
+        'Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
       );
       const messages = await fixture.messages();
       assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);

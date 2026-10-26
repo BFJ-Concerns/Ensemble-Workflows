@@ -1020,7 +1020,7 @@ test("ensemble agent threads --strip to the worker and rejects unknown capabilit
 
   assert.equal(exitCode, 1);
   assert.equal(engine.attempts, 0);
-  assert.match(stderr.text(), /cannot strip the "skills" capability/);
+  assert.match(stderr.text(), /cannot enforce stripping the "skills" capability/);
 
   // The parser's own rejection: an unknown capability is a usage error
   // before worker creation — exit 2, one clean line, nothing dispatched.
@@ -1063,7 +1063,7 @@ test("the workflow --strip tuning flag reaches the runtime as the run-wide strip
     assert.deepEqual(captured, [["agents"]]);
     // The fixed engine declares no capability table, so the run-wide strip
     // fails the dispatch loud — proof it reached agent() itself.
-    assert.match(stderr.text(), /cannot strip the "agents" capability/);
+    assert.match(stderr.text(), /cannot enforce stripping the "agents" capability/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1562,7 +1562,7 @@ test("CLI reports a rejected option as exactly one line, exit 2", async () => {
   // The whole rejection surface: the named diagnostic alone. Usage belongs
   // to the invocation that named no work at all (the bin entrypoint test),
   // never to an option mistake, where it buries the actionable line.
-  assert.equal(stderr.text(), "Unknown option before script path: --unknown\n");
+  assert.equal(stderr.text(), "Unknown option before script path: --unknown; run `ensemble --help` for the options\n");
 });
 
 test("CLI rejects empty caller identities as usage errors before starting a run", async () => {
@@ -1593,7 +1593,7 @@ test("CLI wires per-engine budget ceilings into the workflow runtime", async () 
       try {
         await agent("codex-again", { engine: "codex" });
       } catch (error) {
-        codexBlocked = /Token budget exhausted/.test(String(error?.message ?? error));
+        codexBlocked = /Token budget for codex reached/.test(String(error?.message ?? error));
       }
       const claude = await agent("claude-ok", { engine: "claude" });
       return {
@@ -2317,7 +2317,7 @@ test("CLI fails the run loudly when the return value is not a JSON value", async
     assert.equal(envelope.error.kind, "WorkflowScriptError");
     assert.match(envelope.error.message, /workflow return value must be a JSON value/);
     assert.deepEqual(envelope.completed, []);
-    assert.match(stderr.text(), /WorkflowScriptError: workflow return value must be a JSON value/);
+    assert.match(stderr.text(), /^workflow return value must be a JSON value/m);
     assert.match(stderr.text(), scenario.offence);
     // An authoring error is the author's to fix: one clean line, no stack.
     assert.doesNotMatch(stderr.text(), /\n\s+at /);
@@ -2441,7 +2441,7 @@ test("usage names the program as the caller invoked it and keeps every line with
 test("CLI entrypoint keeps every exit-2 path on stderr", () => {
   const entrypointPath = fileURLToPath(new URL("../../src/cli/ensemble.js", import.meta.url));
   const cases = [
-    { argv: ["--unknown"], stderr: "Unknown option before script path: --unknown\n" },
+    { argv: ["--unknown"], stderr: "Unknown option before script path: --unknown; run `node ensemble.js --help` for the options\n" },
     {
       argv: ["agent", "--unknown", "prompt"],
       stderr:
@@ -3314,7 +3314,7 @@ test("a missing workflow script path is a rejected invocation: exit 2, one clean
   // check would let a builder extend this surface with noisy output unseen.
   assert.equal(
     stderr.text(),
-    `WorkflowScriptReadError: Could not read workflow script ${missing}: no file exists at this path\n`
+    `Could not read workflow script ${missing}: no file exists at this path\n`
   );
   await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
 });
@@ -3343,6 +3343,95 @@ test("a direct agent whose --cwd is missing is rejected the same way, before any
   assert.equal(stderr.text(), `--cwd must name an existing directory; got ${missingCwd}\n`);
   assert.equal(engine.attempts, 0);
   await assert.rejects(access(runRecordDir), "a rejected invocation writes no archive");
+});
+
+test("no refusal line opens with an internal error class name", async () => {
+  // Each refusal is the author's to act on; the class name is harness
+  // vocabulary the envelope's error.kind already carries for a consumer.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-refusal-lines-"));
+  const scripts: Record<string, string> = {
+    "options.js": 'export const meta = { name: "o" };\nreturn await agent("x", { engine: "codex", maxAttempts: 0 });\n',
+    "cycle.js": 'export const meta = { name: "c" };\nconst s = { type: "object", properties: {} };\ns.properties.self = s;\nreturn await agent("x", { engine: "codex", schema: s });\n',
+    "header.js": '// a leading comment\nexport const meta = { name: "h" };\nreturn 1;\n',
+    "metadata.js": 'export const metadata = { name: "m" };\nreturn 1;\n',
+    "import.js": 'export const meta = { name: "i" };\nimport fs from "node:fs";\nreturn 1;\n',
+    "tally.js": 'export const meta = { name: "t" };\nawait tally("count", "20");\nreturn 1;\n',
+    "chain.js": 'export const meta = { name: "f" };\nexport const defaults = { codex: { fallback: [{ engine: "opencode", model: "m" }] } };\nreturn 1;\n',
+    "strip.js": 'export const meta = { name: "s" };\nreturn await agent("x", { engine: "codex", strip: ["skills"] });\n',
+    "return.js": 'export const meta = { name: "r" };\nreturn { value: 1n };\n'
+  };
+  try {
+    const invocations: string[][] = [[path.join(directory, "nowhere.js")], ["--nonsense", "x.js"]];
+    for (const [name, source] of Object.entries(scripts)) {
+      await writeFile(path.join(directory, name), source);
+      invocations.push([path.join(directory, name)]);
+    }
+    for (const argv of invocations) {
+      const engine = new FixedResponseEngine("codex", "never reached");
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli(argv, {
+        cwd: directory,
+        stdout,
+        stderr,
+        runRecordDir: null,
+        statusDir: null,
+        env: {},
+        createRuntime: async (options) => fixedEngineRuntime(engine, 1, options)
+      });
+      assert.notEqual(exitCode, 0, argv.join(" "));
+      assert.equal(engine.attempts, 0, argv.join(" "));
+      const lines = stderr.text().split("\n").filter((line) => line.length > 0);
+      assert.ok(lines.length > 0, `${argv.join(" ")} printed no refusal`);
+      for (const line of lines) {
+        assert.doesNotMatch(line, /^[A-Z][A-Za-z0-9]*Error\b/, `${argv.join(" ")}: ${line}`);
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("every option mistake on ensemble agent is refused before a run exists: exit 2, one line, no archive", async () => {
+  // The direct form runs the same option validator agent() runs, before the
+  // run begins, so the exit code and archive behaviour do not depend on
+  // which option was wrong or which layer judged it.
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-agent-option-rule-"));
+  const runRecordDir = path.join(directory, "records");
+  const cases: Array<{ flags: string[]; line: string }> = [
+    {
+      flags: ["--effort=sideways"],
+      line: 'Invalid agent() option "effort" value "sideways"; expected one of minimal | low | medium | high | xhigh (the canonical effort vocabulary)'
+    },
+    { flags: ["--timeout=1000000000000"], line: "--timeout value must be at most 2147483647 milliseconds; got 1000000000000" },
+    { flags: ["--max-attempts=0"], line: "--max-attempts value must be a positive integer; got 0" },
+    { flags: [`--cwd=${path.join(directory, "nowhere")}`], line: `--cwd must name an existing directory; got ${path.join(directory, "nowhere")}` },
+    { flags: ["--strip=shells"], line: "--strip must name a capability from: skills, agents; got shells" }
+  ];
+  try {
+    for (const { flags, line } of cases) {
+      let runtimes = 0;
+      const stdout = new CaptureStream();
+      const stderr = new CaptureStream();
+      const exitCode = await runEnsembleCli(["agent", "--engine=codex", ...flags, "prompt"], {
+        cwd: directory,
+        stdout,
+        stderr,
+        runRecordDir,
+        createRuntime: async (options) => {
+          runtimes += 1;
+          return fixedEngineRuntime(new FixedResponseEngine("codex", "never reached"), 1, options);
+        }
+      });
+      assert.equal(exitCode, 2, flags.join(" "));
+      assert.equal(stdout.text(), "", flags.join(" "));
+      assert.equal(stderr.text(), `${line}\n`);
+      assert.equal(runtimes, 0, `${flags.join(" ")} created a runtime`);
+      await assert.rejects(access(runRecordDir), `${flags.join(" ")} wrote an archive`);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the durable surfaces name what ended a failed run, discriminating one cause from another", async () => {

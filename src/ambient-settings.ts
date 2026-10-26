@@ -156,17 +156,34 @@ export function resolveAmbientSettings(input: {
     opencode: defaultOpenCodeConcurrency()
   };
 
-  return {
-    configFile,
-    agentCeiling: resolveAgentCeiling({
+  // Each setting is judged independently and every rejection is reported
+  // together: an operator fixing one invalid variable should not discover
+  // the next only on the following run.
+  const problems: AmbientConfigError[] = [];
+  const judged = <T>(resolve: () => T): T | undefined => {
+    try {
+      return resolve();
+    } catch (error) {
+      if (!(error instanceof AmbientConfigError)) {
+        throw error;
+      }
+      problems.push(error);
+      return undefined;
+    }
+  };
+
+  const agentCeiling = judged(() =>
+    resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
       file: config?.agent_ceiling,
       configFile
-    }),
-    concurrencyCaps: Object.fromEntries(
-      ENGINES.map((engine) => [
-        engine,
+    })
+  );
+  const concurrencyCaps = Object.fromEntries(
+    ENGINES.map((engine) => [
+      engine,
+      judged(() =>
         resolveNumber({
           flag: input.flags?.concurrencyCaps?.[engine],
           env: input.env[`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`],
@@ -176,11 +193,29 @@ export function resolveAmbientSettings(input: {
           configFile,
           fallback: defaults[engine]
         })
-      ])
-    ) as Record<EngineName, Resolved<number>>,
-    runRecordDir: resolveRunRecord(config, input.env),
-    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+      )
+    ])
+  ) as Record<EngineName, Resolved<number>>;
+  const runRecordDir = judged(() => resolveRunRecord(config, input.env));
+  const runRecordStoreDir = judged(() => resolveRunRecordStoreDir(config, input.env));
+  const statusDir = judged(() => resolveStatus(config, input.env, input.cwd));
+
+  // Two settings can read the same variable (the run-record directory and
+  // the store directory), so one bad value is reported once.
+  const messages = [...new Set(problems.map((problem) => problem.message))];
+  if (messages.length === 1) {
+    throw problems[0];
+  }
+  if (messages.length > 1) {
+    throw new AmbientConfigError(`${messages.length} settings are invalid: ${messages.join("; ")}`);
+  }
+  return {
+    configFile,
+    agentCeiling: agentCeiling!,
+    concurrencyCaps,
+    runRecordDir: runRecordDir!,
+    runRecordStoreDir: runRecordStoreDir!,
+    statusDir: statusDir!,
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };

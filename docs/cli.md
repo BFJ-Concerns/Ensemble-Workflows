@@ -208,7 +208,7 @@ output of every worker that finished successfully, and `error` is the same
 |---|---|
 | 0 | Success: the script returned or the single agent answered (the result is on stdout), or a listing, `--help`, or `--version` completed |
 | 1 | The run failed or timed out, or Node is too old. stdout carries the partial-result envelope — or the already printed result, when the failure came after the script returned |
-| 2 | Rejected invocation: a usage error, an unreadable script path, or an `agent --cwd` that is not an existing directory |
+| 2 | Rejected invocation: a usage error, an unreadable script path, an `agent --cwd` that is not an existing directory, or an `agent` option the `agent()` option check refuses (such as an `--effort` outside the canonical vocabulary) |
 | 130 | Interrupted by SIGINT (partial-result envelope on stdout) |
 | 143 | Interrupted by SIGTERM (partial-result envelope on stdout) |
 

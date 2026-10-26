@@ -366,11 +366,36 @@ export function readWorkflowMeta(source: string, filename: string = "workflow.js
   return normaliseVmValue(script.runInNewContext(undefined, { timeout: 100 }));
 }
 
+/**
+ * What occupies the position `export const meta` must hold, named so the
+ * author sees the obstruction rather than the rule restated: a comment, an
+ * export under another name, or the first line as written.
+ */
+function describeFirstPosition(source: string): string {
+  const start = skipWhitespace(source, 0);
+  const rest = source.slice(start);
+  if (rest.length === 0) {
+    return "the script is empty";
+  }
+  if (rest.startsWith("//") || rest.startsWith("/*")) {
+    return "a comment comes first — move it below the meta export";
+  }
+  const otherExport = /^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/.exec(rest);
+  if (otherExport !== null) {
+    return `the first export is named \`${otherExport[1]}\` — the metadata export must be named \`meta\``;
+  }
+  const firstLine = rest.split("\n", 1)[0]!.trim();
+  const excerpt = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+  return `the script begins with \`${excerpt}\``;
+}
+
 export function extractWorkflowSource(source: string): ExtractedWorkflow {
   const withoutBom = source.startsWith("\uFEFF") ? source.slice(1) : source;
   const match = /^\s*export\s+const\s+meta\s*=/.exec(withoutBom);
   if (match === null) {
-    throw new WorkflowScriptError("Workflow script must begin with `export const meta = { ... }`");
+    throw new WorkflowScriptError(
+      `Workflow script must begin with \`export const meta = { ... }\`, but ${describeFirstPosition(withoutBom)}`
+    );
   }
 
   const expressionStart = skipWhitespace(withoutBom, match[0].length);
@@ -539,7 +564,7 @@ function validateWorkflowDefaults(value: unknown, openCodeModelRegistry?: OpenCo
         // The chain is judged by the same validator every call site uses,
         // so a static declaration fails before the body runs with the
         // same wording a call-site chain would.
-        assertValidFallbackChain(optionValue);
+        assertValidFallbackChain(optionValue, `the engine default defaults.${engine}.fallback`);
         if (optionValue !== undefined) {
           engineDefaults.fallback = optionValue;
         }
@@ -807,11 +832,16 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
   const suffix = end < sourceLine.length ? "…" : "";
   const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
   const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
+  // A static import fails as a bare token error ("Unexpected identifier");
+  // the author needs the rule it broke, not the symptom.
+  const staticImport = !pointsPastBody && /^\s*import\s*[\w{*"'`]/.test(sourceLine);
   const message = earlyClose !== null
     ? "Unexpected closing '}' in workflow body"
     : pointsPastBody
       ? "Unexpected end of workflow body"
-      : error.message;
+      : staticImport
+        ? "static `import` does not apply here — the workflow body runs as a function body; load the module with dynamic `await import(\"…\")` instead"
+        : error.message;
   return new WorkflowScriptError(
     `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${message}\n` +
       `  ${snippet}\n  ${caret}`,

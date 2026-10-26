@@ -79,7 +79,7 @@ test(
       assert.equal(result.code, 1, result.stderr);
       assert.equal(
         withoutArchiveAnnouncement(withoutSentinelAnnouncement(result.stderr)),
-        "WorkflowScriptError: workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
+        "workflow return value must be a JSON value: return value.settlementFailure is a BigInt\n"
       );
       const envelope = JSON.parse(result.stdout) as SalvageEnvelope;
       assert.deepEqual(envelope, {

@@ -137,11 +137,13 @@ export interface IdentifiedAgentResult {
   /**
    * The discrimination: `null` on success — a `null` output beside a
    * `null` failure is a worker's genuine answer — and the failure's
-   * one-line account when a combinator collapsed this leg, so a fan-in
-   * tells a failed worker from one that legitimately answered `null`
-   * without parsing logs.
+   * account when the worker failed or a combinator collapsed this leg: a
+   * `kind` a script can switch on (an attempt-failure kind such as
+   * `schema-validation`, or the error's class name) and the one-line
+   * `message` that explains it, so a fan-in tells a failed worker from one that
+   * legitimately answered `null` without parsing logs or strings.
    */
-  failure: { message: string } | null;
+  failure: { kind: string; message: string } | null;
 }
 
 /**

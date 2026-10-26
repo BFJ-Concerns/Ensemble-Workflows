@@ -14085,7 +14085,7 @@ var BudgetExceededError = class extends EnsembleError {
   spent;
   constructor(engine, total, spent) {
     super(
-      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget exhausted for ${engine}: spent ${spent} of ${total} tokens`
+      total === 0 ? `Token budget for ${engine} is 0, which admits no agent: this agent was not started` : `Token budget for ${engine} reached: ${spent} tokens spent against a threshold of ${total}, checked before each dispatch \u2014 this agent was not started (a running agent can carry spending past the threshold)`
     );
     this.engine = engine;
     this.total = total;
@@ -14120,7 +14120,7 @@ var CodexSubstrateRefusedError = class extends SubstrateRefusedError {
    * notice would have.
    */
   constructor(cwd, cause, detail = cause.message) {
-    super(`Codex app-server could not serve a thread${cwd === void 0 ? "" : ` in ${cwd}`}: ${detail}`, { cause });
+    super(`A Codex worker could not run${cwd === void 0 ? "" : ` in ${cwd}`}: ${detail}`, { cause });
   }
 };
 var ClaudePollTimeoutError = class extends ClaudeWorkerError {
@@ -14172,15 +14172,22 @@ var TurnTimeoutError = class extends EnsembleError {
   }
 };
 var FallbackTargetRejectedError = class extends AgentOptionRejectedError {
-  constructor(detail) {
-    super(`Invalid fallback chain: ${detail}`);
+  /** `declaredAt` names which declaration holds the bad chain — the call's own option or an engine default. */
+  constructor(detail, declaredAt = "the call's fallback option") {
+    super(`Invalid fallback chain in ${declaredAt}: ${detail}`);
   }
 };
 var CapabilityStripUnsupportedError = class extends AgentOptionRejectedError {
-  constructor(engine, capability, detail) {
+  /**
+   * The enforcement table's own note on why the route is unsupported —
+   * maintainer evidence, kept off the author-facing message.
+   */
+  enforcementNote;
+  constructor(engine, capability, enforcementNote) {
     super(
-      `the ${engine} engine cannot strip the ${JSON.stringify(capability)} capability: ${detail}. The worker was not dispatched. Remove the strip request, or use an engine that can enforce it.`
+      `the ${engine} engine cannot enforce stripping the ${JSON.stringify(capability)} capability, so the worker was not dispatched. Remove ${JSON.stringify(capability)} from strip, or run this call on an engine that can enforce it.`
     );
+    this.enforcementNote = enforcementNote;
   }
 };
 var RemovedAgentOptionError = class extends AgentOptionRejectedError {
@@ -14191,9 +14198,16 @@ var RemovedAgentOptionError = class extends AgentOptionRejectedError {
   }
 };
 var UnrecognisedAgentOptionError = class extends AgentOptionRejectedError {
-  constructor(option, recognised) {
+  constructor(option, recognised, callee = "agent()") {
     super(
-      `Unrecognised agent() option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
+      `Unrecognised ${callee} option ${JSON.stringify(option)}; expected one of ${recognised.map((name) => JSON.stringify(name)).join(", ")}`
+    );
+  }
+};
+var SessionCreationOptionError = class extends AgentOptionRejectedError {
+  constructor(option, perTurn) {
+    super(
+      `send() option ${JSON.stringify(option)} is fixed when the session is created; pass it to session() instead. send() accepts only ${perTurn.map((name) => JSON.stringify(name)).join(", ")}`
     );
   }
 };
@@ -14205,8 +14219,12 @@ var InvalidAgentOptionValueError = class extends AgentOptionRejectedError {
   }
 };
 var InvalidAgentOptionsError = class extends AgentOptionRejectedError {
+  errors;
   constructor(errors) {
-    super(`Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`);
+    super(
+      errors.length === 1 ? errors[0].message : `Invalid agent() options: ${errors.map((error) => error.message).join("; ")}`
+    );
+    this.errors = errors;
   }
 };
 var UnreadableAgentOptionError = class extends AgentOptionRejectedError {
@@ -14424,9 +14442,6 @@ function assertValidAgentOptions(options) {
     collect(() => assertValidStripOption(values.strip));
   }
   collect(() => assertValidFallbackChain(values.fallback));
-  if (errors.length === 1) {
-    throw errors[0];
-  }
   if (errors.length > 0) {
     throw new InvalidAgentOptionsError(errors);
   }
@@ -14476,42 +14491,45 @@ var SESSION_TURN_OPTION_KEYS = ["schema"];
 var SESSION_TURN_OPTION_KEY_SET = new Set(SESSION_TURN_OPTION_KEYS);
 function assertValidSessionTurnOptions(options) {
   for (const key of Object.keys(options)) {
+    if (WORKER_SESSION_OPTION_KEY_SET.has(key) && !SESSION_TURN_OPTION_KEY_SET.has(key)) {
+      throw new SessionCreationOptionError(key, SESSION_TURN_OPTION_KEYS);
+    }
     if (!SESSION_TURN_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS);
+      throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS, "send()");
     }
   }
 }
-function assertValidFallbackChain(chain) {
+function assertValidFallbackChain(chain, declaredAt = "the call's fallback option") {
   if (chain === void 0) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets", declaredAt);
   }
   if (chain.length === 0) {
-    throw new FallbackTargetRejectedError("the chain must not be empty");
+    throw new FallbackTargetRejectedError("the chain must not be empty", declaredAt);
   }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? entry : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`, declaredAt);
     }
     for (const key of Object.keys(target)) {
       if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`, declaredAt);
       }
     }
     if (target.engine === "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
+      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`, declaredAt);
     }
     if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`, declaredAt);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
-      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
+      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`, declaredAt);
     }
     if (target.effort !== void 0 && !CANONICAL_EFFORT_DOMAIN.includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`, declaredAt);
     }
   });
 }
@@ -14523,7 +14541,7 @@ function requireRegisteredOpenCodeModel(model, registry = defaultOpenCodeModelRe
   return registered;
 }
 function validateEngineDefaults(engine, defaults, openCodeModelRegistry = defaultOpenCodeModelRegistry) {
-  assertValidFallbackChain(defaults.fallback);
+  assertValidFallbackChain(defaults.fallback, `the engine default defaults.${engine}.fallback`);
   if (engine !== "opencode") {
     assertCanonicalEffortSupported(defaults.effort);
   }
@@ -15218,18 +15236,31 @@ function resolveAmbientSettings(input) {
     claude: defaultClaudeConcurrency(),
     opencode: defaultOpenCodeConcurrency()
   };
-  return {
-    configFile,
-    agentCeiling: resolveAgentCeiling({
+  const problems = [];
+  const judged = (resolve) => {
+    try {
+      return resolve();
+    } catch (error) {
+      if (!(error instanceof AmbientConfigError)) {
+        throw error;
+      }
+      problems.push(error);
+      return void 0;
+    }
+  };
+  const agentCeiling = judged(
+    () => resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
       file: config?.agent_ceiling,
       configFile
-    }),
-    concurrencyCaps: Object.fromEntries(
-      ENGINES.map((engine) => [
-        engine,
-        resolveNumber({
+    })
+  );
+  const concurrencyCaps = Object.fromEntries(
+    ENGINES.map((engine) => [
+      engine,
+      judged(
+        () => resolveNumber({
           flag: input.flags?.concurrencyCaps?.[engine],
           env: input.env[`ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`],
           envKey: `ENSEMBLE_CONCURRENCY_${engine.toUpperCase()}`,
@@ -15238,11 +15269,26 @@ function resolveAmbientSettings(input) {
           configFile,
           fallback: defaults[engine]
         })
-      ])
-    ),
-    runRecordDir: resolveRunRecord(config, input.env),
-    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+      )
+    ])
+  );
+  const runRecordDir = judged(() => resolveRunRecord(config, input.env));
+  const runRecordStoreDir = judged(() => resolveRunRecordStoreDir(config, input.env));
+  const statusDir = judged(() => resolveStatus(config, input.env, input.cwd));
+  const messages = [...new Set(problems.map((problem) => problem.message))];
+  if (messages.length === 1) {
+    throw problems[0];
+  }
+  if (messages.length > 1) {
+    throw new AmbientConfigError(`${messages.length} settings are invalid: ${messages.join("; ")}`);
+  }
+  return {
+    configFile,
+    agentCeiling,
+    concurrencyCaps,
+    runRecordDir,
+    runRecordStoreDir,
+    statusDir,
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -16746,7 +16792,7 @@ function diagnose(error, context) {
   if (error instanceof BudgetExceededError) {
     return [
       error.message,
-      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+      `Raise the ${error.engine} threshold (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
     ];
   }
   if (error instanceof EngineShutdownError) {
@@ -16754,8 +16800,14 @@ function diagnose(error, context) {
   }
   if (error instanceof Error && error.name === "AppServerExitedError") {
     const exit = workerExitStatusOf(error);
-    const how = exit?.signal !== null && exit?.signal !== void 0 ? `terminated by ${exit.signal}` : exit?.exitCode !== null && exit?.exitCode !== void 0 ? `exited with code ${exit.exitCode}` : "exited unexpectedly";
-    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
+    const how = exit?.signal !== null && exit?.signal !== void 0 ? `was killed by ${exit.signal}` : exit?.exitCode !== null && exit?.exitCode !== void 0 ? `exited with code ${exit.exitCode}` : "stopped unexpectedly";
+    const message = stripControl(error.message).trim();
+    const [firstLine, ...rest] = message.split("\n");
+    const lines = [
+      `the Codex engine process ${how}${firstLine === void 0 || firstLine === "" ? "" : ` (${firstLine})`}, so the worker had no engine to run on`,
+      ...rest,
+      "Nothing in the workflow caused this: re-run it; if it recurs, check that `codex app-server` starts on this machine and that memory is not exhausted (an out-of-memory kill arrives as SIGKILL)."
+    ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
       lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);
@@ -21982,7 +22034,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
     }
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${describeTallyValue(value)}`);
     }
     try {
       await this.#runRecorder?.recordTally(name, value);
@@ -22068,7 +22120,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       unsettled.stage = "admitting";
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
-        const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
+        const failure = agentRecord.status === "complete" ? null : identifiedFailure(agentRecord);
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
       }
       return output;
@@ -23538,9 +23590,9 @@ function settledFailureAccount(record) {
   }
   return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
 }
-function settledFailureMessage(record) {
+function identifiedFailure(record) {
   const account = settledFailureAccount(record);
-  return `${account.kind}: ${account.message}`;
+  return { kind: account.kind, message: `${account.kind}: ${account.message}` };
 }
 function lastRawOutput(record) {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -23553,6 +23605,27 @@ function lastRawOutput(record) {
 }
 function decodeFailureDiagnosticFromParams(params) {
   return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
+}
+function describeTallyValue(value) {
+  if (typeof value === "number") {
+    return `${String(value)} (a non-finite number)`;
+  }
+  if (typeof value === "string") {
+    return `${JSON.stringify(value)} (a string)`;
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n (a bigint)`;
+  }
+  if (typeof value === "object") {
+    return Array.isArray(value) ? "an array" : "an object";
+  }
+  if (value === void 0) {
+    return "undefined (no value)";
+  }
+  return `a ${typeof value}`;
 }
 
 // src/hooks.ts
@@ -23624,7 +23697,7 @@ async function parallel(thunks, log, presentError) {
             label: identity.label,
             phase: identity.phase,
             output: null,
-            failure: { message: error instanceof Error ? error.message : String(error) }
+            failure: describeError(error)
           };
         }
         return null;
@@ -23655,7 +23728,7 @@ async function pipeline(items, stages, log, presentError) {
               label: identity.label,
               phase: identity.phase,
               output: null,
-              failure: { message: error instanceof Error ? error.message : String(error) }
+              failure: describeError(error)
             };
           }
           return null;
@@ -29743,11 +29816,30 @@ function readWorkflowMeta(source, filename = "workflow.js") {
   const script = new vm.Script(`(${extracted.metaSource});`, { filename });
   return normaliseVmValue(script.runInNewContext(void 0, { timeout: 100 }));
 }
+function describeFirstPosition(source) {
+  const start = skipWhitespace(source, 0);
+  const rest = source.slice(start);
+  if (rest.length === 0) {
+    return "the script is empty";
+  }
+  if (rest.startsWith("//") || rest.startsWith("/*")) {
+    return "a comment comes first \u2014 move it below the meta export";
+  }
+  const otherExport = /^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/.exec(rest);
+  if (otherExport !== null) {
+    return `the first export is named \`${otherExport[1]}\` \u2014 the metadata export must be named \`meta\``;
+  }
+  const firstLine = rest.split("\n", 1)[0].trim();
+  const excerpt = firstLine.length > 60 ? `${firstLine.slice(0, 60)}\u2026` : firstLine;
+  return `the script begins with \`${excerpt}\``;
+}
 function extractWorkflowSource(source) {
   const withoutBom = source.startsWith("\uFEFF") ? source.slice(1) : source;
   const match = /^\s*export\s+const\s+meta\s*=/.exec(withoutBom);
   if (match === null) {
-    throw new WorkflowScriptError("Workflow script must begin with `export const meta = { ... }`");
+    throw new WorkflowScriptError(
+      `Workflow script must begin with \`export const meta = { ... }\`, but ${describeFirstPosition(withoutBom)}`
+    );
   }
   const expressionStart = skipWhitespace(withoutBom, match[0].length);
   if (withoutBom[expressionStart] !== "{") {
@@ -29865,7 +29957,7 @@ function validateWorkflowDefaults(value, openCodeModelRegistry) {
         );
       }
       if (option === "fallback") {
-        assertValidFallbackChain(optionValue);
+        assertValidFallbackChain(optionValue, `the engine default defaults.${engine}.fallback`);
         if (optionValue !== void 0) {
           engineDefaults.fallback = optionValue;
         }
@@ -30019,7 +30111,8 @@ function workflowSyntaxError(error, workflow, filename) {
   const suffix = end < sourceLine.length ? "\u2026" : "";
   const snippet = `${prefix}${sourceLine.slice(start, end)}${suffix}`;
   const caret = `${" ".repeat(prefix.length + authorPosition.column - 1 - start)}^`;
-  const message = earlyClose !== null ? "Unexpected closing '}' in workflow body" : pointsPastBody ? "Unexpected end of workflow body" : error.message;
+  const staticImport = !pointsPastBody && /^\s*import\s*[\w{*"'`]/.test(sourceLine);
+  const message = earlyClose !== null ? "Unexpected closing '}' in workflow body" : pointsPastBody ? "Unexpected end of workflow body" : staticImport ? 'static `import` does not apply here \u2014 the workflow body runs as a function body; load the module with dynamic `await import("\u2026")` instead' : error.message;
   return new WorkflowScriptError(
     `Syntax error in ${filename}:${authorPosition.line}:${authorPosition.column}: ${message}
   ${snippet}
@@ -31286,6 +31379,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...maxAttempts !== void 0 ? { maxAttempts } : {},
     ...strip !== void 0 ? { strip } : {}
   };
+  assertValidAgentOptions({ ...agentOptions, ...timeoutMs !== void 0 ? { timeoutMs } : {} });
   return {
     kind: "agent",
     prompt,
@@ -31359,7 +31453,7 @@ function splitTuningFlags(argv, program) {
       continue;
     }
     if (value.startsWith("-")) {
-      throw new CliUsageError(`Unknown option before script path: ${value}`);
+      throw new CliUsageError(`Unknown option before script path: ${value}; run \`${program} --help\` for the options`);
     }
     const scriptArgs = argv.slice(index + 1);
     const misplacedTuningFlag = scriptArgs.find((argument) => isKnownOption(argument) || isKnownInlineOption(argument));
@@ -31792,7 +31886,7 @@ function formatError2(error) {
     return error.message;
   }
   if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
-    return `${error.name}: ${error.message}`;
+    return error.message;
   }
   if (isError(error)) {
     const stack = error.stack;

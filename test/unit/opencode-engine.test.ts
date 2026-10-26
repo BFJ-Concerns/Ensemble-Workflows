@@ -467,9 +467,13 @@ test("opencode refuses unproven capability strips before the runner starts", asy
         () => runtime.agent("must not start", { engine: "opencode", model: "glm-5.2", strip: [capability] }),
         (error: unknown) => {
           assert.ok(error instanceof CapabilityStripUnsupportedError);
-          assert.match(error.message, new RegExp(`cannot strip the "${capability}" capability`));
-          assert.match(error.message, /OPENCODE_CONFIG_CONTENT/);
-          assert.match(error.message, /worker-boundary enforcement is unproven/);
+          assert.match(error.message, new RegExp(`cannot enforce stripping the "${capability}" capability`));
+          // The table's measurement note is maintainer evidence: it rides
+          // the error, never the author-facing message.
+          assert.match(error.enforcementNote, /OPENCODE_CONFIG_CONTENT/);
+          assert.match(error.enforcementNote, /worker-boundary enforcement is unproven/);
+          assert.doesNotMatch(error.message, /measured|\d{4}-\d{2}-\d{2}|opencode \d|OPENCODE_CONFIG_CONTENT/);
+          assert.match(error.message, /Remove "[a-z]+" from strip, or run this call on an engine that can enforce it\./);
           return true;
         }
       );

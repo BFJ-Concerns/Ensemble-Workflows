@@ -8,7 +8,7 @@ import { assertSalvageEnvelope, runProcess } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
-test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: 180_000 }, async () => {
+test("an app-server exit or closed stdin yields a handled refusal", { timeout: 180_000 }, async () => {
   for (const mode of ["exit-at-start", "close-stdin-before-exit", "approval-after-stdin-close"] as const) {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-dead-codex-"));
     const binDirectory = path.join(directory, "bin");
@@ -34,12 +34,15 @@ if (process.argv[2] === "--version") {
     const request = JSON.parse(line);
     process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + "\\n", () => {
       reader.close();
+      process.stdin.destroy();
       closeSync(0);
       process.stderr.write("fake app-server closed stdin before exit\\n");
       if (${JSON.stringify(mode)} === "approval-after-stdin-close") {
         process.stdout.write(JSON.stringify({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "item-1" } }) + "\\n");
       }
-      setTimeout(() => { process.exitCode = 73; }, 750);
+      // Stay alive beyond the client's stdin-close grace. The transport
+      // must settle this live child and reap it during shutdown.
+      setInterval(() => undefined, 1_000);
     });
   });
 }

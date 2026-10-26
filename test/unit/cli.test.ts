@@ -3392,6 +3392,70 @@ test("no refusal line opens with an internal error class name", async () => {
   }
 });
 
+test("authoring refusals say what was found and which declaration is wrong", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-authoring-refusals-"));
+  const cases: Array<{ name: string; source: string; line: string }> = [
+    {
+      name: "comment.js",
+      source: '// a leading comment\nexport const meta = { name: "h" };\nreturn 1;\n',
+      line: "Workflow script must begin with `export const meta = { ... }`, but a comment comes first — move it below the meta export"
+    },
+    {
+      name: "metadata.js",
+      source: 'export const metadata = { name: "m" };\nreturn 1;\n',
+      line: "Workflow script must begin with `export const meta = { ... }`, but the first export is named `metadata` — the metadata export must be named `meta`"
+    },
+    {
+      name: "tally.js",
+      source: 'export const meta = { name: "t" };\nawait tally("count", "20");\nreturn 1;\n',
+      line: 'the tally value for "count" must be a finite number, got "20" (a string)'
+    },
+    {
+      name: "chain.js",
+      source:
+        'export const meta = { name: "f" };\nexport const defaults = { codex: { fallback: [{ engine: "opencode", model: "m" }] } };\n' +
+        'return await agent("x", { engine: "codex", fallback: [{ engine: "claude", model: "opus" }] });\n',
+      line: "Invalid fallback chain in the engine default defaults.codex.fallback: entry 0 names the opencode engine, which is held at its one-shot surface and takes no chain entries"
+    }
+  ];
+  try {
+    for (const { name, source, line } of cases) {
+      const script = path.join(directory, name);
+      await writeFile(script, source);
+      const stderr = new CaptureStream();
+      await runEnsembleCli([script], {
+        cwd: directory,
+        stdout: new CaptureStream(),
+        stderr,
+        runRecordDir: null,
+        statusDir: null,
+        env: {},
+        createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "never reached"), 1, options)
+      });
+      assert.equal(stderr.text(), `${line}\n`, name);
+    }
+    const imported = path.join(directory, "import.js");
+    await writeFile(imported, 'export const meta = { name: "i" };\nimport fs from "node:fs";\nreturn 1;\n');
+    const stderr = new CaptureStream();
+    await runEnsembleCli([imported], {
+      cwd: directory,
+      stdout: new CaptureStream(),
+      stderr,
+      runRecordDir: null,
+      statusDir: null,
+      env: {},
+      createRuntime: async (options) => fixedEngineRuntime(new FixedResponseEngine("codex", "never reached"), 1, options)
+    });
+    assert.equal(
+      stderr.text(),
+      `Syntax error in ${imported}:2:1: static \`import\` does not apply here — the workflow body runs as a function body; load the module with dynamic \`await import("…")\` instead\n` +
+        '  import fs from "node:fs";\n  ^\n'
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("every option mistake on ensemble agent is refused before a run exists: exit 2, one line, no archive", async () => {
   // The direct form runs the same option validator agent() runs, before the
   // run begins, so the exit code and archive behaviour do not depend on

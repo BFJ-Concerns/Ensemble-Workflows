@@ -15,7 +15,6 @@ const colouredEmptySuiteChildPath = path.resolve("test/fixtures/suite-runner/col
 const failedHoldTestPath = path.resolve("test/fixtures/suite-runner/failed-hold-test.mjs");
 const pipeHolderParentPath = path.resolve("test/fixtures/suite-runner/pipe-holder-parent.mjs");
 const completionGuardMilliseconds = 5_000;
-const promptExitMilliseconds = 500;
 
 test("suite runner ignores an ambient direct-child override outside its test context", async () => {
   assertNotInsideSuiteSpawningTest();
@@ -89,15 +88,15 @@ test("suite runner reports a seeded hold assertion failure instead of hanging on
 test("suite runner delivers a descendant's trailing marker after its test child exits", async () => {
   assertNotInsideSuiteSpawningTest();
   await withPipeHolder(async (pipeHolder) => {
-    const run = startSuite(pipeHolder);
+    const streamWaitResultPath = path.join(pipeHolder.directory, "stream-wait-result");
+    const run = startSuite(pipeHolder, { ENSEMBLE_SUITE_TEST_STREAM_WAIT_RESULT_PATH: streamWaitResultPath });
     try {
       await waitForFile(pipeHolder.readyPath);
       await writeFile(pipeHolder.releasePath, "release\n");
-      const releasedAt = Date.now();
       const result = await awaitCompletion(run.completed, "runner did not finish after its pipe holder was released");
       assert.equal(result.code, 0, result.output);
       assert.match(result.output, /SUITE_RUNNER_TRAILING_MARKER/);
-      assert.ok(Date.now() - releasedAt < promptExitMilliseconds, "runner waited for its full close grace after streams closed normally");
+      assert.equal(await readFile(streamWaitResultPath, "utf8"), "closed\n");
     } finally {
       await releasePipeHolder(pipeHolder);
       await stopSuite(run);
@@ -108,12 +107,14 @@ test("suite runner delivers a descendant's trailing marker after its test child 
 test("suite runner bounds its close wait when a detached descendant retains its pipe", async () => {
   assertNotInsideSuiteSpawningTest();
   await withPipeHolder(async (pipeHolder) => {
-    const run = startSuite(pipeHolder);
+    const streamWaitResultPath = path.join(pipeHolder.directory, "stream-wait-result");
+    const run = startSuite(pipeHolder, { ENSEMBLE_SUITE_TEST_STREAM_WAIT_RESULT_PATH: streamWaitResultPath });
     try {
       await waitForFile(pipeHolder.readyPath);
       const result = await awaitCompletion(run.completed, "runner remained blocked on a descendant-held pipe");
       assert.equal(result.code, 0, result.output);
       assert.doesNotMatch(result.output, /SUITE_RUNNER_TRAILING_MARKER/);
+      assert.equal(await readFile(streamWaitResultPath, "utf8"), "grace\n");
     } finally {
       await releasePipeHolder(pipeHolder);
       await stopSuite(run);
@@ -269,10 +270,11 @@ interface PipeHolder {
   releasePath: string;
 }
 
-function startSuite(pipeHolder: PipeHolder) {
+function startSuite(pipeHolder: PipeHolder, overrides: NodeJS.ProcessEnv = {}) {
   return startSuiteProgram(pipeHolderParentPath, {
     ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
-    ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath
+    ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath,
+    ...overrides
   });
 }
 

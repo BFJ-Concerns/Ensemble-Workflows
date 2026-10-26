@@ -132,6 +132,7 @@ test("pipe-holder cleanup reaps its detached descendant after an assertion fails
         descendantPid = await pipeHolderPid(pipeHolder);
         throw new Error("seeded pipe-holder assertion failure");
       } finally {
+        await releasePipeHolder(pipeHolder);
         await stopSuite(run);
       }
     }),

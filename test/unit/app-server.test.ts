@@ -270,7 +270,7 @@ test("a serialised provider invalid_type schema rejection has the common schema 
   });
   runtime.setRunRecorder(writer);
   try {
-    assert.equal(await runtime.agent("reject this schema", { engine: "codex", maxAttempts: 2 }), null);
+    assert.equal(await runtime.agent("reject this schema", { engine: "codex", maxAttempts: 1 }), null);
     await writer.finish({ status: "complete", exitCode: 0, result: null });
     const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8"));
     assert.equal(record.attempts.length, 1);

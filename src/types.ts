@@ -259,7 +259,8 @@ export interface TokenUsageBreakdown {
   /**
    * The portion of `cachedInputTokens` spent *writing* cache rather than
    * reading it, where the engine separates the two (Claude reports
-   * `cache_creation_input_tokens` beside `cache_read_input_tokens`).
+   * `cache_creation_input_tokens` beside `cache_read_input_tokens`; Codex
+   * reports `cacheWriteInputTokens`).
    * Optional and absent for engines that report a single cached figure —
    * absent means "not separable", never "zero creation".
    */

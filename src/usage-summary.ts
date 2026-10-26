@@ -88,11 +88,9 @@ export function subtractUsage(total: TokenUsageBreakdown, previous: TokenUsageBr
  *   disjoint.
  * - **claude** reports `inputTokens` *excluding* cache,
  *   `cachedInputTokens` as reads + creation with the creation share carried
- *   separately, but no reasoning split. The transcript adapter leaves the
- *   optional native field absent, so the summary publishes reasoning as
- *   `null` and keeps the whole generation in `outputTokens`
- *   (measured: `usageSince` in `src/claude-transcript.ts` builds exactly
- *   this shape).
+ *   separately. Its transcript can also report reasoning as
+ *   `output_tokens_details.thinking_tokens`; the adapter carries that
+ *   measurement, including zero, and leaves it absent when unavailable.
  * - **opencode** reports input, output, reasoning, and cache all disjointly
  *   (measured harness-side: `aggregateOpenCodeUsage` in
  *   `src/opencode-engine.ts` sums them into its total; the disjointness of

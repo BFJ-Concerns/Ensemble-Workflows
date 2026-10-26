@@ -11,6 +11,8 @@ import { Writable } from "node:stream";
 
 import { readArchiveIntegrity } from "../archive-integrity-reader.js";
 import { EngineRegistry } from "../../src/engines.js";
+import { tokenUsageEventFromParams } from "../../src/budget.js";
+import { parseTranscriptText, usageSince } from "../../src/claude-transcript.js";
 import { DIGEST_RECIPE } from "../../src/canonical-document.js";
 import { EngineShutdownError } from "../../src/errors.js";
 import { RunRecordWriter, reapAbandonedRuns, resolveRunDirectory } from "../../src/run-record.js";
@@ -159,6 +161,11 @@ test("the manifest attributes budget ceilings and the run timeout to their winni
   };
   assert.deepEqual(bareManifest.budget_ceilings, {});
   assert.deepEqual(bareManifest.run_timeout_ms, { value: null, layer: "default" });
+  assert.deepEqual((bareManifest as Record<string, unknown>).run_record_enabled, { value: true, layer: "default" });
+  assert.deepEqual((bareManifest as Record<string, unknown>).run_record_dir, { value: store, layer: "default" });
+  assert.deepEqual((bareManifest as Record<string, unknown>).status_enabled, { value: true, layer: "default" });
+  assert.deepEqual((bareManifest as Record<string, unknown>).status_dir, { value: null, layer: "default" });
+  assert.equal((bareManifest as Record<string, unknown>).caller_identity_setting, null);
 });
 
 test("run record manifest and agent schemas are fixture-locked", async () => {
@@ -315,6 +322,8 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   const configHome = path.join(cwd, "config");
   const configFile = path.join(configHome, "ensemble", "config.json");
   const script = path.join(cwd, "workflow.js");
+  const statusDir = path.join(cwd, "status");
+  await mkdir(statusDir);
   await mkdir(path.dirname(configFile), { recursive: true });
   await writeFile(
     configFile,
@@ -329,11 +338,14 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   await writeFile(script, `export const meta = { name: "mixed-concurrency" }; return await agent("ok", { engine: "codex" });`);
 
   const observed: RuntimeOptions[] = [];
-  const exitCode = await runEnsembleCli(["--concurrency=codex=3", script], {
+  const exitCode = await runEnsembleCli(["--concurrency=codex=3", "--caller-identity=flag:accounting", script], {
     cwd,
     env: {
       XDG_CONFIG_HOME: configHome,
-      ENSEMBLE_AGENT_CEILING: "4"
+      ENSEMBLE_AGENT_CEILING: "4",
+      ENSEMBLE_STATUS: "on",
+      ENSEMBLE_STATUS_DIR: statusDir,
+      ENSEMBLE_CALLER_IDENTITY: "env:accounting"
     },
     stdout: new CaptureStream(),
     stderr: new CaptureStream(),
@@ -360,7 +372,7 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
   assert.ok(manifestRelative);
   const manifest = JSON.parse(
     await readFile(path.join(store, "runs", "cwd", manifestRelative), "utf8")
-  ) as { concurrency: unknown; agent_ceiling?: unknown };
+  ) as { concurrency: unknown; agent_ceiling?: unknown; [key: string]: unknown };
   assert.equal(Object.hasOwn(manifest, "agent_ceiling"), false);
   assert.deepEqual(manifest.concurrency, {
     agent_ceiling: { value: 4, layer: "env" },
@@ -370,6 +382,11 @@ test("CLI records effective concurrency values with mixed-layer provenance", asy
       opencode: { value: 5, layer: "config-file" }
     }
   });
+  assert.deepEqual(manifest.run_record_enabled, { value: true, layer: "config-file" });
+  assert.deepEqual(manifest.run_record_dir, { value: store, layer: "config-file" });
+  assert.deepEqual(manifest.status_enabled, { value: true, layer: "env" });
+  assert.deepEqual(manifest.status_dir, { value: statusDir, layer: "env" });
+  assert.deepEqual(manifest.caller_identity_setting, { value: "flag:accounting", layer: "flag" });
 });
 
 test("a dispatched worker with no usage has an unresolved roll-up reason", async () => {
@@ -566,6 +583,56 @@ test("the roll-up publishes the declared summary vocabulary under each engine's 
   // Claude's absent measurement stays null at both levels.
   assert.deepEqual((await agentJson("000001")).usage.summary, codex);
   assert.deepEqual((await agentJson("000002")).usage.summary, claude);
+});
+
+test("reported zero reasoning and cache creation reach both archived summaries", async () => {
+  const cwd = await gitRepo("ensemble-record-reported-splits-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-record-store-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store,
+    cwd,
+    runUuid: "run-reported-splits",
+    workflowPath: path.join(cwd, "workflow.js"),
+    workflowSource: "export const meta = { name: 'splits' };\nreturn true;\n",
+    args: [],
+    cliFlags: { jsonArgs: false }
+  });
+  const claudeReport = parseTranscriptText(JSON.stringify({
+    type: "assistant",
+    message: {
+      id: "msg_zero",
+      usage: { input_tokens: 12, output_tokens: 5, output_tokens_details: { thinking_tokens: 0 } }
+    }
+  }));
+  const codexReport = tokenUsageEventFromParams({
+    threadId: "thread",
+    turnId: "turn",
+    tokenUsage: {
+      last: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 },
+      total: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 }
+    }
+  });
+  assert.ok(codexReport);
+  await writer.recordAgent(agentRecordWithUsage(1, "claude", usageSince(claudeReport)));
+  await writer.recordAgent(agentRecordWithUsage(2, "codex", codexReport.last));
+  await writer.finish({ status: "complete", exitCode: 0, result: true });
+  const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+    cost_rollup: Record<string, Record<string, { tokens: Record<string, unknown> }>>;
+  };
+  for (const [id, engine] of [["000001", "claude"], ["000002", "codex"]] as const) {
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", id, "agent.json"), "utf8")) as {
+      usage: { summary: Record<string, unknown> };
+    };
+    const rollup = manifest.cost_rollup[engine]?.unresolved?.tokens;
+    assert.ok(rollup);
+    assert.equal(agent.usage.summary.reasoningOutputTokens, 0);
+    assert.equal(rollup.reasoningOutputTokens, 0);
+    if (engine === "codex") {
+      assert.equal(agent.usage.summary.cacheCreationTokens, 0);
+      assert.equal(rollup.cacheCreationTokens, 0);
+      assert.equal(rollup.cacheReadTokens, 8);
+    }
+  }
 });
 
 test("cache creation is accounted apart from cache reads when the engine separates them", async () => {

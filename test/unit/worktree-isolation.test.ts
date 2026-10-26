@@ -131,6 +131,32 @@ test("a retained changed worktree keeps its container after an unchanged sibling
   }
 });
 
+test("a linked checkout creates worktrees beside the main checkout", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-linked-"));
+  const repo = path.join(directory, "repo");
+  const linked = path.join(directory, "linked");
+  await initialiseRepo(repo);
+  await git(repo, ["worktree", "add", "-b", "linked", linked]);
+  const container = path.join(directory, "repo.ensemble-workflows-worktrees");
+
+  try {
+    const manager = new GitWorktreeIsolationManager();
+    const fromMain = await manager.create(repo);
+    const fromLinked = await manager.create(linked);
+
+    assert.equal(path.dirname(fromMain.path), container);
+    assert.equal(path.dirname(fromLinked.path), container);
+    await writeFile(path.join(fromLinked.path, "feature.txt"), "worker output\n");
+    await manager.finish(fromMain);
+    const retained = await manager.finish(fromLinked);
+    assert.equal(retained.removed, false);
+    await access(fromLinked.path);
+    await access(container);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("one manager creates worktrees from different repositories independently", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-worktree-multi-repo-"));
   const firstRepo = path.join(directory, "first");

@@ -294,6 +294,8 @@ Each agent record lists the requested strips and how each was enforced.
 With `isolation: "worktree"` the worker runs in a fresh linked git worktree on
 a temporary branch. With `cwd` as well, `cwd` selects the source repository; a
 `cwd` that is not in a git repository fails before the worker spawns.
+The worktree is placed in `<repo>.ensemble-workflows-worktrees/` beside the
+repository's main checkout, including when `cwd` is inside a linked worktree.
 Placement is decided once per target and kept across that target's retries; a
 fallback step to another target opens its own.
 

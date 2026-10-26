@@ -98,7 +98,9 @@ export class GitWorktreeIsolationManager implements WorktreeIsolationManager {
     const resolvedCwd = path.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === undefined) {
-      repoRoot = git(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error: unknown) => {
+      repoRoot = git(resolvedCwd, ["rev-parse", "--git-common-dir"]).then((commonDir) =>
+        path.dirname(path.resolve(resolvedCwd, commonDir.trim()))
+      ).catch((error: unknown) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });

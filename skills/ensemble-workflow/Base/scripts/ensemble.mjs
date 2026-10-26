@@ -16892,7 +16892,9 @@ var GitWorktreeIsolationManager = class {
     const resolvedCwd = path8.resolve(baseCwd);
     let repoRoot = this.#repoRoots.get(resolvedCwd);
     if (repoRoot === void 0) {
-      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+      repoRoot = git2(resolvedCwd, ["rev-parse", "--git-common-dir"]).then(
+        (commonDir) => path8.dirname(path8.resolve(resolvedCwd, commonDir.trim()))
+      ).catch((error) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });

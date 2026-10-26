@@ -59,7 +59,7 @@ export interface EngineProgressSnapshot {
 
 /** An open hold as the snapshot shows it: what a poller needs to see the run is waiting. */
 export interface OpenHoldSnapshot {
-  id: string;
+  hold_id: string;
   /** Bounded to keep the snapshot small; the hold file carries the full text. */
   content: string;
   verdicts: string[];
@@ -162,7 +162,7 @@ export class RunProgress {
   /** An open hold joins the snapshot the moment it is raised. */
   noteHoldRaised(hold: { id: string; content: string; verdicts: string[] }): void {
     this.#openHolds.set(hold.id, {
-      id: hold.id,
+      hold_id: hold.id,
       content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}…` : hold.content,
       verdicts: [...hold.verdicts],
       raisedAtMs: this.#now()

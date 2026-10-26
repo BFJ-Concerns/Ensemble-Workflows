@@ -2720,8 +2720,7 @@ test("CLI holds renders real verdict choices and a bounced answer's rejection fe
   assert.match(stdout.text(), /verdicts: approve \| reject/);
   // The template spells an accepted verdict and names the alternatives, so a
   // decider copying it writes an answer the runtime accepts.
-  assert.match(stdout.text(), /"verdict":"approve".*\(or use "reject"\)/);
-  assert.match(stdout.text(), /"nonce":"open-hold-nonce","verdict":"approve"/);
+  assert.match(stdout.text(), /ensemble holds answer open-hold --verdict "approve" \(or "reject"\)/);
   assert.doesNotMatch(stdout.text(), /"verdict":"…"/);
   // The bounced answer's feedback rides the listing; the untouched hold has none.
   assert.match(stdout.text(), /rejected: invalid-verdict \("later"\)/);
@@ -3968,6 +3967,46 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
     assert.match(usageErr.text(), /Usage: ensemble holds answer/);
   } finally {
     holds.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a run announces a hold and its settlement on stderr without recording", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-hold-notice-"));
+  const holdsDir = path.join(directory, "holds");
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, `export const meta = { name: "hold-notice" };\nreturn await hold({ content: "ship?", verdicts: ["yes", "no"] });\n`);
+  const stderr = new CaptureStream();
+  const runtime = new EnsembleRuntime({ engines: new EngineRegistry([]), defaultMaxAttempts: 1,
+    holdsDir, holdScope: "review", holdPollIntervalMs: 5 });
+  try {
+    const running = runEnsembleCli([script], { cwd: directory, stdout: new CaptureStream(), stderr,
+      runRecordDir: null, createRuntime: async () => runtime });
+    const record = await (async () => {
+      for (let attempt = 0; attempt < 400; attempt += 1) {
+        const open = (await enumerateHolds(holdsDir)).holds[0]?.record;
+        if (open) return open;
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+      throw new Error("hold did not open");
+    })();
+    assert.equal(stderr.text(), `[hold] ${record.hold_id} raised in scope review; ` +
+      `ensemble holds answer ${record.hold_id} --verdict "yes" or ensemble holds answer ${record.hold_id} --verdict "no"\n`);
+    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+    assert.equal(await running, 0);
+    assert.equal(stderr.text(), `[hold] ${record.hold_id} raised in scope review; ` +
+      `ensemble holds answer ${record.hold_id} --verdict "yes" or ensemble holds answer ${record.hold_id} --verdict "no"\n` +
+      `[hold] ${record.hold_id} answered with "yes"\n`);
+
+    await writeFile(script, `export const meta = { name: "hold-notice" };\ntry { await hold({ content: "ship?", verdicts: ["yes"], timeoutMs: 20 }); } catch { return "timed out"; }\n`);
+    const timedStderr = new CaptureStream();
+    const timedRuntime = new EnsembleRuntime({ engines: new EngineRegistry([]), defaultMaxAttempts: 1,
+      holdsDir, holdScope: "review", holdPollIntervalMs: 5 });
+    assert.equal(await runEnsembleCli([script], { cwd: directory, stdout: new CaptureStream(), stderr: timedStderr,
+      runRecordDir: null, createRuntime: async () => timedRuntime }), 0);
+    assert.match(timedStderr.text(), /^\[hold\] .+ raised in scope review; ensemble holds answer .+ --verdict "yes"\n\[hold\] .+ timed out\n$/);
+  } finally {
+    await runtime.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

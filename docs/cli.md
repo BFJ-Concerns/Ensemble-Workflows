@@ -140,11 +140,11 @@ the raiser's poll intervals. It prints one JSON object on stdout and exits:
 
 | Exit code | Meaning |
 |---|---|
-| 0 | The answer was consumed: the answer file and the hold both disappeared, which normally means the run accepted the answer and resumed |
+| 0 | The raiser accepted this answer, confirmed by its submission receipt |
 | 3 | The answer bounced; the output includes the rejection reason, and the hold keeps waiting |
 | 4 | The raiser has not read the answer yet; the answer file stays in place |
 | 5 | No open hold has that id |
-| 6 | The hold settled without judging this answer; the stale decision file is removed |
+| 7 | The files cannot attribute an outcome to this submission |
 
 See [Holds](workflow-scripts.md#holds) for how holds are raised, scoped, and
 answered by hand.
@@ -181,6 +181,8 @@ Logs and diagnostics go to stderr. These lines are written there:
   reports its failure in its own final diagnostic instead. When a fallback chain was used, the line
   reads `failed after N attempts across M chain targets — the last target's
   failure: <cause>`.
+- `[hold] <id> raised in scope <scope>; ensemble holds answer <id> --verdict <choice>` — the raising run announces each hold and its accepted choices.
+- `[hold] <id> answered with <verdict>` or `[hold] <id> timed out` — the raising run announces settlement.
 - `[<engine>] agent <id> (<label>) answered by fallback entry <n> …` — a
   fallback entry answered for a refused target.
 - `[<engine>] agent <id> (<label>) fallback chain not consulted — …` — a

@@ -230,7 +230,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
         phase("find");
         const finding = await agent(
           "Return exactly one JSON object matching the schema: token LIVE_CROSS_FIND and a short risk description.",
-          { engine: "codex", ${liveCodexScriptOptions()} label: "cross-find", schema: findingSchema, maxAttempts: 1 }
+          { engine: "codex", ${liveCodexScriptOptions()} label: "cross-find", schema: findingSchema, maxAttempts: 2 }
         );
 
         phase("verify");

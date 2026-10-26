@@ -90,8 +90,8 @@ test(
         assert.equal(runtime.worktrees.length, previousWorktrees + 1);
         const worktree = runtime.worktrees.at(-1);
         assert.ok(worktree, `${engine.name} produced no worktree record`);
-        assert.equal(worktree.changed, true);
-        assert.equal(worktree.removed, false);
+        assert.equal(worktree.changed, true, `${engine.name} left no change in its worktree`);
+        assert.equal(worktree.removed, false, `${engine.name}'s changed worktree was removed`);
         const committed = await git(repo, ["show", `${worktree.branch}:${filename}`]);
         // The claim is that the branch carries the marker the worker was asked
         // to commit. Whether the worker ended the file with a newline is its

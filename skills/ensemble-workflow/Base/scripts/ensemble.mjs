@@ -18865,6 +18865,10 @@ var RunProgress = class {
     this.#touch();
     return id;
   }
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id) {
+    return this.#live.get(id)?.phase ?? null;
+  }
   /**
    * Returns a running worker to the queue on another engine: a fallback
    * chain step across engines releases the refused engine's slot and
@@ -22048,13 +22052,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     }
     const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
     this.budget.assertCanStart(engine.name);
-    const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase
+      phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
         method: "claude/unpinnedModel",
@@ -22226,13 +22230,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     state.inFlight = true;
     try {
       this.budget.assertCanStart(engine.name);
-      const phase = options.phase ?? this.progress.snapshot().currentPhase;
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase
+        phase: options.phase ?? null
       });
+      const phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -22897,7 +22901,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error) : null;
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error, record.attempts.length > 0) : null;
   }
   /**
    * One target's placement, invocation, and bounded attempts. Resolves to
@@ -23503,21 +23507,24 @@ function attemptedFailureAccount(record) {
   }
   return null;
 }
-function failedWithoutAttemptCause(error) {
+function failedWithoutAttemptCause(error, hasAttempt) {
   if (error === null || error === void 0) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
-function unavailableCause(reason) {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason, hasAttempt) {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 function describedRejection(error) {
   try {

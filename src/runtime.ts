@@ -792,13 +792,13 @@ export class EnsembleRuntime {
     // backlog. A blocked call is a pre-dispatch rejection, like a rejected
     // option: no engine invocation, no progress entry, no run record.
     this.budget.assertCanStart(engine.name);
-    const phase = options.phase ?? this.progress.snapshot().currentPhase;
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
       engine: engine.name,
       label: options.label ?? null,
-      phase
+      phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === undefined) {
       // Unpinned Claude burns the ambient default model silently; make it visible.
       this.#emitEvent({
@@ -996,13 +996,13 @@ export class EnsembleRuntime {
       // this send, exactly as for a one-shot call — a held session
       // buys no exemption from the ceiling.
       this.budget.assertCanStart(engine.name);
-      const phase = options.phase ?? this.progress.snapshot().currentPhase;
       const queuedAt = Date.now();
       const agentId = this.progress.queueAgent({
         engine: engine.name,
         label: options.label ?? null,
-        phase
+        phase: options.phase ?? null
       });
+      const phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === undefined && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -1899,7 +1899,7 @@ export class EnsembleRuntime {
     // is then taken from the account the runtime is holding, never
     // synthesised from the status.
     record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null
-      ? failedWithoutAttemptCause(error)
+      ? failedWithoutAttemptCause(error, record.attempts.length > 0)
       : null;
   }
 
@@ -2709,20 +2709,21 @@ function attemptedFailureAccount(record: RuntimeAgentRecord): { kind: string; me
 }
 
 /**
- * The cause a failed agent records when no attempt of its own named one.
+ * The cause a failed agent records when its attempts have no terminal
+ * failure account of their own.
  * The runtime publishes what it is actually holding — the rejection that
  * ended the call, in the engine's own words — and where it holds nothing it
  * says so with the reason, because a record that reads `failed` and nothing
  * else is indistinguishable from one whose diagnostic was lost.
  * Nothing here is inferred from the status.
  */
-function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
+function failedWithoutAttemptCause(error: unknown, hasAttempt: boolean): TerminalErrorRecord {
   if (error === null || error === undefined) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
     // A `failed` status beside an empty message is the bare status this
@@ -2730,7 +2731,7 @@ function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
     // as a diagnostic lost in transit alike. Naming the silence, and the
     // shape that was silent, keeps the record honest without wording the
     // engine never produced.
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
@@ -2741,8 +2742,11 @@ function failedWithoutAttemptCause(error: unknown): TerminalErrorRecord {
  * diagnostic that was lost — the honesty rule in its other direction, where
  * a generic "failed" would be the fabrication.
  */
-function unavailableCause(reason: string): TerminalErrorRecord {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason: string, hasAttempt: boolean): TerminalErrorRecord {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 
 /**

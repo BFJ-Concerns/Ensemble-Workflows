@@ -2064,6 +2064,26 @@ test("a held correction keeps the served model reported by its rejected first an
   await runtime.close();
 });
 
+test("failed and empty held corrections retain the first attempt's served model", async () => {
+  for (const correction of ['{"answer":"no"}', ""]) {
+    const transport = new FakeTransport([
+      { ...turn('{"answer":"no"}'), resolvedModel: "gpt-served" },
+      turn(correction)
+    ]);
+    const records: RuntimeAgentRecord[] = [];
+    const runtime = new EnsembleRuntime({ transport, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 2 });
+    runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+    const session = runtime.createWorkerSession({ engine: "codex" });
+    assert.equal(await session.send("answer", { schema }), null);
+    const settled = records.at(-1)!;
+    assert.equal(settled.status, "failed");
+    assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "failed"]);
+    assert.deepEqual(settled.attempts.map((attempt) => attempt.resolvedModel), ["gpt-served", "gpt-served"]);
+    await session.close();
+    await runtime.close();
+  }
+});
+
 test("a worker inherits the current phase unless its call declares another", async () => {
   const { runtime, records } = chainRuntime([new ChainEngine("codex", [answers("before"), answers("one"), answers("two"), answers("override")])], 1);
   await runtime.agent("before", { engine: "codex" });
@@ -3911,6 +3931,32 @@ test("a cross-engine answer keeps the requested header visibly distinct from the
   await runtime.close();
 });
 
+test("a budget rejection before cross-engine re-admission keeps the last admitted concurrency group", async () => {
+  const codex = new ChainEngine("codex", [codexRefusal("usageLimitExceeded")]);
+  const claude = new ChainEngine("claude", [answers("must not dispatch")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    budgetCeilings: { claude: 1 },
+    defaultMaxAttempts: 1
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  runtime.budget.record("claude", {
+    threadId: "earlier-thread", turnId: "earlier-turn", last: usage(1), total: usage(1), raw: {}
+  });
+
+  await assert.rejects(() => runtime.agent("work", {
+    engine: "codex", fallback: [{ engine: "claude", model: "opus" }]
+  }), BudgetExceededError);
+  const settled = records.at(-1)!;
+  assert.equal(settled.status, "failed");
+  assert.equal(settled.concurrencyGroup, "codex");
+  assert.deepEqual(settled.attempts.map((attempt) => attempt.target.engine), ["codex"]);
+  assert.equal(claude.dispatches.length, 0);
+  await runtime.close();
+});
+
 test("a single-target call retains its requested header and labels it as such", async () => {
   const codex = new ChainEngine("codex", [answers("from codex", "gpt-6-luna-served")]);
   const { runtime, records } = chainRuntime([codex], 1);
@@ -4153,6 +4199,32 @@ test("an invocation close failure after a completed correction names the close e
   assert.deepEqual(settled.attempts.map((attempt) => attempt.status), ["failed", "complete"]);
   assert.equal(settled.terminationCause?.message, "invocation close failed");
   await runtime.close();
+});
+
+test("an undescribed close rejection after a completed attempt never claims no attempt was recorded", async () => {
+  for (const rejection of [new Error(""), {}]) {
+    for (const retry of [false, true]) {
+      let attempts = 0;
+      const engine: EngineAdapter = {
+        name: "codex", concurrency: 1, schedule: async (task) => task(),
+        createInvocation: () => ({
+          runAttempt: async () => retry && ++attempts === 1 ? turn("") : turn("answered"),
+          close: async () => { throw rejection; }
+        }),
+        close: async () => undefined
+      };
+      const records: RuntimeAgentRecord[] = [];
+      const runtime = new EnsembleRuntime({ engines: new EngineRegistry([engine]), defaultMaxAttempts: 2 });
+      runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+      assert.equal(await runtime.agent("work", { engine: "codex" }), null);
+      const settled = records.at(-1)!;
+      assert.deepEqual(settled.attempts.map((attempt) => attempt.status), retry ? ["failed", "complete"] : ["complete"]);
+      assert.equal(settled.terminationCause?.kind, "unavailable");
+      assert.match(settled.terminationCause?.message ?? "", /after an attempt/);
+      assert.doesNotMatch(settled.terminationCause?.message ?? "", /no attempt recorded/);
+      await runtime.close();
+    }
+  }
 });
 
 test("an unrecognised failure with a chain entry remaining records chain-not-consulted and announces it once", async () => {

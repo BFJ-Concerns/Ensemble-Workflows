@@ -595,6 +595,9 @@ export class EnsembleRuntime {
       ...(options.retryPromiseSilenceTimeoutMs !== undefined
         ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs }
         : {}),
+      ...(options.whitespaceStreamTimeoutMs !== undefined
+        ? { whitespaceStreamTimeoutMs: options.whitespaceStreamTimeoutMs }
+        : {}),
       ...(options.firstOutputTimeoutMs !== undefined ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {}),
       ...(options.workerEnvironment !== undefined ? { workerEnvironment: options.workerEnvironment } : {}),
       ...(options.openCodeModels !== undefined ? { openCodeModels: options.openCodeModels } : {}),
@@ -702,6 +705,8 @@ export class EnsembleRuntime {
       if (diagnostic !== null) {
         for (const record of this.#executingAgentRecords.get(engine) ?? []) {
           record.decodeFailure = diagnostic;
+          const oversized = oversizedEventFromParams(event.params);
+          if (oversized !== null) record.oversizedEvent = oversized;
         }
       }
     }
@@ -2058,6 +2063,7 @@ export class EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        noteOversizedEventResult(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== undefined) {
           if (operationalFailure.refused) {
@@ -2142,6 +2148,7 @@ export class EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        noteOversizedEventResult(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== undefined) {
           if (operationalFailure.refused) {
@@ -2544,6 +2551,7 @@ export class EnsembleRuntime {
       transcriptCapture: null,
       parseRoute: null,
       decodeFailure: null,
+      oversizedEvent: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,
@@ -2808,4 +2816,23 @@ function decodeFailureDiagnosticFromParams(params: JsonObject): { byteLength: nu
   return typeof params.byteLength === "number" && typeof params.linePrefix === "string"
     ? { byteLength: params.byteLength, linePrefix: params.linePrefix }
     : null;
+}
+
+function oversizedEventFromParams(params: JsonObject): RuntimeAgentRecord["oversizedEvent"] {
+  if (params.reason !== "inbound-line-limit" || typeof params.byteLength !== "number") return null;
+  return {
+    byteLength: params.byteLength,
+    eventMethod: typeof params.eventMethod === "string" ? params.eventMethod : null,
+    itemType: typeof params.itemType === "string" ? params.itemType : null,
+    resultAffected: null
+  };
+}
+
+function noteOversizedEventResult(record: RuntimeAgentRecord, result: TurnResult): void {
+  if (record.oversizedEvent === null) return;
+  if (record.oversizedEvent.eventMethod === "item/completed"
+      && record.oversizedEvent.itemType === "commandExecution"
+      && result.text.trim().length > 0) {
+    record.oversizedEvent.resultAffected = false;
+  }
 }

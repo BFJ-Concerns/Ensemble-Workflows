@@ -1153,6 +1153,7 @@ function agentRecord(
     transcriptCapture: null,
     parseRoute: null,
     decodeFailure: null,
+    oversizedEvent: null,
     rawOutput: "ok",
     validatedOutput: "ok",
     queuedMs: 0,

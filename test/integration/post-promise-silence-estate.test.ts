@@ -14,9 +14,10 @@ const deadlineAcceleratorPath = path.resolve(
 const firstOutputDeadlineAcceleratorPath = path.resolve(
   "test/fixtures/codex/accelerate-first-output-deadline.mjs"
 );
+const whitespaceDeadlineAcceleratorPath = path.resolve("test/fixtures/codex/accelerate-whitespace-deadline.mjs");
 
 interface Action {
-  type: "deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "approval" | "success" | "silence";
+  type: "deadline" | "whitespace-deadline" | "delta" | "malformed-delta" | "promise" | "mcp-progress" | "reasoning" | "oversized-command" | "approval" | "success" | "silence";
   text?: string;
   diagnostic?: string;
   afterMs?: number;
@@ -53,6 +54,77 @@ test("built consumer terminalises permanent silence after a retry promise with i
     assert.equal(attempts[0]?.raw_output, "PARTIAL_BEFORE_SILENCE");
     assert.match(attempts[0]?.failure?.message ?? "", /PROMISE_ABANDONED_41/);
     assertFirstOutputDeadlineDisarmed(await fixture.deadlineControl());
+  });
+});
+
+test("built consumer retries a whitespace stream on a fresh Codex thread", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([
+      [
+        { type: "delta", text: "ANSWER_BEFORE_WHITESPACE" },
+        { type: "delta", text: "   " },
+        { type: "whitespace-deadline" },
+        { type: "silence" }
+      ],
+      [{ type: "success", text: "recovered-answer" }]
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '"recovered-answer"\n');
+    const attempts = await fixture.attempts();
+    assert.equal(attempts[0]?.failure?.kind, "AppServerWhitespaceStreamTimeoutError");
+    assert.equal(attempts[0]?.classification?.class, "output");
+    assert.match(attempts[0]?.raw_output ?? "", /^ANSWER_BEFORE_WHITESPACE\s+$/);
+    assert.equal(attempts[1]?.status, "complete");
+    const requests = await fixture.messages();
+    assert.equal(requests.filter((message) => message.method === "thread/start").length, 2);
+  });
+});
+
+test("built consumer keeps a turn open when a tool frame follows whitespace", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "delta", text: " " },
+      { type: "mcp-progress" },
+      { type: "whitespace-deadline", requireDisarm: true },
+      { type: "success", text: "tool-finished", afterMs: 100 }
+    ]], 1);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '"tool-finished"\n');
+    assert.equal((await fixture.attempts()).length, 1);
+  });
+});
+
+test("built consumer keeps a turn open when a reasoning frame follows whitespace", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "delta", text: " " },
+      { type: "reasoning" },
+      { type: "whitespace-deadline", requireDisarm: true },
+      { type: "success", text: "reasoning-finished", afterMs: 100 }
+    ]], 1);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '"reasoning-finished"\n', result.stderr);
+    assert.equal((await fixture.attempts()).length, 1);
+  });
+});
+
+test("built consumer records a dropped command event without losing the answer", { timeout: 45_000 }, async () => {
+  await withFixture(async (fixture) => {
+    const result = await fixture.run([[
+      { type: "oversized-command" },
+      { type: "success", text: "research-answer" }
+    ]], 1);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '"research-answer"\n');
+    const record = await fixture.agentRecord();
+    assert.equal(record.status, "complete");
+    assert.deepEqual(record.oversized_event, {
+      byte_length: 1_056_599,
+      dropped: "whole inbound event",
+      event_method: "item/completed",
+      item_type: "commandExecution",
+      result_affected: false
+    });
   });
 });
 
@@ -207,11 +279,13 @@ function assertFirstOutputDeadlineDisarmed(control: string): void {
 interface RecordedAttempt {
   status: string;
   raw_output: string | null;
-  failure: { message?: string } | null;
+  failure: { kind?: string; message?: string } | null;
+  classification?: { class: string };
 }
 
 interface RecordedMessage {
   id?: number;
+  method?: string;
   result?: { decision?: string; reason?: string };
 }
 
@@ -243,6 +317,7 @@ async function createFixture() {
   const emittedFrameCapturePath = path.join(directory, "emitted-notifications.jsonl");
   const deadlineControlPath = path.join(directory, "deadline-control");
   const firstOutputDeadlineControlPath = path.join(directory, "first-output-deadline-control");
+  const whitespaceDeadlineControlPath = path.join(directory, "whitespace-deadline-control");
   const recordStore = path.join(directory, "records");
   const workflow = path.join(directory, "workflow.js");
   await mkdir(binDirectory);
@@ -251,6 +326,7 @@ async function createFixture() {
   await writeFile(emittedFrameCapturePath, "");
   await writeFile(deadlineControlPath, "");
   await writeFile(firstOutputDeadlineControlPath, "");
+  await writeFile(whitespaceDeadlineControlPath, "");
   await writeFile(fakeCodex, `#!/usr/bin/env node\nimport ${JSON.stringify(appServerFixturePath)};\n`);
   await chmod(fakeCodex, 0o755);
 
@@ -272,6 +348,7 @@ async function createFixture() {
         [
           "--import", deadlineAcceleratorPath,
           "--import", firstOutputDeadlineAcceleratorPath,
+          "--import", whitespaceDeadlineAcceleratorPath,
           bundledCliPath,
           workflow
         ],
@@ -283,6 +360,7 @@ async function createFixture() {
           ENSEMBLE_POST_PROMISE_DEADLINE_CONTROL: deadlineControlPath,
           ENSEMBLE_POST_PROMISE_DEADLINE_KIND: "retry-promise",
           ENSEMBLE_FIRST_OUTPUT_DEADLINE_CONTROL: firstOutputDeadlineControlPath,
+          ENSEMBLE_WHITESPACE_DEADLINE_CONTROL: whitespaceDeadlineControlPath,
           ENSEMBLE_POST_PROMISE_SCENARIOS: JSON.stringify(scenarios),
           ENSEMBLE_CODEX_SCHEMA_CLI: schemaCodexPath,
           ENSEMBLE_RUN_RECORD: "1",
@@ -297,6 +375,10 @@ async function createFixture() {
       const pathToAgent = await findOnlyFile(recordStore, "agent.json");
       const agent = JSON.parse(await readFile(pathToAgent, "utf8")) as { attempts: RecordedAttempt[] };
       return agent.attempts;
+    },
+    agentRecord: async (): Promise<{ status: string; oversized_event: unknown }> => {
+      const pathToAgent = await findOnlyFile(recordStore, "agent.json");
+      return JSON.parse(await readFile(pathToAgent, "utf8"));
     },
     messages: async (): Promise<RecordedMessage[]> =>
       (await readFile(capturePath, "utf8"))

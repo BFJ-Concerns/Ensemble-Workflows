@@ -474,6 +474,7 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   nothing but one JSON scalar, the shape a fenced or prose-wrapped `null`,
   `false`, `0`, or `""` takes), or `null` until a valid value is selected.
 - `decode_failure`: `{ byte_length, line_prefix }` or `null`.
+- `oversized_event`: `{ byte_length, dropped, event_method, item_type, result_affected }` or `null`. A discarded Codex line records its size and, where its prefix identifies them, the event and item type. `result_affected` is `false` when a command execution event was dropped but the turn still completed with an answer; `null` means the transport cannot establish the effect.
 - `raw_output`: final raw model text, or the latest raw failed output. `null`
   means no output was produced; `""` means the worker answered with empty
   text. Attempt records use the same convention.
@@ -505,7 +506,9 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
   - `diagnostics`, `app_server_diagnostic`, and `token_usage_events` (the
-    engine-native usage events).
+    engine-native usage events). A Codex `app_server_diagnostic` has
+    `provider_error: { code, param }` when its message contains a serialised
+    provider error body; `param` may be `null`.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble

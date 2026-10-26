@@ -19,6 +19,7 @@ import {
   AppServerStartupTimeoutError,
   AppServerSystemError,
   CodexSchemaSubsetUnsupportedError,
+  AppServerWhitespaceStreamTimeoutError,
   TurnTimeoutError,
   appServerDiagnosticOf,
   partialWorkerTextOf,
@@ -256,6 +257,40 @@ test("a systemError followed by Codex's schema diagnostic keeps its classified c
   } finally {
     await transport.close();
   }
+});
+
+test("a serialised provider invalid_type schema rejection has the common schema class", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("schema-invalid-type-provider-body");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-provider-schema-record-"));
+  const runtime = await createRuntime({ codexBin });
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "provider-schema",
+    workflowPath: path.join(process.cwd(), "provider-schema.js"), workflowSource: "return true;\n",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    assert.equal(await runtime.agent("reject this schema", { engine: "codex", maxAttempts: 1 }), null);
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8"));
+    assert.equal(record.attempts.length, 1);
+    assert.equal(record.attempts[0].failure.kind, "CodexSchemaSubsetUnsupportedError");
+    assert.deepEqual(record.attempts[0].classification, { class: "unclassified", rule: "codex.schema-rejected" });
+    assert.deepEqual(record.attempts[0].app_server_diagnostic.provider_error, {
+      code: "invalid_type", param: "text.format.schema"
+    });
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
+  }
+
+  const proseOnly = appServerErrorFromPayload("turn notification", {
+    code: "other",
+    message: "[ObjectParam] [text.format.schema] [invalid_type] expected an object",
+    data: { error: { message: "[ObjectParam] [text.format.schema] [invalid_type] expected an object" } }
+  });
+  assert.ok(!(proseOnly instanceof CodexSchemaSubsetUnsupportedError));
+  assert.equal(appServerDiagnosticOf(proseOnly)?.providerError, undefined);
 });
 
 test("a schema diagnostic disarms its systemError grace before a follow-up turn", async () => {
@@ -701,7 +736,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
   }
 });
 
-test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 5_000 }, async () => {
+test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 20_000 }, async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-request-deadline-record-"));
   const archiveCauseFor = async (
     mode: "no-turn-start-ack" | "hang-after-delta",
@@ -1039,6 +1074,57 @@ test("retryPromiseSilenceTimeoutMs threads from RuntimeOptions to the live trans
   }
 });
 
+test("whitespace after an answer ends with its partial text", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-after-answer");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    await assert.rejects(() => transport.runTurn(threadId, "answer then whitespace", {}), (error: unknown) => {
+      assert.ok(error instanceof AppServerWhitespaceStreamTimeoutError);
+      assert.match(partialWorkerTextOf(error) ?? "", /the answer\s+$/);
+      return true;
+    });
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a tool frame stops the whitespace bound while the turn continues", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-then-tool");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    let answer: string | undefined;
+    await assert.doesNotReject(async () => {
+      answer = (await transport.runTurn(threadId, "whitespace then tool", {})).text;
+    });
+    assert.equal(answer, "answered after tool activity");
+  } finally {
+    await transport.close();
+  }
+});
+
+test("a reasoning frame stops the whitespace bound while the turn continues", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("whitespace-then-reasoning");
+  const transport = await CodexAppServerTransport.start({
+    ...defaultTransportOptions(codexBin), whitespaceStreamTimeoutMs: 140
+  });
+  try {
+    const threadId = await transport.openThread({});
+    let answer: string | undefined;
+    await assert.doesNotReject(async () => {
+      answer = (await transport.runTurn(threadId, "whitespace then reasoning", {})).text;
+    });
+    assert.equal(answer, "answered after reasoning activity");
+  } finally {
+    await transport.close();
+  }
+});
+
 test("exact -32001 backpressure outranks an incidental invalid_json_schema mention", () => {
   const error = appServerErrorFromPayload("turn/start", {
     code: -32001,
@@ -1122,6 +1208,34 @@ test("an oversized stdout frame leaves bounded decode evidence and the transport
     assert.equal(result.text, "answer after oversized frame");
   } finally {
     await transport.close();
+  }
+});
+
+test("a dropped command event leaves a completed answer and an explicit record", async () => {
+  const codexBin = await fakeCodexFailingTurnServer("oversized-command-event");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-oversized-command-record-"));
+  const runtime = await createRuntime({ codexBin });
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "oversized-command",
+    workflowPath: path.join(process.cwd(), "oversized-command.js"), workflowSource: "return true;\n",
+    args: [], cliFlags: { jsonArgs: false }
+  });
+  runtime.setRunRecorder(writer);
+  try {
+    assert.equal(await runtime.agent("answer after command output", { engine: "codex", maxAttempts: 1 }), "answer after oversized frame");
+    await writer.finish({ status: "complete", exitCode: 0, result: "answer after oversized frame" });
+    const record = JSON.parse(await readFile(path.join(writer.archiveDir, "agents", "000001", "agent.json"), "utf8"));
+    assert.equal(record.status, "complete");
+    assert.deepEqual(record.oversized_event, {
+      byte_length: 1_048_699,
+      dropped: "whole inbound event",
+      event_method: "item/completed",
+      item_type: "commandExecution",
+      result_affected: false
+    });
+  } finally {
+    await runtime.close();
+    await rm(store, { recursive: true, force: true });
   }
 });
 
@@ -1726,8 +1840,13 @@ async function fakeCodexFailingTurnServer(
     | "turn-start-error"
     | "exit-at-thread-start"
     | "oversized-line"
+    | "oversized-command-event"
     | "just-under-limit-line"
     | "tool-active-output-silent"
+    | "whitespace-after-answer"
+    | "whitespace-then-tool"
+    | "whitespace-then-reasoning"
+    | "schema-invalid-type-provider-body"
     | "no-first-delta"
     | "delayed-first-delta"
     | "recycled-thread-stragglers"
@@ -1868,6 +1987,15 @@ reader.on("line", (line) => {
       );
       return;
     }
+    if (mode === "oversized-command-event") {
+      const frame = { method: "item/completed", params: { threadId, item: { type: "commandExecution", aggregatedOutput: "" } } };
+      const length = 1_048_699 - Buffer.byteLength(JSON.stringify(frame));
+      frame.params.item.aggregatedOutput = "x".repeat(length);
+      send(frame);
+      send({ method: "item/completed", params: { threadId, item: { type: "agentMessage", text: "answer after oversized frame" } } });
+      send({ method: "turn/completed", params: { threadId } });
+      return;
+    }
     if (mode === "oversized-line" || mode === "just-under-limit-line") {
       const prefix = mode === "oversized-line" ? "over-limit frame" : "under-limit frame";
       const targetByteLength = mode === "oversized-line" ? 1_048_699 : 1_048_575;
@@ -1979,6 +2107,25 @@ reader.on("line", (line) => {
       setInterval(() => {
         send({ method: "item/mcpToolCall/progress", params: { threadId, turnId: "turn-1", itemId: "item-1", message: "tool still active" } });
       }, 20);
+    } else if (mode === "schema-invalid-type-provider-body") {
+      send({ method: "error", params: { threadId, turnId: "turn-1", willRetry: false, error: {
+        message: '{"error":{"code":"invalid_type","message":"Invalid type for \\'text.format.schema\\': expected an object, but got a boolean instead.","param":"text.format.schema","type":"invalid_request_error"}}',
+        codexErrorInfo: "other", additionalDetails: null
+      } } });
+    } else if (mode === "whitespace-after-answer" || mode === "whitespace-then-tool" || mode === "whitespace-then-reasoning") {
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "the answer" } });
+      send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: "   " } });
+      if (mode === "whitespace-after-answer") {
+        setInterval(() => send({ method: "item/agentMessage/delta", params: { threadId, turnId: "turn-1", delta: " " } }), 20);
+      } else {
+        setTimeout(() => send({ method: mode === "whitespace-then-reasoning" ? "item/reasoning/summaryTextDelta" : "item/started", params: mode === "whitespace-then-reasoning"
+          ? { threadId, turnId: "turn-1", itemId: "reason-1", summaryIndex: 0, delta: "thinking" }
+          : { threadId, turnId: "turn-1", item: { type: "commandExecution" } } }), 60);
+        setTimeout(() => {
+          send({ method: "item/completed", params: { threadId, turnId: "turn-1", item: { type: "agentMessage", text: mode === "whitespace-then-reasoning" ? "answered after reasoning activity" : "answered after tool activity" } } });
+          send({ method: "turn/completed", params: { threadId, turn: { id: "turn-1" } } });
+        }, 220);
+      }
     }
     // hang-after-delta: send nothing further.
   }

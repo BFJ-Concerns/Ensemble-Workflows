@@ -74,6 +74,7 @@ const CODEX_ERROR_CLASSES = new Map<string, FailureClassification>([
   ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
+  ["AppServerWhitespaceStreamTimeoutError", { class: "output", rule: "codex.whitespace-stream" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]
 ]);
 

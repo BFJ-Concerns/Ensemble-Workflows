@@ -14060,6 +14060,11 @@ var AppServerFirstOutputTimeoutError = class extends EnsembleError {
     super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
   }
 };
+var AppServerWhitespaceStreamTimeoutError = class extends EnsembleError {
+  constructor(timeoutMs) {
+    super(`codex app-server turn streamed only whitespace for ${timeoutMs}ms`);
+  }
+};
 var AppServerStartupTimeoutError = class extends EnsembleError {
   constructor(timeoutMs) {
     super(`codex app-server initialize handshake timed out after ${timeoutMs}ms`);
@@ -16104,6 +16109,13 @@ var RunRecordWriter = class _RunRecordWriter {
         byte_length: record.decodeFailure.byteLength,
         line_prefix: record.decodeFailure.linePrefix
       },
+      oversized_event: record.oversizedEvent === null ? null : {
+        byte_length: record.oversizedEvent.byteLength,
+        dropped: "whole inbound event",
+        event_method: record.oversizedEvent.eventMethod,
+        item_type: record.oversizedEvent.itemType,
+        result_affected: record.oversizedEvent.resultAffected
+      },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       // Summary usage in the declared vocabulary, or the reason there is
@@ -16124,7 +16136,8 @@ var RunRecordWriter = class _RunRecordWriter {
         app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
           code: attempt.appServerDiagnostic.code,
           message: attempt.appServerDiagnostic.message,
-          payload: attempt.appServerDiagnostic.payload
+          payload: attempt.appServerDiagnostic.payload,
+          ...attempt.appServerDiagnostic.providerError === void 0 ? {} : { provider_error: attempt.appServerDiagnostic.providerError }
         },
         background_waits: attempt.backgroundWaits.map((wait) => ({
           task_id: wait.taskId,
@@ -17210,6 +17223,7 @@ var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   ["CodexSchemaSubsetUnsupportedError", { class: "unclassified", rule: "codex.schema-rejected" }],
   // A started turn that never produced output before the transport's bound.
   ["AppServerFirstOutputTimeoutError", { class: "unclassified", rule: "codex.first-output-deadline" }],
+  ["AppServerWhitespaceStreamTimeoutError", { class: "output", rule: "codex.whitespace-stream" }],
   ["TurnTimeoutError", { class: "unclassified", rule: "codex.deadline" }]
 ]);
 var CLAUDE_AVAILABILITY_STATUSES = /* @__PURE__ */ new Map([
@@ -19069,6 +19083,7 @@ import { createInterface } from "node:readline";
 var MAX_CONSECUTIVE_APP_SERVER_RETRY_PROMISES = 5;
 var DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS = 15 * 60 * 1e3;
 var DEFAULT_FIRST_OUTPUT_TIMEOUT_MS = 15 * 60 * 1e3;
+var DEFAULT_WHITESPACE_STREAM_TIMEOUT_MS = 2 * 60 * 1e3;
 var STDOUT_CLOSE_EXIT_GRACE_MS = 50;
 var STDIN_CLOSE_EXIT_GRACE_MS = 500;
 var SYSTEM_ERROR_DIAGNOSTIC_GRACE_MS = 50;
@@ -19127,6 +19142,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   #requestTimeoutMs;
   #retryPromiseSilenceTimeoutMs;
   #firstOutputTimeoutMs;
+  #whitespaceStreamTimeoutMs;
   #startupHandshakeTimeoutMs;
   #skillDiscoveryStabilityIntervalMs;
   #skillDiscoveryDeadlineMs;
@@ -19157,6 +19173,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#requestTimeoutMs = options.requestTimeoutMs;
     this.#retryPromiseSilenceTimeoutMs = options.retryPromiseSilenceTimeoutMs ?? DEFAULT_RETRY_PROMISE_SILENCE_TIMEOUT_MS;
     this.#firstOutputTimeoutMs = options.firstOutputTimeoutMs ?? DEFAULT_FIRST_OUTPUT_TIMEOUT_MS;
+    this.#whitespaceStreamTimeoutMs = options.whitespaceStreamTimeoutMs ?? DEFAULT_WHITESPACE_STREAM_TIMEOUT_MS;
     this.#startupHandshakeTimeoutMs = options.startupHandshakeTimeoutMs ?? 12e4;
     this.#skillDiscoveryStabilityIntervalMs = options.skillDiscoveryStabilityIntervalMs ?? SKILL_DISCOVERY_STABILITY_INTERVAL_MS;
     this.#skillDiscoveryDeadlineMs = options.skillDiscoveryDeadlineMs ?? SKILL_DISCOVERY_DEADLINE_MS;
@@ -19482,7 +19499,20 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
     };
     const reportOversizedLine = () => {
-      this.#reportDecodeFailure(oversizedLineByteLength, prefix.toString("utf8"));
+      const linePrefix = prefix.toString("utf8");
+      const eventMethod = /"method"\s*:\s*"([^"]+)"/.exec(linePrefix)?.[1] ?? null;
+      const itemType = /"item"\s*:\s*\{[^}]*"type"\s*:\s*"([^"]+)"/.exec(linePrefix)?.[1] ?? null;
+      this.#onEvent?.({
+        method: "transport/decodeFailed",
+        params: {
+          byteLength: oversizedLineByteLength,
+          linePrefix,
+          reason: "inbound-line-limit",
+          eventMethod,
+          itemType
+        },
+        receivedAt: Date.now()
+      });
     };
     const handleRetainedLine = () => {
       const line = Buffer.concat(chunks).toString("utf8").replace(/\r$/, "");
@@ -19569,6 +19599,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         const turn = this.#turnCorrelatedBy(requestParams);
         if (turn !== void 0) {
           this.#disarmRetryPromiseSilenceDeadline(turn);
+          this.#noteContentOrActivity(turn, Date.now());
           this.#disarmFirstOutputDeadline(turn);
           this.#noteTurnFirstOutput(turn);
         }
@@ -19629,6 +19660,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
     }
     const now = Date.now();
+    if (speaksForTurn && isWhitespaceStreamActivity(method)) {
+      this.#noteContentOrActivity(turn, now);
+    }
     if (isTurnProgressNotification(method)) {
       turn.consecutiveRetryPromises = 0;
     }
@@ -19658,6 +19692,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       }
       if (typeof params.delta === "string") {
         turn.deltaText += params.delta;
+        if (params.delta.trim().length > 0) {
+          this.#noteContentOrActivity(turn, now);
+        } else if (params.delta.length > 0 && speaksForTurn) {
+          this.#armWhitespaceStreamDeadline(threadId, turn);
+        }
       }
       return;
     }
@@ -19783,6 +19822,23 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       turn.retryPromiseSilenceDeadline = void 0;
     }
   }
+  #noteContentOrActivity(turn, at2) {
+    turn.lastContentOrActivityAt = at2;
+    this.#disarmWhitespaceStreamDeadline(turn);
+  }
+  #disarmWhitespaceStreamDeadline(turn) {
+    if (turn.whitespaceStreamDeadline !== void 0) {
+      clearTimeout(turn.whitespaceStreamDeadline);
+      turn.whitespaceStreamDeadline = void 0;
+    }
+  }
+  #armWhitespaceStreamDeadline(threadId, turn) {
+    if (turn.whitespaceStreamDeadline !== void 0) return;
+    const remaining = Math.max(0, this.#whitespaceStreamTimeoutMs - (Date.now() - turn.lastContentOrActivityAt));
+    turn.whitespaceStreamDeadline = setTimeout(() => {
+      void this.#rejectTurn(threadId, turn, new AppServerWhitespaceStreamTimeoutError(this.#whitespaceStreamTimeoutMs));
+    }, remaining);
+  }
   #disarmSystemErrorDiagnosticGrace(turn) {
     if (turn.systemErrorDiagnosticGraceDeadline !== void 0) {
       clearTimeout(turn.systemErrorDiagnosticGraceDeadline);
@@ -19879,6 +19935,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmWhitespaceStreamDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     if (turn.turnId !== void 0) {
@@ -19895,6 +19952,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
     this.#rememberSettledTurn(turn);
     clearTimeout(turn.timeout);
     this.#disarmRetryPromiseSilenceDeadline(turn);
+    this.#disarmWhitespaceStreamDeadline(turn);
     this.#disarmSystemErrorDiagnosticGrace(turn);
     this.#disarmFirstOutputDeadline(turn);
     const text = turn.itemText ?? turn.deltaText;
@@ -19960,6 +20018,8 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       tokenUsageEvents: [],
       consecutiveRetryPromises: 0,
       retryPromiseSilenceDeadline: void 0,
+      whitespaceStreamDeadline: void 0,
+      lastContentOrActivityAt: Date.now(),
       systemErrorDiagnosticGraceDeadline: void 0,
       systemErrorDiagnosticFallback: void 0,
       firstOutputDeadline: void 0,
@@ -20043,7 +20103,7 @@ ${this.#stderrTail.join("\n")}` : "";
 };
 function appServerErrorFromPayload(method, errorPayload) {
   const diagnostic = appServerDiagnosticFromPayload(errorPayload);
-  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
+  const error = errorPayload.code === -32001 ? new AppServerBackpressureError(method, errorPayload) : diagnostic.providerError?.code === "invalid_type" && diagnostic.providerError.param === "text.format.schema" || payloadContainsInvalidJsonSchema(errorPayload) ? new CodexSchemaSubsetUnsupportedError(errorPayload, diagnostic) : new AppServerRequestError(method, errorPayload);
   return attachAppServerDiagnostic(error, diagnostic);
 }
 function appServerErrorFromNotification(params) {
@@ -20057,11 +20117,25 @@ function appServerErrorFromNotification(params) {
   return appServerErrorFromPayload("turn notification", errorPayload);
 }
 function appServerDiagnosticFromPayload(payload) {
+  const turnError = asJsonObject(asJsonObject(payload.data)?.error);
+  const providerError = providerErrorFromMessage(turnError?.message);
   return {
     code: payload.code ?? null,
     message: payload.message ?? "unknown app-server error",
-    payload: renderPayloadSafely(payload.data)
+    payload: renderPayloadSafely(payload.data),
+    ...providerError === null ? {} : { providerError }
   };
+}
+function providerErrorFromMessage(message) {
+  if (typeof message !== "string") return null;
+  let decoded;
+  try {
+    decoded = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  const error = asJsonObject(asJsonObject(decoded)?.error);
+  return typeof error?.code === "string" && (typeof error.param === "string" || error.param === null) ? { code: error.code, param: error.param } : null;
 }
 function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
@@ -20089,6 +20163,9 @@ function isTurnProgressNotification(method) {
   // resuming — the reset set's rationale. Counting it would let a
   // promise/heartbeat alternation defeat the consecutive-promise bound.
   method.startsWith("item/") && method !== "item/mcpToolCall/progress";
+}
+function isWhitespaceStreamActivity(method) {
+  return method !== "item/agentMessage/delta" && (method.startsWith("item/") || method === "turn/plan/updated" || method === "turn/diff/updated");
 }
 function isOutputBearingTurnFrame(method) {
   return method !== "turn/started";
@@ -21619,6 +21696,7 @@ async function createDefaultEngineRegistry(options) {
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+    ...options.whitespaceStreamTimeoutMs !== void 0 ? { whitespaceStreamTimeoutMs: options.whitespaceStreamTimeoutMs } : {},
     ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
     startupHandshakeTimeoutMs: options.startupHandshakeTimeoutMs,
     clientName: options.clientName,
@@ -21919,6 +21997,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       holdScope,
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
+      ...options.whitespaceStreamTimeoutMs !== void 0 ? { whitespaceStreamTimeoutMs: options.whitespaceStreamTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
       ...options.workerEnvironment !== void 0 ? { workerEnvironment: options.workerEnvironment } : {},
       ...options.openCodeModels !== void 0 ? { openCodeModels: options.openCodeModels } : {},
@@ -22007,6 +22086,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (diagnostic !== null) {
         for (const record of this.#executingAgentRecords.get(engine) ?? []) {
           record.decodeFailure = diagnostic;
+          const oversized = oversizedEventFromParams(event.params);
+          if (oversized !== null) record.oversizedEvent = oversized;
         }
       }
     }
@@ -23027,6 +23108,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        noteOversizedEventResult(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== void 0) {
           if (operationalFailure.refused) {
@@ -23091,6 +23173,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         });
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
+        noteOversizedEventResult(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
         if (operationalFailure !== void 0) {
           if (operationalFailure.refused) {
@@ -23398,6 +23481,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       transcriptCapture: null,
       parseRoute: null,
       decodeFailure: null,
+      oversizedEvent: null,
       rawOutput: null,
       validatedOutput: null,
       queuedMs: 0,
@@ -23553,6 +23637,21 @@ function lastRawOutput(record) {
 }
 function decodeFailureDiagnosticFromParams(params) {
   return typeof params.byteLength === "number" && typeof params.linePrefix === "string" ? { byteLength: params.byteLength, linePrefix: params.linePrefix } : null;
+}
+function oversizedEventFromParams(params) {
+  if (params.reason !== "inbound-line-limit" || typeof params.byteLength !== "number") return null;
+  return {
+    byteLength: params.byteLength,
+    eventMethod: typeof params.eventMethod === "string" ? params.eventMethod : null,
+    itemType: typeof params.itemType === "string" ? params.itemType : null,
+    resultAffected: null
+  };
+}
+function noteOversizedEventResult(record, result) {
+  if (record.oversizedEvent === null) return;
+  if (record.oversizedEvent.eventMethod === "item/completed" && record.oversizedEvent.itemType === "commandExecution" && result.text.trim().length > 0) {
+    record.oversizedEvent.resultAffected = false;
+  }
 }
 
 // src/hooks.ts

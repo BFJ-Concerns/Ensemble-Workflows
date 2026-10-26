@@ -140,6 +140,24 @@ test("pipe-holder cleanup reaps its detached descendant after an assertion fails
   assert.equal(await processIsRunning(descendantPid), false, "the failing journey left its descendant running");
 });
 
+test("pipe-holder cleanup preserves the original failure without a ready marker", async () => {
+  assertNotInsideSuiteSpawningTest();
+  let directory: string | undefined;
+  await assert.rejects(withPipeHolder(async (pipeHolder) => {
+    directory = pipeHolder.directory;
+    const run = startSuite(pipeHolder);
+    try {
+      await waitForFile(pipeHolder.pidPath);
+      await rm(pipeHolder.pidPath);
+      throw new Error("original assertion failed before ready");
+    } finally {
+      await stopSuite(run);
+    }
+  }, true), /original assertion failed before ready/);
+  assert.ok(directory !== undefined);
+  await assert.rejects(access(directory), { code: "ENOENT" });
+});
+
 test("concurrent suite runners keep their hand-off state in separate namespaces", async () => {
   assertNotInsideSuiteSpawningTest();
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-concurrent-"));
@@ -246,32 +264,48 @@ async function onlyHandoffDirectory(namespace: string): Promise<string> {
   return path.join(namespace, handoffs[0]!.name);
 }
 
-async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>): Promise<void> {
+async function withPipeHolder(run: (pipeHolder: PipeHolder) => Promise<void>, withholdReady = false): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-suite-runner-robustness-"));
   const pipeHolder = {
     directory,
     readyPath: path.join(directory, "ready"),
+    pidPath: path.join(directory, "pid"),
+    withholdReady,
     releasePath: path.join(directory, "release")
   };
+  let failure: unknown;
   try {
     await run(pipeHolder);
-  } finally {
+  } catch (error) {
+    failure = error;
+  }
+  try {
     await releasePipeHolder(pipeHolder);
-    const pid = await pipeHolderPid(pipeHolder);
+    await waitForFile(pipeHolder.pidPath);
+    const pid = Number((await readFile(pipeHolder.pidPath, "utf8")).trim());
+    assert.ok(Number.isInteger(pid) && pid > 0);
     await waitForProcessExit(pid);
+  } catch (error) {
+    if (failure === undefined) failure = error;
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
+  if (failure !== undefined) throw failure;
 }
 
 interface PipeHolder {
   directory: string;
   readyPath: string;
+  pidPath: string;
+  withholdReady: boolean;
   releasePath: string;
 }
 
 function startSuite(pipeHolder: PipeHolder) {
   return startSuiteProgram(pipeHolderParentPath, {
     ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH: pipeHolder.readyPath,
+    ENSEMBLE_SUITE_PIPE_HOLDER_PID_PATH: pipeHolder.pidPath,
+    ENSEMBLE_SUITE_PIPE_HOLDER_WITHHOLD_READY: pipeHolder.withholdReady ? "1" : "0",
     ENSEMBLE_SUITE_PIPE_HOLDER_RELEASE_PATH: pipeHolder.releasePath
   });
 }

@@ -165,7 +165,12 @@ export interface RuntimeAgentAttemptRecord {
    * The Codex app-server diagnostic observed for this failed attempt. Null
    * when the engine supplied no diagnostic, rather than an inferred cause.
    */
-  appServerDiagnostic: { code: number | string | null; message: string; payload: string } | null;
+  appServerDiagnostic: {
+    code: number | string | null;
+    message: string;
+    payload: string;
+    providerError?: { code: string; param: string | null };
+  } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   /** The served model this attempt's engine reported, when it reported one. */
@@ -285,6 +290,13 @@ export interface RuntimeAgentRecord {
   parseRoute: ParseRoute | null;
   /** Bounded evidence for the latest inbound Codex frame that could not be decoded. */
   decodeFailure: DecodeFailureDiagnostic | null;
+  /** A bounded inbound event discarded by the Codex line limit. */
+  oversizedEvent: {
+    byteLength: number;
+    eventMethod: string | null;
+    itemType: string | null;
+    resultAffected: boolean | null;
+  } | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   queuedMs: number;
@@ -962,6 +974,16 @@ export class RunRecordWriter {
               byte_length: record.decodeFailure.byteLength,
               line_prefix: record.decodeFailure.linePrefix
             },
+      oversized_event:
+        record.oversizedEvent === null
+          ? null
+          : {
+              byte_length: record.oversizedEvent.byteLength,
+              dropped: "whole inbound event",
+              event_method: record.oversizedEvent.eventMethod,
+              item_type: record.oversizedEvent.itemType,
+              result_affected: record.oversizedEvent.resultAffected
+            },
       raw_output: record.rawOutput,
       validated_output: record.validatedOutput,
       // Summary usage in the declared vocabulary, or the reason there is
@@ -988,7 +1010,10 @@ export class RunRecordWriter {
             : {
                 code: attempt.appServerDiagnostic.code,
                 message: attempt.appServerDiagnostic.message,
-                payload: attempt.appServerDiagnostic.payload
+                payload: attempt.appServerDiagnostic.payload,
+                ...(attempt.appServerDiagnostic.providerError === undefined
+                  ? {}
+                  : { provider_error: attempt.appServerDiagnostic.providerError })
               },
         background_waits: attempt.backgroundWaits.map((wait) => ({
           task_id: wait.taskId,

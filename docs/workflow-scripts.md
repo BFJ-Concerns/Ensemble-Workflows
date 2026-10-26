@@ -419,6 +419,9 @@ consecutive promise without progress ends the turn as a retryable failure,
 keeping the last error's diagnostic. A server that promises a retry and then goes silent is ended after
 `retryPromiseSilenceTimeoutMs` (15 minutes by default; see
 [Library runtime options](configuration.md#library-runtime-options)).
+The Codex transport also ends a stream of whitespace-only text after two minutes
+without content, tool activity or reasoning. This spends an output-failure
+attempt, retains partial text and retries within the call's attempt bound.
 Backpressure while starting a turn, and a terminal `serverOverloaded` error,
 are retried within the attempt bound. A `thread/status/changed` notification
 with `status.type: "systemError"` ends the turn as an app-server failure,

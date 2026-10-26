@@ -14,6 +14,10 @@ descendant.unref();
 // The test reads the PID as soon as the marker exists, so the marker must
 // appear complete: write it beside the final path, then rename it into place.
 const readyPath = process.env.ENSEMBLE_SUITE_PIPE_HOLDER_READY_PATH;
+await writeFile(process.env.ENSEMBLE_SUITE_PIPE_HOLDER_PID_PATH, `${descendant.pid}\n`);
+if (process.env.ENSEMBLE_SUITE_PIPE_HOLDER_WITHHOLD_READY === "1") {
+  process.exit(0);
+}
 await writeFile(`${readyPath}.partial`, `${descendant.pid}\n`);
 await rename(`${readyPath}.partial`, readyPath);
 process.exit(0);

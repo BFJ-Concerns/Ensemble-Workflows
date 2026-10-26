@@ -15,6 +15,7 @@
   "label",
   "model",
   "options",
+  "oversized_event",
   "parse_route",
   "phase",
   "prompt",

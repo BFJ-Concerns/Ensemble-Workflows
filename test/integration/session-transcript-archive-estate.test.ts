@@ -76,6 +76,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
     transcriptCapture: "lost",
     parseRoute: null,
     decodeFailure: null,
+    oversizedEvent: null,
     rawOutput: "",
     validatedOutput: null,
     queuedMs: 0,

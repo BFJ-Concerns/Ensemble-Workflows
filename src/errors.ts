@@ -221,6 +221,8 @@ export interface AppServerDiagnostic {
   code: number | string | null;
   message: string;
   payload: string;
+  /** Provider fields decoded from a serialised error body, when present. */
+  providerError?: { code: string; param: string | null };
 }
 
 interface AppServerDiagnosticCarrier {
@@ -389,6 +391,13 @@ export class AppServerSystemError extends AppServerRequestError {}
 export class AppServerFirstOutputTimeoutError extends EnsembleError {
   constructor(timeoutMs: number) {
     super(`codex app-server turn did not deliver its first output-bearing frame within ${timeoutMs}ms`);
+  }
+}
+
+/** A Codex worker kept streaming whitespace without content or other activity. */
+export class AppServerWhitespaceStreamTimeoutError extends EnsembleError {
+  constructor(timeoutMs: number) {
+    super(`codex app-server turn streamed only whitespace for ${timeoutMs}ms`);
   }
 }
 

@@ -65,6 +65,25 @@ test("pre-spawn validation errors pass through combinators and real agent() call
   );
 });
 
+test("a collected option fault survives a later throwing getter before dispatch", async () => {
+  const validationRuntime = new EnsembleRuntime({ transport: { close: async () => {} } as never, concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const source = `export const meta = { name: "getter" };
+    const options = { engine: "codex", identity: "yes" };
+    Object.defineProperty(options, "maxAttempts", { enumerable: true, get() { throw new Error("getter failed"); } });
+    return await agent("go", options);`;
+  await assert.rejects(
+    runWorkflowScript({ filename: "getter.js", runtime: validationRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof InvalidAgentOptionsError);
+      assert.match(error.message, /Invalid agent\(\) option "identity" value "yes"/);
+      assert.match(error.message, /Invalid agent\(\) option "maxAttempts": reading its value threw/);
+      return true;
+    }
+  );
+  assert.equal(validationRuntime.lastAgentRecord(), null);
+  await validationRuntime.close();
+});
+
 test("concrete validation classes propagate unchanged through a combinator", async () => {
   const optionError = new InvalidAgentOptionsError([]);
   const cycleError = new CyclicAgentSchemaError("#/self", "#");
@@ -280,6 +299,30 @@ test("workflow(name) resolves saved children from the project registry before th
   });
 
   assert.equal(result.result, "project");
+});
+
+test("a literal missing workflow after an agent call is refused before that call runs", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-missing-workflow-"));
+  let calls = 0;
+  const countingRuntime: WorkflowRuntime = {
+    ...runtime,
+    agent: (async () => {
+      calls += 1;
+      return "paid answer";
+    }) as unknown as WorkflowRuntime["agent"]
+  };
+  const source = `export const meta = { name: "missing-literal" };
+await agent("first", { engine: "codex" });
+return await workflow("there-is-no-such-workflow");`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "parent.js"), cwd: directory, runtime: countingRuntime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /parent\.js:3:14: workflow\("there-is-no-such-workflow"\) was not found/);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
 });
 
 test("child workflows share the parent budget ledger", async () => {
@@ -1685,6 +1728,32 @@ test("a syntax error near the end of a long source line keeps the caret near its
       assert.ok((snippet?.length ?? Infinity) <= 110, error.message);
       assert.equal(caret?.indexOf("^"), snippet?.indexOf(";"));
       assert.doesNotMatch(error.message, /ensemble-workflow-body|node:|script-runner/);
+      return true;
+    }
+  );
+});
+
+test("an extra closing brace followed by body code points at the brace", async () => {
+  const source = 'export const meta = { name: "brace" };\nconst value = 1;\n}\nreturn 2;\n';
+  await assert.rejects(
+    runWorkflowScript({ filename: "brace.js", runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /brace\.js:3:1: Unexpected closing '\}' in workflow body/);
+      assert.match(error.message, /\n {2}}\n {2}\^/);
+      return true;
+    }
+  );
+});
+
+test("an unfinished CR-separated body reports its own line", async () => {
+  const source = 'export const meta = { name: "carriage-return" };\rconst unfinished = (';
+  await assert.rejects(
+    runWorkflowScript({ filename: "cr.js", runtime, log: () => {}, source }),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowScriptError);
+      assert.match(error.message, /cr\.js:2:\d+: Unexpected end of workflow body/);
+      assert.match(error.message, /const unfinished = \(/);
       return true;
     }
   );

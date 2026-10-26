@@ -272,6 +272,9 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   // script may read the object it was required to declare, never mutate it.
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
   assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  if (workflowDepth === 0) {
+    await assertKnownWorkflowReferences(extracted, options.filename, cwd, options.env);
+  }
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings: WorkflowBodyBindings = {
     agent: hooks.agent,
@@ -618,7 +621,14 @@ function positionAt(source: string, offset: number): { line: number; column: num
   let lineStart = 0;
   const end = Math.min(offset, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (source[index] === "\r") {
+      line += 1;
+      lineStart = index + 1;
+      if (source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+        lineStart = index + 1;
+      }
+    } else if (source[index] === "\n") {
       line += 1;
       lineStart = index + 1;
     }
@@ -788,7 +798,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     wrappedPosition !== null &&
     (wrappedPosition.line > bodyEnd.line ||
       (wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column));
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition =
     earlyClose ??
     (pointsPastBody
@@ -800,7 +810,7 @@ function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, fi
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
 
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|\r|\n/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "…" : "";
@@ -826,21 +836,38 @@ function prematureWrapperClose(
   origin: WorkflowModuleOrigin
 ): { line: number; column: number } | null {
   try {
-    const program = acorn.parse(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (
-      declaration?.type !== "ExportDefaultDeclaration" ||
-      declaration.declaration.type !== "ArrowFunctionExpression" ||
-      declaration.declaration.body.type !== "BlockStatement"
-    ) {
-      return null;
+    const tokens = acorn.tokenizer(wrappedSource.slice(0, bodyEndOffset), {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    while (true) {
+      const token = tokens.getToken();
+      if (token.type.label === "eof") {
+        break;
+      }
+      if (token.type.label !== "}") {
+        continue;
+      }
+      try {
+        const program = acorn.parse(wrappedSource.slice(0, token.end), { ecmaVersion: "latest", sourceType: "module" });
+        const declaration = program.body[0];
+        if (
+          declaration?.type === "ExportDefaultDeclaration" &&
+          declaration.declaration.type === "ArrowFunctionExpression" &&
+          declaration.declaration.body.type === "BlockStatement" &&
+          declaration.declaration.body.end === token.end
+        ) {
+          const closingBrace = positionAt(wrappedSource, token.start);
+          return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+        }
+      } catch {
+        // A nested brace cannot close the exported body yet.
+      }
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
-    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
     // Acorn is only helping describe a rejection V8 has already made.
-    return null;
   }
+  return null;
 }
 
 /**
@@ -1129,6 +1156,100 @@ function assertKnownFreeIdentifiers(wrappedSource: string, filename: string): vo
         "(require, dynamic import(), import.meta) — a mistyped name fails here, at load, " +
         "before any worker spawns."
     );
+  }
+}
+
+/**
+ * Resolve literal names in straight-line body statements before evaluating
+ * any statement. Dynamic names and calls guarded by author control flow keep
+ * their ordinary runtime resolution: this pass cannot decide whether those
+ * calls will happen, and must not reject a script that would run without them.
+ */
+async function assertKnownWorkflowReferences(
+  workflow: ExtractedWorkflow,
+  filename: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv | undefined
+): Promise<void> {
+  const wrappedSource = buildWrappedSource(workflow);
+  let program: acorn.Program;
+  try {
+    program = acorn.parse(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+  } catch {
+    // V8 remains the syntax authority, as in the free-identifier check.
+    return;
+  }
+  const declaration = program.body[0];
+  if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression") {
+    return;
+  }
+  const body = declaration.declaration.body;
+  if (body.type !== "BlockStatement") {
+    return;
+  }
+  // A local binding can replace the hook, so its literal argument is not a
+  // saved-workflow reference. Let the executing body decide that call.
+  if (body.body.some((statement) =>
+    (statement.type === "VariableDeclaration" && statement.declarations.some((entry) => entry.id.type === "Identifier" && entry.id.name === "workflow")) ||
+    (statement.type === "FunctionDeclaration" && statement.id?.name === "workflow") ||
+    (statement.type === "ClassDeclaration" && statement.id?.name === "workflow")
+  )) {
+    return;
+  }
+  const literalCalls: Array<{ name: string; offset: number }> = [];
+  const inspectExpression = (node: unknown): void => {
+    if (typeof node !== "object" || node === null || !("type" in node)) {
+      return;
+    }
+    const expression = node as { type: string; start: number; argument?: unknown; callee?: unknown; arguments?: unknown[]; value?: unknown };
+    if (expression.type === "AwaitExpression") {
+      inspectExpression(expression.argument);
+    } else if (expression.type === "CallExpression") {
+      const callee = expression.callee as { type?: string; name?: string } | undefined;
+      const first = expression.arguments?.[0] as { type?: string; value?: unknown } | undefined;
+      if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+        literalCalls.push({ name: first.value, offset: expression.start });
+      }
+    }
+  };
+  for (const statement of body.body) {
+    if (statement.type === "ExpressionStatement" || statement.type === "ReturnStatement") {
+      inspectExpression(statement.type === "ExpressionStatement" ? statement.expression : statement.argument);
+      if (statement.type === "ReturnStatement") {
+        break;
+      }
+    } else if (statement.type === "VariableDeclaration") {
+      for (const declaration of statement.declarations) {
+        inspectExpression(declaration.init);
+      }
+    } else if (statement.type !== "EmptyStatement") {
+      // A branch, loop, try block or throw can make later calls unreachable.
+      break;
+    }
+  }
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  const origin: WorkflowModuleOrigin = {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+  for (const call of literalCalls) {
+    try {
+      await resolveWorkflowReference(call.name, {
+        cwd,
+        ...(env !== undefined ? { env } : {}),
+        readMeta: readWorkflowMeta
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowResolutionError)) {
+        throw error;
+      }
+      const wrappedPosition = positionAt(wrappedSource, call.offset);
+      const authorPosition = authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+      const location = authorPosition === null ? filename : `${filename}:${authorPosition.line}:${authorPosition.column}`;
+      throw new WorkflowResolutionError(`${location}: ${error.message}`, { cause: error });
+    }
   }
 }
 

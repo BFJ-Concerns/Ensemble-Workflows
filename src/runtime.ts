@@ -400,6 +400,11 @@ export class WorkerSession {
     return this.#state.stalenessThresholdMs;
   }
 
+  /** Whether this session reports staleness after its idle threshold. */
+  get stalenessMark(): boolean {
+    return this.#state.markStaleness;
+  }
+
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
@@ -418,7 +423,7 @@ export class WorkerSession {
   }
 
   send(prompt: string, turn: SessionTurnOptions & { schema: JsonSchema }): Promise<unknown | null>;
-  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string | null>;
+  send(prompt: string, turn?: SessionTurnOptions & { schema?: undefined }): Promise<string | null | IdentifiedAgentResult>;
   send(prompt: string, turn?: SessionTurnOptions): Promise<string | unknown | null>;
   send(prompt: string, turn: SessionTurnOptions = {}): Promise<string | unknown | null> {
     return this.#sendTurn(prompt, turn);
@@ -1061,6 +1066,14 @@ export class EnsembleRuntime {
           // is not a served-model claim, and a missing response stays null.
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
+          if (options.identity === true) {
+            return {
+              label: options.label ?? null,
+              phase: options.phase ?? null,
+              output,
+              failure: agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) }
+            } satisfies IdentifiedAgentResult;
+          }
           return output;
         } catch (error) {
           // A failed first turn can still have reached a live session and

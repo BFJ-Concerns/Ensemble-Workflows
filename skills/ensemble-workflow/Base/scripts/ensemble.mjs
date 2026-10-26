@@ -8004,7 +8004,7 @@ var require_acorn = __commonJS({
         parser.nextToken();
         return parser.parseExpression();
       };
-      Parser3.tokenizer = function tokenizer3(input, options) {
+      Parser3.tokenizer = function tokenizer4(input, options) {
         return new this(options, input);
       };
       Object.defineProperties(Parser3.prototype, prototypeAccessors2);
@@ -13107,7 +13107,7 @@ var require_acorn = __commonJS({
       function parseExpressionAt2(input, pos, options) {
         return Parser3.parseExpressionAt(input, pos, options);
       }
-      function tokenizer2(input, options) {
+      function tokenizer3(input, options) {
         return Parser3.tokenizer(input, options);
       }
       exports2.Node = Node3;
@@ -13130,7 +13130,7 @@ var require_acorn = __commonJS({
       exports2.parseExpressionAt = parseExpressionAt2;
       exports2.tokContexts = types2;
       exports2.tokTypes = types$12;
-      exports2.tokenizer = tokenizer2;
+      exports2.tokenizer = tokenizer3;
       exports2.version = version2;
     }));
   }
@@ -14400,30 +14400,60 @@ function assertValidAgentOptions(options) {
     }
   }
   const values = options;
-  collect(() => {
-    if (values.cwd !== void 0 && typeof values.cwd !== "string") {
-      throw new InvalidAgentOptionValueError("cwd", values.cwd, "a string path");
+  const unreadable = /* @__PURE__ */ Symbol("unreadable option");
+  const read = (key, expected) => {
+    try {
+      return values[key];
+    } catch (error) {
+      errors.push(new UnreadableAgentOptionError(key, expected, error));
+      return unreadable;
     }
-  });
-  collect(() => {
-    if (values.isolation !== void 0 && values.isolation !== "worktree") {
-      throw new InvalidAgentOptionValueError("isolation", values.isolation, 'exactly "worktree"');
-    }
-  });
-  if (values.engine !== "opencode") {
-    collect(() => assertCanonicalEffortSupported(values.effort));
+  };
+  const cwd = read("cwd", "a string path");
+  if (cwd !== unreadable) {
+    collect(() => {
+      if (cwd !== void 0 && typeof cwd !== "string") {
+        throw new InvalidAgentOptionValueError("cwd", cwd, "a string path");
+      }
+    });
   }
-  collect(() => assertPositiveIntegerOption(values, "timeoutMs", MAX_TIMER_DELAY_MS));
-  collect(() => assertPositiveIntegerOption(values, "maxAttempts"));
-  collect(() => {
-    if (values.identity !== void 0 && typeof values.identity !== "boolean") {
-      throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
-    }
-  });
-  if (values.strip !== void 0) {
-    collect(() => assertValidStripOption(values.strip));
+  const isolation = read("isolation", 'exactly "worktree"');
+  if (isolation !== unreadable) {
+    collect(() => {
+      if (isolation !== void 0 && isolation !== "worktree") {
+        throw new InvalidAgentOptionValueError("isolation", isolation, 'exactly "worktree"');
+      }
+    });
   }
-  collect(() => assertValidFallbackChain(values.fallback));
+  const engine = read("engine", "an engine name");
+  if (engine !== unreadable && engine !== "opencode") {
+    const effort = read("effort", `one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}`);
+    if (effort !== unreadable) {
+      collect(() => assertCanonicalEffortSupported(effort));
+    }
+  }
+  for (const key of ["timeoutMs", "maxAttempts"]) {
+    const value = read(key, "a positive integer");
+    if (value !== unreadable) {
+      collect(() => assertPositiveIntegerOption({ [key]: value }, key, key === "timeoutMs" ? MAX_TIMER_DELAY_MS : void 0));
+    }
+  }
+  const identity = read("identity", "a boolean");
+  if (identity !== unreadable) {
+    collect(() => {
+      if (identity !== void 0 && typeof identity !== "boolean") {
+        throw new InvalidAgentOptionValueError("identity", identity, "a boolean");
+      }
+    });
+  }
+  const strip = read("strip", "a list of capabilities");
+  if (strip !== unreadable && strip !== void 0) {
+    collect(() => assertValidStripOption(strip));
+  }
+  const fallback = read("fallback", "a valid fallback chain");
+  if (fallback !== unreadable) {
+    collect(() => assertValidFallbackChain(fallback));
+  }
   if (errors.length === 1) {
     throw errors[0];
   }
@@ -14443,7 +14473,8 @@ var WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
-  stalenessMark: true
+  stalenessMark: true,
+  identity: true
 });
 var WORKER_SESSION_OPTION_KEY_SET = new Set(WORKER_SESSION_OPTION_KEYS);
 function assertValidWorkerSessionOptions(options) {
@@ -14466,6 +14497,9 @@ function assertValidWorkerSessionOptions(options) {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== void 0 && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.identity !== void 0 && typeof values.identity !== "boolean") {
+    throw new InvalidAgentOptionValueError("identity", values.identity, "a boolean");
   }
   if (values.strip !== void 0) {
     assertValidStripOption(values.strip);
@@ -21769,6 +21803,10 @@ var WorkerSession = class {
   get staleAfterMs() {
     return this.#state.stalenessThresholdMs;
   }
+  /** Whether this session reports staleness after its idle threshold. */
+  get stalenessMark() {
+    return this.#state.markStaleness;
+  }
   /**
    * The advisory staleness mark: true once the idle gap since the
    * last settled turn has outlived the session's cache economics — the
@@ -22271,6 +22309,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
           );
           state.resolvedModel ??= agentRecord.resolvedModel;
           state.resolvedEffort ??= agentRecord.resolvedEffort;
+          if (options.identity === true) {
+            return {
+              label: options.label ?? null,
+              phase: options.phase ?? null,
+              output,
+              failure: agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) }
+            };
+          }
           return output;
         } catch (error) {
           state.resolvedModel ??= agentRecord.resolvedModel;
@@ -29398,6 +29444,9 @@ Parser.acorn = {
 function parse3(input, options) {
   return Parser.parse(input, options);
 }
+function tokenizer2(input, options) {
+  return Parser.tokenizer(input, options);
+}
 
 // src/script-runner.ts
 var import_acorn_globals = __toESM(require_acorn_globals(), 1);
@@ -29680,6 +29729,9 @@ async function runWorkflowScript(options) {
   });
   const declaredMeta = readWorkflowMeta(options.source, options.filename);
   assertKnownFreeIdentifiers(buildWrappedSource(extracted), options.filename);
+  if (workflowDepth === 0) {
+    await assertKnownWorkflowReferences(extracted, options.filename, cwd, options.env);
+  }
   const run = await importWorkflowBody(extracted, resolvedFilename);
   const bindings = {
     agent: hooks.agent,
@@ -29900,7 +29952,14 @@ function positionAt(source, offset2) {
   let lineStart = 0;
   const end = Math.min(offset2, source.length);
   for (let index = 0; index < end; index += 1) {
-    if (source[index] === "\n") {
+    if (source[index] === "\r") {
+      line += 1;
+      lineStart = index + 1;
+      if (source[index + 1] === "\n" && index + 1 < end) {
+        index += 1;
+        lineStart = index + 1;
+      }
+    } else if (source[index] === "\n") {
       line += 1;
       lineStart = index + 1;
     }
@@ -30007,12 +30066,12 @@ function workflowSyntaxError(error, workflow, filename) {
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
   const pointsPastBody = wrappedPosition !== null && (wrappedPosition.line > bodyEnd.line || wrappedPosition.line === bodyEnd.line && wrappedPosition.column > bodyEnd.column);
-  const earlyClose = pointsPastBody ? prematureWrapperClose(wrappedSource, bodyEndOffset, origin) : null;
+  const earlyClose = prematureWrapperClose(wrappedSource, bodyEndOffset, origin);
   const authorPosition = earlyClose ?? (pointsPastBody ? positionAt(workflow.source, workflow.source.trimEnd().length) : wrappedPosition === null ? null : authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column));
   if (authorPosition === null) {
     return new WorkflowScriptError(`Syntax error in ${filename}: ${error.message}`, { cause: error });
   }
-  const sourceLine = workflow.source.split("\n")[authorPosition.line - 1] ?? "";
+  const sourceLine = workflow.source.split(/\r\n|\r|\n/)[authorPosition.line - 1] ?? "";
   const start = Math.max(0, authorPosition.column - 1 - 72);
   const end = Math.min(sourceLine.length, start + 96);
   const prefix = start > 0 ? "\u2026" : "";
@@ -30029,16 +30088,31 @@ function workflowSyntaxError(error, workflow, filename) {
 }
 function prematureWrapperClose(wrappedSource, bodyEndOffset, origin) {
   try {
-    const program = parse3(wrappedSource.slice(0, bodyEndOffset), { ecmaVersion: "latest", sourceType: "module" });
-    const declaration = program.body[0];
-    if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression" || declaration.declaration.body.type !== "BlockStatement") {
-      return null;
+    const tokens = tokenizer2(wrappedSource.slice(0, bodyEndOffset), {
+      ecmaVersion: "latest",
+      sourceType: "module"
+    });
+    while (true) {
+      const token = tokens.getToken();
+      if (token.type.label === "eof") {
+        break;
+      }
+      if (token.type.label !== "}") {
+        continue;
+      }
+      try {
+        const program = parse3(wrappedSource.slice(0, token.end), { ecmaVersion: "latest", sourceType: "module" });
+        const declaration = program.body[0];
+        if (declaration?.type === "ExportDefaultDeclaration" && declaration.declaration.type === "ArrowFunctionExpression" && declaration.declaration.body.type === "BlockStatement" && declaration.declaration.body.end === token.end) {
+          const closingBrace = positionAt(wrappedSource, token.start);
+          return authorPositionOf(origin, closingBrace.line, closingBrace.column);
+        }
+      } catch {
+      }
     }
-    const closingBrace = positionAt(wrappedSource, declaration.declaration.body.end - 1);
-    return authorPositionOf(origin, closingBrace.line, closingBrace.column);
   } catch {
-    return null;
   }
+  return null;
 }
 function v8SyntaxErrorPosition(error) {
   const stack = typeof error.stack === "string" ? error.stack : "";
@@ -30215,6 +30289,82 @@ function assertKnownFreeIdentifiers(wrappedSource, filename) {
     throw new WorkflowScriptError(
       `Workflow ${filename} references identifiers that are not defined: ${unknown.join(", ")}. A free identifier must be a Node global, a bound hook, or a module-scope binding (require, dynamic import(), import.meta) \u2014 a mistyped name fails here, at load, before any worker spawns.`
     );
+  }
+}
+async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
+  const wrappedSource = buildWrappedSource(workflow);
+  let program;
+  try {
+    program = parse3(wrappedSource, { ecmaVersion: "latest", sourceType: "module" });
+  } catch {
+    return;
+  }
+  const declaration = program.body[0];
+  if (declaration?.type !== "ExportDefaultDeclaration" || declaration.declaration.type !== "ArrowFunctionExpression") {
+    return;
+  }
+  const body = declaration.declaration.body;
+  if (body.type !== "BlockStatement") {
+    return;
+  }
+  if (body.body.some(
+    (statement) => statement.type === "VariableDeclaration" && statement.declarations.some((entry) => entry.id.type === "Identifier" && entry.id.name === "workflow") || statement.type === "FunctionDeclaration" && statement.id?.name === "workflow" || statement.type === "ClassDeclaration" && statement.id?.name === "workflow"
+  )) {
+    return;
+  }
+  const literalCalls = [];
+  const inspectExpression = (node) => {
+    if (typeof node !== "object" || node === null || !("type" in node)) {
+      return;
+    }
+    const expression = node;
+    if (expression.type === "AwaitExpression") {
+      inspectExpression(expression.argument);
+    } else if (expression.type === "CallExpression") {
+      const callee = expression.callee;
+      const first = expression.arguments?.[0];
+      if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+        literalCalls.push({ name: first.value, offset: expression.start });
+      }
+    }
+  };
+  for (const statement of body.body) {
+    if (statement.type === "ExpressionStatement" || statement.type === "ReturnStatement") {
+      inspectExpression(statement.type === "ExpressionStatement" ? statement.expression : statement.argument);
+      if (statement.type === "ReturnStatement") {
+        break;
+      }
+    } else if (statement.type === "VariableDeclaration") {
+      for (const declaration2 of statement.declarations) {
+        inspectExpression(declaration2.init);
+      }
+    } else if (statement.type !== "EmptyStatement") {
+      break;
+    }
+  }
+  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
+  const origin = {
+    authorPath: filename,
+    source: workflow.source,
+    bodyLine: bodyPosition.line,
+    bodyColumn: bodyPosition.column
+  };
+  for (const call of literalCalls) {
+    try {
+      await resolveWorkflowReference(call.name, {
+        cwd,
+        ...env !== void 0 ? { env } : {},
+        readMeta: readWorkflowMeta
+      });
+    } catch (error) {
+      if (!(error instanceof WorkflowResolutionError)) {
+        throw error;
+      }
+      const wrappedPosition = positionAt(wrappedSource, call.offset);
+      const authorPosition = authorPositionOf(origin, wrappedPosition.line, wrappedPosition.column);
+      const location = authorPosition === null ? filename : `${filename}:${authorPosition.line}:${authorPosition.column}`;
+      throw new WorkflowResolutionError(`${location}: ${error.message}`, { cause: error });
+    }
   }
 }
 function asWorkflowReference(value) {

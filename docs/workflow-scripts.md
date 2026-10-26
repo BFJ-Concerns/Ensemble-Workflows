@@ -460,9 +460,9 @@ await builder.close();
 ```
 
 - **Fixed at creation:** `engine`, `model`, `effort`, `fallback`, `cwd`,
-  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`, and
-  `stalenessMark`. The fallback chain applies to the first turn only: the
-  target that answers it fixes the session's engine and model for its life
+  `isolation`, `timeoutMs`, `maxAttempts`, `label`, `phase`, `strip`,
+  `stalenessMark`, and `identity`. The fallback chain applies to the first turn
+  only: the target that answers it fixes the session's engine and model for its life
   (`handle.engine` reports it), and a later turn's availability failure fails
   that turn. Changing model or effort would invalidate the session's prompt
   cache, so a change of model means a new session.
@@ -471,6 +471,10 @@ await builder.close();
   turn leaves the session usable. Creating a session spawns nothing; the
   worker starts at the first `send()`. opencode sessions throw before any
   worker spawns.
+- **Identified turns:** `identity: true` at creation makes every `send()`
+  resolve `{ label, phase, output, failure }`. `failure` is `null` for a
+  successful answer, including a valid JSON `null`; a failed turn carries
+  its recorded failure message. The option cannot vary per turn.
 - **Turns are sequential:** calling `send()` while a previous send is
   unsettled throws, as does `send()` after `close()` or after the run ends.
 - **Concurrency and budget are per turn:** a turn holds its engine slot from
@@ -486,7 +490,9 @@ await builder.close();
   Codex — and `handle.idleMs` gives the idle time. It is advisory: a send to a
   stale session still runs, and the script decides whether to pay for the
   re-read or start a fresh worker. `stalenessMark: false` turns the mark off
-  for that session, and `handle.staleAfterMs` gives the threshold in use.
+  for that session. `handle.stalenessMark` reports whether the mark is enabled,
+  including before the first turn, and `handle.staleAfterMs` gives the
+  threshold in use.
 - **Lifetime:** `await handle.close()` ends a session early, once any turn in
   flight has settled, and every session is closed when the run ends. A session cannot outlive its run or be reattached
   by a later run.

@@ -350,7 +350,11 @@ test("CLI workflow fans out, compiles, logs to stderr, and emits result JSON on 
   );
 
   assert.equal(exitCode, 0, stderr);
-  assert.equal(withoutSentinelAnnouncement(stderr), "[phase] collect\n[phase] compile\n");
+  // Four workers on one engine: the run also says it never left that family.
+  assert.equal(
+    withoutSentinelAnnouncement(stderr),
+    "[phase] collect\n[phase] compile\n[single-family] all 4 workers ran on one model family: codex\n"
+  );
   const result = JSON.parse(stdout) as {
     args: string[];
     findings: Array<{ topic: string; confidence: number }>;

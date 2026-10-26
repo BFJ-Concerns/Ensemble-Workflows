@@ -349,6 +349,40 @@ if (true) return await parallel([() => workflow("there-is-no-such-workflow")]);`
   assert.equal(calls, 0);
 });
 
+test("a nested workflow parameter is called as a local function", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-local-workflow-param-"));
+  const source = `export const meta = { name: "local-parameter" };
+const run = (workflow) => workflow("there-is-no-such-workflow");
+return run((name) => ({ local: name }));`;
+  let result: unknown;
+  await assert.doesNotReject(async () => {
+    result = (await runWorkflowScript({ filename: path.join(directory, "parameter.js"), cwd: directory, runtime, log: () => {}, source })).result;
+  });
+  assert.deepEqual(result, { local: "there-is-no-such-workflow" });
+});
+
+test("a block-local workflow binding does not mask the hook outside its block", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-local-workflow-block-"));
+  const localSource = `export const meta = { name: "local-block" };
+{
+  const workflow = (name) => ({ local: name });
+  return workflow("there-is-no-such-workflow");
+}`;
+  let result: unknown;
+  await assert.doesNotReject(async () => {
+    result = (await runWorkflowScript({ filename: path.join(directory, "local.js"), cwd: directory, runtime, log: () => {}, source: localSource })).result;
+  });
+  assert.deepEqual(result, { local: "there-is-no-such-workflow" });
+
+  const hookSource = `export const meta = { name: "outside-block" };
+{ const workflow = (name) => name; workflow("local"); }
+return workflow("there-is-no-such-workflow");`;
+  await assert.rejects(
+    runWorkflowScript({ filename: path.join(directory, "hook.js"), cwd: directory, runtime, log: () => {}, source: hookSource }),
+    /hook\.js:3:8: workflow\("there-is-no-such-workflow"\) was not found/
+  );
+});
+
 test("child workflows share the parent budget ledger", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-workflow-budget-"));
   await writeFile(

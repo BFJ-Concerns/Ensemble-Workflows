@@ -170,8 +170,9 @@ A literal `workflow("name")` is checked against the saved registries when the
 script loads, including calls in branches and callbacks. A missing name
 reports the script's line and column before the body can dispatch a worker.
 Names computed at runtime and `{ scriptPath }` references are resolved when
-their calls execute. A local binding named `workflow` is a JavaScript call,
-not a saved-workflow lookup.
+their calls execute. A call through a local binding named `workflow`, such as
+a nested function parameter or a block-local variable, is an ordinary
+JavaScript call.
 
 The child shares the parent's runtime: the same concurrency caps, budgets,
 worktrees, and run record. Nesting is one level only; calling `workflow()`

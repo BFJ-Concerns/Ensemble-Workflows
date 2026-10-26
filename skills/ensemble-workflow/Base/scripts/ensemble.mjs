@@ -30054,7 +30054,6 @@ async function importWorkflowBody(workflow, filename) {
 function workflowSyntaxError(error, workflow, filename) {
   const wrappedSource = buildWrappedSource(workflow);
   const origin = workflowModuleOrigin(workflow, filename);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   const bodyEndOffset = wrappedSource.length - WORKFLOW_WRAPPER_SUFFIX.length;
   const bodyEnd = positionAt(wrappedSource, bodyEndOffset);
@@ -30300,33 +30299,87 @@ async function assertKnownWorkflowReferences(workflow, filename, cwd, env) {
   if (body.type !== "BlockStatement") {
     return;
   }
-  if (body.body.some(
-    (statement) => statement.type === "VariableDeclaration" && statement.declarations.some((entry) => entry.id.type === "Identifier" && entry.id.name === "workflow") || statement.type === "FunctionDeclaration" && statement.id?.name === "workflow" || statement.type === "ClassDeclaration" && statement.id?.name === "workflow"
-  )) {
-    return;
-  }
   const literalCalls = [];
-  const inspectNode = (node) => {
+  const asNode = (value) => typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" ? value : null;
+  const bindsWorkflow = (pattern) => {
+    const node = asNode(pattern);
+    if (node === null) return false;
+    switch (node.type) {
+      case "Identifier":
+        return node.name === "workflow";
+      case "RestElement":
+        return bindsWorkflow(node.argument);
+      case "AssignmentPattern":
+        return bindsWorkflow(node.left);
+      case "ArrayPattern":
+        return Array.isArray(node.elements) && node.elements.some(bindsWorkflow);
+      case "ObjectPattern":
+        return Array.isArray(node.properties) && node.properties.some((property) => {
+          const entry = asNode(property);
+          return entry?.type === "RestElement" ? bindsWorkflow(entry.argument) : bindsWorkflow(entry?.value);
+        });
+      default:
+        return false;
+    }
+  };
+  const declarationBindsWorkflow = (statement, includeVar) => {
+    if (statement.type === "VariableDeclaration") {
+      return (includeVar || statement.kind !== "var") && Array.isArray(statement.declarations) && statement.declarations.some((entry) => bindsWorkflow(asNode(entry)?.id));
+    }
+    return (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") && bindsWorkflow(statement.id);
+  };
+  const bodyBindsWorkflow = (statements, includeVar) => Array.isArray(statements) && statements.some((statement) => {
+    const node = asNode(statement);
+    return node !== null && declarationBindsWorkflow(node, includeVar);
+  });
+  const hasHoistedVar = (candidate) => {
+    const node = asNode(candidate);
+    if (node === null || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassDeclaration", "ClassExpression"].includes(node.type)) {
+      return false;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && declarationBindsWorkflow(node, true)) {
+      return true;
+    }
+    return Object.entries(node).some(([key, value]) => key !== "start" && key !== "end" && hasHoistedVarIn(value));
+  };
+  const hasHoistedVarIn = (value) => Array.isArray(value) ? value.some(hasHoistedVar) : hasHoistedVar(value);
+  const inspectNode = (node, shadowed) => {
     if (typeof node !== "object" || node === null) {
       return;
     }
     if (Array.isArray(node)) {
-      node.forEach(inspectNode);
+      node.forEach((child) => inspectNode(child, shadowed));
       return;
     }
-    const expression = node;
+    const expression = asNode(node);
+    if (expression === null) return;
+    let localShadow = shadowed;
+    if (expression.type === "BlockStatement") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false);
+    } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
+      localShadow ||= bindsWorkflow(expression.id) || Array.isArray(expression.params) && expression.params.some(bindsWorkflow) || hasHoistedVar(expression.body);
+    } else if (expression.type === "CatchClause") {
+      localShadow ||= bindsWorkflow(expression.param);
+    } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
+      const binding = asNode(expression.init ?? expression.left);
+      localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
+    } else if (expression.type === "SwitchStatement") {
+      localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) => bodyBindsWorkflow(asNode(entry)?.consequent, false));
+    } else if (expression.type === "ClassExpression") {
+      localShadow ||= bindsWorkflow(expression.id);
+    }
     if (expression.type === "CallExpression") {
-      const callee = expression.callee;
-      const first = expression.arguments?.[0];
-      if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+      const callee = asNode(expression.callee);
+      const first = Array.isArray(expression.arguments) ? asNode(expression.arguments[0]) : null;
+      if (!localShadow && callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
         literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
       }
     }
     for (const [key, value] of Object.entries(expression)) {
-      if (key !== "start" && key !== "end") inspectNode(value);
+      if (key !== "start" && key !== "end") inspectNode(value, localShadow);
     }
   };
-  inspectNode(body);
+  for (const statement of body.body.slice(1)) inspectNode(statement, false);
   const origin = workflowModuleOrigin(workflow, filename);
   for (const call of literalCalls) {
     try {

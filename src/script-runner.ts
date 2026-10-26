@@ -785,7 +785,6 @@ async function importWorkflowBody(workflow: ExtractedWorkflow, filename: string)
 function workflowSyntaxError(error: SyntaxError, workflow: ExtractedWorkflow, filename: string): WorkflowScriptError {
   const wrappedSource = buildWrappedSource(workflow);
   const origin = workflowModuleOrigin(workflow, filename);
-  const bodyPosition = positionAt(workflow.source, workflow.bodyOffset);
 
   const wrappedPosition = v8SyntaxErrorPosition(error) ?? acornSyntaxErrorPosition(wrappedSource);
   // An unfinished expression or an extra author `}` can make V8 reject the
@@ -1158,10 +1157,10 @@ function assertKnownFreeIdentifiers(wrappedSource: string, filename: string): vo
 }
 
 /**
- * Resolve literal names in straight-line body statements before evaluating
- * any statement. Dynamic names and calls guarded by author control flow keep
- * their ordinary runtime resolution: this pass cannot decide whether those
- * calls will happen, and must not reject a script that would run without them.
+ * Resolve literal calls through the wrapper's workflow hook throughout the
+ * body before evaluating it. Calls through a local binding retain ordinary
+ * JavaScript behaviour, including bindings in nested functions and blocks.
+ * Dynamic names remain runtime decisions.
  */
 async function assertKnownWorkflowReferences(
   workflow: ExtractedWorkflow,
@@ -1185,37 +1184,94 @@ async function assertKnownWorkflowReferences(
   if (body.type !== "BlockStatement") {
     return;
   }
-  // A local binding can replace the hook, so its literal argument is not a
-  // saved-workflow reference. Let the executing body decide that call.
-  if (body.body.some((statement) =>
-    (statement.type === "VariableDeclaration" && statement.declarations.some((entry) => entry.id.type === "Identifier" && entry.id.name === "workflow")) ||
-    (statement.type === "FunctionDeclaration" && statement.id?.name === "workflow") ||
-    (statement.type === "ClassDeclaration" && statement.id?.name === "workflow")
-  )) {
-    return;
-  }
   const literalCalls: Array<{ name: string; offset: number }> = [];
-  const inspectNode = (node: unknown): void => {
+  type WalkNode = { type: string; start?: number; [key: string]: unknown };
+  const asNode = (value: unknown): WalkNode | null =>
+    typeof value === "object" && value !== null && "type" in value && typeof value.type === "string"
+      ? value as WalkNode
+      : null;
+  const bindsWorkflow = (pattern: unknown): boolean => {
+    const node = asNode(pattern);
+    if (node === null) return false;
+    switch (node.type) {
+      case "Identifier": return node.name === "workflow";
+      case "RestElement": return bindsWorkflow(node.argument);
+      case "AssignmentPattern": return bindsWorkflow(node.left);
+      case "ArrayPattern": return Array.isArray(node.elements) && node.elements.some(bindsWorkflow);
+      case "ObjectPattern": return Array.isArray(node.properties) && node.properties.some((property) => {
+        const entry = asNode(property);
+        return entry?.type === "RestElement" ? bindsWorkflow(entry.argument) : bindsWorkflow(entry?.value);
+      });
+      default: return false;
+    }
+  };
+  const declarationBindsWorkflow = (statement: WalkNode, includeVar: boolean): boolean => {
+    if (statement.type === "VariableDeclaration") {
+      return (includeVar || statement.kind !== "var") &&
+        Array.isArray(statement.declarations) && statement.declarations.some((entry) => bindsWorkflow(asNode(entry)?.id));
+    }
+    return (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") &&
+      bindsWorkflow(statement.id);
+  };
+  const bodyBindsWorkflow = (statements: unknown, includeVar: boolean): boolean =>
+    Array.isArray(statements) && statements.some((statement) => {
+      const node = asNode(statement);
+      return node !== null && declarationBindsWorkflow(node, includeVar);
+    });
+  const hasHoistedVar = (candidate: unknown): boolean => {
+    const node = asNode(candidate);
+    if (node === null || ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression", "ClassDeclaration", "ClassExpression"].includes(node.type)) {
+      return false;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && declarationBindsWorkflow(node, true)) {
+      return true;
+    }
+    return Object.entries(node).some(([key, value]) => key !== "start" && key !== "end" && hasHoistedVarIn(value));
+  };
+  const hasHoistedVarIn = (value: unknown): boolean =>
+    Array.isArray(value) ? value.some(hasHoistedVar) : hasHoistedVar(value);
+  const inspectNode = (node: unknown, shadowed: boolean): void => {
     if (typeof node !== "object" || node === null) {
       return;
     }
     if (Array.isArray(node)) {
-      node.forEach(inspectNode);
+      node.forEach((child) => inspectNode(child, shadowed));
       return;
     }
-    const expression = node as { type?: string; start?: number; callee?: unknown; arguments?: unknown[]; [key: string]: unknown };
+    const expression = asNode(node);
+    if (expression === null) return;
+    let localShadow = shadowed;
+    if (expression.type === "BlockStatement") {
+      localShadow ||= bodyBindsWorkflow(expression.body, false);
+    } else if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(expression.type)) {
+      localShadow ||= bindsWorkflow(expression.id) ||
+        (Array.isArray(expression.params) && expression.params.some(bindsWorkflow)) ||
+        hasHoistedVar(expression.body);
+    } else if (expression.type === "CatchClause") {
+      localShadow ||= bindsWorkflow(expression.param);
+    } else if (["ForStatement", "ForInStatement", "ForOfStatement"].includes(expression.type)) {
+      const binding = asNode(expression.init ?? expression.left);
+      localShadow ||= binding !== null && declarationBindsWorkflow(binding, false);
+    } else if (expression.type === "SwitchStatement") {
+      localShadow ||= Array.isArray(expression.cases) && expression.cases.some((entry) =>
+        bodyBindsWorkflow(asNode(entry)?.consequent, false));
+    } else if (expression.type === "ClassExpression") {
+      localShadow ||= bindsWorkflow(expression.id);
+    }
     if (expression.type === "CallExpression") {
-      const callee = expression.callee as { type?: string; name?: string } | undefined;
-      const first = expression.arguments?.[0] as { type?: string; value?: unknown } | undefined;
-      if (callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
+      const callee = asNode(expression.callee);
+      const first = Array.isArray(expression.arguments) ? asNode(expression.arguments[0]) : null;
+      if (!localShadow && callee?.type === "Identifier" && callee.name === "workflow" && first?.type === "Literal" && typeof first.value === "string") {
         literalCalls.push({ name: first.value, offset: expression.start ?? 0 });
       }
     }
     for (const [key, value] of Object.entries(expression)) {
-      if (key !== "start" && key !== "end") inspectNode(value);
+      if (key !== "start" && key !== "end") inspectNode(value, localShadow);
     }
   };
-  inspectNode(body);
+  // The first statement binds the runtime hooks. It is the hook itself, not
+  // an author shadow, so walk only the author's statements beneath it.
+  for (const statement of body.body.slice(1)) inspectNode(statement, false);
   const origin = workflowModuleOrigin(workflow, filename);
   for (const call of literalCalls) {
     try {

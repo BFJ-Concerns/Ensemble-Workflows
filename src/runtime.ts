@@ -19,7 +19,7 @@ import {
   snapshotAgentCwd
 } from "./engine-option-validation.js";
 import { resolveNamedTargets } from "./named-targets.js";
-import type { NamedTargetEvidence, NamedTargets, SettledTarget } from "./named-targets.js";
+import type { DeclaredDispatch, NamedTargetEvidence, NamedTargets, SettledTarget } from "./named-targets.js";
 import type { WorkflowDefaults } from "./hooks.js";
 import {
   AppServerExitedError,
@@ -282,12 +282,8 @@ interface UnsettledAgentRecord {
 }
 
 /** The options a dispatch resolves: its own target, declared literally or by name, and its chain. */
-interface DispatchDeclaration {
-  engine?: EngineName | undefined;
-  model?: string | undefined;
-  target?: string | undefined;
+interface DispatchDeclaration extends DeclaredDispatch {
   effort?: string | undefined;
-  fallback?: FallbackTarget[] | undefined;
   label?: string | undefined;
   phase?: string | undefined;
 }
@@ -837,12 +833,14 @@ export class EnsembleRuntime {
       assertCanonicalEffortSupported(view.effort);
     }
     // A chain the defaults supplied was not in the declaration the resolver
-    // read: settle its entries now, under the same bindings.
-    const entryTargets =
-      overrides.fallback === undefined
-        ? resolved.entries
-        : resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model).entries;
-    return { options: view, entryTargets, resolutions: resolved.resolutions };
+    // read: settle its entries now, under the same bindings, and keep what
+    // its names resolved to beside the call's own — the record names every
+    // target the dispatch could reach, wherever the chain came from.
+    if (overrides.fallback === undefined) {
+      return { options: view, entryTargets: resolved.entries, resolutions: resolved.resolutions };
+    }
+    const inherited = resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model);
+    return { options: view, entryTargets: inherited.entries, resolutions: [...resolved.resolutions, ...inherited.resolutions] };
   }
 
   /**
@@ -1308,7 +1306,10 @@ export class EnsembleRuntime {
       if (state.turnCount === 0) {
         this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
       }
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, state.namedTargets);
+      // As with the chain: a later turn's record names the session's own
+      // target only, since no chain entry could have served it.
+      const namedTargets = state.turnCount === 0 ? state.namedTargets : state.namedTargets.filter((resolution) => resolution.entry === -1);
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, namedTargets);
       // The engine exposes the served model and effort when its held worker
       // first starts. Every later turn is still on that worker, so carry the
       // observed session identity into its dispatch-time record rather than

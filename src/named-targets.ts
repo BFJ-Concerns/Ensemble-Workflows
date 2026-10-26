@@ -7,7 +7,7 @@ import type { EngineName, FallbackTarget } from "./types.js";
  * operator's own names — `doer`, `reviewer`, whatever their routing
  * vocabulary is — to an engine with or without a model, and a script names
  * the target where it would have named an engine and model: in `agent()`
- * and `session()`, in a fallback-chain entry, and on the single-agent CLI.
+ * and `session()`, and in a fallback-chain entry.
  * One edit to the file moves every workflow on the machine that uses the
  * name; when a family misbehaves, rebinding the names that point at it
  * moves every role off it with no script edited. Ensemble ships no names,
@@ -70,9 +70,12 @@ export interface ResolvedDispatch {
  * own target and each chain entry naming one take the binding's engine and
  * the binding's model, else `declaredModel(engine)` — the resolved engine's
  * script default — else undefined, the engine's own default, exactly as an
- * unpinned call on that engine runs. An unbound name is refused naming the
- * name and the source; a chain entry bound to opencode is refused as every
- * opencode chain entry is. Literal targets pass through as declared.
+ * unpinned call on that engine runs. A target beside a literal engine or
+ * model — on the call or on a chain entry — is refused naming the name, the
+ * literal and the source whose binding would have supplied them; an unbound
+ * name is refused naming the name and the source; a chain entry bound to
+ * opencode is refused as every opencode chain entry is. Literal targets pass
+ * through as declared.
  */
 export function resolveNamedTargets(
   targets: NamedTargets | null,
@@ -86,12 +89,25 @@ export function resolveNamedTargets(
     resolutions.push({ name, entry, resolved: { engine: binding.engine, model: model ?? null } });
     return { engine: binding.engine, model };
   };
+  if (declared.target !== undefined && (declared.engine !== undefined || declared.model !== undefined)) {
+    const literal = declared.engine !== undefined ? `engine ${JSON.stringify(declared.engine)}` : `model ${JSON.stringify(declared.model)}`;
+    throw new NamedTargetRejectedError(
+      `${JSON.stringify(declared.target)} is named beside ${literal}: a call names a target or a literal engine and model, never both — ${bindingClause(targets)}`
+    );
+  }
   const own = declared.target === undefined ? { engine: declared.engine, model: declared.model } : resolve(declared.target, -1);
   const entries = new Map<number, SettledTarget>();
   (declared.fallback ?? []).forEach((entry, index) => {
     if (entry.target === undefined) {
       entries.set(index, { engine: entry.engine, model: entry.model });
       return;
+    }
+    // The union types forbid the pair; a script's object literal does not.
+    const written = entry as { target: string; engine?: unknown; model?: unknown };
+    if (written.engine !== undefined || written.model !== undefined) {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(written.target)} beside a literal engine or model; an entry names one or the other — ${bindingClause(targets)}`
+      );
     }
     const settled = resolve(entry.target, index);
     if (settled.engine === "opencode") {
@@ -102,6 +118,13 @@ export function resolveNamedTargets(
     entries.set(index, settled);
   });
   return { own, entries, resolutions };
+}
+
+/** Where a name's engine and model come from, for a refusal that names the file. */
+function bindingClause(targets: NamedTargets | null): string {
+  return targets === null
+    ? "and this run has no targets map to bind the name"
+    : `the binding in ${targets.source} supplies the engine and model`;
 }
 
 function bindingFor(targets: NamedTargets | null, name: string): NamedTargetBinding {

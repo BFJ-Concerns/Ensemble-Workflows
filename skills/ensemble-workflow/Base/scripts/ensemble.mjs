@@ -14487,14 +14487,8 @@ function assertValidDispatchTarget(values) {
   if (values.target === void 0) {
     return;
   }
-  if (typeof values.target !== "string" || values.target.length === 0) {
+  if (typeof values.target !== "string" || values.target.trim().length === 0) {
     throw new InvalidAgentOptionValueError("target", values.target, "a non-empty string naming a target the machine configuration binds");
-  }
-  if (values.engine !== void 0 || values.model !== void 0) {
-    const literal2 = values.engine !== void 0 ? `engine ${JSON.stringify(values.engine)}` : `model ${JSON.stringify(values.model)}`;
-    throw new NamedTargetRejectedError(
-      `a call names a target or a literal engine and model, never both \u2014 ${JSON.stringify(values.target)} beside ${literal2}`
-    );
   }
 }
 var SESSION_TURN_OPTION_KEYS = ["schema"];
@@ -14529,11 +14523,8 @@ function assertValidFallbackChain(chain) {
       }
     }
     if (target.target !== void 0) {
-      if (typeof target.target !== "string" || target.target.length === 0) {
+      if (typeof target.target !== "string" || target.target.trim().length === 0) {
         throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
-      }
-      if (target.engine !== void 0 || target.model !== void 0) {
-        throw new FallbackTargetRejectedError(`entry ${index} names target ${JSON.stringify(target.target)} beside a literal engine or model; an entry names one or the other`);
       }
       assertChainEntryEffort(target, index);
       return;
@@ -17513,12 +17504,24 @@ function resolveNamedTargets(targets, declared, declaredModel) {
     resolutions.push({ name, entry, resolved: { engine: binding.engine, model: model ?? null } });
     return { engine: binding.engine, model };
   };
+  if (declared.target !== void 0 && (declared.engine !== void 0 || declared.model !== void 0)) {
+    const literal2 = declared.engine !== void 0 ? `engine ${JSON.stringify(declared.engine)}` : `model ${JSON.stringify(declared.model)}`;
+    throw new NamedTargetRejectedError(
+      `${JSON.stringify(declared.target)} is named beside ${literal2}: a call names a target or a literal engine and model, never both \u2014 ${bindingClause(targets)}`
+    );
+  }
   const own = declared.target === void 0 ? { engine: declared.engine, model: declared.model } : resolve(declared.target, -1);
   const entries = /* @__PURE__ */ new Map();
   (declared.fallback ?? []).forEach((entry, index) => {
     if (entry.target === void 0) {
       entries.set(index, { engine: entry.engine, model: entry.model });
       return;
+    }
+    const written = entry;
+    if (written.engine !== void 0 || written.model !== void 0) {
+      throw new FallbackTargetRejectedError(
+        `entry ${index} names target ${JSON.stringify(written.target)} beside a literal engine or model; an entry names one or the other \u2014 ${bindingClause(targets)}`
+      );
     }
     const settled = resolve(entry.target, index);
     if (settled.engine === "opencode") {
@@ -17529,6 +17532,9 @@ function resolveNamedTargets(targets, declared, declaredModel) {
     entries.set(index, settled);
   });
   return { own, entries, resolutions };
+}
+function bindingClause(targets) {
+  return targets === null ? "and this run has no targets map to bind the name" : `the binding in ${targets.source} supplies the engine and model`;
 }
 function bindingFor(targets, name) {
   const binding = targets !== null && Object.hasOwn(targets.bindings, name) ? targets.bindings[name] : void 0;
@@ -22307,8 +22313,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
     if (view.engine !== "opencode") {
       assertCanonicalEffortSupported(view.effort);
     }
-    const entryTargets = overrides.fallback === void 0 ? resolved.entries : resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model).entries;
-    return { options: view, entryTargets, resolutions: resolved.resolutions };
+    if (overrides.fallback === void 0) {
+      return { options: view, entryTargets: resolved.entries, resolutions: resolved.resolutions };
+    }
+    const inherited = resolveNamedTargets(this.#namedTargets, { fallback: view.fallback }, (engine) => defaults[engine]?.model);
+    return { options: view, entryTargets: inherited.entries, resolutions: [...resolved.resolutions, ...inherited.resolutions] };
   }
   /**
    * Every dispatch resolves through here before its engine is looked up, its
@@ -22670,7 +22679,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
       if (state.turnCount === 0) {
         this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
       }
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, state.namedTargets);
+      const namedTargets = state.turnCount === 0 ? state.namedTargets : state.namedTargets.filter((resolution) => resolution.entry === -1);
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves, namedTargets);
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };

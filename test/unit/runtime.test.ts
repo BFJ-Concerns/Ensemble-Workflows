@@ -4574,7 +4574,14 @@ test("an unbound name, a target beside a literal engine, a bad effort on a named
     );
     await assert.rejects(
       runtime.agent("x", { target: "doer", engine: "codex" } as unknown as Partial<AgentOptions>),
-      (error: unknown) => error instanceof NamedTargetRejectedError && /never both — "doer" beside engine "codex"/.test(error.message)
+      (error: unknown) =>
+        error instanceof NamedTargetRejectedError &&
+        error.message ===
+          'Invalid named target: "doer" is named beside engine "codex": a call names a target or a literal engine and model, never both — the binding in /fake/config.json supplies the engine and model'
+    );
+    await assert.rejects(
+      runtime.agent("x", { engine: "codex", model: "gpt-6-luna", fallback: [{ target: "doer", engine: "claude" }] } as unknown as Partial<AgentOptions>),
+      (error: unknown) => error instanceof FallbackTargetRejectedError && /entry 0 names target "doer" beside a literal engine or model; .* the binding in \/fake\/config\.json/.test(error.message)
     );
     await assert.rejects(runtime.agent("x", { target: "" }), { name: "InvalidAgentOptionValueError" });
     // The effort is judged once the name resolves, against the resolved engine's domain.
@@ -4589,5 +4596,55 @@ test("an unbound name, a target beside a literal engine, a bad effort on a named
   } finally {
     await runtime.close();
     await unbound.close();
+  }
+});
+
+test("a chain the resolved engine's defaults supplied records its named entries, and a session's later turns record the session's own target only", async () => {
+  const codex = new SessionEngine("codex", [codexRefusal("usageLimitExceeded"), answers("turn 1"), answers("turn 2")]);
+  const claude = new SessionEngine("claude", [answers("reviewer answered")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    namedTargets: { bindings: { doer: { engine: "codex" }, reviewer: { engine: "claude", model: "opus" } }, source: "/fake/config.json" }
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    // The call names its target only; the chain comes from the resolved
+    // engine's block. The record names both resolutions, the chain's entry
+    // after the call's own, exactly as a chain declared on the call would.
+    const defaults = { codex: { model: "gpt-6-luna", fallback: [{ target: "reviewer" }] } };
+    assert.equal(await runtime.runWithWorkflowDefaults(defaults, () => runtime.agent("go", { target: "doer" })), "reviewer answered");
+    const inherited = records.at(-1)!;
+    assert.deepEqual(inherited.fallback, [{ target: "reviewer" }], "the block's chain, as declared");
+    assert.deepEqual(inherited.namedTargets, [
+      { name: "doer", entry: -1, resolved: { engine: "codex", model: "gpt-6-luna" } },
+      { name: "reviewer", entry: 0, resolved: { engine: "claude", model: "opus" } }
+    ]);
+    assert.deepEqual(inherited.attempts.map((attempt) => [attempt.namedTarget, attempt.target]), [
+      ["doer", { engine: "codex", model: "gpt-6-luna" }],
+      ["reviewer", { engine: "claude", model: "opus" }]
+    ]);
+
+    // A session's chain is the creating turn's: that turn's record names
+    // the chain entry; a later turn, which declares no chain, names the
+    // session's own target and nothing else.
+    const session = runtime.createWorkerSession({ target: "doer", fallback: [{ target: "reviewer" }] });
+    assert.equal(await session.send("one"), "turn 1");
+    assert.equal(await session.send("two"), "turn 2");
+    await session.close();
+    const turns = [...new Map(records.filter((record) => record.session !== null).map((record) => [record.id, record])).values()];
+    assert.equal(turns.length, 2);
+    assert.deepEqual(turns[0]?.fallback, [{ target: "reviewer" }]);
+    assert.deepEqual(turns[0]?.namedTargets, [
+      { name: "doer", entry: -1, resolved: { engine: "codex", model: null } },
+      { name: "reviewer", entry: 0, resolved: { engine: "claude", model: "opus" } }
+    ]);
+    assert.equal(turns[1]?.fallback, null);
+    assert.deepEqual(turns[1]?.namedTargets, [{ name: "doer", entry: -1, resolved: { engine: "codex", model: null } }]);
+    assert.deepEqual(turns.map((turnRecord) => turnRecord.attempts.map((attempt) => attempt.namedTarget)), [["doer"], ["doer"]]);
+  } finally {
+    await runtime.close();
   }
 });

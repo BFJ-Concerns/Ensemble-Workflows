@@ -3,7 +3,6 @@ import {
   InvalidAgentOptionsError,
   AgentOptionRejectedError,
   InvalidAgentOptionValueError,
-  NamedTargetRejectedError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
   UnreadableAgentOptionError,
@@ -224,14 +223,10 @@ export function assertValidDispatchTarget(values: Record<string, unknown>): void
   if (values.target === undefined) {
     return;
   }
-  if (typeof values.target !== "string" || values.target.length === 0) {
+  // The one-or-the-other rule is the resolver's (`resolveNamedTargets`),
+  // which knows the file whose binding the refusal names.
+  if (typeof values.target !== "string" || values.target.trim().length === 0) {
     throw new InvalidAgentOptionValueError("target", values.target, "a non-empty string naming a target the machine configuration binds");
-  }
-  if (values.engine !== undefined || values.model !== undefined) {
-    const literal = values.engine !== undefined ? `engine ${JSON.stringify(values.engine)}` : `model ${JSON.stringify(values.model)}`;
-    throw new NamedTargetRejectedError(
-      `a call names a target or a literal engine and model, never both — ${JSON.stringify(values.target)} beside ${literal}`
-    );
   }
 }
 
@@ -282,11 +277,8 @@ export function assertValidFallbackChain(chain: unknown): asserts chain is Fallb
       }
     }
     if (target.target !== undefined) {
-      if (typeof target.target !== "string" || target.target.length === 0) {
+      if (typeof target.target !== "string" || target.target.trim().length === 0) {
         throw new FallbackTargetRejectedError(`entry ${index} target must be a non-empty string naming a target the machine configuration binds`);
-      }
-      if (target.engine !== undefined || target.model !== undefined) {
-        throw new FallbackTargetRejectedError(`entry ${index} names target ${JSON.stringify(target.target)} beside a literal engine or model; an entry names one or the other`);
       }
       assertChainEntryEffort(target, index);
       return;

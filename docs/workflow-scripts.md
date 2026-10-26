@@ -188,7 +188,9 @@ const held = session({ target: "reviewer", label: "critic" });
 ```
 
 - **`target` replaces `engine` and `model`.** A call names one or the other:
-  a `target` beside an `engine` or `model` throws before any worker spawns.
+  a `target` beside an `engine` or `model` throws before any worker spawns,
+  naming the name, the literal and the file whose binding would have
+  supplied them.
   The names are a namespace of their own, so a name may spell an engine's
   name without shadowing it.
 - **Resolution happens before the worker spawns.** The bindings are read when
@@ -206,8 +208,11 @@ const held = session({ target: "reviewer", label: "critic" });
   `engine:model` key matches what the name resolved to.
 - **The record says so**: the manifest's `named_targets` carries the
   bindings in force, each agent record's `named_targets` names each target
-  the call declared beside the engine and model it resolved to, and every
-  attempt's `named_target` names the target it was dispatched through (see
+  the call declared — or its engine's `defaults` chain supplied — beside the
+  engine and model it resolved to (a session's later turns name the session's
+  own target only: the chain was the creating turn's, and their `fallback` is
+  `null`), and every attempt's `named_target` names the target it was
+  dispatched through (see
   [Run records](run-records.md#agent-records)). `fallback` stays the chain as
   declared, names included.
 

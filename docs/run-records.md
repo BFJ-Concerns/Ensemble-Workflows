@@ -460,11 +460,13 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   `model` are the dispatched target; `fallback` stays the chain as declared,
   each attempt's `target` says where the entry went, and the script's own
   request is under `remap`.
-- `named_targets`: the named targets the call declared, each
-  `{ name, entry, resolved: { engine, model } }` (`entry` as for `remap`;
-  `resolved` is the engine and model the name bound to, before any remap) —
-  `null` when the call named none. The top-level `engine` and `model` are the
-  resolved call target; `fallback` keeps the names it declared.
+- `named_targets`: the named targets the call declared, or its engine's
+  `defaults` chain supplied, each `{ name, entry, resolved: { engine, model } }`
+  (`entry` as for `remap`; `resolved` is the engine and model the name bound
+  to, before any remap) — `null` when the call named none. A session's later
+  turns carry the session's own target (`entry` `-1`) only, their `fallback`
+  being `null`. The top-level `engine` and `model` are the resolved call
+  target; `fallback` keeps the names it declared.
 - `prompt`: the agent's prompt text.
 - `options`: `{ timeout_ms, max_attempts }`.
 - `resolved_cwd`, `isolation` (`null` when unused).

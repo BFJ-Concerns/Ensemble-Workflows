@@ -5,6 +5,7 @@ import { FallbackTargetRejectedError, NamedTargetRejectedError } from "../../src
 import { resolveNamedTargets } from "../../src/named-targets.js";
 
 import type { NamedTargets } from "../../src/named-targets.js";
+import type { FallbackTarget } from "../../src/types.js";
 
 const targets: NamedTargets = {
   bindings: {
@@ -85,4 +86,25 @@ test("a chain entry bound to opencode is refused as every opencode chain entry i
   );
   // The call's own target may be the opencode binding: it is a one-shot dispatch like any other.
   assert.deepEqual(resolveNamedTargets(targets, { target: "local" }, declaredModel).own, { engine: "opencode", model: "glm-5.2" });
+});
+
+test("a target beside a literal engine or model is refused naming the name, the literal and the source, on the call and on a chain entry", () => {
+  assert.throws(
+    () => resolveNamedTargets(targets, { target: "doer", engine: "codex" }, declaredModel),
+    (error: unknown) =>
+      error instanceof NamedTargetRejectedError &&
+      error.message ===
+        'Invalid named target: "doer" is named beside engine "codex": a call names a target or a literal engine and model, never both — the binding in /home/op/.config/ensemble/config.json supplies the engine and model'
+  );
+  assert.throws(() => resolveNamedTargets(targets, { target: "doer", model: "gpt-6-luna" }, declaredModel), /"doer" is named beside model "gpt-6-luna"/);
+  // The shape is judged before the name: an unbound name beside a literal is
+  // refused for the shape, and the clause still names the file.
+  assert.throws(() => resolveNamedTargets(targets, { target: "nobody", engine: "codex" }, declaredModel), /"nobody" is named beside engine "codex".*config\.json/);
+  assert.throws(() => resolveNamedTargets(null, { target: "doer", engine: "codex" }, declaredModel), /never both — and this run has no targets map to bind the name/);
+  assert.throws(
+    () => resolveNamedTargets(targets, { engine: "codex", fallback: [{ target: "reviewer", engine: "claude" }] as unknown as FallbackTarget[] }, declaredModel),
+    (error: unknown) =>
+      error instanceof FallbackTargetRejectedError &&
+      /entry 0 names target "reviewer" beside a literal engine or model; an entry names one or the other — the binding in \/home\/op\/.config\/ensemble\/config\.json supplies/.test(error.message)
+  );
 });

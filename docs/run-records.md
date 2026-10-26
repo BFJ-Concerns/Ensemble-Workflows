@@ -576,12 +576,13 @@ Usage summaries — an agent record's `usage` and each `cost_rollup` bucket's
 | `unclassifiedTokens` | Spend the engine's total covers but no other class does — for example opencode steps that report only a total |
 
 Each engine's native fields are mapped under one rule. Codex reports cached
-tokens within input and reasoning within output, so both are subtracted out.
-Claude and opencode report them separately. Claude's
-`output_tokens_details.thinking_tokens` separates reasoning when present,
-including a reported zero; otherwise its `reasoningOutputTokens` is `null`
-and the whole generation is
-in `outputTokens`. On Claude, usage is read from the session transcript once
+tokens within input and reasoning within output, so both are subtracted out;
+its `cacheWriteInputTokens` separates cache creation from reads when reported.
+Claude reports cache outside input and can separate reasoning within output
+through `output_tokens_details.thinking_tokens`, including a reported zero.
+When that field is absent, `reasoningOutputTokens` is `null` and the whole
+generation stays in `outputTokens`. On Claude, usage is read from the session
+transcript once
 per API call: Claude Code writes one call's reply across several rows that
 repeat the call's usage, so rows sharing a message id are counted once, and
 every figure is summed across the turn's calls. A held session's later turn

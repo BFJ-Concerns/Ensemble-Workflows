@@ -608,8 +608,8 @@ test("reported zero reasoning and cache creation reach both archived summaries",
     threadId: "thread",
     turnId: "turn",
     tokenUsage: {
-      last: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 },
-      total: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, totalTokens: 25 }
+      last: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 25 },
+      total: { cachedInputTokens: 8, cacheWriteInputTokens: 0, inputTokens: 20, outputTokens: 5, reasoningOutputTokens: 0, totalTokens: 25 }
     }
   });
   assert.ok(codexReport);

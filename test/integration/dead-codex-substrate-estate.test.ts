@@ -32,18 +32,19 @@ if (process.argv[2] === "--version") {
   const reader = createInterface({ input: process.stdin });
   reader.once("line", (line) => {
     const request = JSON.parse(line);
-    process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + "\\n", () => {
-      reader.close();
-      process.stdin.destroy();
-      closeSync(0);
-      process.stderr.write("fake app-server closed stdin before exit\\n");
-      if (${JSON.stringify(mode)} === "approval-after-stdin-close") {
-        process.stdout.write(JSON.stringify({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "item-1" } }) + "\\n");
-      }
-      // Stay alive beyond the client's stdin-close grace. The transport
-      // must settle this live child and reap it during shutdown.
-      setInterval(() => undefined, 1_000);
-    });
+    reader.close();
+    process.stdin.destroy();
+    closeSync(0);
+    process.stderr.write("fake app-server closed stdin before exit\\n");
+    // The client cannot issue thread/start until it receives this response;
+    // close stdin first so no write can slip through an open pipe.
+    process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + "\\n");
+    if (${JSON.stringify(mode)} === "approval-after-stdin-close") {
+      process.stdout.write(JSON.stringify({ id: 999, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "item-1" } }) + "\\n");
+    }
+    // Stay alive beyond the client's stdin-close grace. The transport
+    // must settle this live child and reap it during shutdown.
+    setInterval(() => undefined, 1_000);
   });
 }
 `);

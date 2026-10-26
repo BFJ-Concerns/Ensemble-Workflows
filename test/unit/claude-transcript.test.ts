@@ -282,6 +282,20 @@ test("enteredWorktrees names the worktree an EnterWorktree call created, from th
   assert.deepEqual(enteredWorktrees(refused), []);
 });
 
+test("enteredWorktrees excludes Claude's presentation quotes from created names", () => {
+  const created = "Created worktree at “/repo with spaces/.claude/worktrees/edit-main-js” on branch “worktree-edit-main-js”. The session is now working in the worktree.";
+  const entries = parseTranscriptText(
+    [
+      assistant([toolUse("toolu_quoted", "EnterWorktree", {})], { stop: "tool_use" }),
+      JSON.stringify({ type: "api-request-blob", message: { content: [{ type: "tool_result", tool_use_id: "toolu_quoted", content: created }] } }),
+      toolResult("toolu_quoted", created),
+      assistant([textBlock("done")])
+    ].join("\n")
+  );
+
+  assert.deepEqual(enteredWorktrees(entries), [{ path: "/repo with spaces/.claude/worktrees/edit-main-js", branch: "worktree-edit-main-js" }]);
+});
+
 // A tool result row as Claude Code persists it: a user entry whose content
 // is a tool_result block naming the call it answers.
 function toolResult(toolUseId: string, text: string, isError = false): string {

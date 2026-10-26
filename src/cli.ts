@@ -227,7 +227,7 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       return 0;
     }
     for (const record of enumeration.retired) {
-      stdout.write(`retired ${record.hold_id} — raiser provably gone; nothing could await its answer\n`);
+      stdout.write(`retired ${record.hold_id} at ${record.retired_at} — ${record.retirement_reason}\n`);
     }
     if (enumeration.holds.length === 0) {
       const view = scope !== null ? `scope ${scope}` : "any scope";
@@ -257,16 +257,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       // verdict so the decider copies a valid answer rather than the
       // placeholder.
       const [firstVerdict, ...otherVerdicts] = record.verdicts;
-      stdout.write(
-        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}` +
-          `${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`
-      );
+      stdout.write(`  answer:   ${program} holds answer ${record.hold_id} --verdict ${JSON.stringify(firstVerdict)}` +
+        `${otherVerdicts.length > 0 ? ` (or ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}\n`);
       if (record.answer_rejection !== undefined) {
         const attempted =
           record.answer_rejection.attempted_verdict === null
             ? record.answer_rejection.attempted_verdict_state
             : JSON.stringify(record.answer_rejection.attempted_verdict);
-        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})\n`);
+        const submitter = record.answer_rejection.answered_by;
+        const note = record.answer_rejection.note;
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})` +
+          `${submitter ? ` by ${boundedEvidence(submitter)}` : ""}` +
+          `${note ? ` — ${boundedEvidence(note)}` : ""}\n`);
       }
       for (const line of record.content.split("\n")) {
         stdout.write(`  | ${line}\n`);
@@ -428,6 +430,20 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     }
 
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
+        const scope = typeof event.params.scope === "string" ? boundedEvidence(event.params.scope) : "(shared)";
+        const verdicts = Array.isArray(event.params.verdicts) ? event.params.verdicts.filter((v): v is string => typeof v === "string") : [];
+        const forms = verdicts.map((verdict) => `${program} holds answer ${id} --verdict ${JSON.stringify(boundedEvidence(verdict))}`);
+        stderr.write(`[hold] ${id} raised in scope ${scope}; ${forms.join(" or ")}\n`);
+        return;
+      }
+      if (event.method === "hold/answered" || event.method === "hold/timedOut") {
+        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
+        const outcome = event.method === "hold/timedOut" ? "timed out" : `answered with ${JSON.stringify(event.params.verdict)}`;
+        stderr.write(`[hold] ${id} ${outcome}\n`);
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
@@ -1791,11 +1807,11 @@ function holdsAnswerUsage(program: string): string {
     "from the hold), then reports what the raiser did with it, as one JSON object\n" +
     "on stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\n" +
     "otherwise host:pid.\n" +
-    "Exit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\n" +
+    "Exit codes: 0 consumed (the raiser accepted this answer); 3 bounced (rejected;\n" +
     "the hold keeps waiting and the reason is reported); 4 not yet consumed (the\n" +
     "raiser has not read it within its poll cadence; the answer file stays in\n" +
-    "place); 5 no open hold with that id; 6 retired (the hold settled without\n" +
-    "judging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n"
+    "place); 5 no open hold with that id; 7 outcome not attributable to this\n" +
+    "answer; 2 usage; 1 I/O failure.\n"
   );
 }
 
@@ -1863,9 +1879,9 @@ async function answerHoldCommand(
     case "consumed":
       stderr.write(`hold ${holdId}: answer consumed — the run resumed with verdict ${JSON.stringify(verdict)}\n`);
       return 0;
-    case "retired":
-      stderr.write(`hold ${holdId}: hold settled without judging this answer — the stale decision file was removed\n`);
-      return 6;
+    case "not-attributable":
+      stderr.write(`hold ${holdId}: this answer's outcome is not attributable\n`);
+      return 7;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) — the hold is still waiting for a valid answer\n`

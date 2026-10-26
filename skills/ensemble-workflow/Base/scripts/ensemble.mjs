@@ -13838,15 +13838,15 @@ import path14 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile9, stat as stat4 } from "node:fs/promises";
+import { readFile as readFile9, stat as stat3 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
 import path13 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import path4 from "node:path";
+import path6 from "node:path";
 
 // src/concurrency-defaults.ts
 function defaultCodexConcurrency() {
@@ -13861,9 +13861,9 @@ function defaultOpenCodeConcurrency() {
 
 // src/holds.ts
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile as readFile3, readdir as readdir2, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir2, readFile as readFile4, readdir as readdir3, rename as rename3, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir, hostname as hostname2 } from "node:os";
-import path3 from "node:path";
+import path5 from "node:path";
 
 // src/errors.ts
 var EnsembleError = class extends Error {
@@ -14783,6 +14783,1046 @@ function isNodeError(error) {
   return typeof error === "object" && error !== null && "code" in error;
 }
 
+// src/run-record.ts
+import { createHash as createHash2 } from "node:crypto";
+import { mkdir, readdir as readdir2, readFile as readFile3, realpath, rename as rename2, rm, stat, writeFile as writeFile2 } from "node:fs/promises";
+import os from "node:os";
+import path4 from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/canonical-document.ts
+import { createHash } from "node:crypto";
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+var DIGEST_RECIPE = "sha256 hex of the document with this digest field set to null, serialised as ECMA-262 JSON.stringify with two-space indent and no trailing newline, object keys sorted by UTF-16 code unit at every level (integer-index keys first in ascending numeric order, as ECMA-262 property enumeration places them)";
+function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function sortJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b));
+    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
+  }
+  return value;
+}
+function sha256(text) {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+// src/node-version.ts
+import { readFileSync } from "node:fs";
+import path3 from "node:path";
+import { fileURLToPath } from "node:url";
+function requiredNodeRange(fromUrl = import.meta.url) {
+  if (">=24.14.0".trim().length > 0) {
+    return ">=24.14.0".trim();
+  }
+  const metadata = readHarnessPackageMetadata(fromUrl);
+  const range = metadata.engines?.node;
+  if (typeof range !== "string" || range.trim().length === 0) {
+    throw new Error("package.json is missing engines.node");
+  }
+  return range.trim();
+}
+function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
+  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
+}
+function satisfiesNodeRange(version2, range) {
+  const minimum = parseMinimumRange(range);
+  const actual = parseVersion(version2);
+  if (minimum === null || actual === null) {
+    throw new Error(`Unsupported Node version range: ${range}`);
+  }
+  if (actual.major !== minimum.major) {
+    return actual.major > minimum.major;
+  }
+  if (actual.minor !== minimum.minor) {
+    return actual.minor > minimum.minor;
+  }
+  return actual.patch >= minimum.patch;
+}
+function parseMinimumRange(range) {
+  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2] ?? 0),
+    patch: Number(match[3] ?? 0)
+  };
+}
+function parseVersion(version2) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
+}
+function readHarnessPackageMetadata(fromUrl) {
+  let current2 = path3.dirname(fileURLToPath(fromUrl));
+  while (true) {
+    const candidate = path3.join(current2, "package.json");
+    try {
+      const metadata = JSON.parse(readFileSync(candidate, "utf8"));
+      if (metadata.name === "ensemble-workflows") {
+        return metadata;
+      }
+    } catch {
+    }
+    const parent = path3.dirname(current2);
+    if (parent === current2) {
+      throw new Error("Could not locate ensemble-workflows package.json");
+    }
+    current2 = parent;
+  }
+}
+
+// src/harness-version.ts
+function harnessVersion(fromUrl = import.meta.url) {
+  if ("0.0.1".trim().length > 0) {
+    return "0.0.1".trim();
+  }
+  const version2 = readHarnessPackageMetadata(fromUrl).version;
+  return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
+}
+
+// src/usage-summary.ts
+function subtractUsage(total, previous) {
+  const before = previous ?? {
+    cachedInputTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0
+  };
+  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
+  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 ? void 0 : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
+  return {
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
+    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
+    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
+    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
+  };
+}
+var ENGINE_INCLUSION_RULES = {
+  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
+  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
+  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
+};
+function summariseUsage(engine, events) {
+  if (events.length === 0) {
+    return null;
+  }
+  const rules = ENGINE_INCLUSION_RULES[engine];
+  let fresh = 0;
+  let cached = 0;
+  let cacheCreation = 0;
+  let cacheCreationSeparable = true;
+  let output = 0;
+  let reasoning = 0;
+  let reasoningSeparable = true;
+  let unclassified = 0;
+  for (const event of events) {
+    const delta = event.last;
+    cached += delta.cachedInputTokens;
+    if (delta.cacheCreationInputTokens === void 0) {
+      cacheCreationSeparable = false;
+    } else {
+      cacheCreation += delta.cacheCreationInputTokens;
+    }
+    const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
+    const deltaReasoning = delta.reasoningOutputTokens;
+    if (deltaReasoning === void 0) {
+      reasoningSeparable = false;
+    }
+    const reportedReasoning = deltaReasoning ?? 0;
+    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== void 0 ? Math.max(0, delta.outputTokens - reportedReasoning) : delta.outputTokens;
+    fresh += deltaFresh;
+    reasoning += reportedReasoning;
+    output += deltaOutput;
+    unclassified += Math.max(
+      0,
+      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
+    );
+  }
+  const separableReasoning = reasoningSeparable ? reasoning : null;
+  return {
+    freshInputTokens: fresh,
+    cachedInputTokens: cached,
+    ...cacheCreationSeparable ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation } : {},
+    outputTokens: separableReasoning === null ? output + reasoning : output,
+    reasoningOutputTokens: separableReasoning,
+    unclassifiedTokens: unclassified,
+    // The total is the class sum by construction, so the vocabulary's
+    // disjoint-and-summing invariant cannot drift from the fields beside it.
+    totalTokens: fresh + cached + output + reasoning + unclassified
+  };
+}
+function addUsageSummary(target, delta) {
+  const splitSurvives = target.cacheReadTokens !== void 0 && target.cacheCreationTokens !== void 0 && delta.cacheReadTokens !== void 0 && delta.cacheCreationTokens !== void 0;
+  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
+  return {
+    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
+    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
+    ...splitSurvives ? {
+      cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
+      cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
+    } : {},
+    outputTokens: reasoningSurvives || target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null ? target.outputTokens + delta.outputTokens : target.outputTokens + (target.reasoningOutputTokens ?? 0) + delta.outputTokens + (delta.reasoningOutputTokens ?? 0),
+    reasoningOutputTokens: reasoningSurvives ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0) : null,
+    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
+    totalTokens: target.totalTokens + delta.totalTokens
+  };
+}
+
+// src/run-record.ts
+var execFileAsync = promisify(execFile);
+var SCHEMA_VERSION = 4;
+var MANIFEST_PATH = "manifest.json";
+async function recordRetiredHold(archiveDir, retired) {
+  const manifestPath = path4.join(archiveDir, MANIFEST_PATH);
+  const manifest = JSON.parse(await readFile3(manifestPath, "utf8"));
+  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id || !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
+    throw new Error("retired hold does not belong to the named run archive");
+  }
+  if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
+    return;
+  }
+  manifest.hold_events.push({
+    hold_id: retired.hold_id,
+    event: "retired",
+    verdict: null,
+    reason: retired.retirement_reason,
+    attempted_verdict: null,
+    attempted_verdict_state: null,
+    answered_by: null,
+    note: null,
+    at: retired.retired_at
+  });
+  await writeAttestedManifest(manifestPath, manifest);
+}
+var RunRecordWriter = class _RunRecordWriter {
+  archiveDir;
+  manifest;
+  #cwd;
+  #files = /* @__PURE__ */ new Map();
+  #agents = /* @__PURE__ */ new Map();
+  #tmpSeq = 0;
+  #writeChain = Promise.resolve();
+  #sealed = false;
+  constructor(archiveDir, cwd, manifest) {
+    this.archiveDir = archiveDir;
+    this.#cwd = cwd;
+    this.manifest = manifest;
+  }
+  /**
+   * Concurrent agents settle independently, but the manifest is one shared
+   * read-modify-write document: interleaved writes would race each other (and
+   * previously collided on same-millisecond temp names). Every mutating public
+   * operation runs through this chain, so each snapshot on disk reflects all
+   * operations before it. One failed write must not poison later ones.
+   */
+  #serialise(task) {
+    const next = this.#writeChain.then(task, task);
+    this.#writeChain = next.catch(() => void 0);
+    return next;
+  }
+  static async start(options) {
+    try {
+      return await _RunRecordWriter.#open(options);
+    } catch (error) {
+      throw new RunRecordStartError(options.storeDir, error);
+    }
+  }
+  static async #open(options) {
+    const namespace = await deriveNamespace(options.cwd);
+    const runId = `${namespace.id}:${options.runUuid}`;
+    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
+    await mkdir(archiveDir, { recursive: true });
+    const harnessRoot = await findHarnessRoot();
+    const packageInfo = await readPackageInfo(harnessRoot ?? path4.dirname(fileURLToPath2(import.meta.url)));
+    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
+    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
+    const canonicalArgs = canonicalJson(options.args);
+    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_manifest",
+      run_id: runId,
+      run_uuid: options.runUuid,
+      caller_identity: options.callerIdentity ?? null,
+      namespace,
+      status: "in-progress",
+      owner: await captureProcessOwner(options.procDir ?? "/proc", os.hostname()),
+      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ended_at: null,
+      workflow: {
+        path: options.workflowPath,
+        archive_path: "workflow.js",
+        sha256: sha256(options.workflowSource)
+      },
+      args: {
+        archive_path: "args.json",
+        canonical_archive_path: "args.canonical.json",
+        sha256: sha256(canonicalArgs)
+      },
+      meta: {
+        task: null,
+        raw: null
+      },
+      cli_flags: options.cliFlags,
+      concurrency: {
+        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
+        engines: options.concurrency?.engines ?? {}
+      },
+      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
+      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      git: {
+        start: gitStart,
+        end: null
+      },
+      environment: {
+        os: {
+          platform: os.platform(),
+          release: os.release(),
+          arch: os.arch()
+        },
+        node: process.version,
+        tools: await toolVersions()
+      },
+      harness: {
+        package_name: packageInfo.name,
+        package_version: packageInfo.version,
+        commit: harnessCommit,
+        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
+      },
+      result: {
+        archive_path: null,
+        exit_code: null
+      },
+      error: null,
+      workflow_invocations: [
+        {
+          ordinal: 0,
+          parent: null,
+          path: options.workflowPath,
+          source: {
+            archive_path: "workflow.js",
+            sha256: sha256(options.workflowSource)
+          },
+          args: {
+            archive_path: "args.json",
+            canonical_archive_path: "args.canonical.json",
+            sha256: sha256(canonicalArgs)
+          }
+        }
+      ],
+      hold_events: [],
+      tallies: {},
+      tallies_unavailable: "none-recorded",
+      cost_rollup: {},
+      files: [],
+      integrity: {
+        algorithm: "sha256",
+        recipe: DIGEST_RECIPE,
+        manifest_sha256: null,
+        files_lost: []
+      }
+    });
+    await writer.#writeText("workflow.js", options.workflowSource);
+    await writer.#writeJson("args.json", {
+      schema_version: SCHEMA_VERSION,
+      kind: "run_args",
+      value: options.args
+    });
+    await writer.#writeText("args.canonical.json", canonicalArgs);
+    if (gitStart.diffPath !== null) {
+      await writer.#trackFile(gitStart.diffPath);
+    }
+    await writer.#writeManifest();
+    await reapAbandonedRuns({
+      namespaceDir: path4.dirname(archiveDir),
+      skipRunUuid: options.runUuid,
+      procDir: options.procDir ?? "/proc",
+      observer: { pid: process.pid, runUuid: options.runUuid }
+    });
+    return writer;
+  }
+  async noteMeta(meta) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.meta = {
+        task: extractTask(meta),
+        raw: meta
+      };
+      await this.#writeManifest();
+    });
+  }
+  /**
+   * Record a composed child's invocation: its source and args are archived
+   * beside the root's (same hashing, same canonicalisation), the manifest
+   * gains an ordered entry carrying the parent link, and the assigned
+   * ordinal is returned so nested provenance (if a deeper level is ever
+   * permitted) can name its parent. One run identity throughout — a child
+   * never opens a second archive.
+   */
+  async recordWorkflowInvocation(invocation) {
+    const args = structuredClone(invocation.args);
+    return await this.#serialise(async () => {
+      if (this.#sealed) {
+        return -1;
+      }
+      const ordinal = this.manifest.workflow_invocations.length;
+      const directory = `workflows/${padId(ordinal)}`;
+      const sourcePath = `${directory}/workflow.js`;
+      const argsPath = `${directory}/args.json`;
+      const canonicalArgsPath = `${directory}/args.canonical.json`;
+      const canonicalArgs = canonicalJson(args);
+      await this.#writeText(sourcePath, invocation.source);
+      await this.#writeJson(argsPath, {
+        schema_version: SCHEMA_VERSION,
+        kind: "workflow_args",
+        value: args
+      });
+      await this.#writeText(canonicalArgsPath, canonicalArgs);
+      this.manifest.workflow_invocations.push({
+        ordinal,
+        parent: invocation.parentOrdinal,
+        path: invocation.scriptPath,
+        source: {
+          archive_path: sourcePath,
+          sha256: sha256(invocation.source)
+        },
+        args: {
+          archive_path: argsPath,
+          canonical_archive_path: canonicalArgsPath,
+          sha256: sha256(canonicalArgs)
+        }
+      });
+      await this.#writeManifest();
+      return ordinal;
+    });
+  }
+  /**
+   * Append one hold lifecycle event from the runtime's event stream.
+   * Same intent-before-outcome principle as the dispatch-time agent write:
+   * the raise is recorded when it happens, so a run that dies mid-hold
+   * still shows what it was waiting on. Unrecognised methods are ignored —
+   * the runtime forwards its hold events unfiltered.
+   */
+  async recordHoldEvent(event) {
+    const kind = holdEventKind(event.method);
+    if (kind === null || typeof event.params.holdId !== "string") {
+      return;
+    }
+    const entry = {
+      hold_id: event.params.holdId,
+      event: kind,
+      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
+      reason: (kind === "answer-rejected" || kind === "retired") && typeof event.params.reason === "string" ? event.params.reason : null,
+      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
+      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: (kind === "answered" || kind === "answer-rejected") && typeof event.params.note === "string" ? event.params.note : null,
+      at: new Date(event.receivedAt).toISOString()
+    };
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.hold_events.push(entry);
+      await this.#writeManifest();
+    });
+  }
+  /**
+   * Record one named count from the script body. Last write wins per
+   * name, and the write lands in the manifest at once — a count recorded
+   * before the run ends by any handleable path is in the archive whether
+   * or not `finish()` is ever reached.
+   */
+  async recordTally(name, value) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
+      this.manifest.tallies_unavailable = null;
+      await this.#writeManifest();
+    });
+  }
+  async recordAgent(record) {
+    const snapshot = structuredClone(record);
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      await this.#recordAgent(snapshot);
+    });
+  }
+  async #recordAgent(record) {
+    this.#agents.set(record.id, record);
+    const agentDir = `agents/${padId(record.id)}`;
+    const transcriptRefs = [];
+    for (const attempt of record.attempts) {
+      let index = 0;
+      for (const transcript of attempt.transcripts) {
+        if (transcript.content.length === 0) {
+          continue;
+        }
+        index += 1;
+        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
+        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
+        await this.#writeText(relativePath, transcript.content);
+        transcriptRefs.push({
+          attempt: attempt.attempt,
+          path: relativePath,
+          format: transcript.format,
+          source: transcript.source,
+          partial: transcript.partial === true,
+          thread_id: transcript.threadId ?? null,
+          session_id: transcript.sessionId ?? null
+        });
+      }
+    }
+    const agentJsonPath = `${agentDir}/agent.json`;
+    await this.#writeJson(agentJsonPath, {
+      schema_version: SCHEMA_VERSION,
+      kind: "agent_record",
+      id: record.id,
+      engine: record.engine,
+      header_identity: record.headerIdentity,
+      prompt: record.prompt,
+      options: {
+        timeout_ms: record.options.timeoutMs,
+        max_attempts: record.options.maxAttempts
+      },
+      model: record.model,
+      effort: record.effort,
+      fallback: record.fallback,
+      answered_by: record.answeredBy,
+      resolved_model: record.resolvedModel,
+      resolved_effort: record.resolvedEffort,
+      resolved_cwd: record.resolvedCwd,
+      isolation: record.isolation,
+      worktree: record.worktree === null ? null : {
+        branch: record.worktree.branch,
+        base_commit: record.worktree.baseCommit,
+        tip_commit: record.worktree.tipCommit,
+        changed: record.worktree.changed,
+        removed: record.worktree.removed
+      },
+      label: record.label,
+      phase: record.phase,
+      status: record.status,
+      termination_cause: record.terminationCause,
+      creation_order: record.creationOrder,
+      concurrency_group: record.concurrencyGroup,
+      schema: record.schema,
+      strip: record.strip,
+      session: record.session,
+      transcript_capture: record.transcriptCapture,
+      parse_route: record.parseRoute,
+      decode_failure: record.decodeFailure === null ? null : {
+        byte_length: record.decodeFailure.byteLength,
+        line_prefix: record.decodeFailure.linePrefix
+      },
+      raw_output: record.rawOutput,
+      validated_output: record.validatedOutput,
+      // Summary usage in the declared vocabulary, or the reason there is
+      // none — an agent with no usage data must be legible as "unknown for
+      // this reason", never indistinguishable from zero spend.
+      usage: agentUsage(record),
+      queued_ms: record.queuedMs,
+      execution_ms: record.executionMs,
+      attempts: record.attempts.map((attempt) => ({
+        attempt: attempt.attempt,
+        status: attempt.status,
+        target: attempt.target,
+        failure: attempt.failure,
+        classification: attempt.classification,
+        chain_decision: attempt.chainDecision,
+        observed_failure: attempt.observedFailure,
+        worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
+        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
+          code: attempt.appServerDiagnostic.code,
+          message: attempt.appServerDiagnostic.message,
+          payload: attempt.appServerDiagnostic.payload
+        },
+        background_waits: attempt.backgroundWaits.map((wait) => ({
+          task_id: wait.taskId,
+          description: wait.description,
+          observed_at: wait.observedAt,
+          ended_at: wait.endedAt
+        })),
+        raw_output: attempt.rawOutput,
+        validated_output: attempt.validatedOutput,
+        resolved_model: attempt.resolvedModel,
+        resolved_effort: attempt.resolvedEffort,
+        started_at: attempt.startedAt,
+        ended_at: attempt.endedAt,
+        duration_ms: attempt.durationMs,
+        first_delta_ms: attempt.firstDeltaMs,
+        token_usage_events: attempt.tokenUsageEvents,
+        diagnostics: attempt.diagnostics ?? {}
+      })),
+      // Keep the documented v3 array shape in every outcome. Its sibling
+      // preserves why it is empty, so a consumer can distinguish an absent
+      // transcript from one lost by the archive.
+      transcripts: transcriptRefs,
+      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
+    });
+    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
+    await this.#writeManifest();
+  }
+  async finish(options) {
+    await this.#serialise(async () => {
+      if (this.#sealed) {
+        return;
+      }
+      this.manifest.status = options.status;
+      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
+      if (this.manifest.git.end.diffPath !== null) {
+        await this.#trackFile(this.manifest.git.end.diffPath);
+      }
+      this.manifest.result = {
+        archive_path: "result.json",
+        exit_code: options.exitCode
+      };
+      this.manifest.error = options.error ?? null;
+      await this.#writeJson("result.json", {
+        schema_version: SCHEMA_VERSION,
+        kind: "run_result",
+        // The run's own outcome as the launcher reported it. Where the
+        // manifest later degrades to `incomplete`, the two are answering
+        // different questions: this envelope says how the run ended, the
+        // manifest says whether the archive recording it is whole.
+        status: options.status,
+        exit_code: options.exitCode,
+        error: options.error ?? null,
+        value: options.result
+      });
+      this.manifest.integrity.files_lost = await this.#reconcileFiles();
+      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
+        this.manifest.status = "incomplete";
+      }
+      await this.#writeManifest();
+      this.#sealed = true;
+    });
+  }
+  async #writeJson(relativePath, value) {
+    await this.#writeText(relativePath, `${canonicalJson(value)}
+`);
+  }
+  async #writeText(relativePath, content) {
+    const destination = path4.join(this.archiveDir, relativePath);
+    await mkdir(path4.dirname(destination), { recursive: true });
+    const temporary = path4.join(path4.dirname(destination), `.${path4.basename(destination)}${this.#tmpSuffix()}`);
+    await writeAndRename(temporary, destination, content);
+    await this.#trackFile(relativePath);
+  }
+  async #writeManifest() {
+    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
+    const destination = path4.join(this.archiveDir, MANIFEST_PATH);
+    await writeAttestedManifest(
+      destination,
+      this.manifest,
+      true,
+      path4.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`)
+    );
+  }
+  // pid + sequence keeps names unique within the process; Date.now() alone
+  // collided when two agents settled in the same millisecond.
+  #tmpSuffix() {
+    this.#tmpSeq += 1;
+    return `.${process.pid}.${this.#tmpSeq}.tmp`;
+  }
+  /**
+   * Checks every file the manifest declares against the archive directory,
+   * returning what is no longer accountable. Presence and size only: the
+   * recorded digest is what a consumer walks, and re-hashing the whole
+   * archive at seal would repeat that walk for no extra evidence.
+   */
+  async #reconcileFiles() {
+    const lost = [];
+    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
+      const metadata = await stat(path4.join(this.archiveDir, entry.path)).catch(() => null);
+      if (metadata === null) {
+        lost.push({ path: entry.path, reason: "missing" });
+      } else if (metadata.size !== entry.size) {
+        lost.push({ path: entry.path, reason: "size-mismatch" });
+      }
+    }
+    return lost;
+  }
+  /**
+   * The sealed manifest's self-digest, for a consumer of this writer that
+   * publishes an attestation elsewhere (the completion sentinel). Null
+   * until the archive seals: a mid-run digest is real but perishable —
+   * `finish()` rewrites the manifest — so publishing it outside the file
+   * it covers would attest bytes the seal then replaces.
+   */
+  sealedManifestDigest() {
+    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
+  }
+  async #trackFile(relativePath) {
+    const absolute = path4.join(this.archiveDir, relativePath);
+    const [metadata, contentHash] = await Promise.all([stat(absolute), hashFile(absolute)]);
+    this.#files.set(relativePath, {
+      path: relativePath,
+      size: metadata.size,
+      sha256: contentHash
+    });
+  }
+};
+function transcriptAbsenceReason(record) {
+  if (record.status === "in-progress") {
+    return "record-unsettled";
+  }
+  if (record.attempts.length === 0) {
+    return "no-attempt-ran";
+  }
+  if (record.attempts.every(
+    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
+  )) {
+    return "substrate-never-started";
+  }
+  if (record.status === "interrupted") {
+    return "worker-interrupted";
+  }
+  if (record.status === "timed-out") {
+    return "worker-timed-out";
+  }
+  if (record.transcriptCapture === "lost") {
+    return "session-client-capture-gap";
+  }
+  return "engine-produced-no-transcript";
+}
+function agentUsage(record) {
+  let summary = null;
+  for (const attempt of record.attempts) {
+    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
+    if (attemptSummary !== null) {
+      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
+    }
+  }
+  if (summary !== null) {
+    return { summary };
+  }
+  if (record.status === "in-progress") {
+    return { unavailable: "record-unsettled" };
+  }
+  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
+}
+function buildCostRollup(records) {
+  const rollup = {};
+  const accumulators = /* @__PURE__ */ new Map();
+  const noteAbsentUsage = (engine, model) => {
+    rollup[engine] ??= {};
+    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
+  };
+  for (const record of records) {
+    if (record.attempts.length === 0) {
+      noteAbsentUsage(record.engine, "unresolved");
+    }
+    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
+    for (const attempt of record.attempts) {
+      const engine = attempt.target.engine;
+      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
+      const borrowed = engine === lastReporter ? record.resolvedModel : null;
+      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
+      if (summary === null) {
+        noteAbsentUsage(engine, model);
+        continue;
+      }
+      rollup[engine] ??= {};
+      const existing = rollup[engine][model];
+      const key = `${engine}\0${model}`;
+      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
+      accumulators.set(key, accumulator);
+      for (const event of attempt.tokenUsageEvents) {
+        addProviderCost(accumulator, event);
+      }
+      rollup[engine][model] = {
+        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
+        cost: publishedCost(accumulator)
+      };
+    }
+  }
+  return rollup;
+}
+function publishedCost(accumulator) {
+  if (accumulator.unlike) {
+    return { unavailable: "unlike-currencies" };
+  }
+  if (!accumulator.reported) {
+    return { unavailable: "no-provider-cost-reported" };
+  }
+  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
+}
+function addProviderCost(target, event) {
+  if (target.unlike) {
+    return;
+  }
+  const cost = event.raw.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost)) {
+    return;
+  }
+  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
+  if (target.currency !== null && currency !== null && currency !== target.currency) {
+    target.unlike = true;
+    return;
+  }
+  target.amount += cost;
+  target.reported = true;
+  if (currency !== null && target.currency === null) {
+    target.currency = currency;
+  }
+}
+async function resolveRunDirectory(storeDir, cwd, runUuid) {
+  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
+}
+async function reapAbandonedRuns(options) {
+  const procDir = options.procDir ?? "/proc";
+  const host = options.host ?? os.hostname();
+  const reaped = [];
+  const entries = await readdir2(options.namespaceDir, { withFileTypes: true }).catch(() => null);
+  if (entries === null) {
+    return reaped;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
+      continue;
+    }
+    try {
+      const manifestPath = path4.join(options.namespaceDir, entry.name, MANIFEST_PATH);
+      const manifest = JSON.parse(await readFile3(manifestPath, "utf8"));
+      if (manifest.status !== "in-progress") {
+        continue;
+      }
+      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
+      if (reason === null) {
+        continue;
+      }
+      const fresh = JSON.parse(await readFile3(manifestPath, "utf8"));
+      if (fresh.status !== "in-progress") {
+        continue;
+      }
+      const abandonment = {
+        observed_at: (/* @__PURE__ */ new Date()).toISOString(),
+        reason,
+        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
+      };
+      const rewritten = await resolveAbandonedAgentRecords(path4.join(options.namespaceDir, entry.name), abandonment);
+      if (Array.isArray(fresh.files)) {
+        for (const fileEntry of fresh.files) {
+          const update = rewritten.get(fileEntry.path);
+          if (update !== void 0) {
+            fileEntry.size = update.size;
+            fileEntry.sha256 = update.sha256;
+          }
+        }
+      }
+      fresh.status = "abandoned";
+      fresh.abandonment = abandonment;
+      await writeAttestedManifest(manifestPath, fresh);
+      reaped.push(entry.name);
+    } catch {
+    }
+  }
+  return reaped;
+}
+async function resolveAbandonedAgentRecords(runDir, abandonment) {
+  const rewritten = /* @__PURE__ */ new Map();
+  const agentsDir = path4.join(runDir, "agents");
+  const agentEntries = await readdir2(agentsDir, { withFileTypes: true }).catch(() => null);
+  if (agentEntries === null) {
+    return rewritten;
+  }
+  for (const agentEntry of agentEntries) {
+    if (!agentEntry.isDirectory()) {
+      continue;
+    }
+    try {
+      const agentJsonPath = path4.join(agentsDir, agentEntry.name, "agent.json");
+      const agentRecord = JSON.parse(await readFile3(agentJsonPath, "utf8"));
+      if (agentRecord.status !== "in-progress") {
+        continue;
+      }
+      agentRecord.status = "abandoned";
+      agentRecord.abandonment = abandonment;
+      const content = `${canonicalJson(agentRecord)}
+`;
+      await writeStandaloneText(agentJsonPath, content);
+      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
+        size: Buffer.byteLength(content),
+        sha256: sha256(content)
+      });
+    } catch {
+    }
+  }
+  return rewritten;
+}
+function runDirectoryFor(storeDir, namespace, runUuid) {
+  return path4.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
+}
+async function deriveNamespace(cwd) {
+  const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
+  const material = await realpath(gitRoot ?? cwd);
+  const hash = sha256(material);
+  return {
+    strategy: "git-root-realpath-sha256",
+    id: `cwd:${hash.slice(0, 24)}`,
+    material,
+    hash
+  };
+}
+async function readGitState(cwd, diffPath, archiveDir) {
+  const root = await git(["rev-parse", "--show-toplevel"], cwd);
+  const head = await git(["rev-parse", "HEAD"], cwd);
+  const porcelain = await git(["status", "--porcelain"], cwd);
+  const dirty = porcelain === null ? null : porcelain.length > 0;
+  let archivedDiffPath = null;
+  if (dirty === true) {
+    const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
+    if (diff !== null && diff.length > 0) {
+      await writeStandaloneText(path4.join(archiveDir, diffPath), diff);
+      archivedDiffPath = diffPath;
+    }
+  }
+  return { root, head, dirty, diffPath: archivedDiffPath };
+}
+async function readPackageInfo(cwd) {
+  try {
+    const text = await readFile3(path4.join(cwd, "package.json"), "utf8");
+    const parsed = JSON.parse(text);
+    return {
+      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
+      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
+    };
+  } catch {
+    return { name: "ensemble-workflows", version: harnessVersion() };
+  }
+}
+async function findHarnessRoot() {
+  let current2 = path4.dirname(fileURLToPath2(import.meta.url));
+  for (; ; ) {
+    try {
+      const text = await readFile3(path4.join(current2, "package.json"), "utf8");
+      const parsed = JSON.parse(text);
+      if (parsed.name === "ensemble-workflows") {
+        return current2;
+      }
+    } catch {
+    }
+    const parent = path4.dirname(current2);
+    if (parent === current2) {
+      return null;
+    }
+    current2 = parent;
+  }
+}
+async function toolVersions() {
+  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
+    commandVersion("git", ["--version"]),
+    commandVersion("codex", ["--version"]),
+    commandVersion("claude", ["--version"]),
+    commandVersion("opencode", ["--version"])
+  ]);
+  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
+}
+async function commandVersion(command, args) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
+    return (stdout || stderr).trim() || null;
+  } catch {
+    return null;
+  }
+}
+async function git(args, cwd) {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+function holdEventKind(method) {
+  switch (method) {
+    case "hold/raised":
+      return "raised";
+    case "hold/answered":
+      return "answered";
+    case "hold/answerRejected":
+      return "answer-rejected";
+    case "hold/timedOut":
+      return "timed-out";
+    case "hold/retired":
+      return "retired";
+    default:
+      return null;
+  }
+}
+function isAttemptedVerdictState(value) {
+  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
+}
+function extractTask(meta) {
+  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
+    return null;
+  }
+  return meta.task ?? null;
+}
+async function hashFile(filePath) {
+  const text = await readFile3(filePath);
+  return createHash2("sha256").update(text).digest("hex");
+}
+async function writeAttestedManifest(destination, manifest, initialise = false, temporary) {
+  if (manifest.integrity !== void 0 && manifest.integrity !== null && (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
+    manifest.integrity.manifest_sha256 = null;
+    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
+  }
+  await writeStandaloneText(destination, `${canonicalJson(manifest)}
+`, temporary);
+}
+async function writeStandaloneText(destination, content, temporary) {
+  await mkdir(path4.dirname(destination), { recursive: true });
+  const staging = temporary ?? path4.join(path4.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(staging, destination, content);
+}
+async function writeAndRename(temporary, destination, content) {
+  try {
+    await writeFile2(temporary, content, "utf8");
+    await rename2(temporary, destination);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+function padId(id) {
+  return String(id).padStart(6, "0");
+}
+function padAttempt(attempt) {
+  return String(attempt).padStart(3, "0");
+}
+function safeName(filename, suffix) {
+  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
+  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
+}
+
 // src/holds.ts
 var HOLD_SCOPE_ENV = "ENSEMBLE_HOLD_SCOPE";
 function resolveHoldScope(explicit, env = process.env) {
@@ -14796,9 +15836,10 @@ function holdScopeSegment(scope) {
   return scope === null ? "shared" : `scope-${encodeURIComponent(scope)}`;
 }
 var DECISION_SUFFIX = ".decision.json";
+var RETIRED_SUFFIX = ".retired.json";
 function defaultHoldsDirectory(env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path3.join(homedir(), ".local", "share");
-  return path3.join(dataHome2, "ensemble", "holds");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path5.join(homedir(), ".local", "share");
+  return path5.join(dataHome2, "ensemble", "holds");
 }
 var HoldManager = class {
   #dir;
@@ -14817,7 +15858,7 @@ var HoldManager = class {
   #abort = new AbortController();
   #sweepDone = false;
   constructor(options) {
-    this.#dir = path3.join(options.dir, holdScopeSegment(options.scope));
+    this.#dir = path5.join(options.dir, holdScopeSegment(options.scope));
     this.#runId = options.runId;
     this.#cwd = options.cwd;
     this.#scope = options.scope;
@@ -14837,8 +15878,8 @@ var HoldManager = class {
     this.#sequence += 1;
     const holdId = `${this.#runId}-${this.#sequence}`;
     const nonce = randomUUID();
-    const holdPath = path3.join(this.#dir, `${holdId}.json`);
-    const decisionPath = path3.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
+    const holdPath = path5.join(this.#dir, `${holdId}.json`);
+    const decisionPath = path5.join(this.#dir, `${holdId}${DECISION_SUFFIX}`);
     const raisedAt = this.#now();
     const deadline = options.timeoutMs === void 0 ? null : raisedAt + options.timeoutMs;
     const record = {
@@ -14862,7 +15903,7 @@ var HoldManager = class {
       },
       decision_path: decisionPath
     };
-    await mkdir(this.#dir, { recursive: true });
+    await mkdir2(this.#dir, { recursive: true });
     await this.#retireDeadSiblings();
     record.run_identity = this.#identity?.() ?? null;
     await publishHoldRecord(holdPath, record);
@@ -14879,7 +15920,7 @@ var HoldManager = class {
       return await this.#awaitDecision(record, holdPath, decisionPath, deadline);
     } finally {
       this.#onSettled?.(holdId);
-      await rm(holdPath, { force: true }).catch(() => void 0);
+      await rm2(holdPath, { force: true }).catch(() => void 0);
     }
   }
   /** Reject the waits and stop polling; the finally blocks remove the files. */
@@ -14899,10 +15940,10 @@ var HoldManager = class {
     }
     this.#sweepDone = true;
     try {
-      const { retired } = await enumerateScopeDirectory(this.#dir, { procDir: this.#procDir });
-      for (const record of retired) {
-        this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope });
-      }
+      await enumerateScopeDirectory(this.#dir, {
+        procDir: this.#procDir,
+        onRetired: (record) => this.#emit("hold/retired", { holdId: record.hold_id, scope: record.scope, reason: record.retirement_reason })
+      });
     } catch {
     }
   }
@@ -14921,6 +15962,8 @@ var HoldManager = class {
       }
       if (deadline !== null && this.#now() >= deadline) {
         this.#emit("hold/timedOut", { holdId: record.hold_id });
+        await retireHold(record, holdPath, "timed-out");
+        await rm2(decisionPath, { force: true });
         throw new HoldTimeoutError(record.hold_id, record.timeout_at ?? "");
       }
       await this.#delay();
@@ -14936,7 +15979,7 @@ var HoldManager = class {
   async #readDecision(record, holdPath, decisionPath, grace) {
     let raw;
     try {
-      raw = await readFile3(decisionPath, "utf8");
+      raw = await readFile4(decisionPath, "utf8");
     } catch {
       grace.lastUnparseable = null;
       return null;
@@ -14946,6 +15989,7 @@ var HoldManager = class {
     try {
       const parsed = JSON.parse(raw);
       grace.lastUnparseable = null;
+      const submissionId = typeof parsed.submission_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parsed.submission_id) ? parsed.submission_id : null;
       if (parsed.nonce !== record.nonce) {
         rejection = rejectedAnswer("stale-nonce", parsed.verdict, this.#now());
       } else if (typeof parsed.verdict !== "string" || !record.verdicts.includes(parsed.verdict)) {
@@ -14956,8 +16000,14 @@ var HoldManager = class {
           note: typeof parsed.note === "string" ? parsed.note : null,
           // Read from the decision file as written: a hand-authored answer
           // that names no answerer records none — never a guess.
-          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null
+          answeredBy: typeof parsed.answered_by === "string" ? parsed.answered_by : null,
+          submissionId
         };
+      }
+      if (rejection !== null) {
+        rejection.answered_by = typeof parsed.answered_by === "string" ? parsed.answered_by : null;
+        rejection.note = typeof parsed.note === "string" ? parsed.note : null;
+        rejection.submission_id = submissionId;
       }
     } catch {
       if (grace.lastUnparseable !== raw) {
@@ -14973,7 +16023,11 @@ var HoldManager = class {
       };
     }
     if (decision !== null || rejection !== null) {
-      await rm(decisionPath, { force: true }).catch(() => void 0);
+      const submissionId = decision?.submissionId ?? rejection?.submission_id;
+      if (submissionId) {
+        await publishDecisionReceipt(decisionPath, submissionId, decision, rejection);
+      }
+      await rm2(decisionPath, { force: true }).catch(() => void 0);
     }
     if (rejection !== null) {
       record.answer_rejection = rejection;
@@ -14982,7 +16036,10 @@ var HoldManager = class {
         holdId: record.hold_id,
         reason: rejection.reason,
         attemptedVerdict: rejection.attempted_verdict,
-        attemptedVerdictState: rejection.attempted_verdict_state
+        attemptedVerdictState: rejection.attempted_verdict_state,
+        answeredBy: rejection.answered_by ?? null,
+        note: rejection.note ?? null,
+        submissionId: rejection.submission_id ?? null
       });
       return null;
     }
@@ -15013,6 +16070,17 @@ var HoldManager = class {
 function holdListingState(record) {
   return record.answer_rejection === void 0 ? "open" : "bounced";
 }
+function decisionReceiptPath(decisionPath, submissionId) {
+  return `${decisionPath}.${submissionId}.receipt.json`;
+}
+async function publishDecisionReceipt(decisionPath, submissionId, decision, rejection) {
+  const receipt = decision !== null ? { submission_id: submissionId, outcome: "consumed" } : { submission_id: submissionId, outcome: "bounced", rejection };
+  const dest = decisionReceiptPath(decisionPath, submissionId);
+  const temp = `${dest}.${process.pid}.tmp`;
+  await writeFile3(temp, `${JSON.stringify(receipt)}
+`);
+  await rename3(temp, dest);
+}
 async function answerHold(options) {
   const enumeration = await enumerateHolds(options.dir, options.procDir !== void 0 ? { procDir: options.procDir } : {});
   const found = enumeration.holds.find((hold) => hold.record.hold_id === options.holdId);
@@ -15020,24 +16088,39 @@ async function answerHold(options) {
     return { outcome: "not-found", hold_id: options.holdId };
   }
   const { record, path: holdPath } = found;
-  const priorRejection = JSON.stringify(record.answer_rejection ?? null);
-  const answer = { nonce: record.nonce, verdict: options.verdict };
+  const submissionId = randomUUID();
+  const answer = { nonce: record.nonce, verdict: options.verdict, submission_id: submissionId };
   if (options.note !== void 0) {
     answer.note = options.note;
   }
   answer.answered_by = options.answeredBy;
-  const tmp = `${record.decision_path}.${process.pid}.tmp`;
-  await writeFile2(tmp, `${JSON.stringify(answer)}
+  const tmp = `${record.decision_path}.${submissionId}.tmp`;
+  await writeFile3(tmp, `${JSON.stringify(answer)}
 `, { encoding: "utf8" });
-  await rename2(tmp, record.decision_path);
+  await rename3(tmp, record.decision_path);
   const cadence = typeof record.poll_interval_ms === "number" && record.poll_interval_ms > 0 ? record.poll_interval_ms : 500;
   const waitMs = options.waitMs ?? cadence * 4 + 1e3;
   const checkIntervalMs = options.checkIntervalMs ?? Math.min(100, cadence);
   const started = Date.now();
+  async function readReceipt() {
+    const receiptPath = decisionReceiptPath(record.decision_path, submissionId);
+    let receipt;
+    try {
+      receipt = JSON.parse(await readFile4(receiptPath, "utf8"));
+    } catch (error) {
+      if (error instanceof Error && error.code === "ENOENT") return null;
+      throw error;
+    }
+    await rm2(receiptPath, { force: true });
+    if (receipt.submission_id !== submissionId) return null;
+    return receipt.outcome === "consumed" ? { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict } : { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: receipt.rejection };
+  }
   for (; ; ) {
+    const receipt = await readReceipt();
+    if (receipt !== null) return receipt;
     let current2;
     try {
-      current2 = JSON.parse(await readFile3(holdPath, "utf8"));
+      current2 = JSON.parse(await (options.readHoldFile?.(holdPath) ?? readFile4(holdPath, "utf8")));
     } catch (error) {
       if (error instanceof Error && error.code === "ENOENT") {
         current2 = null;
@@ -15046,22 +16129,20 @@ async function answerHold(options) {
       }
     }
     if (current2 === null) {
-      try {
-        await stat(record.decision_path);
-      } catch (error) {
-        if (error instanceof Error && error.code === "ENOENT") {
-          return { outcome: "consumed", hold_id: record.hold_id, verdict: options.verdict };
-        }
-        throw error;
-      }
-      await rm(record.decision_path, { force: true });
-      return { outcome: "retired", hold_id: record.hold_id, verdict: options.verdict };
-    }
-    if (current2.answer_rejection !== void 0 && JSON.stringify(current2.answer_rejection) !== priorRejection) {
-      return { outcome: "bounced", hold_id: record.hold_id, verdict: options.verdict, rejection: current2.answer_rejection };
+      const settled = await readReceipt();
+      if (settled !== null) return settled;
+      return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
     }
     const waited = Date.now() - started;
     if (waited >= waitMs) {
+      let pending = null;
+      try {
+        pending = JSON.parse(await readFile4(record.decision_path, "utf8"));
+      } catch {
+      }
+      if (pending?.submission_id !== submissionId) {
+        return { outcome: "not-attributable", hold_id: record.hold_id, verdict: options.verdict };
+      }
       return {
         outcome: "not-consumed",
         hold_id: record.hold_id,
@@ -15076,11 +16157,11 @@ async function answerHold(options) {
 async function enumerateHolds(dir, options = {}) {
   const procDir = options.procDir ?? "/proc";
   if (options.scope !== void 0) {
-    return enumerateScopeDirectory(path3.join(dir, holdScopeSegment(options.scope)), { procDir });
+    return enumerateScopeDirectory(path5.join(dir, holdScopeSegment(options.scope)), { procDir });
   }
   let entries;
   try {
-    entries = await readdir2(dir, { withFileTypes: true });
+    entries = await readdir3(dir, { withFileTypes: true });
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { holds: [], retired: [] };
@@ -15092,7 +16173,7 @@ async function enumerateHolds(dir, options = {}) {
     if (!entry.isDirectory()) {
       continue;
     }
-    const scoped = await enumerateScopeDirectory(path3.join(dir, entry.name), { procDir });
+    const scoped = await enumerateScopeDirectory(path5.join(dir, entry.name), { procDir });
     result.holds.push(...scoped.holds);
     result.retired.push(...scoped.retired);
   }
@@ -15101,7 +16182,7 @@ async function enumerateHolds(dir, options = {}) {
 async function enumerateScopeDirectory(scopeDir, options) {
   let entries;
   try {
-    entries = await readdir2(scopeDir);
+    entries = await readdir3(scopeDir);
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { holds: [], retired: [] };
@@ -15113,18 +16194,29 @@ async function enumerateScopeDirectory(scopeDir, options) {
     if (!entry.endsWith(".json") || entry.endsWith(DECISION_SUFFIX)) {
       continue;
     }
-    const holdPath = path3.join(scopeDir, entry);
+    const holdPath = path5.join(scopeDir, entry);
     try {
-      const record = JSON.parse(await readFile3(holdPath, "utf8"));
+      if (entry.endsWith(RETIRED_SUFFIX)) {
+        const retired = JSON.parse(await readFile4(holdPath, "utf8"));
+        if (retired.kind === "ensemble_hold" && retired.state === "retired") {
+          if (retired.retirement_reason === "dead-raiser" && retired.run_identity?.archive_path) {
+            await recordRetirementEvidence(retired, holdPath);
+          }
+          result.retired.push(retired);
+        }
+        continue;
+      }
+      const record = JSON.parse(await readFile4(holdPath, "utf8"));
       if (record.kind !== "ensemble_hold" || typeof record.hold_id !== "string") {
         continue;
       }
       if (await snapshotOwnerGone(record.owner, options.procDir)) {
-        await rm(holdPath, { force: true }).catch(() => void 0);
+        const retired = await retireHold(record, holdPath, "dead-raiser");
         if (typeof record.decision_path === "string") {
-          await rm(record.decision_path, { force: true }).catch(() => void 0);
+          await rm2(record.decision_path, { force: true }).catch(() => void 0);
         }
-        result.retired.push(record);
+        result.retired.push(retired);
+        options.onRetired?.(retired);
         continue;
       }
       result.holds.push({ record, path: holdPath });
@@ -15133,11 +16225,37 @@ async function enumerateScopeDirectory(scopeDir, options) {
   }
   return result;
 }
+async function retireHold(record, holdPath, reason) {
+  const retired = {
+    ...record,
+    state: "retired",
+    retired_at: (/* @__PURE__ */ new Date()).toISOString(),
+    retirement_reason: reason
+  };
+  await publishHoldRecord(holdPath.replace(/\.json$/, RETIRED_SUFFIX), retired);
+  await rm2(holdPath, { force: true });
+  if (reason === "dead-raiser" && record.run_identity?.archive_path) {
+    await recordRetirementEvidence(retired, holdPath.replace(/\.json$/, RETIRED_SUFFIX));
+  }
+  return retired;
+}
+async function recordRetirementEvidence(retired, tombstonePath) {
+  try {
+    await recordRetiredHold(retired.run_identity.archive_path, retired);
+    if (retired.archive_error === void 0) return;
+    delete retired.archive_error;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (retired.archive_error === message) return;
+    retired.archive_error = message;
+  }
+  await publishHoldRecord(tombstonePath, retired);
+}
 async function publishHoldRecord(holdPath, record) {
-  const tmp = `${holdPath}.${process.pid}.tmp`;
-  await writeFile2(tmp, `${JSON.stringify(record, null, 2)}
+  const tmp = `${holdPath}.${randomUUID()}.tmp`;
+  await writeFile3(tmp, `${JSON.stringify(record, null, 2)}
 `, { encoding: "utf8" });
-  await rename2(tmp, holdPath);
+  await rename3(tmp, holdPath);
 }
 function rejectedAnswer(reason, verdict, now) {
   return {
@@ -15248,13 +16366,13 @@ function resolveAmbientSettings(input) {
   };
 }
 function machineConfigPath(env) {
-  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path4.join(homedir2(), ".config");
-  return path4.join(configHome, "ensemble", "config.json");
+  const configHome = env.XDG_CONFIG_HOME !== void 0 && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : path6.join(homedir2(), ".config");
+  return path6.join(configHome, "ensemble", "config.json");
 }
 function readMachineConfig(configFile) {
   let source;
   try {
-    source = readFileSync(configFile, "utf8");
+    source = readFileSync2(configFile, "utf8");
   } catch (error) {
     if (isNodeError2(error, "ENOENT")) {
       return null;
@@ -15462,7 +16580,7 @@ function resolveRunRecord(config, env) {
     env[RUN_RECORD_DIR_ENV],
     RUN_RECORD_DIR_ENV,
     config?.run_record?.dir,
-    path4.join(dataHome(env), "ensemble")
+    path6.join(dataHome(env), "ensemble")
   );
   return directory;
 }
@@ -15471,7 +16589,7 @@ function resolveRunRecordStoreDir(config, env) {
     env[RUN_RECORD_DIR_ENV],
     RUN_RECORD_DIR_ENV,
     config?.run_record?.dir,
-    path4.join(dataHome(env), "ensemble")
+    path6.join(dataHome(env), "ensemble")
   );
 }
 function resolveStatus(config, env, cwd) {
@@ -15483,7 +16601,7 @@ function resolveStatus(config, env, cwd) {
     env.ENSEMBLE_STATUS_DIR,
     "ENSEMBLE_STATUS_DIR",
     config?.status?.dir,
-    path4.join(cwd, ".claude")
+    path6.join(cwd, ".claude")
   );
   if (isDirectory(directory.value)) {
     return directory;
@@ -15546,7 +16664,7 @@ function fileValueError(configFile, key, detail) {
   return new AmbientConfigError(`Invalid machine configuration key ${key} in ${configFile}: ${detail}`);
 }
 function dataHome(env) {
-  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path4.join(homedir2(), ".local", "share");
+  return env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path6.join(homedir2(), ".local", "share");
 }
 function isDirectory(candidate) {
   try {
@@ -15568,1022 +16686,6 @@ function errorMessage(error) {
 // src/completion-sentinel.ts
 import { mkdir as mkdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path7 from "node:path";
-
-// src/canonical-document.ts
-import { createHash } from "node:crypto";
-function canonicalJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
-}
-var DIGEST_RECIPE = "sha256 hex of the document with this digest field set to null, serialised as ECMA-262 JSON.stringify with two-space indent and no trailing newline, object keys sorted by UTF-16 code unit at every level (integer-index keys first in ascending numeric order, as ECMA-262 property enumeration places them)";
-function compareCodeUnits(a, b) {
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-function sortJson(value) {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b));
-    return Object.fromEntries(entries.map(([key, entryValue]) => [key, sortJson(entryValue)]));
-  }
-  return value;
-}
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-// src/run-record.ts
-import { createHash as createHash2 } from "node:crypto";
-import { mkdir as mkdir2, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
-import os from "node:os";
-import path6 from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// src/node-version.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import path5 from "node:path";
-import { fileURLToPath } from "node:url";
-function requiredNodeRange(fromUrl = import.meta.url) {
-  if (">=24.14.0".trim().length > 0) {
-    return ">=24.14.0".trim();
-  }
-  const metadata = readHarnessPackageMetadata(fromUrl);
-  const range = metadata.engines?.node;
-  if (typeof range !== "string" || range.trim().length === 0) {
-    throw new Error("package.json is missing engines.node");
-  }
-  return range.trim();
-}
-function nodeVersionError(version2 = process.versions.node, range = requiredNodeRange()) {
-  return satisfiesNodeRange(version2, range) ? null : `Ensemble requires Node ${range}; detected Node ${version2}.`;
-}
-function satisfiesNodeRange(version2, range) {
-  const minimum = parseMinimumRange(range);
-  const actual = parseVersion(version2);
-  if (minimum === null || actual === null) {
-    throw new Error(`Unsupported Node version range: ${range}`);
-  }
-  if (actual.major !== minimum.major) {
-    return actual.major > minimum.major;
-  }
-  if (actual.minor !== minimum.minor) {
-    return actual.minor > minimum.minor;
-  }
-  return actual.patch >= minimum.patch;
-}
-function parseMinimumRange(range) {
-  const match = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(range.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2] ?? 0),
-    patch: Number(match[3] ?? 0)
-  };
-}
-function parseVersion(version2) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
-  if (match === null) {
-    return null;
-  }
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3])
-  };
-}
-function readHarnessPackageMetadata(fromUrl) {
-  let current2 = path5.dirname(fileURLToPath(fromUrl));
-  while (true) {
-    const candidate = path5.join(current2, "package.json");
-    try {
-      const metadata = JSON.parse(readFileSync2(candidate, "utf8"));
-      if (metadata.name === "ensemble-workflows") {
-        return metadata;
-      }
-    } catch {
-    }
-    const parent = path5.dirname(current2);
-    if (parent === current2) {
-      throw new Error("Could not locate ensemble-workflows package.json");
-    }
-    current2 = parent;
-  }
-}
-
-// src/harness-version.ts
-function harnessVersion(fromUrl = import.meta.url) {
-  if ("0.0.1".trim().length > 0) {
-    return "0.0.1".trim();
-  }
-  const version2 = readHarnessPackageMetadata(fromUrl).version;
-  return typeof version2 === "string" && version2.trim().length > 0 ? version2.trim() : "0.0.0";
-}
-
-// src/usage-summary.ts
-function subtractUsage(total, previous) {
-  const before = previous ?? {
-    cachedInputTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-    totalTokens: 0
-  };
-  const cacheCreationInputTokens = total.cacheCreationInputTokens === void 0 ? void 0 : Math.max(0, total.cacheCreationInputTokens - (before.cacheCreationInputTokens ?? 0));
-  const reasoningOutputTokens = total.reasoningOutputTokens === void 0 ? void 0 : Math.max(0, total.reasoningOutputTokens - (before.reasoningOutputTokens ?? 0));
-  return {
-    cachedInputTokens: Math.max(0, total.cachedInputTokens - before.cachedInputTokens),
-    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
-    inputTokens: Math.max(0, total.inputTokens - before.inputTokens),
-    outputTokens: Math.max(0, total.outputTokens - before.outputTokens),
-    ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
-    totalTokens: Math.max(0, total.totalTokens - before.totalTokens)
-  };
-}
-var ENGINE_INCLUSION_RULES = {
-  codex: { cachedWithinInput: true, reasoningWithinOutput: true },
-  claude: { cachedWithinInput: false, reasoningWithinOutput: true },
-  opencode: { cachedWithinInput: false, reasoningWithinOutput: false }
-};
-function summariseUsage(engine, events) {
-  if (events.length === 0) {
-    return null;
-  }
-  const rules = ENGINE_INCLUSION_RULES[engine];
-  let fresh = 0;
-  let cached = 0;
-  let cacheCreation = 0;
-  let cacheCreationSeparable = true;
-  let output = 0;
-  let reasoning = 0;
-  let reasoningSeparable = true;
-  let unclassified = 0;
-  for (const event of events) {
-    const delta = event.last;
-    cached += delta.cachedInputTokens;
-    if (delta.cacheCreationInputTokens === void 0) {
-      cacheCreationSeparable = false;
-    } else {
-      cacheCreation += delta.cacheCreationInputTokens;
-    }
-    const deltaFresh = rules.cachedWithinInput ? Math.max(0, delta.inputTokens - delta.cachedInputTokens) : delta.inputTokens;
-    const deltaReasoning = delta.reasoningOutputTokens;
-    if (deltaReasoning === void 0) {
-      reasoningSeparable = false;
-    }
-    const reportedReasoning = deltaReasoning ?? 0;
-    const deltaOutput = rules.reasoningWithinOutput && deltaReasoning !== void 0 ? Math.max(0, delta.outputTokens - reportedReasoning) : delta.outputTokens;
-    fresh += deltaFresh;
-    reasoning += reportedReasoning;
-    output += deltaOutput;
-    unclassified += Math.max(
-      0,
-      delta.totalTokens - (deltaFresh + delta.cachedInputTokens + deltaOutput + reportedReasoning)
-    );
-  }
-  const separableReasoning = reasoningSeparable ? reasoning : null;
-  return {
-    freshInputTokens: fresh,
-    cachedInputTokens: cached,
-    ...cacheCreationSeparable ? { cacheReadTokens: Math.max(0, cached - cacheCreation), cacheCreationTokens: cacheCreation } : {},
-    outputTokens: separableReasoning === null ? output + reasoning : output,
-    reasoningOutputTokens: separableReasoning,
-    unclassifiedTokens: unclassified,
-    // The total is the class sum by construction, so the vocabulary's
-    // disjoint-and-summing invariant cannot drift from the fields beside it.
-    totalTokens: fresh + cached + output + reasoning + unclassified
-  };
-}
-function addUsageSummary(target, delta) {
-  const splitSurvives = target.cacheReadTokens !== void 0 && target.cacheCreationTokens !== void 0 && delta.cacheReadTokens !== void 0 && delta.cacheCreationTokens !== void 0;
-  const reasoningSurvives = target.reasoningOutputTokens !== null && delta.reasoningOutputTokens !== null;
-  return {
-    freshInputTokens: target.freshInputTokens + delta.freshInputTokens,
-    cachedInputTokens: target.cachedInputTokens + delta.cachedInputTokens,
-    ...splitSurvives ? {
-      cacheReadTokens: (target.cacheReadTokens ?? 0) + (delta.cacheReadTokens ?? 0),
-      cacheCreationTokens: (target.cacheCreationTokens ?? 0) + (delta.cacheCreationTokens ?? 0)
-    } : {},
-    outputTokens: reasoningSurvives || target.reasoningOutputTokens === null && delta.reasoningOutputTokens === null ? target.outputTokens + delta.outputTokens : target.outputTokens + (target.reasoningOutputTokens ?? 0) + delta.outputTokens + (delta.reasoningOutputTokens ?? 0),
-    reasoningOutputTokens: reasoningSurvives ? (target.reasoningOutputTokens ?? 0) + (delta.reasoningOutputTokens ?? 0) : null,
-    unclassifiedTokens: target.unclassifiedTokens + delta.unclassifiedTokens,
-    totalTokens: target.totalTokens + delta.totalTokens
-  };
-}
-
-// src/run-record.ts
-var execFileAsync = promisify(execFile);
-var SCHEMA_VERSION = 4;
-var MANIFEST_PATH = "manifest.json";
-var RunRecordWriter = class _RunRecordWriter {
-  archiveDir;
-  manifest;
-  #cwd;
-  #files = /* @__PURE__ */ new Map();
-  #agents = /* @__PURE__ */ new Map();
-  #tmpSeq = 0;
-  #writeChain = Promise.resolve();
-  #sealed = false;
-  constructor(archiveDir, cwd, manifest) {
-    this.archiveDir = archiveDir;
-    this.#cwd = cwd;
-    this.manifest = manifest;
-  }
-  /**
-   * Concurrent agents settle independently, but the manifest is one shared
-   * read-modify-write document: interleaved writes would race each other (and
-   * previously collided on same-millisecond temp names). Every mutating public
-   * operation runs through this chain, so each snapshot on disk reflects all
-   * operations before it. One failed write must not poison later ones.
-   */
-  #serialise(task) {
-    const next = this.#writeChain.then(task, task);
-    this.#writeChain = next.catch(() => void 0);
-    return next;
-  }
-  static async start(options) {
-    try {
-      return await _RunRecordWriter.#open(options);
-    } catch (error) {
-      throw new RunRecordStartError(options.storeDir, error);
-    }
-  }
-  static async #open(options) {
-    const namespace = await deriveNamespace(options.cwd);
-    const runId = `${namespace.id}:${options.runUuid}`;
-    const archiveDir = runDirectoryFor(options.storeDir, namespace, options.runUuid);
-    await mkdir2(archiveDir, { recursive: true });
-    const harnessRoot = await findHarnessRoot();
-    const packageInfo = await readPackageInfo(harnessRoot ?? path6.dirname(fileURLToPath2(import.meta.url)));
-    const harnessCommit = harnessRoot === null ? null : await git(["rev-parse", "HEAD"], harnessRoot);
-    const gitStart = await readGitState(options.cwd, "git/start.diff", archiveDir);
-    const canonicalArgs = canonicalJson(options.args);
-    const writer = new _RunRecordWriter(archiveDir, options.cwd, {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_manifest",
-      run_id: runId,
-      run_uuid: options.runUuid,
-      caller_identity: options.callerIdentity ?? null,
-      namespace,
-      status: "in-progress",
-      owner: await captureProcessOwner(options.procDir ?? "/proc", os.hostname()),
-      started_at: options.startedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
-      ended_at: null,
-      workflow: {
-        path: options.workflowPath,
-        archive_path: "workflow.js",
-        sha256: sha256(options.workflowSource)
-      },
-      args: {
-        archive_path: "args.json",
-        canonical_archive_path: "args.canonical.json",
-        sha256: sha256(canonicalArgs)
-      },
-      meta: {
-        task: null,
-        raw: null
-      },
-      cli_flags: options.cliFlags,
-      concurrency: {
-        agent_ceiling: options.concurrency?.agentCeiling ?? { value: null, layer: "default" },
-        engines: options.concurrency?.engines ?? {}
-      },
-      budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
-      run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
-      git: {
-        start: gitStart,
-        end: null
-      },
-      environment: {
-        os: {
-          platform: os.platform(),
-          release: os.release(),
-          arch: os.arch()
-        },
-        node: process.version,
-        tools: await toolVersions()
-      },
-      harness: {
-        package_name: packageInfo.name,
-        package_version: packageInfo.version,
-        commit: harnessCommit,
-        commit_unavailable: harnessCommit !== null ? null : harnessRoot === null ? "bundle-has-no-embedded-commit" : "git-head-unavailable"
-      },
-      result: {
-        archive_path: null,
-        exit_code: null
-      },
-      error: null,
-      workflow_invocations: [
-        {
-          ordinal: 0,
-          parent: null,
-          path: options.workflowPath,
-          source: {
-            archive_path: "workflow.js",
-            sha256: sha256(options.workflowSource)
-          },
-          args: {
-            archive_path: "args.json",
-            canonical_archive_path: "args.canonical.json",
-            sha256: sha256(canonicalArgs)
-          }
-        }
-      ],
-      hold_events: [],
-      tallies: {},
-      tallies_unavailable: "none-recorded",
-      cost_rollup: {},
-      files: [],
-      integrity: {
-        algorithm: "sha256",
-        recipe: DIGEST_RECIPE,
-        manifest_sha256: null,
-        files_lost: []
-      }
-    });
-    await writer.#writeText("workflow.js", options.workflowSource);
-    await writer.#writeJson("args.json", {
-      schema_version: SCHEMA_VERSION,
-      kind: "run_args",
-      value: options.args
-    });
-    await writer.#writeText("args.canonical.json", canonicalArgs);
-    if (gitStart.diffPath !== null) {
-      await writer.#trackFile(gitStart.diffPath);
-    }
-    await writer.#writeManifest();
-    await reapAbandonedRuns({
-      namespaceDir: path6.dirname(archiveDir),
-      skipRunUuid: options.runUuid,
-      procDir: options.procDir ?? "/proc",
-      observer: { pid: process.pid, runUuid: options.runUuid }
-    });
-    return writer;
-  }
-  async noteMeta(meta) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.meta = {
-        task: extractTask(meta),
-        raw: meta
-      };
-      await this.#writeManifest();
-    });
-  }
-  /**
-   * Record a composed child's invocation: its source and args are archived
-   * beside the root's (same hashing, same canonicalisation), the manifest
-   * gains an ordered entry carrying the parent link, and the assigned
-   * ordinal is returned so nested provenance (if a deeper level is ever
-   * permitted) can name its parent. One run identity throughout — a child
-   * never opens a second archive.
-   */
-  async recordWorkflowInvocation(invocation) {
-    const args = structuredClone(invocation.args);
-    return await this.#serialise(async () => {
-      if (this.#sealed) {
-        return -1;
-      }
-      const ordinal = this.manifest.workflow_invocations.length;
-      const directory = `workflows/${padId(ordinal)}`;
-      const sourcePath = `${directory}/workflow.js`;
-      const argsPath = `${directory}/args.json`;
-      const canonicalArgsPath = `${directory}/args.canonical.json`;
-      const canonicalArgs = canonicalJson(args);
-      await this.#writeText(sourcePath, invocation.source);
-      await this.#writeJson(argsPath, {
-        schema_version: SCHEMA_VERSION,
-        kind: "workflow_args",
-        value: args
-      });
-      await this.#writeText(canonicalArgsPath, canonicalArgs);
-      this.manifest.workflow_invocations.push({
-        ordinal,
-        parent: invocation.parentOrdinal,
-        path: invocation.scriptPath,
-        source: {
-          archive_path: sourcePath,
-          sha256: sha256(invocation.source)
-        },
-        args: {
-          archive_path: argsPath,
-          canonical_archive_path: canonicalArgsPath,
-          sha256: sha256(canonicalArgs)
-        }
-      });
-      await this.#writeManifest();
-      return ordinal;
-    });
-  }
-  /**
-   * Append one hold lifecycle event from the runtime's event stream.
-   * Same intent-before-outcome principle as the dispatch-time agent write:
-   * the raise is recorded when it happens, so a run that dies mid-hold
-   * still shows what it was waiting on. Unrecognised methods are ignored —
-   * the runtime forwards its hold events unfiltered.
-   */
-  async recordHoldEvent(event) {
-    const kind = holdEventKind(event.method);
-    if (kind === null || typeof event.params.holdId !== "string") {
-      return;
-    }
-    const entry = {
-      hold_id: event.params.holdId,
-      event: kind,
-      verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
-      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
-      attempted_verdict: kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string" ? event.params.attemptedVerdict : null,
-      attempted_verdict_state: kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState) ? event.params.attemptedVerdictState : null,
-      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
-      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
-      at: new Date(event.receivedAt).toISOString()
-    };
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.hold_events.push(entry);
-      await this.#writeManifest();
-    });
-  }
-  /**
-   * Record one named count from the script body. Last write wins per
-   * name, and the write lands in the manifest at once — a count recorded
-   * before the run ends by any handleable path is in the archive whether
-   * or not `finish()` is ever reached.
-   */
-  async recordTally(name, value) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      Object.defineProperty(this.manifest.tallies, name, { value, enumerable: true, writable: true, configurable: true });
-      this.manifest.tallies_unavailable = null;
-      await this.#writeManifest();
-    });
-  }
-  async recordAgent(record) {
-    const snapshot = structuredClone(record);
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      await this.#recordAgent(snapshot);
-    });
-  }
-  async #recordAgent(record) {
-    this.#agents.set(record.id, record);
-    const agentDir = `agents/${padId(record.id)}`;
-    const transcriptRefs = [];
-    for (const attempt of record.attempts) {
-      let index = 0;
-      for (const transcript of attempt.transcripts) {
-        if (transcript.content.length === 0) {
-          continue;
-        }
-        index += 1;
-        const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
-        const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
-        transcriptRefs.push({
-          attempt: attempt.attempt,
-          path: relativePath,
-          format: transcript.format,
-          source: transcript.source,
-          partial: transcript.partial === true,
-          thread_id: transcript.threadId ?? null,
-          session_id: transcript.sessionId ?? null
-        });
-      }
-    }
-    const agentJsonPath = `${agentDir}/agent.json`;
-    await this.#writeJson(agentJsonPath, {
-      schema_version: SCHEMA_VERSION,
-      kind: "agent_record",
-      id: record.id,
-      engine: record.engine,
-      header_identity: record.headerIdentity,
-      prompt: record.prompt,
-      options: {
-        timeout_ms: record.options.timeoutMs,
-        max_attempts: record.options.maxAttempts
-      },
-      model: record.model,
-      effort: record.effort,
-      fallback: record.fallback,
-      answered_by: record.answeredBy,
-      resolved_model: record.resolvedModel,
-      resolved_effort: record.resolvedEffort,
-      resolved_cwd: record.resolvedCwd,
-      isolation: record.isolation,
-      worktree: record.worktree === null ? null : {
-        branch: record.worktree.branch,
-        base_commit: record.worktree.baseCommit,
-        tip_commit: record.worktree.tipCommit,
-        changed: record.worktree.changed,
-        removed: record.worktree.removed
-      },
-      label: record.label,
-      phase: record.phase,
-      status: record.status,
-      termination_cause: record.terminationCause,
-      creation_order: record.creationOrder,
-      concurrency_group: record.concurrencyGroup,
-      schema: record.schema,
-      strip: record.strip,
-      session: record.session,
-      transcript_capture: record.transcriptCapture,
-      parse_route: record.parseRoute,
-      decode_failure: record.decodeFailure === null ? null : {
-        byte_length: record.decodeFailure.byteLength,
-        line_prefix: record.decodeFailure.linePrefix
-      },
-      raw_output: record.rawOutput,
-      validated_output: record.validatedOutput,
-      // Summary usage in the declared vocabulary, or the reason there is
-      // none — an agent with no usage data must be legible as "unknown for
-      // this reason", never indistinguishable from zero spend.
-      usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
-      attempts: record.attempts.map((attempt) => ({
-        attempt: attempt.attempt,
-        status: attempt.status,
-        target: attempt.target,
-        failure: attempt.failure,
-        classification: attempt.classification,
-        chain_decision: attempt.chainDecision,
-        observed_failure: attempt.observedFailure,
-        worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
-        app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
-          code: attempt.appServerDiagnostic.code,
-          message: attempt.appServerDiagnostic.message,
-          payload: attempt.appServerDiagnostic.payload
-        },
-        background_waits: attempt.backgroundWaits.map((wait) => ({
-          task_id: wait.taskId,
-          description: wait.description,
-          observed_at: wait.observedAt,
-          ended_at: wait.endedAt
-        })),
-        raw_output: attempt.rawOutput,
-        validated_output: attempt.validatedOutput,
-        resolved_model: attempt.resolvedModel,
-        resolved_effort: attempt.resolvedEffort,
-        started_at: attempt.startedAt,
-        ended_at: attempt.endedAt,
-        duration_ms: attempt.durationMs,
-        first_delta_ms: attempt.firstDeltaMs,
-        token_usage_events: attempt.tokenUsageEvents,
-        diagnostics: attempt.diagnostics ?? {}
-      })),
-      // Keep the documented v3 array shape in every outcome. Its sibling
-      // preserves why it is empty, so a consumer can distinguish an absent
-      // transcript from one lost by the archive.
-      transcripts: transcriptRefs,
-      transcripts_unavailable: transcriptRefs.length > 0 ? null : transcriptAbsenceReason(record)
-    });
-    this.manifest.cost_rollup = buildCostRollup([...this.#agents.values()]);
-    await this.#writeManifest();
-  }
-  async finish(options) {
-    await this.#serialise(async () => {
-      if (this.#sealed) {
-        return;
-      }
-      this.manifest.status = options.status;
-      this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
-      this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
-      if (this.manifest.git.end.diffPath !== null) {
-        await this.#trackFile(this.manifest.git.end.diffPath);
-      }
-      this.manifest.result = {
-        archive_path: "result.json",
-        exit_code: options.exitCode
-      };
-      this.manifest.error = options.error ?? null;
-      await this.#writeJson("result.json", {
-        schema_version: SCHEMA_VERSION,
-        kind: "run_result",
-        // The run's own outcome as the launcher reported it. Where the
-        // manifest later degrades to `incomplete`, the two are answering
-        // different questions: this envelope says how the run ended, the
-        // manifest says whether the archive recording it is whole.
-        status: options.status,
-        exit_code: options.exitCode,
-        error: options.error ?? null,
-        value: options.result
-      });
-      this.manifest.integrity.files_lost = await this.#reconcileFiles();
-      if (this.manifest.integrity.files_lost.length > 0 && this.manifest.status === "complete") {
-        this.manifest.status = "incomplete";
-      }
-      await this.#writeManifest();
-      this.#sealed = true;
-    });
-  }
-  async #writeJson(relativePath, value) {
-    await this.#writeText(relativePath, `${canonicalJson(value)}
-`);
-  }
-  async #writeText(relativePath, content) {
-    const destination = path6.join(this.archiveDir, relativePath);
-    await mkdir2(path6.dirname(destination), { recursive: true });
-    const temporary = path6.join(path6.dirname(destination), `.${path6.basename(destination)}${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, content);
-    await this.#trackFile(relativePath);
-  }
-  async #writeManifest() {
-    this.manifest.files = [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path));
-    this.manifest.integrity.manifest_sha256 = null;
-    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
-    const destination = path6.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path6.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}
-`);
-  }
-  // pid + sequence keeps names unique within the process; Date.now() alone
-  // collided when two agents settled in the same millisecond.
-  #tmpSuffix() {
-    this.#tmpSeq += 1;
-    return `.${process.pid}.${this.#tmpSeq}.tmp`;
-  }
-  /**
-   * Checks every file the manifest declares against the archive directory,
-   * returning what is no longer accountable. Presence and size only: the
-   * recorded digest is what a consumer walks, and re-hashing the whole
-   * archive at seal would repeat that walk for no extra evidence.
-   */
-  async #reconcileFiles() {
-    const lost = [];
-    for (const entry of [...this.#files.values()].sort((a, b) => compareCodeUnits(a.path, b.path))) {
-      const metadata = await stat2(path6.join(this.archiveDir, entry.path)).catch(() => null);
-      if (metadata === null) {
-        lost.push({ path: entry.path, reason: "missing" });
-      } else if (metadata.size !== entry.size) {
-        lost.push({ path: entry.path, reason: "size-mismatch" });
-      }
-    }
-    return lost;
-  }
-  /**
-   * The sealed manifest's self-digest, for a consumer of this writer that
-   * publishes an attestation elsewhere (the completion sentinel). Null
-   * until the archive seals: a mid-run digest is real but perishable —
-   * `finish()` rewrites the manifest — so publishing it outside the file
-   * it covers would attest bytes the seal then replaces.
-   */
-  sealedManifestDigest() {
-    return this.#sealed ? this.manifest.integrity.manifest_sha256 : null;
-  }
-  async #trackFile(relativePath) {
-    const absolute = path6.join(this.archiveDir, relativePath);
-    const [metadata, contentHash] = await Promise.all([stat2(absolute), hashFile(absolute)]);
-    this.#files.set(relativePath, {
-      path: relativePath,
-      size: metadata.size,
-      sha256: contentHash
-    });
-  }
-};
-function transcriptAbsenceReason(record) {
-  if (record.status === "in-progress") {
-    return "record-unsettled";
-  }
-  if (record.attempts.length === 0) {
-    return "no-attempt-ran";
-  }
-  if (record.attempts.every(
-    (attempt) => attempt.failure?.kind === "CodexSubstrateRefusedError" || attempt.failure?.kind === "ClaudeDispatchError"
-  )) {
-    return "substrate-never-started";
-  }
-  if (record.status === "interrupted") {
-    return "worker-interrupted";
-  }
-  if (record.status === "timed-out") {
-    return "worker-timed-out";
-  }
-  if (record.transcriptCapture === "lost") {
-    return "session-client-capture-gap";
-  }
-  return "engine-produced-no-transcript";
-}
-function agentUsage(record) {
-  let summary = null;
-  for (const attempt of record.attempts) {
-    const attemptSummary = summariseUsage(attempt.target.engine, attempt.tokenUsageEvents);
-    if (attemptSummary !== null) {
-      summary = summary === null ? attemptSummary : addUsageSummary(summary, attemptSummary);
-    }
-  }
-  if (summary !== null) {
-    return { summary };
-  }
-  if (record.status === "in-progress") {
-    return { unavailable: "record-unsettled" };
-  }
-  return { unavailable: record.attempts.length === 0 ? "no-attempt-ran" : "engine-reported-no-usage" };
-}
-function buildCostRollup(records) {
-  const rollup = {};
-  const accumulators = /* @__PURE__ */ new Map();
-  const noteAbsentUsage = (engine, model) => {
-    rollup[engine] ??= {};
-    rollup[engine][model] ??= { unavailable: "no-usage-reported" };
-  };
-  for (const record of records) {
-    if (record.attempts.length === 0) {
-      noteAbsentUsage(record.engine, "unresolved");
-    }
-    const lastReporter = record.attempts.findLast((attempt) => attempt.resolvedModel !== null)?.target.engine ?? record.engine;
-    for (const attempt of record.attempts) {
-      const engine = attempt.target.engine;
-      const summary = summariseUsage(engine, attempt.tokenUsageEvents);
-      const borrowed = engine === lastReporter ? record.resolvedModel : null;
-      const model = attempt.resolvedModel ?? borrowed ?? "unresolved";
-      if (summary === null) {
-        noteAbsentUsage(engine, model);
-        continue;
-      }
-      rollup[engine] ??= {};
-      const existing = rollup[engine][model];
-      const key = `${engine}\0${model}`;
-      const accumulator = accumulators.get(key) ?? { amount: 0, currency: null, reported: false, unlike: false };
-      accumulators.set(key, accumulator);
-      for (const event of attempt.tokenUsageEvents) {
-        addProviderCost(accumulator, event);
-      }
-      rollup[engine][model] = {
-        tokens: existing === void 0 || "unavailable" in existing ? summary : addUsageSummary(existing.tokens, summary),
-        cost: publishedCost(accumulator)
-      };
-    }
-  }
-  return rollup;
-}
-function publishedCost(accumulator) {
-  if (accumulator.unlike) {
-    return { unavailable: "unlike-currencies" };
-  }
-  if (!accumulator.reported) {
-    return { unavailable: "no-provider-cost-reported" };
-  }
-  return { amount: accumulator.amount, currency: accumulator.currency, source: "provider-reported" };
-}
-function addProviderCost(target, event) {
-  if (target.unlike) {
-    return;
-  }
-  const cost = event.raw.cost;
-  if (typeof cost !== "number" || !Number.isFinite(cost)) {
-    return;
-  }
-  const currency = typeof event.raw.currency === "string" ? event.raw.currency : null;
-  if (target.currency !== null && currency !== null && currency !== target.currency) {
-    target.unlike = true;
-    return;
-  }
-  target.amount += cost;
-  target.reported = true;
-  if (currency !== null && target.currency === null) {
-    target.currency = currency;
-  }
-}
-async function resolveRunDirectory(storeDir, cwd, runUuid) {
-  return runDirectoryFor(storeDir, await deriveNamespace(cwd), runUuid);
-}
-async function reapAbandonedRuns(options) {
-  const procDir = options.procDir ?? "/proc";
-  const host = options.host ?? os.hostname();
-  const reaped = [];
-  const entries = await readdir3(options.namespaceDir, { withFileTypes: true }).catch(() => null);
-  if (entries === null) {
-    return reaped;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name === options.skipRunUuid) {
-      continue;
-    }
-    try {
-      const manifestPath = path6.join(options.namespaceDir, entry.name, MANIFEST_PATH);
-      const manifest = JSON.parse(await readFile4(manifestPath, "utf8"));
-      if (manifest.status !== "in-progress") {
-        continue;
-      }
-      const reason = await judgeOwnerGone(manifest.owner, procDir, host);
-      if (reason === null) {
-        continue;
-      }
-      const fresh = JSON.parse(await readFile4(manifestPath, "utf8"));
-      if (fresh.status !== "in-progress") {
-        continue;
-      }
-      const abandonment = {
-        observed_at: (/* @__PURE__ */ new Date()).toISOString(),
-        reason,
-        observed_by: { pid: options.observer.pid, run_uuid: options.observer.runUuid }
-      };
-      const rewritten = await resolveAbandonedAgentRecords(path6.join(options.namespaceDir, entry.name), abandonment);
-      if (Array.isArray(fresh.files)) {
-        for (const fileEntry of fresh.files) {
-          const update = rewritten.get(fileEntry.path);
-          if (update !== void 0) {
-            fileEntry.size = update.size;
-            fileEntry.sha256 = update.sha256;
-          }
-        }
-      }
-      fresh.status = "abandoned";
-      fresh.abandonment = abandonment;
-      if (fresh.integrity !== void 0 && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
-        fresh.integrity.manifest_sha256 = null;
-        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
-      }
-      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}
-`);
-      reaped.push(entry.name);
-    } catch {
-    }
-  }
-  return reaped;
-}
-async function resolveAbandonedAgentRecords(runDir, abandonment) {
-  const rewritten = /* @__PURE__ */ new Map();
-  const agentsDir = path6.join(runDir, "agents");
-  const agentEntries = await readdir3(agentsDir, { withFileTypes: true }).catch(() => null);
-  if (agentEntries === null) {
-    return rewritten;
-  }
-  for (const agentEntry of agentEntries) {
-    if (!agentEntry.isDirectory()) {
-      continue;
-    }
-    try {
-      const agentJsonPath = path6.join(agentsDir, agentEntry.name, "agent.json");
-      const agentRecord = JSON.parse(await readFile4(agentJsonPath, "utf8"));
-      if (agentRecord.status !== "in-progress") {
-        continue;
-      }
-      agentRecord.status = "abandoned";
-      agentRecord.abandonment = abandonment;
-      const content = `${canonicalJson(agentRecord)}
-`;
-      await writeStandaloneText(agentJsonPath, content);
-      rewritten.set(`agents/${agentEntry.name}/agent.json`, {
-        size: Buffer.byteLength(content),
-        sha256: sha256(content)
-      });
-    } catch {
-    }
-  }
-  return rewritten;
-}
-function runDirectoryFor(storeDir, namespace, runUuid) {
-  return path6.join(storeDir, "runs", "cwd", namespace.hash.slice(0, 24), runUuid);
-}
-async function deriveNamespace(cwd) {
-  const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
-  const material = await realpath(gitRoot ?? cwd);
-  const hash = sha256(material);
-  return {
-    strategy: "git-root-realpath-sha256",
-    id: `cwd:${hash.slice(0, 24)}`,
-    material,
-    hash
-  };
-}
-async function readGitState(cwd, diffPath, archiveDir) {
-  const root = await git(["rev-parse", "--show-toplevel"], cwd);
-  const head = await git(["rev-parse", "HEAD"], cwd);
-  const porcelain = await git(["status", "--porcelain"], cwd);
-  const dirty = porcelain === null ? null : porcelain.length > 0;
-  let archivedDiffPath = null;
-  if (dirty === true) {
-    const diff = await git(["diff", "HEAD", "--binary"], cwd) ?? await git(["diff", "--binary"], cwd);
-    if (diff !== null && diff.length > 0) {
-      await writeStandaloneText(path6.join(archiveDir, diffPath), diff);
-      archivedDiffPath = diffPath;
-    }
-  }
-  return { root, head, dirty, diffPath: archivedDiffPath };
-}
-async function readPackageInfo(cwd) {
-  try {
-    const text = await readFile4(path6.join(cwd, "package.json"), "utf8");
-    const parsed = JSON.parse(text);
-    return {
-      name: typeof parsed.name === "string" ? parsed.name : "ensemble-workflows",
-      version: typeof parsed.version === "string" ? parsed.version : harnessVersion()
-    };
-  } catch {
-    return { name: "ensemble-workflows", version: harnessVersion() };
-  }
-}
-async function findHarnessRoot() {
-  let current2 = path6.dirname(fileURLToPath2(import.meta.url));
-  for (; ; ) {
-    try {
-      const text = await readFile4(path6.join(current2, "package.json"), "utf8");
-      const parsed = JSON.parse(text);
-      if (parsed.name === "ensemble-workflows") {
-        return current2;
-      }
-    } catch {
-    }
-    const parent = path6.dirname(current2);
-    if (parent === current2) {
-      return null;
-    }
-    current2 = parent;
-  }
-}
-async function toolVersions() {
-  const [gitVersion, codexVersion, claudeVersion, openCodeVersion] = await Promise.all([
-    commandVersion("git", ["--version"]),
-    commandVersion("codex", ["--version"]),
-    commandVersion("claude", ["--version"]),
-    commandVersion("opencode", ["--version"])
-  ]);
-  return { git: gitVersion, codex: codexVersion, claude: claudeVersion, opencode: openCodeVersion };
-}
-async function commandVersion(command, args) {
-  try {
-    const { stdout, stderr } = await execFileAsync(command, args, { timeout: 5e3 });
-    return (stdout || stderr).trim() || null;
-  } catch {
-    return null;
-  }
-}
-async function git(args, cwd) {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 1e4, maxBuffer: 20 * 1024 * 1024 });
-    return stdout.trim();
-  } catch {
-    return null;
-  }
-}
-function holdEventKind(method) {
-  switch (method) {
-    case "hold/raised":
-      return "raised";
-    case "hold/answered":
-      return "answered";
-    case "hold/answerRejected":
-      return "answer-rejected";
-    case "hold/timedOut":
-      return "timed-out";
-    case "hold/retired":
-      return "retired";
-    default:
-      return null;
-  }
-}
-function isAttemptedVerdictState(value) {
-  return value === "submitted" || value === "missing-or-non-string" || value === "unparseable";
-}
-function extractTask(meta) {
-  if (typeof meta !== "object" || meta === null || !("task" in meta)) {
-    return null;
-  }
-  return meta.task ?? null;
-}
-async function hashFile(filePath) {
-  const text = await readFile4(filePath);
-  return createHash2("sha256").update(text).digest("hex");
-}
-async function writeStandaloneText(destination, content) {
-  await mkdir2(path6.dirname(destination), { recursive: true });
-  const temporary = path6.join(path6.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(temporary, destination, content);
-}
-async function writeAndRename(temporary, destination, content) {
-  try {
-    await writeFile3(temporary, content, "utf8");
-    await rename3(temporary, destination);
-  } catch (error) {
-    await rm2(temporary, { force: true });
-    throw error;
-  }
-}
-function padId(id) {
-  return String(id).padStart(6, "0");
-}
-function padAttempt(attempt) {
-  return String(attempt).padStart(3, "0");
-}
-function safeName(filename, suffix) {
-  const cleaned = filename.replace(/[^a-zA-Z0-9._-]/g, "-");
-  return cleaned.endsWith(`.${suffix}`) ? cleaned : `${cleaned}.${suffix}`;
-}
-
-// src/completion-sentinel.ts
 var SENTINEL_FILENAME = "completion-sentinel.json";
 var SENTINEL_SCHEMA_VERSION = 3;
 var CompletionSentinel = class {
@@ -16828,7 +16930,7 @@ function findErrorCode(error, code) {
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
-import { stat as stat3 } from "node:fs/promises";
+import { stat as stat2 } from "node:fs/promises";
 import path9 from "node:path";
 
 // src/worktree-isolation.ts
@@ -16944,7 +17046,7 @@ var AgentPlacementManager = class {
   async assertUsableCwd(options) {
     const requestedCwd = resolveAgentCwd(this.baseCwd, options.cwd);
     try {
-      if (!(await stat3(requestedCwd)).isDirectory()) {
+      if (!(await stat2(requestedCwd)).isDirectory()) {
         throw new AgentCwdRejectedError(`agent() cwd must be an existing directory: ${requestedCwd}`);
       }
     } catch (error) {
@@ -18817,7 +18919,7 @@ var RunProgress = class {
   /** An open hold joins the snapshot the moment it is raised. */
   noteHoldRaised(hold) {
     this.#openHolds.set(hold.id, {
-      id: hold.id,
+      hold_id: hold.id,
       content: hold.content.length > 500 ? `${hold.content.slice(0, 500)}\u2026` : hold.content,
       verdicts: [...hold.verdicts],
       raisedAtMs: this.#now()
@@ -19013,7 +19115,7 @@ var RunProgress = class {
       totals.failed += counters.failed;
     }
     return {
-      schema: 2,
+      schema: 3,
       runId: this.runId,
       pid: this.#pid,
       workflow: this.#workflow,
@@ -30524,7 +30626,7 @@ async function runEnsembleCli(argv, options = {}) {
       return 0;
     }
     for (const record of enumeration.retired) {
-      stdout.write(`retired ${record.hold_id} \u2014 raiser provably gone; nothing could await its answer
+      stdout.write(`retired ${record.hold_id} at ${record.retired_at} \u2014 ${record.retirement_reason}
 `);
     }
     if (enumeration.holds.length === 0) {
@@ -30553,13 +30655,13 @@ async function runEnsembleCli(argv, options = {}) {
       stdout.write(`  verdicts: ${record.verdicts.join(" | ")}
 `);
       const [firstVerdict, ...otherVerdicts] = record.verdicts;
-      stdout.write(
-        `  answer:   write {"nonce":"${record.nonce}","verdict":${JSON.stringify(firstVerdict)}} to ${record.decision_path}${otherVerdicts.length > 0 ? ` (or use ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
-`
-      );
+      stdout.write(`  answer:   ${program} holds answer ${record.hold_id} --verdict ${JSON.stringify(firstVerdict)}${otherVerdicts.length > 0 ? ` (or ${otherVerdicts.map((verdict) => JSON.stringify(verdict)).join(" or ")})` : ""}
+`);
       if (record.answer_rejection !== void 0) {
         const attempted = record.answer_rejection.attempted_verdict === null ? record.answer_rejection.attempted_verdict_state : JSON.stringify(record.answer_rejection.attempted_verdict);
-        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})
+        const submitter = record.answer_rejection.answered_by;
+        const note = record.answer_rejection.note;
+        stdout.write(`  rejected: ${record.answer_rejection.reason} (${attempted})${submitter ? ` by ${boundedEvidence(submitter)}` : ""}${note ? ` \u2014 ${boundedEvidence(note)}` : ""}
 `);
       }
       for (const line of record.content.split("\n")) {
@@ -30669,6 +30771,22 @@ async function runEnsembleCli(argv, options = {}) {
       });
     }
     runtime.onEvent((event) => {
+      if (event.method === "hold/raised") {
+        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
+        const scope = typeof event.params.scope === "string" ? boundedEvidence(event.params.scope) : "(shared)";
+        const verdicts = Array.isArray(event.params.verdicts) ? event.params.verdicts.filter((v) => typeof v === "string") : [];
+        const forms = verdicts.map((verdict) => `${program} holds answer ${id} --verdict ${JSON.stringify(boundedEvidence(verdict))}`);
+        stderr.write(`[hold] ${id} raised in scope ${scope}; ${forms.join(" or ")}
+`);
+        return;
+      }
+      if (event.method === "hold/answered" || event.method === "hold/timedOut") {
+        const id = typeof event.params.holdId === "string" ? boundedEvidence(event.params.holdId) : "?";
+        const outcome = event.method === "hold/timedOut" ? "timed out" : `answered with ${JSON.stringify(event.params.verdict)}`;
+        stderr.write(`[hold] ${id} ${outcome}
+`);
+        return;
+      }
       if (event.method === "claude/unpinnedModel") {
         const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
         const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
@@ -30938,7 +31056,7 @@ async function prepareRun(invocation, cwd) {
       const requestedCwd = path13.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
-        isDirectory2 = (await stat4(requestedCwd)).isDirectory();
+        isDirectory2 = (await stat3(requestedCwd)).isDirectory();
       } catch {
         isDirectory2 = false;
       }
@@ -31614,7 +31732,7 @@ function announceRunRecord(writer, stderr) {
   }
 }
 function holdsAnswerUsage(program) {
-  return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted the answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 6 retired (the hold settled without\njudging this answer; its decision file is removed); 2 usage; 1 I/O failure.\n";
+  return subcommandSynopsis(program, ["holds answer", "<hold-id>", "--verdict <verdict>", "[--note <note>]"]) + "Answers an open hold: writes the decision file the hold names (nonce copied\nfrom the hold), then reports what the raiser did with it, as one JSON object\non stdout. The answerer is recorded as ENSEMBLE_CALLER_IDENTITY when set,\notherwise host:pid.\nExit codes: 0 consumed (the raiser accepted this answer); 3 bounced (rejected;\nthe hold keeps waiting and the reason is reported); 4 not yet consumed (the\nraiser has not read it within its poll cadence; the answer file stays in\nplace); 5 no open hold with that id; 7 outcome not attributable to this\nanswer; 2 usage; 1 I/O failure.\n";
 }
 async function answerHoldCommand(args, env, stdout, stderr, program) {
   const answerUsage = holdsAnswerUsage(program);
@@ -31672,10 +31790,10 @@ async function answerHoldCommand(args, env, stdout, stderr, program) {
       stderr.write(`hold ${holdId}: answer consumed \u2014 the run resumed with verdict ${JSON.stringify(verdict)}
 `);
       return 0;
-    case "retired":
-      stderr.write(`hold ${holdId}: hold settled without judging this answer \u2014 the stale decision file was removed
+    case "not-attributable":
+      stderr.write(`hold ${holdId}: this answer's outcome is not attributable
 `);
-      return 6;
+      return 7;
     case "bounced":
       stderr.write(
         `hold ${holdId}: answer bounced (${result.rejection.reason}) \u2014 the hold is still waiting for a valid answer

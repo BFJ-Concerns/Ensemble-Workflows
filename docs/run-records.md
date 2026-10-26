@@ -51,7 +51,7 @@ rules, and a token on one engine does not cost the same as on another.
 
 Each status file contains one JSON object with these fields:
 
-- `schema`: `2`.
+- `schema`: `3`. Version 3 names open holds by `hold_id`; version 2 used `id`.
 - `runId`: string.
 - `pid`: number, the process id of the publishing run.
 - `workflow`: string or `null`, from `meta.name` when present.
@@ -86,7 +86,7 @@ Each status file contains one JSON object with these fields:
   first observed. That distinguishes a stuck background task from a worker
   that is still generating.
 - `holds`: array of open decision holds, empty when the run is not waiting.
-  Each object has string `id`, string `content` (cut to 500 characters plus
+  Each object has string `hold_id`, string `content` (cut to 500 characters plus
   an ellipsis when longer; the hold file carries the full text), string-array
   `verdicts`, and numeric `raisedAtMs` (Unix epoch milliseconds).
 
@@ -98,7 +98,7 @@ Example:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "runId": "run-01HZY7V4Q8P2",
   "pid": 43122,
   "workflow": "verify-findings",
@@ -377,11 +377,14 @@ families with their own schema versions (`3` and `2`), described above.
   archived args with their canonical path and SHA-256. Each entry is recorded
   before the child runs, so a partial archive still knows what was invoked.
 - `hold_events`: the run's hold lifecycle — raise, accepted answer, rejected
-  answer, timeout, and retirements of dead raisers this run observed — in
-  event order. Each entry carries `hold_id`, `event`, `verdict` or `reason`
+  answer, timeout, and retirement, including after its raiser dies — in
+  event order. A run that sweeps another run's dead hold also records that
+  `hold/retired` event in its own `hold_events`. Each entry carries `hold_id`, `event`, `verdict` or `reason`
   where applicable, and a timestamp. An `answered` entry also carries
   `answered_by` (the answerer the decision file named, or `null`) and the
-  decider's `note` (or `null`).
+  decider's `note` (or `null`). Rejected answers carry those fields too when
+  supplied by the decision file; a retirement's `reason` says whether the
+  raiser died or the hold timed out.
 - `tallies`: `name -> number`, the counts the script recorded with `tally()`,
   stored verbatim (last write per name wins) and written as each is recorded,
   so a count recorded before the run ended is in the archive whether or not

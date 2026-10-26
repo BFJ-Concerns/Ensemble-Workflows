@@ -484,7 +484,7 @@ interface Manifest {
   workflow_invocations: WorkflowInvocationEntry[];
   /**
    * The run's hold lifecycle, append-only in event order: each raise,
-   * accepted answer, rejected answer, and timeout, so a consumer holding
+   * accepted answer, rejected answer, timeout and retirement, so a consumer holding
    * only the archive can reconstruct what the run waited on and how each
    * wait ended. The hold files themselves are transient coordination state;
    * this list is their durable trace.
@@ -508,17 +508,45 @@ interface HoldEventEntry {
   event: "raised" | "answered" | "answer-rejected" | "timed-out" | "retired";
   /** The accepted verdict on `answered`; null elsewhere. */
   verdict: string | null;
-  /** The rejection reason on `answer-rejected`; null elsewhere. */
+  /** The rejection or retirement reason; null elsewhere. */
   reason: string | null;
   /** The rejected file's submitted verdict; null only when the state explains why. */
   attempted_verdict: string | null;
   /** The evidence quality for `attempted_verdict`; null outside rejected answers. */
   attempted_verdict_state: "submitted" | "missing-or-non-string" | "unparseable" | null;
-  /** On `answered`: who wrote the answer, as the decision file named it; null when it named no one, and elsewhere. */
+  /** On `answered` or `answer-rejected`: who wrote the answer, as the decision file named it. */
   answered_by: string | null;
-  /** On `answered`: the decider's note; null when none, and elsewhere. */
+  /** On `answered` or `answer-rejected`: the decider's note; null when none. */
   note: string | null;
   at: string;
+}
+
+/** Append a retirement observed after the raising writer has died. */
+export async function recordRetiredHold(
+  archiveDir: string,
+  retired: { run_id: string; hold_id: string; retired_at: string; retirement_reason: "dead-raiser" | "timed-out" }
+): Promise<void> {
+  const manifestPath = path.join(archiveDir, MANIFEST_PATH);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Manifest;
+  if (manifest.kind !== "run_manifest" || manifest.run_uuid !== retired.run_id ||
+      !manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "raised")) {
+    throw new Error("retired hold does not belong to the named run archive");
+  }
+  if (manifest.hold_events.some((event) => event.hold_id === retired.hold_id && event.event === "retired")) {
+    return;
+  }
+  manifest.hold_events.push({
+    hold_id: retired.hold_id,
+    event: "retired",
+    verdict: null,
+    reason: retired.retirement_reason,
+    attempted_verdict: null,
+    attempted_verdict_state: null,
+    answered_by: null,
+    note: null,
+    at: retired.retired_at
+  });
+  await writeAttestedManifest(manifestPath, manifest);
 }
 
 interface WorkflowInvocationEntry {
@@ -826,7 +854,7 @@ export class RunRecordWriter {
       hold_id: event.params.holdId,
       event: kind,
       verdict: kind === "answered" && typeof event.params.verdict === "string" ? event.params.verdict : null,
-      reason: kind === "answer-rejected" && typeof event.params.reason === "string" ? event.params.reason : null,
+      reason: (kind === "answer-rejected" || kind === "retired") && typeof event.params.reason === "string" ? event.params.reason : null,
       attempted_verdict:
         kind === "answer-rejected" && typeof event.params.attemptedVerdict === "string"
           ? event.params.attemptedVerdict
@@ -835,8 +863,8 @@ export class RunRecordWriter {
         kind === "answer-rejected" && isAttemptedVerdictState(event.params.attemptedVerdictState)
           ? event.params.attemptedVerdictState
           : null,
-      answered_by: kind === "answered" && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
-      note: kind === "answered" && typeof event.params.note === "string" ? event.params.note : null,
+      answered_by: (kind === "answered" || kind === "answer-rejected") && typeof event.params.answeredBy === "string" ? event.params.answeredBy : null,
+      note: (kind === "answered" || kind === "answer-rejected") && typeof event.params.note === "string" ? event.params.note : null,
       at: new Date(event.receivedAt).toISOString()
     };
     await this.#serialise(async () => {
@@ -1085,11 +1113,9 @@ export class RunRecordWriter {
     // Self-attestation last, over everything above it: null the field, hash
     // the canonical form, then write. Computed on every manifest write, not
     // only at seal, so a manifest read mid-run is verifiable too.
-    this.manifest.integrity.manifest_sha256 = null;
-    this.manifest.integrity.manifest_sha256 = sha256(canonicalJson(this.manifest));
     const destination = path.join(this.archiveDir, MANIFEST_PATH);
-    const temporary = path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`);
-    await writeAndRename(temporary, destination, `${canonicalJson(this.manifest)}\n`);
+    await writeAttestedManifest(destination, this.manifest, true,
+      path.join(this.archiveDir, `.manifest${this.#tmpSuffix()}`));
   }
 
   // pid + sequence keeps names unique within the process; Date.now() alone
@@ -1440,11 +1466,7 @@ export async function reapAbandonedRuns(options: ReapAbandonedRunsOptions): Prom
       // canonical form, then let the standalone helper atomically replace it.
       // Pre-attestation manifests have no self-digest to renew, but remain
       // eligible for the established reap route.
-      if (fresh.integrity !== undefined && fresh.integrity !== null && typeof fresh.integrity.manifest_sha256 === "string") {
-        fresh.integrity.manifest_sha256 = null;
-        fresh.integrity.manifest_sha256 = sha256(canonicalJson(fresh));
-      }
-      await writeStandaloneText(manifestPath, `${canonicalJson(fresh)}\n`);
+      await writeAttestedManifest(manifestPath, fresh);
       reaped.push(entry.name);
     } catch {
       // One unreadable or unwritable sibling must not end the sweep.
@@ -1617,8 +1639,6 @@ function holdEventKind(method: string): HoldEventEntry["event"] | null {
     case "hold/timedOut":
       return "timed-out";
     case "hold/retired":
-      // A dead-raiser hold this run's own sweep retired: the observation is
-      // this run's, even though the hold was another (dead) run's.
       return "retired";
     default:
       return null;
@@ -1641,10 +1661,24 @@ async function hashFile(filePath: string): Promise<string> {
   return createHash("sha256").update(text).digest("hex");
 }
 
-async function writeStandaloneText(destination: string, content: string): Promise<void> {
+async function writeAttestedManifest(
+  destination: string,
+  manifest: { integrity?: { manifest_sha256?: string | null } | null },
+  initialise = false,
+  temporary?: string
+): Promise<void> {
+  if (manifest.integrity !== undefined && manifest.integrity !== null &&
+      (initialise || typeof manifest.integrity.manifest_sha256 === "string")) {
+    manifest.integrity.manifest_sha256 = null;
+    manifest.integrity.manifest_sha256 = sha256(canonicalJson(manifest));
+  }
+  await writeStandaloneText(destination, `${canonicalJson(manifest)}\n`, temporary);
+}
+
+async function writeStandaloneText(destination: string, content: string, temporary?: string): Promise<void> {
   await mkdir(path.dirname(destination), { recursive: true });
-  const temporary = path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
-  await writeAndRename(temporary, destination, content);
+  const staging = temporary ?? path.join(path.dirname(destination), `.standalone.${process.pid}.${Date.now()}.tmp`);
+  await writeAndRename(staging, destination, content);
 }
 
 /** Atomic temp-then-rename write; a failed write never leaves its temp file behind. */

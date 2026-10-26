@@ -17,7 +17,7 @@ import {
 import { HoldRejectedError, HoldTimeoutError } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { EngineRegistry } from "../../src/engines.js";
-import { RunRecordWriter } from "../../src/run-record.js";
+import { RunRecordWriter, reapAbandonedRuns } from "../../src/run-record.js";
 
 import type { HoldFileRecord } from "../../src/holds.js";
 import type { RuntimeEvent } from "../../src/types.js";
@@ -191,7 +191,7 @@ test("a rejected hold remains waiting and reaches the runtime archive", async ()
       );
       const record = await publishedHold(dir);
 
-      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no" }));
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "no", answered_by: "lead", note: "wait" }));
       await waitForArchiveHoldEvent(writer.archiveDir, "answer-rejected");
 
       // The rejection is consumed, but it is not a decision: the caller is
@@ -199,14 +199,16 @@ test("a rejected hold remains waiting and reaches the runtime archive", async ()
       await Promise.resolve();
       assert.equal(settled, false);
       assert.equal((await enumerateHolds(dir)).holds.length, 1);
+      assert.equal((await enumerateHolds(dir)).holds[0]?.record.answer_rejection?.answered_by, "lead");
+      assert.equal((await enumerateHolds(dir)).holds[0]?.record.answer_rejection?.note, "wait");
       const manifest = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
-        hold_events: Array<{ event: string; reason: string | null; attempted_verdict: string | null }>;
+        hold_events: Array<{ event: string; reason: string | null; attempted_verdict: string | null; answered_by: string | null; note: string | null }>;
       };
       assert.deepEqual(
-        manifest.hold_events.map(({ event, reason, attempted_verdict }) => ({ event, reason, attempted_verdict })),
+        manifest.hold_events.map(({ event, reason, attempted_verdict, answered_by, note }) => ({ event, reason, attempted_verdict, answered_by, note })),
         [
-          { event: "raised", reason: null, attempted_verdict: null },
-          { event: "answer-rejected", reason: "invalid-verdict", attempted_verdict: "no" }
+          { event: "raised", reason: null, attempted_verdict: null, answered_by: null, note: null },
+          { event: "answer-rejected", reason: "invalid-verdict", attempted_verdict: "no", answered_by: "lead", note: "wait" }
         ]
       );
 
@@ -439,7 +441,12 @@ test("enumeration retires a dead raiser's hold and leaves the evidence-free one 
         enumeration.holds.map((hold) => hold.record.hold_id),
         ["run-unknown-1"]
       );
-      assert.deepEqual((await readdir(scopeDir)).sort(), ["run-unknown-1.json"]);
+      assert.deepEqual((await readdir(scopeDir)).sort(), ["run-dead-1.retired.json", "run-unknown-1.json"]);
+      const machineWide = await enumerateHolds(dir, { procDir: proc });
+      assert.deepEqual(machineWide.retired, enumeration.retired);
+      assert.equal(enumeration.retired[0]?.state, "retired");
+      assert.equal(enumeration.retired[0]?.retirement_reason, "dead-raiser");
+      assert.ok(enumeration.retired[0]?.retired_at);
       await requireRejectionWithin(assert.rejects(stat(deadHold.decision_path)), "the retired decision file remained", noTeardownNeeded);
     } finally {
       await rm(proc, { recursive: true, force: true });
@@ -514,22 +521,26 @@ test("the runtime surfaces holds in the live snapshot and archives their events"
     } as never);
 
     const decision = runtime.raiseHold({ content: "proceed?", verdicts: ["yes", "no"] });
-    const record = await publishedHold(dir);
-    assert.equal(record.scope, "runtime-scope");
-    // The open hold is visible to a status poller while the run waits.
-    const openSnapshot = runtime.progress.snapshot();
-    assert.equal(openSnapshot.holds.length, 1);
-    assert.equal(openSnapshot.holds[0]?.id, record.hold_id);
-    assert.deepEqual(openSnapshot.holds[0]?.verdicts, ["yes", "no"]);
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      assert.equal(record.scope, "runtime-scope");
+      // The open hold is visible to a status poller while the run waits.
+      const openSnapshot = runtime.progress.snapshot();
+      assert.equal(openSnapshot.holds.length, 1);
+      assert.equal(openSnapshot.holds[0]?.hold_id, record.hold_id);
+      assert.deepEqual(openSnapshot.holds[0]?.verdicts, ["yes", "no"]);
 
-    await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
-    assert.deepEqual(await decision, { verdict: "yes", note: null });
-    assert.equal(runtime.progress.snapshot().holds.length, 0);
-    assert.deepEqual(
-      holdEvents.map((event) => event.method),
-      ["hold/raised", "hold/answered"]
-    );
-    await runtime.close();
+      await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "yes" }));
+      assert.deepEqual(await decision, { verdict: "yes", note: null });
+      assert.equal(runtime.progress.snapshot().holds.length, 0);
+      assert.deepEqual(
+        holdEvents.map((event) => event.method),
+        ["hold/raised", "hold/answered"]
+      );
+    } finally {
+      await runtime.close();
+    }
   });
 });
 
@@ -638,7 +649,8 @@ test("answerHold reports a bounce with its reason, and never claims an unread an
       assert.equal(holdListingState(idle), "open");
       const unread = await answerHold({ dir, holdId: "run-idle-1", verdict: "ok", answeredBy: "me", waitMs: 30, checkIntervalMs: 5 });
       assert.equal(unread.outcome, "not-consumed");
-      assert.deepEqual(JSON.parse(await readFile(idle.decision_path, "utf8")), { nonce: idle.nonce, verdict: "ok", answered_by: "me" });
+      assert.deepEqual(Object.entries(JSON.parse(await readFile(idle.decision_path, "utf8")) as Record<string, string>)
+        .filter(([key]) => key !== "submission_id"), [["nonce", idle.nonce], ["verdict", "ok"], ["answered_by", "me"]]);
       assert.equal((await answerHold({ dir, holdId: "no-such-hold", verdict: "ok", answeredBy: "me" })).outcome, "not-found");
     } finally {
       holds.close();
@@ -646,7 +658,7 @@ test("answerHold reports a bounce with its reason, and never claims an unread an
   });
 });
 
-test("answerHold reports retired when the hold times out before reading the written answer", async () => {
+test("answerHold reports an unattributable outcome when the hold times out before reading its answer", async () => {
   await withHoldsDir(async (dir) => {
     let parkedDecision: string | null = null;
     let decisionPath: string | null = null;
@@ -676,11 +688,181 @@ test("answerHold reports retired when the hold times out before reading the writ
       parkedDecision = `${record.decision_path}.parked`;
       renameSync(record.decision_path, parkedDecision);
       const outcome = await answering;
-      assert.deepEqual(outcome, { outcome: "retired", hold_id: record.hold_id, verdict: "go" });
+      assert.deepEqual(outcome, { outcome: "not-attributable", hold_id: record.hold_id, verdict: "go" });
       await assert.rejects(decision, HoldTimeoutError);
-      await assert.rejects(stat(record.decision_path));
+      assert.equal((await enumerateHolds(dir)).retired[0]?.retirement_reason, "timed-out");
     } finally {
       holds.close();
+    }
+  });
+});
+
+test("a rejected submission remains attributable after its deadline removes the hold", async () => {
+  await withHoldsDir(async (dir) => {
+    let now = 0;
+    const events: RuntimeEvent[] = [];
+    const holds = new HoldManager({
+      dir, runId: "deadline-rejection", cwd: "/fake/cwd", scope: null,
+      pollIntervalMs: 5, now: () => now,
+      onEvent: (event) => { events.push(event); if (event.method === "hold/answerRejected") now = 100; }
+    });
+    const decision = holds.raise({ content: "deploy?", verdicts: ["go"], timeoutMs: 50 });
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      const answering = answerHold({ dir, holdId: record.hold_id, verdict: "later", answeredBy: "lead", note: "wait",
+        waitMs: 1000, checkIntervalMs: 100 });
+      await waitForEvent(events, "hold/timedOut");
+      const outcome = await answering;
+      assert.equal(outcome.outcome, "bounced");
+      if (outcome.outcome === "bounced") {
+        assert.equal(outcome.rejection.reason, "invalid-verdict");
+        assert.equal(outcome.rejection.answered_by, "lead");
+        assert.equal(outcome.rejection.note, "wait");
+      }
+      await assert.rejects(decision, HoldTimeoutError);
+      assert.equal((await enumerateHolds(dir)).retired[0]?.retirement_reason, "timed-out");
+    } finally {
+      holds.close();
+    }
+  });
+});
+
+test("concurrent answerers report only their own submission's outcome", async () => {
+  await withHoldsDir(async (dir) => {
+    const holds = new HoldManager({ dir, runId: "racing-answers", cwd: "/fake/cwd", scope: null, pollIntervalMs: 300 });
+    const decision = holds.raise({ content: "deploy?", verdicts: ["go"] });
+    decision.catch(() => undefined);
+    try {
+      const record = await publishedHold(dir);
+      const first = answerHold({ dir, holdId: record.hold_id, verdict: "bad", answeredBy: "first", waitMs: 700, checkIntervalMs: 5 });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          const pending = JSON.parse(await readFile(record.decision_path, "utf8")) as { answered_by?: string };
+          if (pending.answered_by === "first") break;
+        } catch { /* Wait for the first publish. */ }
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+      const second = answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "second", waitMs: 700, checkIntervalMs: 5 });
+      const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+      assert.equal(firstOutcome.outcome, "not-attributable");
+      assert.equal(secondOutcome.outcome, "consumed");
+      assert.deepEqual(await decision, { verdict: "go", note: null });
+    } finally {
+      holds.close();
+    }
+  });
+});
+
+test("answerHold checks its receipt again after an in-flight hold read finds no file", async () => {
+  await withHoldsDir(async (dir) => {
+    const holds = new HoldManager({ dir, runId: "receipt-race", cwd: "/fake/cwd", scope: null, pollIntervalMs: 300 });
+    const decision = holds.raise({ content: "proceed?", verdicts: ["go"] });
+    decision.catch(() => undefined);
+    let releaseRead: (() => void) | undefined;
+    const blockedRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let observedRead: (() => void) | undefined;
+    const readStarted = new Promise<void>((resolve) => { observedRead = resolve; });
+    try {
+      const record = await publishedHold(dir);
+      const answering = answerHold({ dir, holdId: record.hold_id, verdict: "go", answeredBy: "lead",
+        readHoldFile: async (holdPath) => {
+          observedRead?.();
+          await blockedRead;
+          return readFile(holdPath, "utf8");
+        } });
+      await Promise.race([readStarted, new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("answerer never reached the delayed hold read")), 2000);
+      })]);
+      assert.deepEqual(await decision, { verdict: "go", note: null });
+      releaseRead?.();
+      assert.deepEqual(await answering, { outcome: "consumed", hold_id: record.hold_id, verdict: "go" });
+      assert.deepEqual((await readdir(path.dirname(record.decision_path))).filter((name) => name.endsWith(".receipt.json")), []);
+    } finally {
+      releaseRead?.();
+      holds.close();
+    }
+  });
+});
+
+for (const archiveCase of ["missing raised event", "missing archive"] as const) {
+  test(`dead hold remains retired when its ${archiveCase} prevents archival`, async () => {
+    await withHoldsDir(async (dir) => {
+      const store = await mkdtemp(path.join(tmpdir(), "ensemble-retirement-failure-"));
+      const proc = await mkdtemp(path.join(tmpdir(), "ensemble-retirement-proc-"));
+      try {
+        await writeProcStat(proc, process.pid, "1111");
+        const scopeDir = path.join(dir, holdScopeSegment("lead"));
+        await mkdir(scopeDir, { recursive: true });
+        const record = holdRecord(`retirement-${archiveCase.replaceAll(" ", "-")}`, "lead", {
+          host: hostname(), pid: 999999, start_ticks: "3333", decisionDir: scopeDir
+        });
+        const writer = archiveCase === "missing raised event" ? await RunRecordWriter.start({
+          storeDir: store, cwd: process.cwd(), runUuid: record.run_id,
+          workflowPath: path.join(process.cwd(), "test", "unit", "holds.test.ts"),
+          workflowSource: "export const meta = { name: 'retirement' };\nreturn null;\n",
+          args: [], cliFlags: { jsonArgs: false }
+        }) : null;
+        record.run_identity = { workflow: null, phase: null,
+          archive_path: writer?.archiveDir ?? path.join(store, "absent"),
+          totals: { active: 0, queued: 0, done: 0, failed: 0 } };
+        await writeFile(path.join(scopeDir, `${record.hold_id}.json`), JSON.stringify(record));
+        await writeFile(record.decision_path, JSON.stringify({ nonce: record.nonce, verdict: "go" }));
+        const first = await enumerateHolds(dir, { scope: "lead", procDir: proc });
+        assert.deepEqual(first.retired.map((entry) => entry.hold_id), [record.hold_id]);
+        assert.equal(first.holds.length, 0);
+        assert.match(first.retired[0]?.archive_error ?? "", archiveCase === "missing archive" ? /ENOENT/ : /does not belong/);
+        await assert.rejects(stat(record.decision_path));
+        const again = await enumerateHolds(dir, { procDir: proc });
+        assert.deepEqual(again.retired, first.retired);
+        assert.deepEqual((await readdir(scopeDir)), [`${record.hold_id}.retired.json`]);
+      } finally {
+        await rm(store, { recursive: true, force: true });
+        await rm(proc, { recursive: true, force: true });
+      }
+    });
+  });
+}
+
+test("retirement reaches the killed raiser's manifest before and after reaping", async () => {
+  await withHoldsDir(async (dir) => {
+    const store = await mkdtemp(path.join(tmpdir(), "ensemble-retirement-record-"));
+    const proc = await mkdtemp(path.join(tmpdir(), "ensemble-retirement-proc-"));
+    try {
+      await writeProcStat(proc, process.pid, "1111");
+      const writer = await RunRecordWriter.start({
+        storeDir: store, cwd: process.cwd(), runUuid: "dead-raiser",
+        workflowPath: path.join(process.cwd(), "test", "unit", "holds.test.ts"),
+        workflowSource: "export const meta = { name: 'dead-raiser' };\nreturn null;\n",
+        args: [], cliFlags: { jsonArgs: false }
+      });
+      const scopeDir = path.join(dir, holdScopeSegment("lead"));
+      await mkdir(scopeDir, { recursive: true });
+      const record = holdRecord("dead-raiser-1", "lead", {
+        host: hostname(), pid: 999999, start_ticks: "3333", decisionDir: scopeDir
+      });
+      record.run_identity = { workflow: null, phase: null, archive_path: writer.archiveDir,
+        totals: { active: 0, queued: 0, done: 0, failed: 0 } };
+      await writer.recordHoldEvent({ method: "hold/raised", params: { holdId: record.hold_id }, receivedAt: 0 });
+      await writeFile(path.join(scopeDir, `${record.hold_id}.json`), JSON.stringify(record));
+      const scoped = await enumerateHolds(dir, { scope: "lead", procDir: proc });
+      assert.equal(scoped.retired[0]?.retirement_reason, "dead-raiser");
+      const before = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as {
+        status: string; hold_events: Array<{ event: string; reason: string | null }>
+      };
+      assert.equal(before.status, "in-progress");
+      assert.deepEqual(before.hold_events.map((event) => event.event), ["raised", "retired"]);
+      assert.equal(before.hold_events[1]?.reason, "dead-raiser");
+      const all = await enumerateHolds(dir, { procDir: proc });
+      assert.deepEqual(all.retired, scoped.retired);
+      await reapAbandonedRuns({ namespaceDir: path.dirname(writer.archiveDir), skipRunUuid: "other",
+        procDir: proc, observer: { pid: process.pid, runUuid: "other" } });
+      const after = JSON.parse(await readFile(path.join(writer.archiveDir, "manifest.json"), "utf8")) as typeof before;
+      assert.equal(after.status, "abandoned");
+      assert.deepEqual(after.hold_events, before.hold_events);
+    } finally {
+      await rm(store, { recursive: true, force: true });
+      await rm(proc, { recursive: true, force: true });
     }
   });
 });

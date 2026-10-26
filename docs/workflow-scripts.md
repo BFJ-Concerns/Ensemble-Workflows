@@ -544,7 +544,7 @@ Any process can also answer by hand. Write this JSON to a temporary file
 beside the hold's `decision_path`, then rename it into place:
 
 ```json
-{ "nonce": "<the hold's nonce>", "verdict": "<one of the verdicts>", "note": "optional", "answered_by": "optional" }
+{ "nonce": "<the hold's nonce>", "verdict": "<one of the verdicts>", "note": "optional", "answered_by": "optional", "submission_id": "optional UUID" }
 ```
 
 A stale nonce, an unlisted verdict, or a malformed file is rejected: the file
@@ -555,6 +555,11 @@ open hold with no rejection fields means the answer has not been judged yet,
 not that it was accepted. An accepted answer removes the hold. A hold can
 also vanish because its raiser was found dead and the hold retired; where the
 difference matters, check the run's archive or live status file.
+
+`submission_id` identifies one answer attempt for outcome reporting. The CLI
+generates one; a hand-written answer can omit it and still be accepted or
+rejected. Without a submission id, the outcome cannot be attributed to that
+specific writer. The raise nonce remains the acceptance check.
 
 ### Listing holds
 
@@ -567,7 +572,11 @@ path, and agent counts as of the raise. A listed hold is `open` or `bounced`
 provably dead is retired by whichever listing or run observes it and reported
 as `retired`, so the listing only shows holds that can still be answered.
 
-Every raise, answer, rejected answer, and timeout is recorded in the raising
-run's `hold_events`, including who answered and their note. A retirement is
-recorded by the run whose startup sweep observed it; one observed by a
-listing is not recorded.
+Every raise, answer, rejected answer, timeout and retirement is recorded in
+the raising run's `hold_events` when its archive can be updated, including the
+submitter and note when the decision names them. A retired hold remains visible
+in scoped and machine-wide listings even if its archive is missing or has not
+yet recorded the raise. A retired JSON listing entry then carries
+`archive_error` with the reason its archive could not record retirement; the
+field clears if a later listing records it successfully. Retired entries also
+carry their state, time and retirement reason.

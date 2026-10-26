@@ -196,7 +196,7 @@ test("live built CLI honours the maximum faithful per-turn timeout as a long dea
   }
 });
 
-test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async () => {
+test("live CLI runs Codex findings through Claude verification", { skip: !isLive, timeout: 420_000 }, async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-live-cross-engine-"));
   const script = path.join(directory, "workflow.js");
   const recordStore = path.join(directory, "records");
@@ -215,7 +215,7 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
           required: ["token", "risk"],
           additionalProperties: false,
           properties: {
-            token: { type: "string", enum: ["LIVE_CROSS_FIND"] },
+            token: { type: "string" },
             risk: { type: "string" }
           }
         };
@@ -225,21 +225,21 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
           required: ["token", "accepted"],
           additionalProperties: false,
           properties: {
-            token: { type: "string", enum: ["LIVE_CROSS_VERIFY"] },
+            token: { type: "string" },
             accepted: { type: "boolean" }
           }
         };
 
         phase("find");
         const finding = await agent(
-          "Return exactly one JSON object matching the schema: token LIVE_CROSS_FIND and a short risk description.",
+          "Name one risk in passing work between two AI engines. Return a JSON object with a one-word token of your choosing for the risk and a short risk description.",
           { engine: "codex", ${liveCodexScriptOptions()} label: "cross-find", schema: findingSchema, maxAttempts: 2 }
         );
 
         phase("verify");
         const verification = await agent(
           "Judge whether this Codex finding is relevant to cross-engine verification. " +
-            "Return JSON with token LIVE_CROSS_VERIFY and your judgement as accepted. Finding: " +
+            "Return JSON with a one-word token of your choosing and your judgement as accepted. Finding: " +
             JSON.stringify(finding),
           { engine: "claude", label: "cross-verify", schema: verificationSchema, maxAttempts: 2 }
         );
@@ -254,8 +254,9 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
 
     // Both families must actually have answered: the archive names the engine
     // each agent ran on and holds the validated object stdout returned, and
-    // the verifier's prompt carries the finding the first engine produced.
-    // What the finding says and how Claude judges it are the workers' choices.
+    // the verifier's recorded prompt carries the finding the Codex agent
+    // actually produced, as archived and as the script received it. Every
+    // token and judgement is the workers' own choice; none is prescribed.
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /\[phase\] find/);
     assert.match(result.stderr, /\[phase\] verify/);
@@ -273,10 +274,15 @@ test("live CLI runs Codex findings through Claude verification", { skip: !isLive
         () => assert.deepEqual(verifier.validated_output, parsed.verification)
       ],
       [
-        "the verifier's recorded prompt carries the Codex finding",
+        "the verifier's recorded prompt carries the finding the script received",
         () => assert.ok(verifier.prompt.includes(JSON.stringify(parsed.finding)), verifier.prompt)
+      ],
+      [
+        "the verifier's recorded prompt carries the finder's archived output",
+        () => assert.ok(verifier.prompt.includes(JSON.stringify(finder.validated_output)), verifier.prompt)
       ]
     ]);
+    t.diagnostic(`model-chosen tokens: finding ${JSON.stringify(parsed.finding)}; verification ${JSON.stringify(parsed.verification)}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

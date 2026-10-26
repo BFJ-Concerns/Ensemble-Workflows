@@ -20,7 +20,7 @@ import { HoldManager, enumerateHolds } from "../../src/holds.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import { Scheduler } from "../../src/scheduler.js";
 import { TokenBudget } from "../../src/budget.js";
-import { isStatusFileName } from "../../src/status-file.js";
+import { StatusFileWriter, isStatusFileName } from "../../src/status-file.js";
 
 import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
 import type { Budget, EngineName, RuntimeEvent, RuntimeOptions, TurnResult } from "../../src/types.js";
@@ -2873,7 +2873,10 @@ test("CLI retains the run's status while writing its terminal sentinel", async (
   const script = path.join(directory, "workflow.js");
   await writeFile(script, 'export const meta = { name: "status-ending" }; return "ok";');
 
+  const stderr = new CaptureStream();
   const original = CompletionSentinel.prototype.writeTerminal;
+  const originalClose = StatusFileWriter.prototype.close;
+  let sentinelPresentAtRemoval = false;
   let reachedWrite!: () => void;
   let continueWrite!: () => void;
   const writing = new Promise<void>((resolve) => { reachedWrite = resolve; });
@@ -2883,8 +2886,19 @@ test("CLI retains the run's status while writing its terminal sentinel", async (
     await released;
     return original.apply(this, args);
   };
+  StatusFileWriter.prototype.close = async function () {
+    const sentinelPath = stderr.text().match(/\[sentinel\] will write (\S+) when the run ends/)?.[1];
+    if (sentinelPath !== undefined) {
+      try {
+        await access(sentinelPath);
+        sentinelPresentAtRemoval = true;
+      } catch {
+        // The assertion below reports the missing sentinel at removal.
+      }
+    }
+    return originalClose.call(this);
+  };
 
-  const stderr = new CaptureStream();
   let run: Promise<number> | undefined;
   try {
     run = runEnsembleCli([script], { cwd: directory, statusDir, stderr });
@@ -2893,12 +2907,14 @@ test("CLI retains the run's status while writing its terminal sentinel", async (
     assert.equal(entries.length, 1, "the live file must remain until the sentinel lands");
     continueWrite();
     assert.equal(await run, 0, stderr.text());
+    assert.equal(sentinelPresentAtRemoval, true, "the sentinel must exist when status removal begins");
     assert.deepEqual((await readdir(statusDir)).filter(isStatusFileName), []);
     assert.match(stderr.text(), /\[sentinel\] will write /);
   } finally {
     continueWrite();
     await run?.catch(() => undefined);
     CompletionSentinel.prototype.writeTerminal = original;
+    StatusFileWriter.prototype.close = originalClose;
   }
 });
 

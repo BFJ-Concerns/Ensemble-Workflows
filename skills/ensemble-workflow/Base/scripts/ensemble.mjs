@@ -16844,14 +16844,14 @@ var GitWorktreeIsolationManager = class {
   #repoRoots = /* @__PURE__ */ new Map();
   #worktreeRoots = /* @__PURE__ */ new Map();
   async create(baseCwd) {
-    const repoRoot = await this.#gitRepoRoot(baseCwd);
+    const repoRoots = await this.#gitRepoRoots(baseCwd);
     const name = this.#uniqueName();
     const branch = `ensemble-workflows/${name}`;
-    const worktreePath = path8.join(path8.dirname(repoRoot), `${path8.basename(repoRoot)}.ensemble-workflows-worktrees`, name);
+    const worktreePath = path8.join(path8.dirname(repoRoots.main), `${path8.basename(repoRoots.main)}.ensemble-workflows-worktrees`, name);
     await mkdir4(path8.dirname(worktreePath), { recursive: true });
-    await git2(repoRoot, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+    await git2(repoRoots.checkout, ["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
     const baseCommit = (await git2(worktreePath, ["rev-parse", "HEAD"])).trim();
-    this.#worktreeRoots.set(worktreePath, repoRoot);
+    this.#worktreeRoots.set(worktreePath, repoRoots.checkout);
     return {
       path: worktreePath,
       branch,
@@ -16889,23 +16889,30 @@ var GitWorktreeIsolationManager = class {
       removed: true
     };
   }
-  async #gitRepoRoot(baseCwd) {
+  async #gitRepoRoots(baseCwd) {
     const resolvedCwd = path8.resolve(baseCwd);
-    let repoRoot = this.#repoRoots.get(resolvedCwd);
-    if (repoRoot === void 0) {
-      repoRoot = git2(resolvedCwd, ["rev-parse", "--show-toplevel"]).catch((error) => {
+    let repoRoots = this.#repoRoots.get(resolvedCwd);
+    if (repoRoots === void 0) {
+      repoRoots = this.#resolveRepoRoots(resolvedCwd).catch((error) => {
         throw new WorktreePlacementRejectedError(resolvedCwd, {
           cause: error
         });
       });
-      this.#repoRoots.set(resolvedCwd, repoRoot);
+      this.#repoRoots.set(resolvedCwd, repoRoots);
     }
     try {
-      return (await repoRoot).trim();
+      return await repoRoots;
     } catch (error) {
       this.#repoRoots.delete(resolvedCwd);
       throw error;
     }
+  }
+  async #resolveRepoRoots(cwd) {
+    const checkout = (await git2(cwd, ["rev-parse", "--show-toplevel"])).trim();
+    const common = path8.resolve(cwd, (await git2(cwd, ["rev-parse", "--git-common-dir"])).trim());
+    const worktree = (await git2(cwd, ["config", "--get", "--default", "", "core.worktree"])).trim();
+    const main = worktree.length > 0 ? path8.resolve(common, worktree) : path8.basename(common) === ".git" ? path8.dirname(common) : checkout;
+    return { checkout, main };
   }
   #uniqueName() {
     this.#counter += 1;

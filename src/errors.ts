@@ -767,14 +767,33 @@ function formatAgentOptionValue(value: unknown): string {
  * The durable run record could not start: its directory could not be
  * created or its opening artefacts could not be written. An operational
  * failure of the run (recording was enabled, so the run has no archive),
- * rendered cause-first in one line; the filesystem error rides `cause`.
+ * rendered cause-first in one line; the message also reaches the stdout
+ * envelope, while the filesystem error rides `cause`.
  */
+export const RUN_RECORD_START_REMEDIES =
+  "run without a record: ENSEMBLE_RUN_RECORD=off; or keep one: ENSEMBLE_RUN_RECORD_DIR=<a writable data home>";
+
 export class RunRecordStartError extends EnsembleError {
   constructor(readonly storeDir: string, cause: unknown) {
     super(
-      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `the durable run record could not start under ${storeDir}: ${cause instanceof Error ? cause.message : String(cause)} — ${RUN_RECORD_START_REMEDIES}`,
       { cause }
     );
+  }
+
+  /** The path the store was creating or writing when it failed, as the filesystem error names it. */
+  get blockedPath(): string {
+    const named = (this.cause as { path?: unknown } | undefined)?.path;
+    return typeof named === "string" ? named : this.storeDir;
+  }
+
+  /** The failing filesystem call (`mkdir`, `open`, …) and its error code, where the cause carries them. */
+  get filesystemFailure(): { syscall: string | null; code: string | null } {
+    const cause = this.cause as { syscall?: unknown; code?: unknown } | undefined;
+    return {
+      syscall: typeof cause?.syscall === "string" ? cause.syscall : null,
+      code: typeof cause?.code === "string" ? cause.code : null
+    };
   }
 }
 

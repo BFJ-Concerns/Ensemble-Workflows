@@ -129,6 +129,47 @@ The optional second export sets per-engine `model`, `effort`, and `fallback`
 values that every `agent()` call and `session()` on that engine inherits;
 options given at the call win. A chain in one engine's block may name targets on another engine.
 
+### Dispatch remap
+
+An operator can re-route a run's workers at launch without editing the
+script, with `--remap` flags or the `ENSEMBLE_DISPATCH_REMAP` variable (see
+[CLI](cli.md#running-a-workflow)). Each rule is `key=engine[:model]`:
+
+```sh
+ensemble --remap 'phase:critique=codex' --remap 'label:propose:*=codex:gpt-6-astra' review.js
+ENSEMBLE_DISPATCH_REMAP='claude=codex:gpt-6.1-sol' ensemble review.js
+```
+
+- **Keys** name the script's own roles first — `label:<glob>` and
+  `phase:<glob>`, where `*` matches any run of characters and `?` one, anchored
+  at both ends — then an `engine:model` pair, then a bare engine. The phase a
+  key matches is the call's `phase` option, else the phase `phase()` last set.
+- **Specificity** decides when several keys match one dispatch: a label key
+  beats a phase key beats an `engine:model` key beats an engine key; among keys
+  of one kind, the first given wins.
+- **The target** is an engine with or without a model. A moved dispatch takes
+  the rule's model, else the script's `defaults` model for the target engine,
+  else that engine's own default — exactly as an unpinned call on that engine
+  would, so a call's own `model` never crosses engines; the call's `effort`
+  and its fallback chain (each entry itself subject to the remap) ride across
+  as the call declared them. A rule whose target is the engine the call is
+  already on still counts as a move: the call takes the rule's model, or the
+  defaults', in place of its own.
+- **Every dispatch** resolves through the remap: a call's own target, each
+  entry of its fallback chain (so a chain cannot carry a call back onto an
+  engine the operator moved it off), and a session's creation, once, for its
+  life. The flags replace the variable whole; rules never merge across the two.
+- **The record says so**: the manifest's `dispatch_remap` carries the rules
+  and the layer that supplied them, each moved agent record carries `remap`
+  naming the key, what the script asked for, and what was dispatched, the
+  launcher announces each move on stderr, and a rule that matched no dispatch
+  by the run's end is reported on stderr and in the manifest's
+  `dispatch_remap_unmatched` — a mistyped key never silently leaves everything
+  where it was.
+
+A run whose coder and reviewer both land on one family has bought throughput,
+not the cross-engine check; the record keeps that visible.
+
 ### `parallel()` and `pipeline()`
 
 `parallel(thunks)` runs every thunk concurrently and returns all the results

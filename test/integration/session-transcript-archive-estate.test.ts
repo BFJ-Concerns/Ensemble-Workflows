@@ -58,6 +58,7 @@ function agentWithSuppressedTranscript(): RuntimeAgentRecord {
     model: null,
     effort: null,
     fallback: null,
+    remap: null,
     answeredBy: null,
     resolvedModel: null,
     resolvedEffort: null,

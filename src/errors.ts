@@ -363,6 +363,13 @@ export function agentIdentityOf(error: unknown): AgentCallIdentity | null {
   return null;
 }
 
+/**
+ * A dispatch-remap rule the launcher could not read: raised while the run's
+ * tuning is resolved, before any worker exists. Not an author error — the
+ * script is unedited by design; the operator's rule is the fault.
+ */
+export class DispatchRemapRejectedError extends EnsembleError {}
+
 export class AppServerExitedError extends EnsembleError {}
 
 export class AppServerRequestError extends EnsembleError {

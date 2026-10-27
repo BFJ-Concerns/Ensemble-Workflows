@@ -14034,6 +14034,8 @@ function agentIdentityOf(error) {
   }
   return null;
 }
+var DispatchRemapRejectedError = class extends EnsembleError {
+};
 var AppServerExitedError = class extends EnsembleError {
 };
 var AppServerRequestError = class extends EnsembleError {
@@ -15178,11 +15180,13 @@ var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
+var DISPATCH_REMAP_ENV = "ENSEMBLE_DISPATCH_REMAP";
 var RUN_SCOPED_ENVIRONMENT_VARIABLES = /* @__PURE__ */ new Set([
   AGENT_CEILING_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
   CALLER_IDENTITY_ENV,
+  DISPATCH_REMAP_ENV,
   "ENSEMBLE_STATUS",
   "ENSEMBLE_STATUS_DIR",
   HOLD_SCOPE_ENV
@@ -15565,6 +15569,134 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/dispatch-remap.ts
+var ENGINE_NAMES = /* @__PURE__ */ new Set(["codex", "claude", "opencode"]);
+var KEY_RANK = { label: 0, phase: 1, model: 2, engine: 3 };
+function isEngineName(value) {
+  return ENGINE_NAMES.has(value);
+}
+function rejected(rule, detail) {
+  return new DispatchRemapRejectedError(
+    `dispatch remap rule ${JSON.stringify(rule)} is invalid: ${detail}. A rule is <key>=<engine>[:<model>], where the key is label:<glob>, phase:<glob>, <engine>:<model>, or <engine>.`
+  );
+}
+function parseDispatchRemapRule(rule) {
+  const equals = rule.indexOf("=");
+  if (equals === -1) {
+    throw rejected(rule, "no `=` separates the key from the target");
+  }
+  const keyText = rule.slice(0, equals).trim();
+  const targetText = rule.slice(equals + 1).trim();
+  if (keyText.length === 0) {
+    throw rejected(rule, "the key is empty");
+  }
+  if (targetText.length === 0) {
+    throw rejected(rule, "the target is empty");
+  }
+  return { key: parseKey(rule, keyText), target: parseTarget(rule, targetText), source: rule.trim() };
+}
+function parseKey(rule, keyText) {
+  const colon = keyText.indexOf(":");
+  if (colon === -1) {
+    if (!isEngineName(keyText)) {
+      throw rejected(rule, `${JSON.stringify(keyText)} is neither an engine nor a label:, phase:, or engine:model key`);
+    }
+    return { kind: "engine", engine: keyText };
+  }
+  const head = keyText.slice(0, colon);
+  const rest = keyText.slice(colon + 1);
+  if (head === "label" || head === "phase") {
+    if (rest.length === 0) {
+      throw rejected(rule, `the ${head} glob is empty`);
+    }
+    return { kind: head, glob: rest };
+  }
+  if (isEngineName(head)) {
+    if (rest.length === 0) {
+      throw rejected(rule, `the model after ${JSON.stringify(head)}: is empty`);
+    }
+    return { kind: "model", engine: head, model: rest };
+  }
+  throw rejected(rule, `${JSON.stringify(head)} is neither an engine nor label or phase`);
+}
+function parseTarget(rule, targetText) {
+  const colon = targetText.indexOf(":");
+  const engine = colon === -1 ? targetText : targetText.slice(0, colon);
+  if (!isEngineName(engine)) {
+    throw rejected(rule, `the target engine ${JSON.stringify(engine)} is not an engine`);
+  }
+  if (colon === -1) {
+    return { engine };
+  }
+  const model = targetText.slice(colon + 1);
+  if (model.length === 0) {
+    throw rejected(rule, `the target model after ${JSON.stringify(engine)}: is empty`);
+  }
+  return { engine, model };
+}
+function parseDispatchRemap(rules) {
+  return rules.map((rule) => rule.trim()).filter((rule) => rule.length > 0).map((rule) => parseDispatchRemapRule(rule));
+}
+function splitDispatchRemapVariable(value) {
+  return value.split(",");
+}
+function globMatches(glob, value) {
+  let pattern = "";
+  for (const character of glob) {
+    if (character === "*") {
+      pattern += ".*";
+    } else if (character === "?") {
+      pattern += ".";
+    } else {
+      pattern += character.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${pattern}$`, "su").test(value);
+}
+function keyMatches(key, request) {
+  switch (key.kind) {
+    case "label":
+      return request.label !== null && globMatches(key.glob, request.label);
+    case "phase":
+      return request.phase !== null && globMatches(key.glob, request.phase);
+    case "model":
+      return request.engine === key.engine && request.model === key.model;
+    case "engine":
+      return request.engine === key.engine;
+  }
+}
+var DispatchRemapLedger = class {
+  rules;
+  #matched = /* @__PURE__ */ new Set();
+  constructor(rules) {
+    this.rules = rules;
+  }
+  /**
+   * The move a request takes, or null where no key matches. Among matching
+   * rules the most specific key wins — label, then phase, then
+   * `engine:model`, then engine — and among keys of one kind the first
+   * declared. A match is recorded as caught even when the target equals the
+   * request: the operator's rule took, and it was not mistyped.
+   */
+  resolve(request) {
+    let best;
+    for (const rule of this.rules) {
+      if (keyMatches(rule.key, request) && (best === void 0 || KEY_RANK[rule.key.kind] < KEY_RANK[best.key.kind])) {
+        best = rule;
+      }
+    }
+    if (best === void 0) {
+      return null;
+    }
+    this.#matched.add(best);
+    return { rule: best, engine: best.target.engine, model: best.target.model };
+  }
+  /** The rules that caught no dispatch so far, as written, in declaration order. */
+  unmatched() {
+    return this.rules.filter((rule) => !this.#matched.has(rule)).map((rule) => rule.source);
+  }
+};
+
 // src/completion-sentinel.ts
 import { mkdir as mkdir3, rename as rename4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path7 from "node:path";
@@ -15853,6 +15985,8 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
+      dispatch_remap_unmatched: null,
       git: {
         start: gitStart,
         end: null
@@ -16077,6 +16211,7 @@ var RunRecordWriter = class _RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      remap: record.remap,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -16160,6 +16295,9 @@ var RunRecordWriter = class _RunRecordWriter {
       }
       this.manifest.status = options.status;
       this.manifest.ended_at = options.endedAt ?? (/* @__PURE__ */ new Date()).toISOString();
+      if (options.dispatchRemapUnmatched !== void 0) {
+        this.manifest.dispatch_remap_unmatched = [...options.dispatchRemapUnmatched];
+      }
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
       if (this.manifest.git.end.diffPath !== null) {
         await this.#trackFile(this.manifest.git.end.diffPath);
@@ -16826,6 +16964,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/agent-placement.ts
@@ -21719,15 +21858,18 @@ var ChainAdvance = class {
   }
   engine;
 };
-function chainTargets(engine, options) {
+function chainTargets(engine, options, moves = /* @__PURE__ */ new Map()) {
   return [
     { entry: -1, engine, model: options.model, effort: options.effort },
-    ...(options.fallback ?? []).map((target, index) => ({
-      entry: index,
-      engine: target.engine,
-      model: target.model,
-      effort: target.effort ?? options.effort
-    }))
+    ...(options.fallback ?? []).map((target, index) => {
+      const moved = moves.get(index);
+      return {
+        entry: index,
+        engine: moved?.engine ?? target.engine,
+        model: moved === void 0 ? target.model : moved.model,
+        effort: target.effort ?? options.effort
+      };
+    })
   ];
 }
 function withoutChain(options) {
@@ -21745,6 +21887,25 @@ function optionsForTarget(options, target) {
   return new Proxy(options, {
     get(source, property, receiver) {
       return typeof property === "string" && property in overrides ? overrides[property] : Reflect.get(source, property, receiver);
+    }
+  });
+}
+function withOptionOverrides(options, overrides) {
+  return new Proxy(options, {
+    get(source, property, receiver) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) ? overrides[property] : Reflect.get(source, property, receiver);
+    },
+    has(source, property) {
+      return typeof property === "string" && Object.hasOwn(overrides, property) || Reflect.has(source, property);
+    },
+    ownKeys(source) {
+      return [.../* @__PURE__ */ new Set([...Reflect.ownKeys(source), ...Object.keys(overrides)])];
+    },
+    getOwnPropertyDescriptor(source, property) {
+      if (typeof property === "string" && Object.hasOwn(overrides, property)) {
+        return { value: overrides[property], writable: true, enumerable: true, configurable: true };
+      }
+      return Reflect.getOwnPropertyDescriptor(source, property);
     }
   });
 }
@@ -21831,6 +21992,16 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #defaultMaxAttempts;
   /** Run-wide capability strip, united with each call's own list. */
   #strip;
+  /** The launch-time dispatch remap, or null when the run has none. */
+  #remap;
+  /**
+   * The script's per-engine defaults a moved target's model resolves
+   * against, scoped to the workflow body that declared them: a composed
+   * child runs inside its own scope and the parent's continuation returns
+   * to the parent's, so concurrent and nested bodies never read each
+   * other's block.
+   */
+  #workflowDefaults = new AsyncLocalStorage();
   #eventListeners = /* @__PURE__ */ new Set();
   #completed = [];
   #runRecorder = null;
@@ -21882,6 +22053,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
   #claudeSessionStaleAfterMs;
   #codexSessionStaleAfterMs;
   constructor(options) {
+    this.#remap = options.dispatchRemap !== void 0 && options.dispatchRemap.length > 0 ? new DispatchRemapLedger(options.dispatchRemap) : null;
     if (options.strip !== void 0) {
       assertValidStripOption(options.strip);
     }
@@ -21973,6 +22145,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
       ...options.holdPollIntervalMs !== void 0 ? { holdPollIntervalMs: options.holdPollIntervalMs } : {},
       ...options.strip !== void 0 ? { strip: options.strip } : {},
+      ...options.dispatchRemap !== void 0 ? { dispatchRemap: options.dispatchRemap } : {},
       // The staleness cliff tracks the *effective* TTL: an explicit option
       // wins, else a machine-declared TTL for the Claude workers (which
       // outranks the injected 1h in the settings file) sets the cliff, else
@@ -21990,6 +22163,88 @@ var EnsembleRuntime = class _EnsembleRuntime {
   }
   setRunRecorder(recorder) {
     this.#runRecorder = recorder;
+  }
+  /**
+   * Runs a workflow body under its own `export const defaults`, so a call
+   * the remap moves to another engine with no model named takes that
+   * engine's declared model, as an unpinned call on it would — the
+   * declaring body's block, however the bodies nest or interleave.
+   */
+  runWithWorkflowDefaults(defaults, body) {
+    return this.#workflowDefaults.run(defaults, body);
+  }
+  /**
+   * The remap in force and the rules that caught no dispatch so far, as
+   * written — read at the run's end for the stderr report and the
+   * manifest, so a mistyped key is never silent. Null when the run has no
+   * remap.
+   */
+  dispatchRemapReport() {
+    if (this.#remap === null) {
+      return null;
+    }
+    return { rules: this.#remap.rules.map((rule) => rule.source), unmatched: this.#remap.unmatched() };
+  }
+  /**
+   * Every dispatch resolves through here before its engine is looked up:
+   * the call's own target and each fallback-chain entry are matched against
+   * the remap (label, phase, `engine:model`, engine — most specific key
+   * wins), a moved target taking the rule's model, else the target engine's
+   * declared default, else that engine's own; effort rides unchanged. The
+   * phase a key matches is the call's own, else the run's current one.
+   */
+  #remapDispatch(options) {
+    const ledger = this.#remap;
+    if (ledger === null || typeof options.engine !== "string") {
+      return { options, entryMoves: /* @__PURE__ */ new Map(), moves: [] };
+    }
+    const defaults = this.#workflowDefaults.getStore() ?? {};
+    const label = options.label ?? null;
+    const phase = options.phase ?? this.progress.snapshot().currentPhase;
+    const moves = [];
+    const entryMoves = /* @__PURE__ */ new Map();
+    const overrides = {};
+    const own = ledger.resolve({ engine: options.engine, model: options.model, label, phase });
+    if (own !== null) {
+      const model = own.model ?? defaults[own.engine]?.model;
+      overrides.engine = own.engine;
+      overrides.model = model;
+      moves.push({
+        key: own.rule.source,
+        entry: -1,
+        requested: { engine: options.engine, model: options.model ?? null },
+        dispatched: { engine: own.engine, model: model ?? null }
+      });
+    }
+    (options.fallback ?? []).forEach((target, index) => {
+      const move = ledger.resolve({ engine: target.engine, model: target.model, label, phase });
+      if (move === null) {
+        return;
+      }
+      const model = move.model ?? defaults[move.engine]?.model;
+      entryMoves.set(index, { engine: move.engine, model });
+      moves.push({
+        key: move.rule.source,
+        entry: index,
+        requested: { engine: target.engine, model: target.model },
+        dispatched: { engine: move.engine, model: model ?? null }
+      });
+    });
+    return {
+      options: own === null ? options : withOptionOverrides(options, overrides),
+      entryMoves,
+      moves
+    };
+  }
+  /** One notice per moved target, on the dispatched engine's channel, once the leg has an id. */
+  #announceRemap(agentId, identity, moves) {
+    for (const move of moves) {
+      this.#emitEvent({
+        method: `${move.dispatched.engine}/remapped`,
+        params: { agentId, label: identity.label, phase: identity.phase, ...move },
+        receivedAt: Date.now()
+      });
+    }
   }
   /** Sets the run's current phase. Driven by the script's `phase()` hook. */
   notePhase(title) {
@@ -22056,6 +22311,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     assertValidAgentPrompt(prompt);
     options = snapshotAgentCwd(options);
     assertValidAgentOptions(options);
+    const remapped = this.#remapDispatch(options);
+    options = remapped.options;
     if (options.schema !== void 0) {
       assertCompilableSchema(options.schema);
     }
@@ -22065,13 +22322,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const engine = this.#engineFor(options.engine);
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (strip.length > 0) {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
-    const dispatchOptions = strip.length > 0 ? { ...options, strip } : options;
+    const dispatchOptions = strip.length > 0 ? withOptionOverrides(options, { strip }) : options;
     this.budget.assertCanStart(engine.name);
     const queuedAt = Date.now();
     const agentId = this.progress.queueAgent({
@@ -22086,13 +22343,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, remapped.moves);
+    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes, remapped.moves);
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
       await this.#recordAgentSafely(agentRecord);
       unsettled.stage = "admitting";
-      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
+      const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt, remapped.entryMoves);
       if (options.identity === true) {
         const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
@@ -22172,13 +22430,15 @@ var EnsembleRuntime = class _EnsembleRuntime {
       throw new SessionClosedError();
     }
     assertValidWorkerSessionOptions(options);
+    const remapped = this.#remapDispatch(options);
+    options = remapped.options;
     const engine = this.#engineFor(options.engine);
     if (engine.createSession === void 0) {
       throw new MultiTurnUnsupportedError(engine.name);
     }
     const strip = effectiveStrip(this.#strip, options.strip);
     const stripRoutes = strip.length > 0 ? resolveStripEnforcement(engine.name, engine.capabilities, strip) : null;
-    for (const target of options.fallback ?? []) {
+    for (const target of chainTargets(engine.name, options, remapped.entryMoves).slice(1)) {
       const targetEngine = this.#chainEngineFor(target);
       if (targetEngine.createSession === void 0) {
         throw new MultiTurnUnsupportedError(targetEngine.name);
@@ -22187,12 +22447,14 @@ var EnsembleRuntime = class _EnsembleRuntime {
         resolveStripEnforcement(targetEngine.name, targetEngine.capabilities, strip);
       }
     }
-    const sessionOptions = strip.length > 0 ? { ...options, strip } : options;
+    const sessionOptions = strip.length > 0 ? withOptionOverrides(options, { strip }) : options;
     this.#sessionCounter += 1;
     const state = {
       id: this.#sessionCounter,
       options: sessionOptions,
       engine,
+      remapMoves: remapped.moves,
+      remapEntryMoves: remapped.entryMoves,
       resolvedModel: null,
       resolvedEffort: null,
       stripRoutes,
@@ -22274,7 +22536,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
-      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes);
+      if (state.turnCount === 0) {
+        this.#announceRemap(agentId, { label: options.label ?? null, phase: options.phase ?? null }, state.remapMoves);
+      }
+      const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, recordOptions, state.stripRoutes, state.remapMoves);
       agentRecord.resolvedModel = state.resolvedModel;
       agentRecord.resolvedEffort = state.resolvedEffort;
       agentRecord.session = { id: state.id, turn: turnNumber };
@@ -22284,7 +22549,11 @@ var EnsembleRuntime = class _EnsembleRuntime {
         await this.#recordAgentSafely(agentRecord);
         unsettled.stage = "admitting";
         try {
-          const targets = chainTargets(engine.name, state.turnCount === 0 ? options : withoutChain(options));
+          const targets = chainTargets(
+            engine.name,
+            state.turnCount === 0 ? options : withoutChain(options),
+            state.turnCount === 0 ? state.remapEntryMoves : void 0
+          );
           const output = await this.#runChained(
             engine,
             targets,
@@ -22435,10 +22704,10 @@ var EnsembleRuntime = class _EnsembleRuntime {
       }
     }
   }
-  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt) {
+  async #runAdmitted(engine, prompt, options, agentId, agentRecord, queuedAt, entryMoves) {
     return this.#runChained(
       engine,
-      chainTargets(engine.name, options),
+      chainTargets(engine.name, options, entryMoves),
       { label: options.label ?? null, phase: options.phase ?? null },
       options.maxAttempts,
       agentId,
@@ -23393,7 +23662,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd
     };
   }
-  #newAgentRecord(id, engine, prompt, options, stripRoutes = null) {
+  #newAgentRecord(id, engine, prompt, options, stripRoutes = null, remapMoves = []) {
     return {
       id,
       engine,
@@ -23406,6 +23675,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       model: typeof options.model === "string" ? options.model : null,
       effort: typeof options.effort === "string" ? options.effort : null,
       fallback: options.fallback === void 0 ? null : options.fallback.map((target) => ({ ...target })),
+      remap: remapMoves.length === 0 ? null : remapMoves.map((move) => ({ ...move, requested: { ...move.requested }, dispatched: { ...move.dispatched } })),
       answeredBy: null,
       resolvedModel: null,
       resolvedEffort: null,
@@ -29731,7 +30001,8 @@ async function runWorkflowScript(options) {
     // sitting where the script sits.
     require: createRequire(resolvedFilename)
   };
-  const resultPromise = run(bindings);
+  const runtime = options.runtime;
+  const resultPromise = runtime.runWithWorkflowDefaults !== void 0 ? runtime.runWithWorkflowDefaults(defaults ?? {}, () => run(bindings)) : run(bindings);
   const noteBodySettled = () => {
     if (workflowDepth === 0) {
       options.onBodySettled?.();
@@ -30429,7 +30700,8 @@ var AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  remap: { type: "string", multiple: true }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -30597,8 +30869,10 @@ async function runEnsembleCli(argv, options = {}) {
   }
   let invocation;
   let ambientSettings;
+  let dispatchRemap = null;
   try {
     invocation = await parseInvocation(argv, cwd, stdin, program);
+    dispatchRemap = resolveDispatchRemap(invocation.remap, env);
     ambientSettings = resolveAmbientSettings({
       env,
       cwd,
@@ -30639,6 +30913,7 @@ async function runEnsembleCli(argv, options = {}) {
 `);
   };
   let exitCode = 1;
+  let dispatchRemapUnmatched = null;
   try {
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
@@ -30646,6 +30921,7 @@ async function runEnsembleCli(argv, options = {}) {
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
+      ...dispatchRemap !== null ? { dispatchRemap: dispatchRemap.rules } : {},
       ...Object.keys(ambientSettings.workerEnvironment).length > 0 ? { workerEnvironment: ambientSettings.workerEnvironment } : {},
       ...ambientSettings.openCodeModels.length > 0 ? { openCodeModels: ambientSettings.openCodeModels } : {},
       ...runtimeConcurrencyOptions(ambientSettings)
@@ -30678,7 +30954,10 @@ async function runEnsembleCli(argv, options = {}) {
         cliFlags: cliFlags(invocation),
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: {
+          ...recordEffectiveSettings(invocation, options.timeoutMs),
+          dispatchRemap: dispatchRemap === null ? { value: null, layer: "default" } : { value: dispatchRemap.sources, layer: dispatchRemap.layer }
+        }
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
@@ -30717,6 +30996,19 @@ async function runEnsembleCli(argv, options = {}) {
         const effort = typeof event.params.effort === "string" ? ` (${event.params.effort} effort)` : "";
         stderr.write(`[codex] agent ${agentId}${label} runs unpinned \u2014 resolved ambient default: ${model}${effort}
 `);
+        return;
+      }
+      if (event.method.endsWith("/remapped")) {
+        const engine = event.method.slice(0, -"/remapped".length);
+        const agentId = typeof event.params.agentId === "number" ? event.params.agentId : "?";
+        const label = typeof event.params.label === "string" ? ` (${event.params.label})` : "";
+        const key = typeof event.params.key === "string" ? event.params.key : "?";
+        const entry = typeof event.params.entry === "number" ? event.params.entry : -1;
+        const what = entry === -1 ? "" : ` fallback entry ${entry}`;
+        stderr.write(
+          `[${engine}] agent ${agentId}${label}${what} remapped by ${JSON.stringify(key)}: asked for ${targetName(event.params.requested)}, dispatched to ${targetName(event.params.dispatched)}
+`
+        );
         return;
       }
       if (event.method === "runRecord/writeFailed") {
@@ -30879,6 +31171,14 @@ async function runEnsembleCli(argv, options = {}) {
         }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
+          const remapReport = runtime.dispatchRemapReport?.() ?? null;
+          if (remapReport !== null) {
+            dispatchRemapUnmatched = remapReport.unmatched;
+            for (const rule of remapReport.unmatched) {
+              stderr.write(`[remap] rule ${JSON.stringify(rule)} matched no dispatch
+`);
+            }
+          }
           await runtime.close(
             terminalStatus === "complete" ? "interrupted" : terminalStatus === void 0 ? "failed" : terminalStatus,
             terminalStatus === "complete" ? "body-returned" : "run-ended"
@@ -30898,6 +31198,7 @@ async function runEnsembleCli(argv, options = {}) {
           await runRecordWriter.finish({
             ...finalRecord ?? { status: "failed", exitCode: 1, result: null },
             ...teardownError !== null ? { status: "failed", exitCode: 1 } : {},
+            ...dispatchRemapUnmatched !== null ? { dispatchRemapUnmatched } : {},
             error: terminalError ?? teardownError
           });
         }
@@ -31012,6 +31313,7 @@ function cliFlags(invocation) {
     ...invocation.concurrencyCaps !== void 0 ? { concurrency: invocation.concurrencyCaps } : {},
     ...invocation.timeoutMs !== void 0 ? { timeoutMs: invocation.timeoutMs } : {},
     ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
+    ...invocation.remap !== void 0 ? { remap: invocation.remap } : {},
     jsonArgs: invocation.kind === "workflow" && invocation.jsonArgsProvided
   };
 }
@@ -31219,7 +31521,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        remap: { type: "string", multiple: true }
       },
       strict: true,
       allowPositionals: false
@@ -31238,6 +31541,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const remap = parseRemapFlag(parsed.values.remap);
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -31249,7 +31553,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
-    ...holdScope !== void 0 ? { holdScope } : {}
+    ...holdScope !== void 0 ? { holdScope } : {},
+    ...remap !== void 0 ? { remap } : {}
   };
 }
 async function parseAgentInvocation(argv, cwd, stdin, program) {
@@ -31299,6 +31604,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const remap = parseRemapFlag(parsed.values.remap);
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -31322,7 +31628,8 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
-    ...holdScope !== void 0 ? { holdScope } : {}
+    ...holdScope !== void 0 ? { holdScope } : {},
+    ...remap !== void 0 ? { remap } : {}
   };
 }
 async function readPrompt(stdin) {
@@ -31340,6 +31647,34 @@ function parseIsolation(value) {
     throw new CliUsageError(`--isolation must be worktree; got ${value}`);
   }
   return value;
+}
+function parseRemapFlag(values) {
+  if (values === void 0) {
+    return void 0;
+  }
+  for (const value of values) {
+    if (value.trim().length === 0) {
+      throw new CliUsageError("--remap requires a rule of the form <key>=<engine>[:<model>]");
+    }
+  }
+  return [...values];
+}
+function resolveDispatchRemap(flag, env) {
+  const inherited = env[DISPATCH_REMAP_ENV];
+  const layer = flag !== void 0 ? "flag" : inherited !== void 0 && inherited.trim().length > 0 ? "env" : null;
+  if (layer === null) {
+    return null;
+  }
+  const written = flag ?? splitDispatchRemapVariable(inherited ?? "");
+  try {
+    const rules = parseDispatchRemap(written);
+    return rules.length === 0 ? null : { rules, sources: rules.map((rule) => rule.source), layer };
+  } catch (error) {
+    if (error instanceof DispatchRemapRejectedError) {
+      throw new CliUsageError(layer === "flag" ? `--remap: ${error.message}` : `${DISPATCH_REMAP_ENV}: ${error.message}`);
+    }
+    throw error;
+  }
 }
 function parseStripList(values) {
   if (values === void 0) {
@@ -31452,7 +31787,7 @@ function optionName(value) {
   return equalsIndex === -1 ? value : value.slice(0, equalsIndex);
 }
 function isRepeatableOption(flag) {
-  return flag === "--budget" || flag === "--concurrency" || flag === "--strip";
+  return flag === "--budget" || flag === "--concurrency" || flag === "--strip" || flag === "--remap";
 }
 function isKnownAgentOption(value) {
   return value.startsWith("--") && Object.hasOwn(AGENT_INVOCATION_OPTIONS, value.slice(2));
@@ -31471,10 +31806,10 @@ function isBooleanAgentFlag(value) {
   return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope" || value === "--remap";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=") || value.startsWith("--remap=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -31738,7 +32073,8 @@ var RUN_OPTION_SYNOPSES = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--remap key=engine[:model]"
 ];
 var AGENT_OPTION_SYNOPSES = [
   "--model <model>",
@@ -31757,7 +32093,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--remap key=engine[:model]"
 ];
 function usage(program) {
   const forms = [

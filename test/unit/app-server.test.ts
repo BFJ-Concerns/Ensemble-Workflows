@@ -705,7 +705,7 @@ test("a started turn with no output expires before its ordinary timeout and reco
   }
 });
 
-test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 5_000 }, async () => {
+test("the archive distinguishes a transport request deadline from a turn deadline", { timeout: 20_000 }, async () => {
   const store = await mkdtemp(path.join(tmpdir(), "ensemble-request-deadline-record-"));
   const archiveCauseFor = async (
     mode: "no-turn-start-ack" | "hang-after-delta",

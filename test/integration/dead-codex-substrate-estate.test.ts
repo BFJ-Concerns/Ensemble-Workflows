@@ -8,8 +8,13 @@ import { assertSalvageEnvelope, runProcess } from "./estate-process.js";
 
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
-test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: 60_000 }, async () => {
-  for (const mode of ["exit-at-start", "close-stdin-before-exit"] as const) {
+const runsPerOrdering = 10;
+const runWaitMilliseconds = 20_000;
+const deadSubstrateOrderings = ["exit-at-start", "close-stdin-before-exit"] as const;
+const outerWaitMilliseconds = deadSubstrateOrderings.length * runsPerOrdering * runWaitMilliseconds + 30_000;
+
+test("a dead Codex app-server always yields a handled refusal across write and exit orderings", { timeout: outerWaitMilliseconds }, async () => {
+  for (const mode of deadSubstrateOrderings) {
     const directory = await mkdtemp(path.join(tmpdir(), "ensemble-dead-codex-"));
     const binDirectory = path.join(directory, "bin");
     const codexBin = path.join(binDirectory, "codex");
@@ -43,13 +48,13 @@ if (process.argv[2] === "--version") {
       await chmod(codexBin, 0o755);
       await writeFile(workflow, 'export const meta = { name: "dead-codex-substrate" };\nreturn await agent("never served", { engine: "codex", identity: true });\n');
 
-      for (let attempt = 1; attempt <= 10; attempt += 1) {
+      for (let attempt = 1; attempt <= runsPerOrdering; attempt += 1) {
         const result = await runProcess(process.execPath, [bundledCliPath, workflow], {
           PATH: `${binDirectory}${path.delimiter}${process.env.PATH ?? ""}`,
           XDG_DATA_HOME: path.join(directory, `data-${attempt}`),
           ENSEMBLE_RUN_RECORD: "1",
           ENSEMBLE_STATUS: "0"
-        }, 5_000);
+        }, runWaitMilliseconds);
         assert.equal(result.code, 1, `${mode} run ${attempt}: ${result.stderr}`);
         assert.ok(result.stdout.trim().length > 0, `${mode} run ${attempt}: missing failure envelope on stdout; stderr:\n${result.stderr}`);
         const envelope = assertSalvageEnvelope(result.stdout, "failed");

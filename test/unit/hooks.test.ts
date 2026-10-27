@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RemovedAgentOptionError, attachAgentIdentity } from "../../src/errors.js";
+import { RemovedAgentOptionError, attachAgentIdentity, markRunEnding } from "../../src/errors.js";
 import { parallel, pipeline } from "../../src/hooks.js";
 import { NestedWorkflowError, WorkflowResolutionError } from "../../src/workflow-registry.js";
 
@@ -168,6 +168,23 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
   // The live TokenBudget's mutators must not reach script code.
   assert.equal("record" in hooks.budget, false);
   assert.equal("events" in hooks.budget, false);
+});
+
+test("parallel and pipeline rethrow the run's own ending, identity envelope or not, instead of collapsing it", async () => {
+  // A leg the run's ending tore down is not a worker failing: a body
+  // awaiting the combinator must not resume past it and act on a run that
+  // has ended — the shape that once committed an empty results file one
+  // second before the launcher settled the run as interrupted.
+  const ending = (): never => {
+    throw markRunEnding(attachAgentIdentity(new Error("codex engine shut down"), { label: "builder", phase: "build" }));
+  };
+  const logs: string[] = [];
+  await assert.rejects(() => parallel([() => "first", ending], (message) => logs.push(message)), /codex engine shut down/);
+  await assert.rejects(
+    () => pipeline(["item"], [() => "stage one", ending], (message) => logs.push(message)),
+    /codex engine shut down/
+  );
+  assert.deepEqual(logs, [], "the ending is not logged as a collapsed leg");
 });
 
 test("parallel resolves an identified failure to its envelope, not bare null", async () => {

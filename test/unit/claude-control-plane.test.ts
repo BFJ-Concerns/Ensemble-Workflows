@@ -9,6 +9,7 @@ import { execFileSync, spawn } from "node:child_process";
 import {
   CLAUDE_CACHE_TTL_VARIABLE,
   ClaudeCliControlPlane,
+  LEAN_START_FLAGS,
   SANDBOXED_WORKSPACE_VARIABLE,
   VALVE_SLICE_BYTES,
   WORKER_MARKER_VARIABLE,
@@ -537,6 +538,58 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
     await controlPlane.stop(handle);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a lean dispatch adds the setting-sources and strict-MCP flags, and an ordinary dispatch adds nothing", async (context) => {
+  for (const lean of [true, false]) {
+    await context.test(lean ? "lean" : "ordinary", async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-lean-"));
+      try {
+        const argvPath = path.join(dir, "dispatch-argv.json");
+        const stubPath = path.join(dir, "claude-stub.mjs");
+        const sessionId = "00000000-0000-4000-8000-000000000032";
+        const name = "lean-probe";
+        await writeFile(
+          stubPath,
+          `#!/usr/bin/env node
+            import { writeFile } from "node:fs/promises";
+            const args = process.argv.slice(2);
+            if (args[0] === "--bg") {
+              await writeFile(${JSON.stringify(argvPath)}, JSON.stringify(args));
+              process.exit(0);
+            }
+            if (args[0] === "agents" && args[1] === "--json") {
+              process.stdout.write(JSON.stringify([{
+                id: "lean-1",
+                sessionId: ${JSON.stringify(sessionId)},
+                name: ${JSON.stringify(name)},
+                kind: "background",
+                cwd: ${JSON.stringify(dir)},
+                status: "busy",
+                state: "working"
+              }]));
+            }
+            process.exit(0);
+          `
+        );
+        await chmod(stubPath, 0o755);
+        const controlPlane = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
+        const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir, ...(lean ? { lean: true } : {}) });
+        const argv = JSON.parse(await readFile(argvPath, "utf8")) as string[];
+        const flagIndex = argv.indexOf("--setting-sources");
+        if (lean) {
+          assert.notEqual(flagIndex, -1);
+          assert.deepEqual(argv.slice(flagIndex, flagIndex + LEAN_START_FLAGS.length), [...LEAN_START_FLAGS]);
+        } else {
+          assert.equal(flagIndex, -1);
+          assert.equal(argv.includes("--strict-mcp-config"), false);
+        }
+        await controlPlane.stop(handle);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
   }
 });
 

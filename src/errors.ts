@@ -629,6 +629,21 @@ export class FallbackTargetRejectedError extends AgentOptionRejectedError {
 }
 
 /**
+ * A lean start asked for on an engine that cannot arrange one. Pre-spawn
+ * by construction: the judgement is made before any worker exists, so no
+ * worker ever dispatches carrying the operator's context the author
+ * believes withheld.
+ */
+export class LeanStartUnsupportedError extends AgentOptionRejectedError {
+  constructor(engine: string, detail: string) {
+    super(
+      `the ${engine} engine cannot arrange a lean start: ${detail}. ` +
+        "The worker was not dispatched. Remove the lean request, or use an engine that can withhold the operator's context."
+    );
+  }
+}
+
+/**
  * Thrown before any worker spawns when a requested capability strip cannot
  * be enforced through the target engine's own configuration surface. A
  * restriction the author asked for and did not get is exactly the silent

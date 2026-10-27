@@ -25,6 +25,7 @@ import {
 } from "./concurrency-defaults.js";
 
 import type { EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
+import type { LeanStartSupport } from "./lean-start.js";
 import type { ClaudeControlPlane } from "./claude-control-plane.js";
 import type { WorkerExitStatus } from "./errors.js";
 import type { ClaudeEngineConfig } from "./claude-engine.js";
@@ -55,6 +56,12 @@ export interface EngineTurnOptions {
    * `absent` ones need nothing by construction.
    */
   strip?: StrippableCapability[];
+  /**
+   * The call's effective lean request (run-wide or per-call), already
+   * judged by the runtime against this adapter's declared route. Adapters
+   * act only on a `config` route; the flag is never set otherwise.
+   */
+  lean?: boolean;
 }
 
 /**
@@ -155,6 +162,11 @@ export interface EngineAdapter {
    * stripping can never silently dispatch an unrestricted worker.
    */
   readonly capabilities?: EngineCapabilityTable;
+  /**
+   * How this engine arranges a lean start. Absent reads as "cannot": the
+   * runtime fails a lean request loud before the worker spawns.
+   */
+  readonly leanStart?: LeanStartSupport;
   schedule<T>(task: () => Promise<T>): Promise<T>;
   createInvocation(prompt: string, options: EngineTurnOptions): EngineInvocation;
   /**
@@ -324,6 +336,17 @@ export class CodexEngineAdapter implements EngineAdapter {
       detail:
         "measured 2026-08-28 on codex-cli 0.149.1: thread/start config overlay agents.enabled=false removes the collaboration tool namespace"
     }
+  };
+
+  /**
+   * No measured route withholds the operator's `~/.codex` instructions,
+   * skills and MCP servers from one thread (judged 2026-10-15 against
+   * codex-cli 0.153.2); a lean request on Codex fails loud pre-spawn until
+   * one is measured through the thread/start config overlay.
+   */
+  readonly leanStart: LeanStartSupport = {
+    route: "unsupported",
+    detail: "judged 2026-10-15 on codex-cli 0.153.2: no measured per-thread route withholds the operator's ~/.codex instructions, skills and MCP servers"
   };
 
   #transport: RuntimeTransport;
@@ -512,6 +535,23 @@ export class ClaudeEngineAdapter implements EngineAdapter {
     }
   };
 
+  /**
+   * The lean route is the dispatch's own flags (`claude-control-plane`'s
+   * `dispatch()`): `--setting-sources project,local` withholds the user
+   * settings layer, and with it the operator's rules files (they ride the
+   * first user message as attachments), the operator's skill listing, the
+   * plugins' MCP servers and the user-level permission mode;
+   * `--strict-mcp-config` closes the user-scope MCP servers a
+   * `~/.claude.json` adds. Project and local settings, the project's
+   * CLAUDE.md, the built-in tools and the per-dispatch settings file all
+   * still apply, so the worker keeps its reach and its default tool surface.
+   */
+  readonly leanStart: LeanStartSupport = {
+    route: "config",
+    detail:
+      "measured 2026-10-15 on Claude Code 2.1.300: --setting-sources project,local and --strict-mcp-config withhold the user settings layer, the operator's rules files, the skill listing and every MCP server; a --bg worker's first user message fell from 44,601 to 591 characters and its first-request cached input from 36,706 to 30,206 tokens, the residue being the engine's own tool schemas, inlined whole (63 KB against 27 KB) once the user layer's deny rules and tool deferral no longer apply"
+  };
+
   #scheduler: Scheduler;
   #cwd: string;
   #controlPlane: ClaudeControlPlane;
@@ -627,6 +667,12 @@ export class OpenCodeEngineAdapter implements EngineAdapter {
       detail:
         "measured 2026-08-27 on opencode 1.18.4: OPENCODE_CONFIG_CONTENT merges permission.task=deny, but worker-boundary enforcement is unproven"
     }
+  };
+
+  /** Held at its one-shot surface and never measured for a lean start; a lean request fails loud pre-spawn. */
+  readonly leanStart: LeanStartSupport = {
+    route: "unsupported",
+    detail: "judged 2026-10-15: no measured route withholds the operator's opencode context; the engine is held at its current surface"
   };
 
   #scheduler: Scheduler;

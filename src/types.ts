@@ -72,6 +72,15 @@ export interface AgentOptions {
    * keeps its engine's default tool surface.
    */
   strip?: StrippableCapability[];
+  /**
+   * Opt-in lean start: the worker begins without the operator's
+   * interactive context — user-level rules and instructions, the skill
+   * listing, the MCP tool set an interactive session would load — keeping
+   * its reach and its engine's built-in tool surface. Combined with the
+   * run-wide `lean`; an engine that cannot arrange it fails loud before the
+   * worker spawns. A worker nobody asked to be lean is unchanged.
+   */
+  lean?: boolean;
 }
 
 /**
@@ -107,6 +116,8 @@ export interface WorkerSessionOptions {
    * enforced once at creation for the session's whole life.
    */
   strip?: StrippableCapability[];
+  /** Opt-in lean start for the session's worker, arranged once at creation for its whole life (see `AgentOptions.lean`). */
+  lean?: boolean;
   /**
    * The advisory staleness mark: on by default. When false the session
    * never reads stale, whatever its idle gap. The mark is author-facing
@@ -221,6 +232,12 @@ export interface RuntimeOptions {
    * strip.
    */
   strip?: StrippableCapability[];
+  /**
+   * Run-wide lean start: every worker begins without the operator's
+   * interactive context, as if each call had asked (`AgentOptions.lean`).
+   * Opt-in only — a call cannot lift it.
+   */
+  lean?: boolean;
   defaultTurnTimeoutMs?: number;
   defaultMaxAttempts?: number;
   clientName?: string;

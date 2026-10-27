@@ -90,6 +90,10 @@ test("a dead or unstartable Codex substrate is availability, a deadline is recog
     classifyAttemptFailure(evidence({ engine: "codex", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
     { class: "unclassified", rule: "codex.deadline" }
   );
+  assert.deepEqual(
+    classifyAttemptFailure(evidence({ engine: "opencode", failure: { kind: "TurnTimeoutError", message: "deadline" } })),
+    { class: "unclassified", rule: "opencode.deadline" }
+  );
 });
 
 test("Codex schema rejection before generation is recognised without attributing a worker answer", () => {

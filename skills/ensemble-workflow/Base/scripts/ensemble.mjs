@@ -17250,6 +17250,10 @@ var CLAUDE_FAILURE_KINDS = /* @__PURE__ */ new Map([
   ["claude-transcript-error", { class: "unclassified", rule: "claude.transcript" }],
   ["claude-collection-error", { class: "unclassified", rule: "claude.collection" }]
 ]);
+var OPENCODE_FAILURE_KINDS = /* @__PURE__ */ new Map([
+  ["opencode-run-error", { class: "unclassified", rule: "opencode.run-error" }],
+  ["TurnTimeoutError", { class: "unclassified", rule: "opencode.deadline" }]
+]);
 function classifyAttemptFailure(evidence) {
   const { kind } = evidence.failure;
   if (OUTPUT_FAILURE_KINDS.has(kind)) {
@@ -17267,7 +17271,7 @@ function classifyAttemptFailure(evidence) {
     case "claude":
       return classifyClaudeFailure(kind, evidence.diagnostics);
     case "opencode":
-      return kind === "opencode-run-error" ? { class: "unclassified", rule: "opencode.run-error" } : { class: "unclassified", rule: null };
+      return OPENCODE_FAILURE_KINDS.get(kind) ?? { class: "unclassified", rule: null };
   }
 }
 function classifyCodexFailure(kind, diagnostic) {
@@ -20288,9 +20292,9 @@ var OpenCodeEngineInvocation = class {
         streamEvents.push(...parsed.events);
         streamSessionId ??= parsed.sessionId;
       }
-      const usage3 = usageFromStream(streamEvents);
-      if (usage3.breakdown !== null) {
-        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage3.breakdown, usage3.cost);
+      const usage2 = usageFromStream(streamEvents);
+      if (usage2.breakdown !== null) {
+        this.#reportUsage(streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
       }
     };
     const run = await this.#runner.run({
@@ -20310,6 +20314,26 @@ var OpenCodeEngineInvocation = class {
         attachPartialWorkerText(new EngineShutdownError("opencode"), fallback),
         { exitCode: run.exitCode, signal: run.signal }
       );
+    }
+    if (run.deadlineExpired === true && this.#options.timeoutMs !== void 0) {
+      const workerExit = { exitCode: run.exitCode, signal: run.signal };
+      const timeout = new TurnTimeoutError(`opencode turn timed out after ${this.#options.timeoutMs}ms`, {
+        kind: "turn",
+        timeoutMs: this.#options.timeoutMs,
+        threadId: parsedRun.sessionId ?? this.#syntheticSessionId()
+      });
+      const evidence = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, null);
+      attachFailedTurnResult(timeout, {
+        text: fallback,
+        resolvedModel: this.#providerModel,
+        workerExit,
+        deltaText: fallback,
+        durationMs: run.durationMs,
+        firstDeltaMs: null,
+        items: {},
+        ...evidence
+      });
+      throw attachWorkerExitStatus(attachPartialWorkerText(timeout, fallback), workerExit);
     }
     let exportData = null;
     let exportDiagnostic;
@@ -20357,23 +20381,7 @@ var OpenCodeEngineInvocation = class {
         exportDiagnostic = { status: "unusable", error: "export did not contain assistant text" };
       }
     }
-    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
-      breakdown: usageFromExport(exportData),
-      cost: exportData.info?.cost ?? null
-    };
-    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
-    if (usage2.breakdown !== null) {
-      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
-    }
-    const transcripts = [
-      {
-        filename: "transcript.opencode.jsonl",
-        format: "jsonl",
-        source: "opencode run --format json",
-        content: transcriptContent(run.stdout, exportData),
-        ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
-      }
-    ];
+    const { tokenUsageEvents, transcripts } = this.#attemptEvidence(run.stdout, parsedRun, streamSessionId, exportData);
     if (run.exitCode !== 0) {
       return {
         text,
@@ -20387,7 +20395,7 @@ var OpenCodeEngineInvocation = class {
         durationMs: run.durationMs,
         firstDeltaMs: null,
         items: {},
-        tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+        tokenUsageEvents,
         transcripts,
         diagnostics: {
           opencode: {
@@ -20403,13 +20411,39 @@ var OpenCodeEngineInvocation = class {
       durationMs: run.durationMs,
       firstDeltaMs: null,
       items: {},
-      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      tokenUsageEvents,
       transcripts,
       diagnostics: {
         opencode: {
           session_export: exportDiagnostic
         }
       }
+    };
+  }
+  /**
+   * The spend and transcript one attempt produced: the export's account when
+   * it was read, else the stream's. Reports the spend as it does so.
+   */
+  #attemptEvidence(stdout, parsedRun, streamSessionId, exportData) {
+    const usage2 = exportData === null ? usageFromStream(parsedRun.events) : {
+      breakdown: usageFromExport(exportData),
+      cost: exportData.info?.cost ?? null
+    };
+    const usageEvent = usage2.breakdown === null ? null : this.#usageEvent(parsedRun.sessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.breakdown, usage2.cost);
+    if (usage2.breakdown !== null) {
+      this.#reportUsage(parsedRun.sessionId ?? streamSessionId ?? this.#syntheticSessionId(), usage2.breakdown, usage2.cost);
+    }
+    return {
+      tokenUsageEvents: usageEvent === null ? [] : [usageEvent],
+      transcripts: [
+        {
+          filename: "transcript.opencode.jsonl",
+          format: "jsonl",
+          source: "opencode run --format json",
+          content: transcriptContent(stdout, exportData),
+          ...parsedRun.sessionId !== null ? { sessionId: parsedRun.sessionId } : {}
+        }
+      ]
     };
   }
   async close() {
@@ -20498,6 +20532,7 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
     const stdout = [];
     const stderr = [];
     let settled = false;
+    let deadlineExpired = false;
     let killEscalation;
     const terminate = () => {
       if (settled || killEscalation !== void 0) {
@@ -20509,7 +20544,12 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
       }, killGraceMs);
       killEscalation.unref();
     };
-    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(terminate, timeoutMs);
+    const timeout = timeoutMs === void 0 ? void 0 : setTimeout(() => {
+      if (!settled) {
+        deadlineExpired = true;
+        terminate();
+      }
+    }, timeoutMs);
     if (abortSignal?.aborted === true) {
       terminate();
     } else {
@@ -20556,7 +20596,8 @@ function runProcess(command, args, cwd, env, timeoutMs, killGraceMs = 5e3, abort
         signal,
         stdout: stdout.join(""),
         stderr: stderr.join(""),
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        deadlineExpired
       });
     });
   });

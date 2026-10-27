@@ -670,7 +670,7 @@ export class EnsembleRuntime {
       throw new TallyRejectedError(`the tally name must be a non-empty string, got ${JSON.stringify(name)}`);
     }
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${String(value)}`);
+      throw new TallyRejectedError(`the tally value for ${JSON.stringify(name)} must be a finite number, got ${describeTallyValue(value)}`);
     }
     try {
       await this.#runRecorder?.recordTally(name, value);
@@ -825,7 +825,7 @@ export class EnsembleRuntime {
         // collapse never read alike. The durable record is unchanged — it
         // already carries label and phase as first-class fields.
         const failure =
-          agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
+          agentRecord.status === "complete" ? null : identifiedFailure(agentRecord);
         return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
       }
       return output;
@@ -2788,10 +2788,14 @@ function settledFailureAccount(record: RuntimeAgentRecord): { kind: string; mess
   return record.terminationCause ?? { kind: "unavailable", message: "the agent failed without a recorded cause" };
 }
 
-/** The one-line rendering of that account an identified envelope's `failure` carries. */
-function settledFailureMessage(record: RuntimeAgentRecord): string {
+/**
+ * An identified envelope's `failure`: the account's kind as a field a
+ * script can switch on, beside the one-line message that has always led
+ * with that kind.
+ */
+function identifiedFailure(record: RuntimeAgentRecord): { kind: string; message: string } {
   const account = settledFailureAccount(record);
-  return `${account.kind}: ${account.message}`;
+  return { kind: account.kind, message: `${account.kind}: ${account.message}` };
 }
 
 function lastRawOutput(record: RuntimeAgentRecord): string | null {
@@ -2808,4 +2812,27 @@ function decodeFailureDiagnosticFromParams(params: JsonObject): { byteLength: nu
   return typeof params.byteLength === "number" && typeof params.linePrefix === "string"
     ? { byteLength: params.byteLength, linePrefix: params.linePrefix }
     : null;
+}
+
+/** A rejected tally value as it was passed, with its type, so `"20"` never reads as the number 20. */
+function describeTallyValue(value: unknown): string {
+  if (typeof value === "number") {
+    return `${String(value)} (a non-finite number)`;
+  }
+  if (typeof value === "string") {
+    return `${JSON.stringify(value)} (a string)`;
+  }
+  if (value === null) {
+    return "null";
+  }
+  if (typeof value === "bigint") {
+    return `${String(value)}n (a bigint)`;
+  }
+  if (typeof value === "object") {
+    return Array.isArray(value) ? "an array" : "an object";
+  }
+  if (value === undefined) {
+    return "undefined (no value)";
+  }
+  return `a ${typeof value}`;
 }

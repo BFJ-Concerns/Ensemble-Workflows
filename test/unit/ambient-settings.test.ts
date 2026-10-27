@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "../../src/ambient-settings.js";
+import { AmbientConfigError, CALLER_IDENTITY_ENV, resolveAmbientSettings } from "../../src/ambient-settings.js";
 
 test("caller identity has a named environment route without widening ambient settings", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "ensemble-caller-identity-env-"));
@@ -178,6 +178,27 @@ test("every environment-variable refusal quotes the offending value", () => {
       `${key}=${JSON.stringify(value)}`
     );
   }
+});
+
+test("every invalid ambient variable is reported in one refusal, not only the first", () => {
+  assert.throws(
+    () =>
+      resolveAmbientSettings({
+        env: { XDG_CONFIG_HOME: "/definitely/absent", ENSEMBLE_AGENT_CEILING: "0", ENSEMBLE_STATUS: "bad", ENSEMBLE_RUN_RECORD_DIR: "" },
+        cwd: "/tmp"
+      }),
+    (error: Error) => {
+      assert.ok(error instanceof AmbientConfigError);
+      assert.equal(
+        error.message,
+        "3 settings are invalid: " +
+          'Invalid value for ENSEMBLE_AGENT_CEILING: expected an integer of at least 1; got "0"; ' +
+          'Invalid value for ENSEMBLE_RUN_RECORD_DIR: expected a non-empty directory path; got ""; ' +
+          'Invalid value for ENSEMBLE_STATUS: expected on/off, true/false, yes/no, or 1/0; got "bad"'
+      );
+      return true;
+    }
+  );
 });
 
 test("worker_environment resolves per engine from the config file alone", async () => {

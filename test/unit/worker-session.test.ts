@@ -12,6 +12,7 @@ import {
   MultiTurnUnsupportedError,
   SessionBusyError,
   SessionClosedError,
+  SessionCreationOptionError,
   UnrecognisedAgentOptionError
 } from "../../src/errors.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
@@ -487,7 +488,32 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
     InvalidAgentOptionValueError
   );
   const session = runtime.createWorkerSession({ engine: "codex" });
-  await assert.rejects(session.send("fine", { effort: "high" } as never), UnrecognisedAgentOptionError);
+  await assert.rejects(session.send("fine", { effort: "high" } as never), SessionCreationOptionError);
+  assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
+
+test("send() refuses a creation-time option naming send(), not agent(), and says where the option belongs", async () => {
+  const transport = new ScriptedTransport([]);
+  const runtime = codexRuntime(transport);
+  const session = runtime.createWorkerSession({ engine: "codex" });
+
+  for (const option of ["model", "effort", "timeoutMs", "fallback"]) {
+    await assert.rejects(session.send("turn", { [option]: "x" } as never), (error: unknown) => {
+      assert.ok(error instanceof SessionCreationOptionError);
+      assert.equal(
+        error.message,
+        `send() option "${option}" is fixed when the session is created; pass it to session() instead. send() accepts only "schema"`
+      );
+      return true;
+    });
+  }
+  // A key no surface knows is still unrecognised — named against send().
+  await assert.rejects(session.send("turn", { surprise: true } as never), (error: unknown) => {
+    assert.ok(error instanceof UnrecognisedAgentOptionError);
+    assert.equal(error.message, 'Unrecognised send() option "surprise"; expected one of "schema"');
+    return true;
+  });
   assert.equal(transport.openedThreads.length, 0);
   await runtime.close();
 });

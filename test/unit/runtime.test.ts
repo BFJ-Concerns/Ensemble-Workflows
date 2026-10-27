@@ -25,11 +25,13 @@ import {
   CapabilityStripUnsupportedError,
   FallbackTargetRejectedError,
   InvalidAgentOptionValueError,
+  InvalidAgentOptionsError,
   InvalidAgentSchemaError,
   MissingEngineError,
   RemovedAgentOptionError,
   TurnTimeoutError,
-  WorktreePlacementRejectedError
+  WorktreePlacementRejectedError,
+  describeError
 } from "../../src/errors.js";
 
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
@@ -413,7 +415,7 @@ test("a transport error mid-attempt resolves null with the thrown failure's clas
     label: "rider",
     phase: null,
     output: null,
-    failure: { message: "AppServerExitedError: transport exited unexpectedly" }
+    failure: { kind: "AppServerExitedError", message: "AppServerExitedError: transport exited unexpectedly" }
   });
   assert.equal(records.at(-1)?.status, "failed");
   assert.equal(records.at(-1)?.attempts.at(-1)?.failure?.kind, "AppServerExitedError");
@@ -452,7 +454,7 @@ test("a bare text call inside parallel resolves null in its slot, never a thunk 
 
   assert.deepEqual(results, [
     null,
-    { label: "checked", phase: null, output: null, failure: { message: "Error: worker transport died" } },
+    { label: "checked", phase: null, output: null, failure: { kind: "Error", message: "Error: worker transport died" } },
     "answered"
   ]);
   assert.deepEqual(collapses, [], "no thunk collapsed: the failures were values");
@@ -543,7 +545,7 @@ test("a non-boolean identity value is rejected before any worker spawns", async 
 
   await assert.rejects(
     () => runtime.agent("go", { engine: "codex", identity: "yes" as never }),
-    InvalidAgentOptionValueError
+    (error: unknown) => soleOptionFault(error) instanceof InvalidAgentOptionValueError
   );
   // Nothing reached the engine at all: no thread opened, no turn run.
   assert.equal(transport.openedThreads.length, 0);
@@ -560,8 +562,8 @@ test("an effort outside the canonical vocabulary is rejected before any worker s
   await assert.rejects(
     () => runtime.agent("go", { engine: "codex", effort: "sol-high" }),
     (error: unknown) => {
-      assert.ok(error instanceof InvalidAgentOptionValueError);
-      assert.match(error.message, /minimal \| low \| medium \| high \| xhigh/);
+      assert.ok(soleOptionFault(error) instanceof InvalidAgentOptionValueError);
+      assert.match((error as Error).message, /minimal \| low \| medium \| high \| xhigh/);
       return true;
     }
   );
@@ -752,6 +754,44 @@ test("schema agents keep schema-validation failure behaviour when no candidate v
 
   assert.deepEqual(result, { answer: "yes" });
   assert.match(transport.turns[1]?.prompt ?? "", /A previous attempt failed \(schema-validation\)/);
+});
+
+test("an identified call's failure carries its kind as a field a script can switch on", async () => {
+  const transport = new FakeTransport([turn('{"answer":7}')]);
+  const runtime = new EnsembleRuntime({
+    transport,
+    concurrencyCaps: { codex: 1 },
+    defaultTurnTimeoutMs: 1_000,
+    defaultMaxAttempts: 1
+  });
+
+  const result = await runtime.agent("return JSON", { engine: "codex", schema, identity: true, label: "typed" });
+
+  assert.equal(result.output, null);
+  assert.equal(result.failure?.kind, "schema-validation");
+  assert.match(result.failure?.message ?? "", /^schema-validation: /);
+  await runtime.close();
+});
+
+test("one option mistake is the same error kind alone and among other mistakes", async () => {
+  const runtime = new EnsembleRuntime({ transport: new FakeTransport([]), concurrencyCaps: { codex: 1 }, defaultMaxAttempts: 1 });
+  const unsafeAgent = runtime.agent.bind(runtime) as unknown as (prompt: string, options: Record<string, unknown>) => Promise<unknown>;
+  const kindOf = async (options: Record<string, unknown>): Promise<{ kind: string; message: string }> => {
+    try {
+      await unsafeAgent("never", { engine: "codex", ...options });
+    } catch (error) {
+      return describeError(error);
+    }
+    assert.fail("the call should have been refused");
+  };
+
+  const alone = await kindOf({ maxAttempts: 0 });
+  const amongOthers = await kindOf({ maxAttempts: 0, timeoutMs: -1, surprise: true });
+  assert.equal(alone.kind, amongOthers.kind);
+  assert.equal(alone.kind, "InvalidAgentOptionsError");
+  assert.equal(alone.message, 'Invalid agent() option "maxAttempts" value 0; expected a positive integer');
+  assert.ok(amongOthers.message.includes(alone.message), amongOthers.message);
+  await runtime.close();
 });
 
 test("schema agents label empty output as empty-output, not invalid-json", async () => {
@@ -2888,7 +2928,7 @@ test("a malformed strip value is rejected before dispatch", async () => {
   });
   await assert.rejects(
     () => runtime.agent("never starts", { engine: "codex", strip: ["shells"] as never }),
-    InvalidAgentOptionValueError
+    (error: unknown) => soleOptionFault(error) instanceof InvalidAgentOptionValueError
   );
   await runtime.close();
 });
@@ -2929,9 +2969,9 @@ test("the retired fallbackModel option is rejected by name, pointing at the chai
   await assert.rejects(
     () => unsafeAgent("read", { engine: "claude", fallbackModel: "sonnet" }),
     (error: unknown) => {
-      assert.ok(error instanceof RemovedAgentOptionError);
-      assert.match(error.message, /"fallbackModel" was removed/);
-      assert.match(error.message, /fallback: \[\{ engine, model, effort\? \}/);
+      assert.ok(soleOptionFault(error) instanceof RemovedAgentOptionError);
+      assert.match((error as Error).message, /"fallbackModel" was removed/);
+      assert.match((error as Error).message, /fallback: \[\{ engine, model, effort\? \}/);
       return true;
     }
   );
@@ -3612,8 +3652,8 @@ test("a malformed or opencode chain entry is rejected before any worker spawns",
     await assert.rejects(
       () => unsafeAgent("work", { engine: "codex", fallback: chain }),
       (error: unknown) => {
-        assert.ok(error instanceof FallbackTargetRejectedError);
-        assert.match(error.message, expected);
+        assert.ok(soleOptionFault(error) instanceof FallbackTargetRejectedError);
+        assert.match((error as Error).message, expected);
         return true;
       }
     );
@@ -4003,7 +4043,7 @@ test("a Codex substrate that cannot start refuses the dispatch pre-spawn: one re
   );
   assert.match(
     settled.attempts[0]?.failure?.message ?? "",
-    /Codex app-server could not serve a thread in \/fake\/repo: codex app-server initialize handshake timed out after 50ms/
+    /A Codex worker could not run in \/fake\/repo: codex app-server initialize handshake timed out after 50ms/
   );
   await runtime.close();
 });
@@ -4264,3 +4304,13 @@ test("with no chain declared, no attempt carries a chain decision and no chain n
   );
   await runtime.close();
 });
+
+/**
+ * agent() reports every option fault on a call as one InvalidAgentOptionsError;
+ * a test about one fault reads that fault's own class from the carrier.
+ */
+function soleOptionFault(error: unknown): unknown {
+  assert.ok(error instanceof InvalidAgentOptionsError, `expected InvalidAgentOptionsError, got ${String(error)}`);
+  assert.equal(error.errors.length, 1);
+  return error.errors[0];
+}

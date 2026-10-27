@@ -5,6 +5,7 @@ import {
   InvalidAgentOptionValueError,
   OpenCodeModelNotRegisteredError,
   RemovedAgentOptionError,
+  SessionCreationOptionError,
   UnreadableAgentOptionError,
   UnrecognisedAgentOptionError
 } from "./errors.js";
@@ -142,9 +143,6 @@ export function assertValidAgentOptions(options: object): void {
     collect(() => assertValidStripOption(values.strip));
   }
   collect(() => assertValidFallbackChain(values.fallback));
-  if (errors.length === 1) {
-    throw errors[0];
-  }
   if (errors.length > 0) {
     throw new InvalidAgentOptionsError(errors);
   }
@@ -210,8 +208,11 @@ const SESSION_TURN_OPTION_KEY_SET = new Set<string>(SESSION_TURN_OPTION_KEYS);
 /** A send()'s options: schema is the one per-turn variation the contract permits. */
 export function assertValidSessionTurnOptions(options: object): void {
   for (const key of Object.keys(options)) {
+    if (WORKER_SESSION_OPTION_KEY_SET.has(key) && !SESSION_TURN_OPTION_KEY_SET.has(key)) {
+      throw new SessionCreationOptionError(key, SESSION_TURN_OPTION_KEYS);
+    }
     if (!SESSION_TURN_OPTION_KEY_SET.has(key)) {
-      throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS);
+      throw new UnrecognisedAgentOptionError(key, SESSION_TURN_OPTION_KEYS, "send()");
     }
   }
 }
@@ -226,37 +227,40 @@ export function assertValidSessionTurnOptions(options: object): void {
  * chain's own engine is never consulted: a Codex block may name a Claude
  * target — that cross-family step is the motivating case.
  */
-export function assertValidFallbackChain(chain: unknown): asserts chain is FallbackTarget[] | undefined {
+export function assertValidFallbackChain(
+  chain: unknown,
+  declaredAt: string = "the call's fallback option"
+): asserts chain is FallbackTarget[] | undefined {
   if (chain === undefined) {
     return;
   }
   if (!Array.isArray(chain)) {
-    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets");
+    throw new FallbackTargetRejectedError("the chain must be an array of { engine, model, effort? } targets", declaredAt);
   }
   if (chain.length === 0) {
-    throw new FallbackTargetRejectedError("the chain must not be empty");
+    throw new FallbackTargetRejectedError("the chain must not be empty", declaredAt);
   }
   chain.forEach((entry, index) => {
     const target = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? (entry as Record<string, unknown>) : null;
     if (target === null) {
-      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`);
+      throw new FallbackTargetRejectedError(`entry ${index} must be an object naming engine and model`, declaredAt);
     }
     for (const key of Object.keys(target)) {
       if (key !== "engine" && key !== "model" && key !== "effort") {
-        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`);
+        throw new FallbackTargetRejectedError(`entry ${index} carries unrecognised key ${JSON.stringify(key)}; a target names engine, model, and optionally effort`, declaredAt);
       }
     }
     if (target.engine === "opencode") {
-      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`);
+      throw new FallbackTargetRejectedError(`entry ${index} names the opencode engine, which is held at its one-shot surface and takes no chain entries`, declaredAt);
     }
     if (target.engine !== "codex" && target.engine !== "claude") {
-      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`);
+      throw new FallbackTargetRejectedError(`entry ${index} must name engine "codex" or "claude", got ${JSON.stringify(target.engine)}`, declaredAt);
     }
     if (typeof target.model !== "string" || target.model.length === 0) {
-      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`);
+      throw new FallbackTargetRejectedError(`entry ${index} must name its model: a fallback that inherits an ambient default is a substitution nobody chose`, declaredAt);
     }
     if (target.effort !== undefined && !(CANONICAL_EFFORT_DOMAIN as readonly unknown[]).includes(target.effort)) {
-      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`);
+      throw new FallbackTargetRejectedError(`entry ${index} effort must be one of ${CANONICAL_EFFORT_DOMAIN.join(" | ")}, got ${JSON.stringify(target.effort)}`, declaredAt);
     }
   });
 }
@@ -278,7 +282,7 @@ export function validateEngineDefaults(
   defaults: EngineDefaultOptions,
   openCodeModelRegistry: OpenCodeModelRegistry = defaultOpenCodeModelRegistry
 ): void {
-  assertValidFallbackChain(defaults.fallback);
+  assertValidFallbackChain(defaults.fallback, `the engine default defaults.${engine}.fallback`);
   if (engine !== "opencode") {
     // A bad static declaration fails before the body runs, not at the
     // first paid dispatch — the same canonical domain agent() enforces.

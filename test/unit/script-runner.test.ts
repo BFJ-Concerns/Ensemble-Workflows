@@ -317,7 +317,7 @@ test("child workflows share the parent budget ledger", async () => {
       try {
         await agent("again", { engine: "codex" });
       } catch (error) {
-        blocked = /Token budget exhausted/.test(String(error?.message ?? error));
+        blocked = /Token budget for codex reached/.test(String(error?.message ?? error));
       }
       return { child, blocked, remaining: budget.remaining("codex") };
     `

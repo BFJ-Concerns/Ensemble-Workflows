@@ -967,7 +967,7 @@ test("the budget ceiling blocks a later Claude agent once exhausted", async () =
         await runtime.agent("first", { engine: "claude" });
         assert.ok(runtime.budget.spent("claude") >= 5);
         assert.equal(runtime.budget.remaining("codex"), Number.POSITIVE_INFINITY);
-        await assert.rejects(() => runtime.agent("second", { engine: "claude" }), /Token budget exhausted/);
+        await assert.rejects(() => runtime.agent("second", { engine: "claude" }), /Token budget for \w+ reached/);
       } finally {
         await runtime.close();
       }

@@ -7,7 +7,7 @@ import { CALLER_IDENTITY_ENV, resolveAmbientSettings } from "./ambient-settings.
 import { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
 import { CompletionSentinel } from "./completion-sentinel.js";
 import type { SentinelManifestAttestation, SentinelWorkerOutcomes } from "./completion-sentinel.js";
-import { MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
+import { assertValidAgentOptions, MAX_TIMER_DELAY_MS } from "./engine-option-validation.js";
 import { describeError, HoldTimeoutError, PreSpawnAuthorError } from "./errors.js";
 import { answerHold, defaultHoldsDirectory, enumerateHolds, holdListingState, resolveHoldScope } from "./holds.js";
 import { boundedEvidence, presentOperationalError, presentTerminalError } from "./operator-diagnosis.js";
@@ -1362,6 +1362,10 @@ async function parseAgentInvocation(
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(strip !== undefined ? { strip } : {})
   };
+  // The same validator agent() runs, invoked before the run exists, so a
+  // bad option on the direct form is refused at the acceptance boundary
+  // like every other option mistake there: exit 2, one line, no archive.
+  assertValidAgentOptions({ ...agentOptions, ...(timeoutMs !== undefined ? { timeoutMs } : {}) });
 
   return {
     kind: "agent",
@@ -1449,7 +1453,7 @@ function splitTuningFlags(
     }
 
     if (value.startsWith("-")) {
-      throw new CliUsageError(`Unknown option before script path: ${value}`);
+      throw new CliUsageError(`Unknown option before script path: ${value}; run \`${program} --help\` for the options`);
     }
 
     const scriptArgs = argv.slice(index + 1);
@@ -2027,9 +2031,11 @@ function formatError(error: unknown): string {
   // workflow() references, nesting violations, workflow-authoring errors
   // (WorkflowScriptError is a member) — is the author's to fix: one clean
   // line, no stack. A breached deadline is not an authoring mistake but
-  // gets the same operator-facing surface.
+  // gets the same operator-facing surface. The message alone: the class
+  // name is harness vocabulary, and the envelope's `error.kind` already
+  // carries it for a consumer that switches on it.
   if (error instanceof PreSpawnAuthorError || error instanceof WorkflowTimeoutError || error instanceof HoldTimeoutError) {
-    return `${error.name}: ${error.message}`;
+    return error.message;
   }
   if (isError(error)) {
     const stack: unknown = error.stack;

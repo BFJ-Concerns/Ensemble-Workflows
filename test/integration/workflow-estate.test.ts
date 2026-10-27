@@ -729,7 +729,7 @@ test("CLI budget flag enforces Codex ceiling without blocking Claude", async () 
     codexRemaining: 0,
     claudeSpent: 3,
     claudeUnbounded: true,
-    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens",
+    codexBlockedMessage: "Token budget for codex reached: 6 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)",
     claudeAfterCodexExhaustion: "claude-still-runs"
   });
   // The blocked call is rejected at dispatch, before the engine sees it: one
@@ -776,7 +776,7 @@ test("CLI budget flag enforces Claude ceiling without blocking Codex", async () 
     claudeRemaining: 0,
     codexSpent: 4,
     codexUnbounded: true,
-    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens",
+    claudeBlockedMessage: "Token budget for claude reached: 7 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)",
     codexAfterClaudeExhaustion: "codex-still-runs"
   });
   assert.equal(codex.invocations.length, 1);
@@ -921,22 +921,22 @@ test("removed options fail loudly on the real agent path before spawning", async
     {
       name: "web-search-removed",
       options: `{ engine: "claude", webSearch: true }`,
-      message: /RemovedAgentOptionError: agent\(\) option "webSearch" was removed/
+      message: /^agent\(\) option "webSearch" was removed/m
     },
     {
       name: "sandbox-removed",
       options: `{ engine: "claude", sandbox: "read-only" }`,
-      message: /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/
+      message: /^agent\(\) option "sandbox" was removed/m
     },
     {
       name: "network-removed",
       options: `{ engine: "claude", network: false }`,
-      message: /RemovedAgentOptionError: agent\(\) option "network" was removed/
+      message: /^agent\(\) option "network" was removed/m
     },
     {
       name: "unknown-option",
       options: `{ engine: "claude", maxAttemps: 2 }`,
-      message: /UnrecognisedAgentOptionError: Unrecognised agent\(\) option "maxAttemps"/
+      message: /^Unrecognised agent\(\) option "maxAttemps"/m
     }
   ]) {
     const codex = new ScriptedEngineAdapter({ name: "codex", concurrency: 1, responses: [] });
@@ -1092,12 +1092,12 @@ test("parallel and pipeline propagate rejected options before a worker opens", a
     {
       name: "parallel-rejected-option",
       body: `await parallel([() => agent("never", { engine: "codex", sandbox: "read-only" })]);`,
-      message: /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/
+      message: /^agent\(\) option "sandbox" was removed/m
     },
     {
       name: "pipeline-rejected-option",
       body: `await pipeline(["item"], () => agent("never", { engine: "codex", maxAttemps: 2 }));`,
-      message: /UnrecognisedAgentOptionError: Unrecognised agent\(\) option "maxAttemps"/
+      message: /^Unrecognised agent\(\) option "maxAttemps"/m
     }
   ]) {
     const { exitCode, stdout, stderr, transport } = await runScript(
@@ -1192,7 +1192,7 @@ test("parallel propagates repeated malformed schemas before a worker opens", asy
 
   assert.equal(exitCode, 1);
   assertSalvageEnvelope(stdout, "failed");
-  assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
+  assert.match(stderr, /^agent schema does not compile as JSON Schema/m);
   assert.equal(transport.openedThreads.length, 0);
 });
 
@@ -1211,7 +1211,7 @@ test("pipeline propagates repeated malformed schemas before a worker opens", asy
 
   assert.equal(exitCode, 1);
   assertSalvageEnvelope(stdout, "failed");
-  assert.match(stderr, /InvalidAgentSchemaError: agent schema does not compile as JSON Schema/);
+  assert.match(stderr, /^agent schema does not compile as JSON Schema/m);
   assert.equal(transport.openedThreads.length, 0);
 });
 
@@ -1292,7 +1292,7 @@ test("schema retries, per-thunk failure, and budget ceiling survive a whole work
   assert.deepEqual(result.fanout, ["plain", null]);
   assert.equal(result.spentBeforeBlockedCall, 27);
   assert.equal(result.remaining, 0);
-  assert.match(result.blockedMessage ?? "", /Token budget exhausted for codex: spent 27 of 20 tokens/);
+  assert.match(result.blockedMessage ?? "", /Token budget for codex reached: 27 tokens spent against a threshold of 20/);
   assert.equal(transport.turns.length, 6);
 });
 
@@ -1332,7 +1332,7 @@ test("Codex budget exhaustion leaves Claude unbounded and runnable", async () =>
     codexRemaining: 0,
     claudeSpent: 3,
     claudeUnbounded: true,
-    codexBlockedMessage: "Token budget exhausted for codex: spent 6 of 5 tokens",
+    codexBlockedMessage: "Token budget for codex reached: 6 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)",
     claudeAfterCodexExhaustion: "claude-still-runs"
   });
 });
@@ -1373,7 +1373,7 @@ test("Claude budget exhaustion leaves Codex unbounded and runnable", async () =>
     claudeRemaining: 0,
     codexSpent: 4,
     codexUnbounded: true,
-    claudeBlockedMessage: "Token budget exhausted for claude: spent 7 of 5 tokens",
+    claudeBlockedMessage: "Token budget for claude reached: 7 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)",
     codexAfterClaudeExhaustion: "codex-still-runs"
   });
 });

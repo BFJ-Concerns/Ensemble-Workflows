@@ -85,6 +85,7 @@ export {
   PreSpawnAuthorError,
   SubstrateRefusedError,
   SessionBusyError,
+  SessionCreationOptionError,
   SessionClosedError,
   TallyRejectedError,
   WorkflowScriptReadError,

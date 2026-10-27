@@ -16092,7 +16092,7 @@ var RunRecordWriter = class _RunRecordWriter {
       label: record.label,
       phase: record.phase,
       status: record.status,
-      termination_cause: record.terminationCause,
+      termination_cause: record.status === "in-progress" && record.terminationCause === null ? { kind: "record-unsettled", message: "the writer has not observed this worker's outcome" } : record.terminationCause,
       creation_order: record.creationOrder,
       concurrency_group: record.concurrencyGroup,
       schema: record.schema,
@@ -16110,8 +16110,8 @@ var RunRecordWriter = class _RunRecordWriter {
       // none — an agent with no usage data must be legible as "unknown for
       // this reason", never indistinguishable from zero spend.
       usage: agentUsage(record),
-      queued_ms: record.queuedMs,
-      execution_ms: record.executionMs,
+      queued_ms: record.status === "in-progress" && record.queuedMs === 0 ? null : record.queuedMs,
+      execution_ms: record.status === "in-progress" && record.executionMs === 0 ? null : record.executionMs,
       attempts: record.attempts.map((attempt) => ({
         attempt: attempt.attempt,
         status: attempt.status,
@@ -18575,6 +18575,7 @@ var ClaudeEngineInvocation = class {
     return {
       handle,
       transcript,
+      completed: turnComplete(transcript.entries, fromIndex),
       resolvedModel: resolvedModelSince(transcript.entries, fromIndex),
       resolvedEffort: effortSince(transcript.entries, fromIndex),
       usage: usageSince(transcript.entries, fromIndex),
@@ -18739,7 +18740,7 @@ function failedTurnResult(error, evidence, usageEvent) {
           source: "claude-session-jsonl",
           sessionId: evidence.handle.sessionId,
           content: evidence.transcript.text,
-          partial: true
+          partial: !evidence.completed
         }
       ]
     }
@@ -18874,6 +18875,10 @@ var RunProgress = class {
     this.#counters(input.engine).queued += 1;
     this.#touch();
     return id;
+  }
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id) {
+    return this.#live.get(id)?.phase ?? null;
   }
   /**
    * Returns a running worker to the queue on another engine: a fallback
@@ -19883,7 +19888,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
         source: "codex-app-server-events",
         threadId,
         content: this.#transcriptText(threadId),
-        partial: true
+        partial: turn.completedAt === null
       });
     }
     this.#transcripts.delete(threadId);
@@ -22079,6 +22084,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       label: options.label ?? null,
       phase: options.phase ?? null
     });
+    const phase = this.progress.queuedAgentPhase(agentId);
     if (engine.name === "claude" && options.model === void 0) {
       this.#emitEvent({
         method: "claude/unpinnedModel",
@@ -22086,7 +22092,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
         receivedAt: Date.now()
       });
     }
-    const agentRecord = this.#newAgentRecord(agentId, engine.name, prompt, dispatchOptions, stripRoutes);
+    const agentRecord = this.#newAgentRecord(
+      agentId,
+      engine.name,
+      prompt,
+      { ...dispatchOptions, ...phase !== null ? { phase } : {} },
+      stripRoutes
+    );
     const unsettled = { record: agentRecord, stage: "dispatching" };
     this.#unsettledAgentRecords.set(agentId, unsettled);
     try {
@@ -22095,13 +22107,13 @@ var EnsembleRuntime = class _EnsembleRuntime {
       const output = await this.#runAdmitted(engine, prompt, dispatchOptions, agentId, agentRecord, queuedAt);
       if (options.identity === true) {
         const failure = agentRecord.status === "complete" ? null : { message: settledFailureMessage(agentRecord) };
-        return { label: options.label ?? null, phase: options.phase ?? null, output, failure };
+        return { label: options.label ?? null, phase, output, failure };
       }
       return output;
     } catch (error) {
       if (options.identity === true) {
         const carrier = error instanceof Error ? error : new Error(String(error), { cause: error });
-        attachAgentIdentity(carrier, { label: options.label ?? null, phase: options.phase ?? null });
+        attachAgentIdentity(carrier, { label: options.label ?? null, phase });
         throw carrier;
       }
       throw error;
@@ -22250,6 +22262,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         label: options.label ?? null,
         phase: options.phase ?? null
       });
+      const phase = this.progress.queuedAgentPhase(agentId);
       if (engine.name === "claude" && options.model === void 0 && state.turnCount === 0) {
         this.#emitEvent({
           method: "claude/unpinnedModel",
@@ -22270,7 +22283,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         ...options.timeoutMs !== void 0 ? { timeoutMs: options.timeoutMs } : {},
         ...options.maxAttempts !== void 0 ? { maxAttempts: options.maxAttempts } : {},
         ...options.label !== void 0 ? { label: options.label } : {},
-        ...options.phase !== void 0 ? { phase: options.phase } : {},
+        ...phase !== null ? { phase } : {},
         ...turn.schema !== void 0 ? { schema: turn.schema } : {},
         ...options.strip !== void 0 ? { strip: options.strip } : {}
       };
@@ -22288,7 +22301,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
           const output = await this.#runChained(
             engine,
             targets,
-            { label: options.label ?? null, phase: options.phase ?? null },
+            { label: options.label ?? null, phase },
             options.maxAttempts,
             agentId,
             agentRecord,
@@ -22353,8 +22366,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
     const invocation = {
       runAttempt: async (context) => {
         const result = await turnInvocation.runAttempt(context);
-        if (result.resolvedModel === void 0 && state.resolvedModel !== null && result.attemptFailure === void 0 && result.text.trim().length > 0) {
-          return { ...result, resolvedModel: state.resolvedModel };
+        if (result.resolvedModel === void 0 && agentRecord.resolvedModel !== null && (agentRecord.attempts.at(-1)?.target.engine === target.engine || result.attemptFailure === void 0 && result.text.trim().length > 0)) {
+          return { ...result, resolvedModel: agentRecord.resolvedModel };
         }
         return result;
       }
@@ -22439,7 +22452,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     return this.#runChained(
       engine,
       chainTargets(engine.name, options),
-      { label: options.label ?? null, phase: options.phase ?? null },
+      { label: options.label ?? null, phase: agentRecord.phase },
       options.maxAttempts,
       agentId,
       agentRecord,
@@ -22490,6 +22503,8 @@ var EnsembleRuntime = class _EnsembleRuntime {
             if (settled.status !== "refused") {
               return settled;
             }
+            agentRecord.resolvedModel = null;
+            agentRecord.resolvedEffort = null;
           }
           throw new Error("fallback chain ended without a settlement");
         })
@@ -22652,7 +22667,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
         phase: identity.phase,
         status: agentRecord.status,
         attempts: agentRecord.attempts.length,
-        targetsTried: agentRecord.fallback === null ? null : 1 + advancesOf(agentRecord).length,
+        targetsTried: agentRecord.fallback === null ? null : targetsTriedOf(agentRecord),
         failure: { kind: failure.kind, message: failure.message },
         diagnosis
       },
@@ -22867,7 +22882,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
    */
   #runSettlementCause(error, dispatch = "in-flight") {
     const substrate = error instanceof SubstrateRefusedError ? error.cause : error;
-    if (error instanceof EngineShutdownError || substrate instanceof AppServerExitedError && this.#closed) {
+    if (error instanceof EngineShutdownError || this.#closed && (error instanceof TurnTimeoutError || substrate instanceof AppServerExitedError)) {
       return this.#closeCause(dispatch);
     }
     return null;
@@ -22914,7 +22929,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       return;
     }
     record.status = "failed";
-    record.terminationCause = attemptedFailureAccount(record) !== null ? null : failedWithoutAttemptCause(error);
+    record.terminationCause = record.attempts.at(-1)?.status === "complete" || attemptedFailureAccount(record) === null ? failedWithoutAttemptCause(error, record.attempts.length > 0) : null;
   }
   /**
    * One target's placement, invocation, and bounded attempts. Resolves to
@@ -23520,21 +23535,24 @@ function attemptedFailureAccount(record) {
   }
   return null;
 }
-function failedWithoutAttemptCause(error) {
+function failedWithoutAttemptCause(error, hasAttempt) {
   if (error === null || error === void 0) {
-    return unavailableCause("no error was reported to the runtime");
+    return unavailableCause("no error was reported to the runtime", hasAttempt);
   }
   const described = describedRejection(error);
   if (described === null) {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) could not be described`, hasAttempt);
   }
   if (described.message.trim() === "") {
-    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`);
+    return unavailableCause(`the rejection the runtime holds (${rejectionShape(error)}) carried no message`, hasAttempt);
   }
   return described;
 }
-function unavailableCause(reason) {
-  return { kind: "unavailable", message: `the agent failed with no attempt recorded and ${reason}` };
+function unavailableCause(reason, hasAttempt) {
+  return {
+    kind: "unavailable",
+    message: `the agent failed ${hasAttempt ? "after an attempt without its own failure account" : "with no attempt recorded"} and ${reason}`
+  };
 }
 function describedRejection(error) {
   try {
@@ -23556,6 +23574,12 @@ function rejectionShape(error) {
 }
 function advancesOf(record) {
   return record.attempts.filter((attempt) => attempt.chainDecision === "advanced");
+}
+function targetsTriedOf(record) {
+  if (record.attempts.length === 0) {
+    return 0;
+  }
+  return advancesOf(record).length + (record.attempts.at(-1)?.chainDecision === "advanced" ? 0 : 1);
 }
 function settledFailureAccount(record) {
   const attempted = attemptedFailureAccount(record);

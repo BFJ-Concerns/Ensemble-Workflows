@@ -1410,6 +1410,7 @@ test("a client diagnostic in place of a model reply still keeps the transcript a
         // make the archive report that the engine produced none.
         assert.equal(attempt?.transcripts.length, 1);
         assert.match(attempt?.transcripts[0]?.content ?? "", /unknown provider/);
+        assert.equal(attempt?.transcripts[0]?.partial, false);
         // The diagnostic stays a failure and the placeholder stays no model:
         // retaining the evidence reclassifies nothing.
         assert.equal(records.at(-1)?.resolvedModel, null);

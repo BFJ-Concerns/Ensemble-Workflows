@@ -372,6 +372,18 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
     // Injected test runtimes may not carry a progress model; read it defensively.
     progress = (runtime as { progress?: RunProgress }).progress;
 
+    const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
+    if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
+      statusWriter = new StatusFileWriter({
+        progress,
+        dir: statusDir,
+        onError: (error) => {
+          stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
+        }
+      });
+      await statusWriter.ready();
+    }
+
     const runRecordDir = options.runRecordDir !== undefined ? options.runRecordDir : ambientSettings.runRecordDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
@@ -414,17 +426,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
       });
       (runtime as { setRunRecorder?: (recorder: RunRecordWriter | null) => void }).setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
-    }
-
-    const statusDir = options.statusDir !== undefined ? options.statusDir : ambientSettings.statusDir.value;
-    if (progress !== undefined && statusDir !== null && statusDir.length > 0) {
-      statusWriter = new StatusFileWriter({
-        progress,
-        dir: statusDir,
-        onError: (error) => {
-          stderr.write(`[status] failed to write progress snapshot: ${formatError(error)}\n`);
-        }
-      });
     }
 
     runtime.onEvent((event) => {
@@ -656,9 +657,6 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
         // Tear workers down while the archive is still open so their terminal
         // status can replace the dispatch-time snapshot before the run is sealed.
         progress?.finish();
-        if (statusWriter !== null) {
-          await statusWriter.close();
-        }
         if (runtime !== null) {
           const terminalStatus = finalRecord?.status;
           // A run whose body returned cleanly did not fail, so the workers it
@@ -730,6 +728,9 @@ export async function runEnsembleCli(argv: string[], options: EnsembleCliOptions
           manifest: manifestAttestation(runRecordWriter, recordingEnabled)
         });
       } finally {
+        if (statusWriter !== null) {
+          await statusWriter.close();
+        }
         // The run's terminal work is done: the handlers come off so a
         // library caller's process keeps its own signal behaviour.
         ending.dispose();

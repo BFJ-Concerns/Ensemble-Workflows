@@ -23,11 +23,20 @@ spend, and the live worker list — to its own file in the status directory:
 default. Ensemble writes there only when `.claude/` already exists and never
 creates it. Writes are atomic, so a reader never sees a half-written file.
 
-Each run has its own file, so concurrent runs in one directory are each
-visible for their whole lifetime: a later run never overwrites an earlier
-run's view, and a run that ends removes only its own file. A file left by a
-killed run stays until the next run starts in that directory, whose startup
-sweep removes any file whose writer is provably dead (below).
+Each run has its own file. For an accepted run with its status namespace
+present, the run's own status file is published as early after invocation
+acceptance as the run allows, before any worker is dispatched, and removed
+only after the sentinel is written. If the sentinel write fails, removal
+follows the write attempt; either write failure is reported without failing
+the run. A later run never overwrites an
+earlier run's view, and a run that ends removes only its own file. Publication
+starts after invocation acceptance and runtime creation; it cannot precede the
+launcher process itself. A missing namespace or a failed status or sentinel
+write can leave a gap. A file
+left by a killed run stays until the next run starts in that directory, whose
+startup sweep removes any file whose writer is provably dead (below). The
+sweep also checks a temp file's recorded PID and process start ticks; a reused
+PID refutes the old writer, while a name without parseable ticks is left alone.
 
 Consumers list the directory for `ensemble.*.local.json` and parse each file
 directly; Ensemble provides no rendering command. A reader decides liveness by

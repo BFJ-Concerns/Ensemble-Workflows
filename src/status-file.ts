@@ -40,8 +40,8 @@ export function isStatusFileName(name: string): boolean {
  * blank the line mid-run; the heartbeat re-stamps well inside that window.
  */
 const DEFAULT_HEARTBEAT_MS = 10_000;
-/** A writer's in-flight temp file: `<status file>.<pid>.<sequence>.tmp`. */
-const STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
+/** A writer's in-flight temp file: `<status file>.<pid>.<start-ticks>.<sequence>.tmp`. */
+const STATUS_TEMP_SUFFIX_PATTERN = /\.([1-9]\d*)\.([1-9]\d*)\.[1-9]\d*\.tmp$/;
 
 export interface StatusFileWriterOptions {
   progress: RunProgress;
@@ -143,6 +143,7 @@ export class StatusFileWriter {
   #tmpSeq = 0;
   #heartbeat: NodeJS.Timeout;
   #initialSweep: Promise<void>;
+  #initialPublication: Promise<void>;
   #ownerEvidence: Promise<SnapshotOwnerEvidence>;
   #procDir: string;
 
@@ -166,11 +167,17 @@ export class StatusFileWriter {
     this.#heartbeat.unref();
     // Publish an initial snapshot so the run shows up before its first agent.
     this.#request();
+    this.#initialPublication = this.#writing ?? Promise.resolve();
   }
 
   /** The path this run publishes to. */
   get path(): string {
     return this.#target;
+  }
+
+  /** Waits until the first publication has settled, including a reported write failure. */
+  async ready(): Promise<void> {
+    await this.#initialPublication;
   }
 
   /** Flushes any in-flight write, removes this run's file, and stops listening. */
@@ -227,12 +234,13 @@ export class StatusFileWriter {
 
   async #writeAtomic(snapshot: ProgressSnapshot): Promise<void> {
     await this.#initialSweep;
-    // pid + sequence keep a killed writer's leftover temp file attributable
-    // to it, so the next writer's sweep can remove it on evidence.
-    const tmp = `${this.#target}.${process.pid}.${(this.#tmpSeq += 1)}.tmp`;
+    const owner = await this.#ownerEvidence;
+    // Start ticks distinguish a killed writer from a later process using its pid.
+    // Unknown ticks stay unjudgeable on the next sweep.
+    const tmp = `${this.#target}.${process.pid}.${owner.start_ticks ?? "unknown"}.${(this.#tmpSeq += 1)}.tmp`;
     // The published shape is the progress snapshot plus this process's own
     // liveness evidence, so a snapshot outliving its run is refutable.
-    const published = { ...snapshot, owner: await this.#ownerEvidence };
+    const published = { ...snapshot, owner };
     await this.#fileOperations.writeFile(tmp, `${JSON.stringify(published)}\n`, "utf8");
     await this.#fileOperations.rename(tmp, this.#target);
   }
@@ -241,7 +249,7 @@ export class StatusFileWriter {
    * The new-writer trigger for what a killed run left behind (the same
    * discipline as the archive reaper): every status file in the directory
    * whose owner is *provably* gone is removed, and a temp file whose writer
-   * pid is dead with it. The judgement is the owner evidence, never age —
+   * pid and start ticks are refuted with it. The judgement is owner evidence, never age —
    * a slow run is not an orphan, an unparseable file is not this writer's
    * to destroy, and a file with no evidence is left for its owner.
    */
@@ -264,7 +272,7 @@ export class StatusFileWriter {
         if (
           isStatusFileName(entry.slice(0, -temp[0].length)) &&
           Number.isSafeInteger(ownerPid) &&
-          (await this.#writerGone(ownerPid))
+          (await this.#writerGone(ownerPid, temp[2]!))
         ) {
           await this.#unlinkQuietly(file);
         }
@@ -287,15 +295,11 @@ export class StatusFileWriter {
   }
 
   /**
-   * A temp file names only its writer's pid, so the judgement is the proc
-   * filesystem's: the pid absent where this process can read its own stat
-   * is death evidence; an unreadable proc filesystem decides nothing.
+   * A temp file carries the writer's process identity. Apply the same
+   * refutation rule as a published snapshot, including the own-stat guard.
    */
-  async #writerGone(pid: number): Promise<boolean> {
-    if ((await readProcessStartTicks(this.#procDir, pid)) !== null) {
-      return false;
-    }
-    return (await readProcessStartTicks(this.#procDir, process.pid)) !== null;
+  async #writerGone(pid: number, startTicks: string): Promise<boolean> {
+    return snapshotOwnerGone({ host: hostname(), pid, start_ticks: startTicks }, this.#procDir);
   }
 
   async #unlinkQuietly(file: string): Promise<void> {

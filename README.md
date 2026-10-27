@@ -194,6 +194,12 @@ and token usage, and a manifest with integrity hashes. A completion sentinel
 file tells a supervising process when, and how, the run ended. See
 [Run records and live status](docs/run-records.md).
 
+For an accepted run with a status namespace present, its own status file is
+published as early after invocation acceptance as the run allows, before any
+worker is dispatched, and removed only after the sentinel is written. If the
+sentinel write fails, removal follows the write attempt; failed status or
+sentinel writes never fail the run.
+
 ## Documentation
 
 - [Workflow scripts](docs/workflow-scripts.md): the script format, hooks,

@@ -477,8 +477,8 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
     UnrecognisedAgentOptionError
   );
   assert.throws(
-    () => runtime.createWorkerSession({ engine: "codex", identity: true } as never),
-    UnrecognisedAgentOptionError
+    () => runtime.createWorkerSession({ engine: "codex", identity: "yes" } as never),
+    InvalidAgentOptionValueError
   );
   // Effort is fixed at creation and judged there against the canonical
   // vocabulary, before the held worker spawns.
@@ -489,6 +489,45 @@ test("session creation is validated pre-spawn: schema and unknown keys are rejec
   const session = runtime.createWorkerSession({ engine: "codex" });
   await assert.rejects(session.send("fine", { effort: "high" } as never), UnrecognisedAgentOptionError);
   assert.equal(transport.openedThreads.length, 0);
+  await runtime.close();
+});
+
+test("an identified held session distinguishes a failed schema turn from a valid null answer", async () => {
+  const transport = new ScriptedTransport([turnResult("{}"), turnResult("null")]);
+  const runtime = codexRuntime(transport);
+  let session: ReturnType<EnsembleRuntime["createWorkerSession"]> | undefined;
+  assert.doesNotThrow(() => {
+    session = runtime.createWorkerSession({ engine: "codex", identity: true, label: "held", maxAttempts: 1 });
+  });
+  assert.ok(session);
+  const first = await session.send("fail", { schema: { type: "null" } }) as {
+    label: string | null; phase: string | null; output: unknown; failure: { message: string } | null;
+  };
+  const second = await session.send("answer null", { schema: { type: "null" } });
+  assert.equal(first.label, "held");
+  assert.equal(first.phase, null);
+  assert.equal(first.output, null);
+  assert.match(first.failure?.message ?? "", /schema-validation/);
+  assert.deepEqual(second, { label: "held", phase: null, output: null, failure: null });
+  assert.deepEqual(transport.turns.map((turn) => turn.threadId), ["thread-1", "thread-1"]);
+  await runtime.close();
+});
+
+test("a fresh handle reports whether staleness marking is enabled", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const marked = runtime.createWorkerSession({ engine: "codex" });
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(marked.stale, false);
+  assert.equal(disabled.stale, false);
+  assert.equal(marked.stalenessMark, true);
+  assert.equal(disabled.stalenessMark, false);
+  await runtime.close();
+});
+
+test("a disabled staleness mark has no active threshold on its handle", async () => {
+  const runtime = codexRuntime(new ScriptedTransport([]));
+  const disabled = runtime.createWorkerSession({ engine: "codex", stalenessMark: false });
+  assert.equal(disabled.staleAfterMs, null);
   await runtime.close();
 });
 

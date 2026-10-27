@@ -102,6 +102,8 @@ export interface WorkerSessionOptions {
   maxAttempts?: number;
   label?: string;
   phase?: string;
+  /** Resolve every turn with its label, output and failure account. */
+  identity?: boolean;
   /**
    * Named tool-surface capabilities to strip from the session's worker,
    * enforced once at creation for the session's whole life.

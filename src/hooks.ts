@@ -36,7 +36,7 @@ export interface WorkflowRuntime {
    * Optional so a minimal WorkflowRuntime (a test fake, an embedding) stays
    * valid; the `session` hook fails loud, pre-spawn, when it is absent.
    */
-  createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession;
+  createWorkerSession?: (options: WorkerSessionOptions) => WorkerSession<boolean>;
   /**
    * Runtime holds; see EnsembleRuntime.raiseHold. Optional on the
    * same terms as createWorkerSession; the `hold` hook fails loud when
@@ -74,7 +74,11 @@ export interface WorkflowHooks {
    * as for `agent()`: the session's engine block supplies model, effort,
    * and the fallback chain where the call leaves them unset.
    */
-  session: (options: WorkerSessionOptions) => WorkerSession;
+  session: {
+    (options: WorkerSessionOptions & { identity: true }): WorkerSession<true>;
+    (options: WorkerSessionOptions & { identity?: false }): WorkerSession<false>;
+    (options: WorkerSessionOptions): WorkerSession<boolean>;
+  };
   /**
    * Raise a hold and await its decision: content and accepted
    * verdicts in, the decider's verdict (and note) back, from a decision
@@ -130,7 +134,7 @@ export function createWorkflowHooks(options: {
 
   return {
     agent: agentWithDefaults,
-    session: (sessionOptions) => {
+    session: ((sessionOptions: WorkerSessionOptions) => {
       const createWorkerSession = options.runtime.createWorkerSession;
       if (createWorkerSession === undefined) {
         // Pre-spawn and loud, like every capability the runtime cannot
@@ -138,7 +142,7 @@ export function createWorkflowHooks(options: {
         throw new PreSpawnAuthorError("this runtime does not support multi-turn worker sessions");
       }
       return createWorkerSession.call(options.runtime, mergeSessionDefaults(defaults, sessionOptions));
-    },
+    }) as WorkflowHooks["session"],
     hold: (holdOptions) => {
       const raiseHold = options.runtime.raiseHold;
       if (raiseHold === undefined) {

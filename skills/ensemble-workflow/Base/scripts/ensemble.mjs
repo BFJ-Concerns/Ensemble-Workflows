@@ -16123,6 +16123,7 @@ var RunRecordWriter = class _RunRecordWriter {
         worker_exit: attempt.workerExit === null ? null : { exit_code: attempt.workerExit.exitCode, signal: attempt.workerExit.signal },
         app_server_diagnostic: attempt.appServerDiagnostic === null ? null : {
           code: attempt.appServerDiagnostic.code,
+          http_status_code: attempt.appServerDiagnostic.httpStatusCode,
           message: attempt.appServerDiagnostic.message,
           payload: attempt.appServerDiagnostic.payload
         },
@@ -17195,6 +17196,16 @@ var CODEX_AVAILABILITY_CODES = /* @__PURE__ */ new Map([
   ["responseStreamConnectionFailed", "codex.provider-unreachable"],
   ["internalServerError", "codex.provider-internal-error"]
 ]);
+var CODEX_STATUS_FORWARDING_CODES = /* @__PURE__ */ new Set(["responseTooManyFailedAttempts"]);
+function codexRuleForHttpStatus(status) {
+  if (status === 429) {
+    return "codex.rate-limit";
+  }
+  if (typeof status === "number" && status >= 500 && status <= 599) {
+    return "codex.provider-internal-error";
+  }
+  return void 0;
+}
 var CODEX_ERROR_CLASSES = /* @__PURE__ */ new Map([
   // The substrate died or never came up: the worker was lost before answering.
   ["AppServerExitedError", { class: "availability", rule: "codex.substrate-dead" }],
@@ -17262,7 +17273,7 @@ function classifyAttemptFailure(evidence) {
 function classifyCodexFailure(kind, diagnostic) {
   const code = diagnostic?.code;
   if (typeof code === "string") {
-    const rule = CODEX_AVAILABILITY_CODES.get(code);
+    const rule = CODEX_STATUS_FORWARDING_CODES.has(code) ? codexRuleForHttpStatus(diagnostic?.httpStatusCode) : CODEX_AVAILABILITY_CODES.get(code);
     if (rule !== void 0) {
       return { class: "availability", rule };
     }
@@ -20059,22 +20070,37 @@ function appServerErrorFromNotification(params) {
 function appServerDiagnosticFromPayload(payload) {
   return {
     code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
     message: payload.message ?? "unknown app-server error",
     payload: renderPayloadSafely(payload.data)
   };
 }
+function codexErrorInfoOf(value) {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: void 0 };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : void 0;
+  if (variant === void 0) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? status : void 0 };
+}
 function errorPayloadFromNotification(params) {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : void 0;
-  const errorInfo = code ?? (asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo));
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
+  const errorInfo = typeof codexErrorInfo === "string" ? codexErrorInfo : asJsonObject(codexErrorInfo) === null ? void 0 : renderPayloadSafely(codexErrorInfo);
   const message = typeof turnError?.message === "string" ? turnError.message : void 0;
   const additionalDetails = typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : void 0;
   const renderedDiagnostic = [errorInfo, message, additionalDetails].filter((value) => value !== void 0).filter((value, index, values) => values.indexOf(value) === index).join(": ");
   return {
-    code,
+    code: errorInfoParts?.code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
+    data: params,
+    ...errorInfoParts?.httpStatusCode === void 0 ? {} : { httpStatusCode: errorInfoParts.httpStatusCode }
   };
 }
 function renderPayloadSafely(payload) {

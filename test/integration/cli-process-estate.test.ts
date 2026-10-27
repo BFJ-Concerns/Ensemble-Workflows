@@ -1673,6 +1673,7 @@ test("built CLI retries a scoped overload and archives the provider diagnostic",
     assert.match(agent.attempts[0]?.failure?.message ?? "", /gateway detail: server_is_overloaded/);
     assert.deepEqual(agent.attempts[0]?.app_server_diagnostic, {
       code: "serverOverloaded",
+      http_status_code: null,
       message: "serverOverloaded: Upstream capacity is temporarily exhausted; invalid_json_schema is not the cause: gateway detail: server_is_overloaded",
       payload: JSON.stringify({ ...overload, threadId: "thread-1", turnId: "turn-1" })
     });
@@ -2919,7 +2920,7 @@ interface RecordedAgent {
   attempts: Array<{
     status: "complete" | "failed";
     failure: { kind: string; message: string } | null;
-    app_server_diagnostic: { code: number | string | null; message: string; payload: string } | null;
+    app_server_diagnostic: { code: number | string | null; http_status_code: number | null; message: string; payload: string } | null;
     raw_output: string | null;
   }>;
 }

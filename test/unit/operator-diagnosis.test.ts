@@ -177,9 +177,9 @@ test("a Codex schema rejection leads with the remedy and carries the diagnostic 
   const rejection = attachAppServerDiagnostic(
     new CodexSchemaSubsetUnsupportedError(
       { code: -32602, message: "invalid schema", data: { detail: "unsupported keyword" } },
-      { code: -32602, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
+      { code: -32602, httpStatusCode: null, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
     ),
-    { code: -32602, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
+    { code: -32602, httpStatusCode: null, message: "invalid schema", payload: '{"detail":"unsupported keyword"}' }
   );
   const rendered = presentTerminalError(rejection, noContext);
   assert.ok(rendered !== null);
@@ -330,6 +330,7 @@ const serverBody =
   '{\n  "type": "error",\n  "error": {\n    "code": "invalid_json_schema",\n    "message": "Invalid schema for response_format \'codex_output_schema\': In context=(), \'if\' is not permitted."\n  },\n  "status": 400\n}';
 const echoingDiagnostic = {
   code: "other",
+  httpStatusCode: null,
   message: `other: ${serverBody}`,
   payload: JSON.stringify({ error: { message: serverBody, codexErrorInfo: "other" }, willRetry: false })
 };

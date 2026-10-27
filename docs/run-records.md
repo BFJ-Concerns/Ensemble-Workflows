@@ -504,8 +504,12 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
     names that ending (`run-interrupted`, `run-timed-out`) and
     `observed_failure` keeps the symptom the turn saw (a closed app-server, an
     aborted poll); `null` when the engine's own failure is the cause.
-  - `diagnostics`, `app_server_diagnostic`, and `token_usage_events` (the
-    engine-native usage events).
+  - `diagnostics` and `token_usage_events` (the engine-native usage events).
+  - `app_server_diagnostic`: Codex's own account of the failure,
+    `{ code, http_status_code, message, payload }`. `code` is the condition
+    Codex named; `http_status_code` is the provider status Codex forwarded
+    with it (such as the last status after its own retries ran out), or
+    `null`. The whole field is `null` when Codex supplied no diagnostic.
   - `worker_exit`: `{ exit_code, signal }` when the worker process died
     rather than returned; `null` otherwise.
   - `background_waits`: the background tasks the worker started and Ensemble

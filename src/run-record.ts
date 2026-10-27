@@ -24,6 +24,7 @@ import { addUsageSummary, summariseUsage } from "./usage-summary.js";
 import type { Resolved } from "./ambient-settings.js";
 import type { OwnerGoneReason, ProcessOwnerRecord } from "./process-owner-evidence.js";
 import type { DischargedEnforcement, StrippableCapability } from "./capability-stripping.js";
+import type { AppServerDiagnostic } from "./errors.js";
 import type { FailureClassification } from "./failure-classification.js";
 import type { UsageSummary } from "./usage-summary.js";
 
@@ -165,7 +166,7 @@ export interface RuntimeAgentAttemptRecord {
    * The Codex app-server diagnostic observed for this failed attempt. Null
    * when the engine supplied no diagnostic, rather than an inferred cause.
    */
-  appServerDiagnostic: { code: number | string | null; message: string; payload: string } | null;
+  appServerDiagnostic: AppServerDiagnostic | null;
   rawOutput: string | null;
   validatedOutput: unknown;
   /** The served model this attempt's engine reported, when it reported one. */
@@ -987,6 +988,7 @@ export class RunRecordWriter {
             ? null
             : {
                 code: attempt.appServerDiagnostic.code,
+                http_status_code: attempt.appServerDiagnostic.httpStatusCode,
                 message: attempt.appServerDiagnostic.message,
                 payload: attempt.appServerDiagnostic.payload
               },

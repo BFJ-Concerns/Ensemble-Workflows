@@ -362,8 +362,9 @@ engine's own diagnostic:
 
 - **availability** — the engine refused or lost the worker before it
   answered: Codex's `usageLimitExceeded`, `rateLimitExceeded`, or
-  `serverOverloaded`, a refused connection, or an app-server that died or
-  never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
+  `serverOverloaded`, a refused connection, Codex running out of its own
+  retries (`responseTooManyFailedAttempts`) on a 429 or 5xx, or an app-server
+  that died or never started; a Claude API refusal carrying a 429, 503, or 529, a dispatch
   Claude Code refused, a dispatch the daemon never registered, or a session
   that never showed life. Only this class advances a fallback chain.
 - **output** — the worker answered badly: empty, unparseable, or off-schema.

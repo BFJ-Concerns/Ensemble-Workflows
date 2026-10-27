@@ -18,7 +18,7 @@ import {
   CodexSchemaSubsetUnsupportedError,
   TurnTimeoutError
 } from "./errors.js";
-import type { WorkerExitStatus } from "./errors.js";
+import type { AppServerDiagnostic, WorkerExitStatus } from "./errors.js";
 
 import type {
   JsonObject,
@@ -42,6 +42,8 @@ export interface RpcErrorPayload {
   code: number | string | undefined;
   message: string | undefined;
   data?: unknown;
+  /** The provider's HTTP status a turn-error notification forwarded in its `codexErrorInfo`. */
+  httpStatusCode?: number;
 }
 
 interface RpcMessage {
@@ -1370,24 +1372,45 @@ function appServerErrorFromNotification(params: JsonObject): Error {
   return appServerErrorFromPayload("turn notification", errorPayload);
 }
 
-function appServerDiagnosticFromPayload(payload: RpcErrorPayload): {
-  code: number | string | null;
-  message: string;
-  payload: string;
-} {
+function appServerDiagnosticFromPayload(payload: RpcErrorPayload): AppServerDiagnostic {
   return {
     code: payload.code ?? null,
+    httpStatusCode: payload.httpStatusCode ?? null,
     message: payload.message ?? "unknown app-server error",
     payload: renderPayloadSafely(payload.data)
   };
 }
 
+/**
+ * Codex names a turn's terminal condition in `codexErrorInfo`: a bare string
+ * for most conditions, or a one-key object whose key is the condition and
+ * whose value may forward the provider's HTTP status
+ * (`{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`).
+ */
+function codexErrorInfoOf(value: unknown): { code: string; httpStatusCode: number | undefined } | null {
+  if (typeof value === "string") {
+    return { code: value, httpStatusCode: undefined };
+  }
+  const variants = Object.entries(asJsonObject(value) ?? {});
+  const variant = variants.length === 1 ? variants[0] : undefined;
+  if (variant === undefined) {
+    return null;
+  }
+  const [code, detail] = variant;
+  const status = asJsonObject(detail)?.httpStatusCode;
+  return { code, httpStatusCode: Number.isInteger(status) ? (status as number) : undefined };
+}
+
 function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
   const turnError = asJsonObject(params.error);
   const codexErrorInfo = turnError?.codexErrorInfo;
-  const code = typeof codexErrorInfo === "string" ? codexErrorInfo : undefined;
+  const errorInfoParts = codexErrorInfoOf(codexErrorInfo);
   const errorInfo =
-    code ?? (asJsonObject(codexErrorInfo) === null ? undefined : renderPayloadSafely(codexErrorInfo));
+    typeof codexErrorInfo === "string"
+      ? codexErrorInfo
+      : asJsonObject(codexErrorInfo) === null
+        ? undefined
+        : renderPayloadSafely(codexErrorInfo);
   const message = typeof turnError?.message === "string" ? turnError.message : undefined;
   const additionalDetails =
     typeof turnError?.additionalDetails === "string" ? turnError.additionalDetails : undefined;
@@ -1397,9 +1420,10 @@ function errorPayloadFromNotification(params: JsonObject): RpcErrorPayload {
     .join(": ");
 
   return {
-    code,
+    code: errorInfoParts?.code,
     message: renderedDiagnostic.length > 0 ? renderedDiagnostic : renderPayloadSafely(params),
-    data: params
+    data: params,
+    ...(errorInfoParts?.httpStatusCode === undefined ? {} : { httpStatusCode: errorInfoParts.httpStatusCode })
   };
 }
 

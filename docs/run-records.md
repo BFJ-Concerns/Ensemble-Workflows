@@ -369,6 +369,19 @@ families with their own schema versions (`3` and `2`), described above.
 - `budget_ceilings` / `run_timeout_ms`: the effective per-engine token
   ceilings and whole-run timeout, each as `{ value, layer }`. Both are set by
   flag only, so their layers are `flag` or `default`.
+- `run_record_enabled` / `run_record_dir` and `status_enabled` /
+  `status_dir`: the effective recording and status-file switches and
+  directories, each as `{ value, layer }` when resolved by the CLI, or
+  `null` when a library caller starts the writer without effective settings.
+  Their ambient layers are `env`, `config-file`, or `default`. A library
+  override passed through the CLI is recorded as the run's `default`
+  baseline. A disabled switch or unusable default status directory gives
+  a resolved effective directory a `null` value.
+- `caller_identity_setting`: `{ value, layer }` when the CLI received an
+  identity from its flag or environment, or `null` when neither supplied
+  one. Its only layers are `flag` and `env`; a library-supplied identity
+  has no CLI layer. The existing `caller_identity` field carries the
+  identity itself.
 - `workflow_invocations`: the root workflow and every child it invoked through
   `workflow()`, in the order they were recorded — call order, except that
   concurrent `workflow()` calls are recorded as each one resolves. Each entry carries an ordinal (0 for the root),
@@ -573,10 +586,13 @@ Usage summaries — an agent record's `usage` and each `cost_rollup` bucket's
 | `unclassifiedTokens` | Spend the engine's total covers but no other class does — for example opencode steps that report only a total |
 
 Each engine's native fields are mapped under one rule. Codex reports cached
-tokens within input and reasoning within output, so both are subtracted out.
-Claude and opencode report them separately; Claude's reasoning is not
-separable, so its `reasoningOutputTokens` is `null` and the whole generation is
-in `outputTokens`. On Claude, usage is read from the session transcript once
+tokens within input and reasoning within output, so both are subtracted out;
+its `cacheWriteInputTokens` separates cache creation from reads when reported.
+Claude reports cache outside input and can separate reasoning within output
+through `output_tokens_details.thinking_tokens`, including a reported zero.
+When that field is absent, `reasoningOutputTokens` is `null` and the whole
+generation stays in `outputTokens`. On Claude, usage is read from the session
+transcript once
 per API call: Claude Code writes one call's reply across several rows that
 repeat the call's usage, so rows sharing a message id are counted once, and
 every figure is summed across the turn's calls. A held session's later turn

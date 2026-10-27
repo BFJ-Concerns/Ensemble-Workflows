@@ -21,8 +21,10 @@ test("caller identity has a named environment route without widening ambient set
       "configFile",
       "openCodeModels",
       "runRecordDir",
+      "runRecordEnabled",
       "runRecordStoreDir",
       "statusDir",
+      "statusEnabled",
       "workerEnvironment"
     ]);
   } finally {

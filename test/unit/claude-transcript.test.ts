@@ -21,7 +21,7 @@ import { ClaudeTranscriptError } from "../../src/errors.js";
 // `stop` defaults to a terminal turn (end_turn); pass "tool_use" for mid-turn.
 function assistant(
   blocks: unknown[],
-  options: { id?: string; usage?: Record<string, number>; stop?: string; model?: string; effort?: string } = {}
+  options: { id?: string; usage?: Record<string, unknown>; stop?: string; model?: string; effort?: string } = {}
 ): string {
   return JSON.stringify({
     type: "assistant",
@@ -164,6 +164,25 @@ test("usageSince counts every figure once per API call and sums across the turn'
   assert.equal(usage.cacheCreationInputTokens, 3);
   assert.equal("reasoningOutputTokens" in usage, false);
   assert.equal(usage.totalTokens, 320 + 15 + 40);
+});
+
+test("usageSince carries a reported thinking zero but leaves an unreported split absent", () => {
+  const reported = parseTranscriptText(assistant([textBlock("answer")], {
+    id: "msg_reported_zero",
+    usage: {
+      input_tokens: 3,
+      output_tokens: 2,
+      output_tokens_details: { thinking_tokens: 0 }
+    }
+  }));
+  assert.equal(usageSince(reported).reasoningOutputTokens, 0);
+  assert.equal(usageSince(reported).outputTokens, 2);
+
+  const mixed = parseTranscriptText(assistant([textBlock("another")], {
+    id: "msg_unreported",
+    usage: { input_tokens: 2, output_tokens: 1 }
+  }));
+  assert.equal("reasoningOutputTokens" in usageSince([...reported, ...mixed]), false);
 });
 
 test("usageSince counts one API call written across several transcript rows once", () => {

@@ -72,6 +72,7 @@ export interface AmbientSettings {
   configFile: string;
   agentCeiling: Resolved<number | null>;
   concurrencyCaps: Record<EngineName, Resolved<number>>;
+  runRecordEnabled: Resolved<boolean>;
   runRecordDir: Resolved<string | null>;
   /**
    * The durable-record store's directory, resolved independently of the
@@ -80,6 +81,7 @@ export interface AmbientSettings {
    * supervision surface, not archive.
    */
   runRecordStoreDir: Resolved<string>;
+  statusEnabled: Resolved<boolean>;
   statusDir: Resolved<string | null>;
   /**
    * Per-engine environment variables to inject into dispatched workers.
@@ -156,6 +158,17 @@ export function resolveAmbientSettings(input: {
     opencode: defaultOpenCodeConcurrency()
   };
 
+  const runRecordEnabled = resolveEnabled(input.env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
+  const runRecordStoreDir = resolveRunRecordStoreDir(config, input.env);
+  const statusEnabled = resolveEnabled(input.env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+  const statusStoreDir = statusEnabled.value
+    ? resolveDirectory(
+        input.env.ENSEMBLE_STATUS_DIR,
+        "ENSEMBLE_STATUS_DIR",
+        config?.status?.dir,
+        path.join(input.cwd, ".claude")
+      )
+    : { value: null, layer: statusEnabled.layer };
   return {
     configFile,
     agentCeiling: resolveAgentCeiling({
@@ -178,9 +191,11 @@ export function resolveAmbientSettings(input: {
         })
       ])
     ) as Record<EngineName, Resolved<number>>,
-    runRecordDir: resolveRunRecord(config, input.env),
-    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    runRecordEnabled,
+    runRecordDir: runRecordEnabled.value ? runRecordStoreDir : { value: null, layer: runRecordEnabled.layer },
+    runRecordStoreDir,
+    statusEnabled,
+    statusDir: resolveStatus(statusEnabled, statusStoreDir),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -473,23 +488,6 @@ function resolveAgentCeiling(input: {
   return { value: null, layer: "default" };
 }
 
-function resolveRunRecord(
-  config: MachineConfig | null,
-  env: NodeJS.ProcessEnv
-): Resolved<string | null> {
-  const enabled = resolveEnabled(env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
-  if (!enabled.value) {
-    return { value: null, layer: enabled.layer };
-  }
-  const directory = resolveDirectory(
-    env[RUN_RECORD_DIR_ENV],
-    RUN_RECORD_DIR_ENV,
-    config?.run_record?.dir,
-    path.join(dataHome(env), "ensemble")
-  );
-  return directory;
-}
-
 function resolveRunRecordStoreDir(
   config: MachineConfig | null,
   env: NodeJS.ProcessEnv
@@ -502,22 +500,11 @@ function resolveRunRecordStoreDir(
   );
 }
 
-function resolveStatus(
-  config: MachineConfig | null,
-  env: NodeJS.ProcessEnv,
-  cwd: string
-): Resolved<string | null> {
-  const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+function resolveStatus(enabled: Resolved<boolean>, directory: Resolved<string | null>): Resolved<string | null> {
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
   }
-  const directory = resolveDirectory(
-    env.ENSEMBLE_STATUS_DIR,
-    "ENSEMBLE_STATUS_DIR",
-    config?.status?.dir,
-    path.join(cwd, ".claude")
-  );
-  if (isDirectory(directory.value)) {
+  if (directory.value !== null && isDirectory(directory.value)) {
     return directory;
   }
   if (directory.layer !== "default") {

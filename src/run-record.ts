@@ -103,6 +103,11 @@ export interface EffectiveConcurrencyRecord {
 export interface EffectiveRunSettingsRecord {
   budgetCeilings: Partial<Record<EngineName, Resolved<number | null>>>;
   runTimeoutMs: Resolved<number | null>;
+  runRecordEnabled?: Resolved<boolean>;
+  runRecordDir?: Resolved<string | null>;
+  statusEnabled?: Resolved<boolean>;
+  statusDir?: Resolved<string | null>;
+  callerIdentity?: Resolved<string> | null;
 }
 
 /**
@@ -447,6 +452,11 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
+  run_record_enabled: Resolved<boolean> | null;
+  run_record_dir: Resolved<string | null> | null;
+  status_enabled: Resolved<boolean> | null;
+  status_dir: Resolved<string | null> | null;
+  caller_identity_setting: Resolved<string> | null;
   git: {
     start: GitState;
     end: GitState | null;
@@ -668,6 +678,11 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      run_record_enabled: options.effectiveSettings?.runRecordEnabled ?? null,
+      run_record_dir: options.effectiveSettings?.runRecordDir ?? null,
+      status_enabled: options.effectiveSettings?.statusEnabled ?? null,
+      status_dir: options.effectiveSettings?.statusDir ?? null,
+      caller_identity_setting: options.effectiveSettings?.callerIdentity ?? null,
       git: {
         start: gitStart,
         end: null

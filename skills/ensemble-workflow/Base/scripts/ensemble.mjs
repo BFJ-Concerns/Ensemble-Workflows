@@ -15218,6 +15218,15 @@ function resolveAmbientSettings(input) {
     claude: defaultClaudeConcurrency(),
     opencode: defaultOpenCodeConcurrency()
   };
+  const runRecordEnabled = resolveEnabled(input.env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
+  const runRecordStoreDir = resolveRunRecordStoreDir(config, input.env);
+  const statusEnabled = resolveEnabled(input.env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+  const statusStoreDir = statusEnabled.value ? resolveDirectory(
+    input.env.ENSEMBLE_STATUS_DIR,
+    "ENSEMBLE_STATUS_DIR",
+    config?.status?.dir,
+    path4.join(input.cwd, ".claude")
+  ) : { value: null, layer: statusEnabled.layer };
   return {
     configFile,
     agentCeiling: resolveAgentCeiling({
@@ -15240,9 +15249,11 @@ function resolveAmbientSettings(input) {
         })
       ])
     ),
-    runRecordDir: resolveRunRecord(config, input.env),
-    runRecordStoreDir: resolveRunRecordStoreDir(config, input.env),
-    statusDir: resolveStatus(config, input.env, input.cwd),
+    runRecordEnabled,
+    runRecordDir: runRecordEnabled.value ? runRecordStoreDir : { value: null, layer: runRecordEnabled.layer },
+    runRecordStoreDir,
+    statusEnabled,
+    statusDir: resolveStatus(statusEnabled, statusStoreDir),
     workerEnvironment: config?.worker_environment ?? {},
     openCodeModels: openCodeModelEntries(config?.opencode_models)
   };
@@ -15453,19 +15464,6 @@ function resolveAgentCeiling(input) {
   }
   return { value: null, layer: "default" };
 }
-function resolveRunRecord(config, env) {
-  const enabled = resolveEnabled(env[RUN_RECORD_ENV], RUN_RECORD_ENV, config?.run_record?.enabled);
-  if (!enabled.value) {
-    return { value: null, layer: enabled.layer };
-  }
-  const directory = resolveDirectory(
-    env[RUN_RECORD_DIR_ENV],
-    RUN_RECORD_DIR_ENV,
-    config?.run_record?.dir,
-    path4.join(dataHome(env), "ensemble")
-  );
-  return directory;
-}
 function resolveRunRecordStoreDir(config, env) {
   return resolveDirectory(
     env[RUN_RECORD_DIR_ENV],
@@ -15474,18 +15472,11 @@ function resolveRunRecordStoreDir(config, env) {
     path4.join(dataHome(env), "ensemble")
   );
 }
-function resolveStatus(config, env, cwd) {
-  const enabled = resolveEnabled(env.ENSEMBLE_STATUS, "ENSEMBLE_STATUS", config?.status?.enabled);
+function resolveStatus(enabled, directory) {
   if (!enabled.value) {
     return { value: null, layer: enabled.layer };
   }
-  const directory = resolveDirectory(
-    env.ENSEMBLE_STATUS_DIR,
-    "ENSEMBLE_STATUS_DIR",
-    config?.status?.dir,
-    path4.join(cwd, ".claude")
-  );
-  if (isDirectory(directory.value)) {
+  if (directory.value !== null && isDirectory(directory.value)) {
     return directory;
   }
   if (directory.layer !== "default") {
@@ -15853,6 +15844,11 @@ var RunRecordWriter = class _RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      run_record_enabled: options.effectiveSettings?.runRecordEnabled ?? null,
+      run_record_dir: options.effectiveSettings?.runRecordDir ?? null,
+      status_enabled: options.effectiveSettings?.statusEnabled ?? null,
+      status_dir: options.effectiveSettings?.statusDir ?? null,
+      caller_identity_setting: options.effectiveSettings?.callerIdentity ?? null,
       git: {
         start: gitStart,
         end: null
@@ -17163,8 +17159,9 @@ function breakdownFromUnknown(value) {
   const inputTokens = numericField(value, "inputTokens");
   const outputTokens = numericField(value, "outputTokens");
   const reasoningOutputTokens = optionalNumericField(value, "reasoningOutputTokens");
+  const cacheCreationInputTokens = optionalNumericField(value, "cacheWriteInputTokens");
   const totalTokens = numericField(value, "totalTokens");
-  if (cachedInputTokens === null || inputTokens === null || outputTokens === null || reasoningOutputTokens === null || totalTokens === null) {
+  if (cachedInputTokens === null || inputTokens === null || outputTokens === null || reasoningOutputTokens === null || cacheCreationInputTokens === null || totalTokens === null) {
     return null;
   }
   return {
@@ -17172,6 +17169,7 @@ function breakdownFromUnknown(value) {
     inputTokens,
     outputTokens,
     ...reasoningOutputTokens === void 0 ? {} : { reasoningOutputTokens },
+    ...cacheCreationInputTokens === void 0 ? {} : { cacheCreationInputTokens },
     totalTokens
   };
 }
@@ -17872,6 +17870,8 @@ function usageSince(entries, fromIndex = 0) {
   let outputTokens = 0;
   let cacheRead = 0;
   let cacheCreation = 0;
+  let reasoning = 0;
+  let reasoningSeparable = true;
   let sawUsage = false;
   for (let index = start; index < entries.length; index += 1) {
     const entry = entries[index];
@@ -17894,6 +17894,12 @@ function usageSince(entries, fromIndex = 0) {
     outputTokens += numeric(usage2.output_tokens);
     cacheRead += numeric(usage2.cache_read_input_tokens);
     cacheCreation += numeric(usage2.cache_creation_input_tokens);
+    const thinkingTokens = asRecord(usage2.output_tokens_details)?.thinking_tokens;
+    if (typeof thinkingTokens === "number" && Number.isFinite(thinkingTokens)) {
+      reasoning += thinkingTokens;
+    } else {
+      reasoningSeparable = false;
+    }
   }
   if (!sawUsage) {
     return zeroUsage();
@@ -17904,6 +17910,7 @@ function usageSince(entries, fromIndex = 0) {
     cacheCreationInputTokens: cacheCreation,
     inputTokens,
     outputTokens,
+    ...reasoningSeparable ? { reasoningOutputTokens: reasoning } : {},
     totalTokens: inputTokens + cachedInputTokens + outputTokens
   };
 }
@@ -30653,6 +30660,7 @@ async function runEnsembleCli(argv, options = {}) {
     const timeoutMs = invocation.timeoutMs ?? options.timeoutMs;
     progress = runtime.progress;
     const runRecordDir = options.runRecordDir !== void 0 ? options.runRecordDir : ambientSettings.runRecordDir.value;
+    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     recordingEnabled = runRecordDir !== null && runRecordDir.length > 0;
     const runtimeRunId = progress?.runId ?? "unknown-run";
     const callerIdentity = resolveCallerIdentity(invocation.callerIdentity, env);
@@ -30678,12 +30686,18 @@ async function runEnsembleCli(argv, options = {}) {
         cliFlags: cliFlags(invocation),
         ...callerIdentity !== void 0 ? { callerIdentity } : {},
         concurrency: recordConcurrency(ambientSettings, progress),
-        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs)
+        effectiveSettings: recordEffectiveSettings(invocation, options.timeoutMs, ambientSettings, {
+          runRecordDir,
+          statusDir,
+          callerIdentity,
+          runRecordDirOverridden: options.runRecordDir !== void 0,
+          statusDirOverridden: options.statusDir !== void 0,
+          callerIdentityLayer: invocation.callerIdentity !== void 0 ? "flag" : callerIdentity !== void 0 ? "env" : null
+        })
       });
       runtime.setRunRecorder?.(runRecordWriter);
       announceRunRecord(runRecordWriter, stderr);
     }
-    const statusDir = options.statusDir !== void 0 ? options.statusDir : ambientSettings.statusDir.value;
     if (progress !== void 0 && statusDir !== null && statusDir.length > 0) {
       statusWriter = new StatusFileWriter({
         progress,
@@ -31042,7 +31056,7 @@ function recordConcurrency(settings, progress) {
   }
   return { agentCeiling: settings.agentCeiling, engines };
 }
-function recordEffectiveSettings(invocation, injectedTimeoutMs) {
+function recordEffectiveSettings(invocation, injectedTimeoutMs, ambient, actual) {
   const budgetCeilings = {};
   for (const engine of ["codex", "claude", "opencode"]) {
     const flagged = invocation.budgetCeilings?.[engine];
@@ -31051,7 +31065,12 @@ function recordEffectiveSettings(invocation, injectedTimeoutMs) {
   const timeoutMs = invocation.timeoutMs ?? injectedTimeoutMs ?? null;
   return {
     budgetCeilings,
-    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== void 0 ? "flag" : "default" }
+    runTimeoutMs: { value: timeoutMs, layer: invocation.timeoutMs !== void 0 ? "flag" : "default" },
+    runRecordEnabled: actual.runRecordDirOverridden ? { value: actual.runRecordDir !== null, layer: "default" } : ambient.runRecordEnabled,
+    runRecordDir: actual.runRecordDirOverridden ? { value: actual.runRecordDir, layer: "default" } : ambient.runRecordStoreDir,
+    statusEnabled: actual.statusDirOverridden ? { value: actual.statusDir !== null, layer: "default" } : ambient.statusEnabled,
+    statusDir: actual.statusDirOverridden ? { value: actual.statusDir, layer: "default" } : ambient.statusDir,
+    callerIdentity: actual.callerIdentityLayer === null || actual.callerIdentity === void 0 ? null : { value: actual.callerIdentity, layer: actual.callerIdentityLayer }
   };
 }
 var CliUsageError = class extends Error {

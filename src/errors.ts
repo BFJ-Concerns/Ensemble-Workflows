@@ -219,6 +219,8 @@ export function failedTurnResultOf(error: unknown): EngineAttemptResult | null {
  */
 export interface AppServerDiagnostic {
   code: number | string | null;
+  /** The provider's HTTP status Codex forwarded with a turn's error, or null when it forwarded none. */
+  httpStatusCode: number | null;
   message: string;
   payload: string;
 }

@@ -182,6 +182,7 @@ test("the systemError failure-mode reports the protocol's missing diagnostic wit
         assert.match(error.message, /systemError without a diagnostic/);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: null,
+          httpStatusCode: null,
           message: "Codex app-server reported terminal systemError without a diagnostic",
           payload: '{"threadId":"thread-1","status":{"type":"systemError"}}'
         });
@@ -245,6 +246,7 @@ test("a systemError followed by Codex's schema diagnostic keeps its classified c
         assert.match(error.message, /invalid_json_schema: Invalid schema for response_format/);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: "invalid_json_schema",
+          httpStatusCode: null,
           message: "invalid_json_schema: Invalid schema for response_format",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
@@ -289,6 +291,7 @@ test("a systemError makes a retry-promised schema diagnostic terminal and classi
         assert.ok(error instanceof CodexSchemaSubsetUnsupportedError);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: "invalid_json_schema",
+          httpStatusCode: null,
           message: "invalid_json_schema: Invalid schema for response_format",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":true,"error":{"message":"Invalid schema for response_format","codexErrorInfo":"invalid_json_schema"}}'
@@ -350,6 +353,7 @@ test("a systemError followed by another diagnostic keeps that diagnostic attache
         assert.ok(error instanceof AppServerRequestError);
         assert.deepEqual(appServerDiagnosticOf(error), {
           code: null,
+          httpStatusCode: null,
           message: "upstream fell over",
           payload:
             '{"threadId":"thread-1","turnId":"turn-1","willRetry":false,"error":{"message":"upstream fell over"}}'

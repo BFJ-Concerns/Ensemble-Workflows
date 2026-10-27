@@ -87,7 +87,7 @@ import type {
 } from "./engines.js";
 import type { AgentPlacement } from "./agent-placement.js";
 import type { StrippableCapability } from "./capability-stripping.js";
-import type { FailureClassification } from "./failure-classification.js";
+import type { AttemptFailureEvidence, FailureClassification } from "./failure-classification.js";
 import type {
   ChainDecision,
   RunRecordWriter,
@@ -2403,7 +2403,7 @@ export class EnsembleRuntime {
   #classify(
     engine: EngineName,
     failure: { kind: string; message: string },
-    appServerDiagnostic: { code: number | string | null } | null,
+    appServerDiagnostic: AttemptFailureEvidence["appServerDiagnostic"],
     diagnostics: JsonObject | undefined
   ): FailureClassification {
     return classifyAttemptFailure({ engine, failure, appServerDiagnostic, diagnostics });

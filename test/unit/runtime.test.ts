@@ -2122,6 +2122,7 @@ test("a recorded Codex failure serialises its observed app-server diagnostic", a
 
   assert.deepEqual(records.at(-1)?.attempts.at(-1)?.appServerDiagnostic, {
     code: -32001,
+    httpStatusCode: null,
     message: "backpressure from fixture",
     payload: '{"queue":"saturated"}'
   });
@@ -3292,6 +3293,17 @@ function codexRefusal(code: string): () => Promise<EngineAttemptResult> {
   };
 }
 
+/** A Codex turn that spent Codex's own retries, as the transport raises it: the forwarded provider status riding the error. */
+function codexRetriesExhausted(httpStatusCode: number): () => Promise<EngineAttemptResult> {
+  return async () => {
+    throw appServerErrorFromPayload("turn notification", {
+      code: "responseTooManyFailedAttempts",
+      httpStatusCode,
+      message: `exceeded retry limit, last status: ${httpStatusCode}`
+    });
+  };
+}
+
 /** A Claude refusal as the engine returns it: a failed result carrying the API's status and code. */
 function claudeRefusal(status: number, code: string): () => Promise<EngineAttemptResult> {
   return async () => ({
@@ -3399,6 +3411,34 @@ test("an availability refusal advances the chain to the next target on the same 
     ]
   );
   assert.deepEqual(settled.fallback, [{ engine: "codex", model: "gpt-5.6-terra" }]);
+  assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-fallback" });
+  await runtime.close();
+});
+
+test("a Codex turn that exhausted its own retries on a 429 advances the chain instead of retrying the rate-limited target", async () => {
+  const codex = new ChainEngine("codex", [codexRetriesExhausted(429), answers("from the fallback", "gpt-served-fallback")]);
+  const { runtime, records } = chainRuntime([codex], 3);
+
+  const output = await runtime.agent("work", {
+    engine: "codex",
+    model: "gpt-5.6-sol",
+    fallback: [{ engine: "codex", model: "gpt-5.6-terra" }]
+  });
+
+  assert.equal(output, "from the fallback");
+  assert.deepEqual(
+    codex.dispatches.map((dispatch) => dispatch.model),
+    ["gpt-5.6-sol", "gpt-5.6-terra"]
+  );
+  const settled = records.at(-1)!;
+  assert.deepEqual(
+    settled.attempts.map((attempt) => [attempt.status, attempt.target, attempt.classification, attempt.chainDecision]),
+    [
+      ["failed", { engine: "codex", model: "gpt-5.6-sol" }, { class: "availability", rule: "codex.rate-limit" }, "advanced"],
+      ["complete", { engine: "codex", model: "gpt-5.6-terra" }, null, null]
+    ]
+  );
+  assert.equal(settled.attempts[0]?.appServerDiagnostic?.httpStatusCode, 429);
   assert.deepEqual(settled.answeredBy, { entry: 0, engine: "codex", model: "gpt-served-fallback" });
   await runtime.close();
 });

@@ -45,6 +45,30 @@ test("a Codex refusal is classified from the app-server's own code, outranking t
   }
 });
 
+test("a Codex turn that exhausted Codex's own retries is classified by the provider status it forwarded", () => {
+  // The archived shape from the 2026-10-26 rate-limit incident: Codex spent
+  // its retries on 429s and ended the turn with an object-shaped
+  // codexErrorInfo carrying the last status.
+  const exhausted = (httpStatusCode: number | null) =>
+    classifyAttemptFailure(
+      evidence({
+        engine: "codex",
+        failure: {
+          kind: "AppServerRequestError",
+          message:
+            'turn notification failed (responseTooManyFailedAttempts): {"responseTooManyFailedAttempts":{"httpStatusCode":429}}: exceeded retry limit, last status: 429 Too Many Requests'
+        },
+        appServerDiagnostic: { code: "responseTooManyFailedAttempts", httpStatusCode }
+      })
+    );
+  assert.deepEqual(exhausted(429), { class: "availability", rule: "codex.rate-limit" });
+  assert.deepEqual(exhausted(500), { class: "availability", rule: "codex.provider-internal-error" });
+  assert.deepEqual(exhausted(503), { class: "availability", rule: "codex.provider-internal-error" });
+  // The message still names a 429; only the structured status is read.
+  assert.deepEqual(exhausted(400), { class: "unclassified", rule: null });
+  assert.deepEqual(exhausted(null), { class: "unclassified", rule: null });
+});
+
 test("a dead or unstartable Codex substrate is availability, a deadline is recognised but unclassified", () => {
   assert.deepEqual(
     classifyAttemptFailure(evidence({ engine: "codex", failure: { kind: "AppServerExitedError", message: "exited" } })),

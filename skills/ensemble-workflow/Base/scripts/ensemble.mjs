@@ -17314,6 +17314,7 @@ import { access, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4,
 import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
 import path10 from "node:path";
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+var BOUND_BIN_VARIABLE = "AGENT_BOUND_BIN";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
 var OWNER_FILENAME = "owner.json";
@@ -17408,7 +17409,27 @@ var ClaudeCliControlPlane = class {
     if (registered === null) {
       throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
+    await this.#adopt(registered.sessionId);
     return registered;
+  }
+  /**
+   * Hands a registered session to the machine-wide worker bound when this
+   * launcher runs under one (`BOUND_BIN_VARIABLE` in its environment).
+   * Best-effort: the session is already running, so a failed adoption is
+   * one stderr line and the dispatch stands.
+   */
+  async #adopt(sessionId) {
+    const bound = this.#env[BOUND_BIN_VARIABLE];
+    if (bound === void 0 || bound.length === 0) {
+      return;
+    }
+    const result = await this.#run(bound, ["adopt", "--session", sessionId]);
+    if (!result.ok) {
+      process.stderr.write(
+        `[worker-bound] ${bound} adopt --session ${sessionId} failed: ${boundedEvidence(result.stderr.trim() || "no output")}
+`
+      );
+    }
   }
   /**
    * Write the per-dispatch settings file carrying the declared worker

@@ -192,6 +192,10 @@ while status is off, is not read. `0` is not a valid ceiling or cap. An empty
 `ENSEMBLE_CALLER_IDENTITY` does not affect the manifest's `meta.task` grouping
 key. With neither the variable nor the flag set, `caller_identity` is `null`.
 
+### The machine-wide worker bound
+
+`AGENT_BOUND_BIN` is set by the worker bound's `bound run` in the environment of a launcher it runs, and names the `bound` command. When it is present, the Claude engine hands each session it dispatches to `bound adopt --session <session id>` once the session has registered, so a session that runs under the per-user daemon — outside the launcher's own cgroup — is moved into the run's slice, where the bound measures its footprint and the slice's memory backstop reaches it. A failed adoption is reported on stderr and the dispatch stands. Without the variable the launcher never calls the bound.
+
 ## Run record and status locations
 
 The run record store's data home defaults to `$XDG_DATA_HOME/ensemble`

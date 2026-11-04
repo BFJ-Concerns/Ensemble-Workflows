@@ -20,6 +20,15 @@ import { boundedEvidence } from "./operator-diagnosis.js";
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+/**
+ * Set by the machine-wide worker bound's `bound run` in the environment of a
+ * launcher it runs: the path of the `bound` command. A dispatched session is
+ * a child of the per-user daemon, not of this launcher, so the bound cannot
+ * see it from the launcher's cgroup; `bound adopt --session <id>` moves the
+ * session's processes into the run's slice, where its footprint is measured
+ * and the slice's memory backstop reaches it.
+ */
+export const BOUND_BIN_VARIABLE = "AGENT_BOUND_BIN";
 /** Per-dispatch settings directories live under the temp root as `<prefix><dispatch name>-<random>`. */
 const SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 /** Each valve's private tmux socket lives at `<tmux's socket root>/<prefix><random>/tmux.sock`. */
@@ -355,7 +364,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Unreachable: every path that leaves the loop without a handle throws.
       throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
+    await this.#adopt(registered.sessionId);
     return registered;
+  }
+
+  /**
+   * Hands a registered session to the machine-wide worker bound when this
+   * launcher runs under one (`BOUND_BIN_VARIABLE` in its environment).
+   * Best-effort: the session is already running, so a failed adoption is
+   * one stderr line and the dispatch stands.
+   */
+  async #adopt(sessionId: string): Promise<void> {
+    const bound = this.#env[BOUND_BIN_VARIABLE];
+    if (bound === undefined || bound.length === 0) {
+      return;
+    }
+    const result = await this.#run(bound, ["adopt", "--session", sessionId]);
+    if (!result.ok) {
+      process.stderr.write(
+        `[worker-bound] ${bound} adopt --session ${sessionId} failed: ${boundedEvidence(result.stderr.trim() || "no output")}\n`
+      );
+    }
   }
 
   /**

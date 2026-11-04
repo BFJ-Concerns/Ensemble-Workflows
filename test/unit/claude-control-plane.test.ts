@@ -540,6 +540,75 @@ test("a requested cache TTL joins the settings env block, and a machine declarat
   }
 });
 
+test("a registered session is handed to the worker bound's adopt when the launcher runs under one", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-adopt-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const boundPath = path.join(dir, "bound-stub.mjs");
+    const adoptArgvPath = path.join(dir, "adopt-argv.json");
+    const sessionId = "00000000-0000-4000-8000-00000000ad09";
+    const name = "adopt-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "adopt-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await writeFile(
+      boundPath,
+      `#!/usr/bin/env node
+        import { writeFile } from "node:fs/promises";
+        await writeFile(${JSON.stringify(adoptArgvPath)}, JSON.stringify(process.argv.slice(2)));
+        process.exit(process.env.BOUND_STUB_FAIL === "1" ? 1 : 0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+    await chmod(boundPath, 0o755);
+
+    // Without the variable, the bound is never called.
+    const unbound = new ClaudeCliControlPlane({ claudeBin: stubPath, projectsDir: dir, dispatchTimeoutMs: 1_000 });
+    await unbound.dispatch({ prompt: "hello", name, cwd: dir });
+    await assert.rejects(readFile(adoptArgvPath, "utf8"));
+
+    // With it, the registered session id is handed over.
+    const bound = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      workerEnv: { AGENT_BOUND_BIN: boundPath }
+    });
+    const handle = await bound.dispatch({ prompt: "hello", name, cwd: dir });
+    assert.equal(handle.sessionId, sessionId);
+    assert.deepEqual(JSON.parse(await readFile(adoptArgvPath, "utf8")), ["adopt", "--session", sessionId]);
+
+    // A failing adoption leaves the dispatch standing.
+    await rm(adoptArgvPath);
+    const failing = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      workerEnv: { AGENT_BOUND_BIN: boundPath, BOUND_STUB_FAIL: "1" }
+    });
+    const stillRegistered = await failing.dispatch({ prompt: "hello", name, cwd: dir });
+    assert.equal(stillRegistered.sessionId, sessionId);
+    assert.deepEqual(JSON.parse(await readFile(adoptArgvPath, "utf8")), ["adopt", "--session", sessionId]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("an undeclared worker environment still dispatches with the ownership tag alone", async () => {
   // The settings file is written on every dispatch now: the tag is what lets
   // stop() reap the worker's surviving descendants, and an untagged worker

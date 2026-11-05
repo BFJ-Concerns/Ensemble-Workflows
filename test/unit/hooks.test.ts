@@ -173,7 +173,7 @@ test("the budget hook is a read-only facade, not the live ledger", async () => {
 test("parallel resolves an identified failure to its envelope, not bare null", async () => {
   // A thunk throwing an error with an attached identity collapses to an
   // envelope that preserves the identity, sets output to null, and carries
-  // the error message in failure.
+  // the error class as failure.kind and its message as failure.message.
   const failure = attachAgentIdentity(new Error("worker died"), { label: "verify", phase: "check" });
   const logs: string[] = [];
 
@@ -189,7 +189,7 @@ test("parallel resolves an identified failure to its envelope, not bare null", a
 
   assert.deepEqual(results, [
     "first",
-    { label: "verify", phase: "check", output: null, failure: { message: "worker died" } }
+    { label: "verify", phase: "check", output: null, failure: { kind: "Error", message: "worker died" } }
   ]);
   assert.match(logs[0] ?? "", /parallel thunk 1 failed/);
 });
@@ -207,7 +207,7 @@ test("pipeline resolves an identified failed item to its envelope", async () => 
     () => {}
   );
 
-  assert.deepEqual(results, [{ label: "leg", phase: null, output: null, failure: { message: "stage died" } }]);
+  assert.deepEqual(results, [{ label: "leg", phase: null, output: null, failure: { kind: "Error", message: "stage died" } }]);
 });
 
 test("the hooks agent surface presents the canonical overload set", async () => {

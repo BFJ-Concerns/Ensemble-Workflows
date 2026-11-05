@@ -22,7 +22,7 @@ function assertSubstrateRefusal(result: { code: number | null; stdout: string; s
   assert.equal(envelope.partial, true);
   assert.equal(envelope.reason, "failed");
   assert.equal(envelope.error.kind, "CodexSubstrateRefusedError");
-  assert.match(result.stderr, /CodexSubstrateRefusedError: Codex app-server could not serve a thread in .*: Codex app-server exited/);
+  assert.match(result.stderr, /^A Codex worker could not run in .*: the Codex engine process exited/m);
   assert.doesNotMatch(result.stderr, /failed after \d+ attempts?/);
 }
 

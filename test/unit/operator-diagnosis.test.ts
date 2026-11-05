@@ -143,14 +143,28 @@ test("an oversized prompt renders as the named platform limit, not raw spawn E2B
 test("a dead app-server discriminates how it died from the evidence the error carries", () => {
   const terminated = new AppServerExitedError("codex app-server exited before responding");
   attachWorkerExitStatus(terminated, { exitCode: null, signal: "SIGTERM" });
-  assert.match(presentTerminalError(terminated, noContext) ?? "", /terminated by SIGTERM/);
+  assert.match(presentTerminalError(terminated, noContext) ?? "", /the Codex engine process was killed by SIGTERM/);
 
   const crashed = new AppServerExitedError("codex app-server exited before responding");
   attachWorkerExitStatus(crashed, { exitCode: 137, signal: null });
   assert.match(presentTerminalError(crashed, noContext) ?? "", /exited with code 137/);
 
   const unknown = new AppServerExitedError("codex app-server exited before responding");
-  assert.match(presentTerminalError(unknown, noContext) ?? "", /exited unexpectedly/);
+  assert.match(presentTerminalError(unknown, noContext) ?? "", /the Codex engine process stopped unexpectedly/);
+});
+
+test("a killed engine process is reported once, in operator terms, with what to do", () => {
+  const killed = new AppServerExitedError("codex app-server exited with code null signal SIGKILL");
+  const rendered = presentTerminalError(killed, noContext) ?? "";
+  const lines = rendered.split("\n");
+  assert.equal(
+    lines[0],
+    "the Codex engine process stopped unexpectedly (codex app-server exited with code null signal SIGKILL), so the worker had no engine to run on"
+  );
+  assert.match(lines[1] ?? "", /^ {2}Unless the run was being stopped, the workflow did not cause this: re-run it; if it recurs, check that `codex app-server` starts/);
+  assert.equal(lines.length, 2);
+  assert.equal(rendered.split("SIGKILL").length - 1, 2, "the death is named once; the remedy names the kill signal once");
+  assert.doesNotMatch(rendered, /Error\b/);
 });
 
 test("an unknown error is not diagnosed: the caller keeps its stack as evidence", () => {
@@ -203,7 +217,9 @@ test("operator diagnostics strip 7-bit terminal controls while UTF-8 renders a C
   // The rendered diagnostic emits U+009B in UTF-8, not as a lone 0x9B C1
   // byte for a UTF-8 terminal to interpret as CSI.
   const renderedBytes = Buffer.from(rendered, "utf8");
-  assert.deepEqual([...renderedBytes.subarray(-13)], [0x61, 0x66, 0x74, 0x65, 0x72, 0x20, 0xc2, 0x9b, 0x33, 0x31, 0x6d, 0x43, 0x31]);
+  const encoded = Buffer.from([0x61, 0x66, 0x74, 0x65, 0x72, 0x20, 0xc2, 0x9b, 0x33, 0x31, 0x6d, 0x43, 0x31]);
+  assert.notEqual(renderedBytes.indexOf(encoded), -1);
+  assert.equal(renderedBytes.includes(Buffer.from([0x20, 0x9b])), false);
 });
 
 test("a teardown-time engine shutdown is attributed to the run ending, not the author's call", () => {
@@ -369,9 +385,13 @@ test("a zero token budget says it admitted nothing and names the ceiling to set,
   assert.equal(lines.some((line) => /^\s*at\s/.test(line)), false);
 });
 
-test("a spent token budget keeps its spend figures and gains the same remedy", () => {
+test("a spent token budget keeps its spend figures, reads as a threshold checked at dispatch, and gains the same remedy", () => {
   const rendered = presentTerminalError(new BudgetExceededError("claude", 5, 7), noContext) ?? "";
-  assert.match(rendered, /^Token budget exhausted for claude: spent 7 of 5 tokens\n {2}Raise the claude ceiling/);
+  assert.match(
+    rendered,
+    /^Token budget for claude reached: 7 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started \(a running agent can carry spending past the threshold\)\n {2}Raise the claude threshold/
+  );
+  assert.doesNotMatch(rendered, /ceiling \(|exhausted/);
 });
 
 test("an exhausted agent's attempt line keeps vocabulary kinds but never prints an internal error class name", () => {

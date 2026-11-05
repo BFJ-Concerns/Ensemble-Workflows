@@ -72,7 +72,7 @@ test(
       assert.equal(output.admitted.trim(), token);
       assert.ok(output.spent >= 1);
       assert.equal(output.blocked?.name, "BudgetExceededError");
-      assert.match(output.blocked?.message ?? "", /Token budget exhausted for codex/);
+      assert.match(output.blocked?.message ?? "", /Token budget for codex reached/);
       assert.ok(snapshots.some((snapshot) => snapshot.agents.some((agent) => agent.label === "admitted-live")));
       assert.ok(snapshots.every((snapshot) => snapshot.agents.every((agent) => agent.label !== "blocked-live")));
 

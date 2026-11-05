@@ -179,7 +179,7 @@ test("built consumer rejects the post-promise fixture's malformed partial assist
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout, "null\n");
-    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — Codex app-server exited/);
+    assert.match(result.stderr, /\[codex\] agent 1 failed after 1 attempt — the Codex engine process exited/);
     assert.match(result.stderr, /ServerNotification\.json validation for item\/agentMessage\/delta/);
     assert.match(result.stderr, /must have required property 'itemId'/);
   });

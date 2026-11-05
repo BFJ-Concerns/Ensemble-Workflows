@@ -250,7 +250,7 @@ test("built CLI rejects a removed agent option with its removal reason", async (
 
     assert.equal(result.code, 1);
     assertSalvageEnvelope(result.stdout, "failed");
-    assert.match(result.stderr, /RemovedAgentOptionError: agent\(\) option "sandbox" was removed/);
+    assert.match(result.stderr, /^agent\(\) option "sandbox" was removed/m);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -773,7 +773,7 @@ test("built CLI rejects a per-turn timeout above Node's timer limit on every aff
       assertSalvageEnvelope(result.stdout, "failed");
       assert.equal(
         withoutSentinelAnnouncement(result.stderr),
-        'InvalidAgentOptionValueError: Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
+        'Invalid agent() option "timeoutMs" value 1000000000000; expected a positive integer no greater than 2147483647\n'
       );
       const messages = await fixture.messages();
       assert.equal(messages.filter((message) => message.method === "thread/start").length, 0);
@@ -1002,7 +1002,7 @@ test("built CLI propagates malformed schemas from both combinators before openin
 
       assert.equal(result.code, 1);
       assertSalvageEnvelope(result.stdout, "failed");
-      assert.match(result.stderr, /InvalidAgentSchemaError/);
+      assert.match(result.stderr, /^agent schema does not compile as JSON Schema/m);
       assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
     } finally {
       await fixture.cleanup();
@@ -1080,7 +1080,7 @@ test("built CLI reports a direct-agent malformed --schema before the Codex worke
 
     assert.equal(result.code, 1);
     assertSalvageEnvelope(result.stdout, "failed");
-    assert.match(result.stderr, /InvalidAgentSchemaError/);
+    assert.match(result.stderr, /^agent schema does not compile as JSON Schema/m);
     assert.match(result.stderr, /offending schema: \{"type":"definitely-not-json-schema"\}/);
     assert.equal((await fixture.messages()).filter((message) => message.method === "thread/start").length, 0);
   } finally {
@@ -1557,7 +1557,7 @@ test("ensemble agent gives a supervisor terminal evidence in foreground and redi
       exitCode: 1,
       stdout: { reason: "failed" as const },
       outcome: "failed",
-      error: /The worker was not dispatched/,
+      error: /so the worker was not dispatched\. Remove "skills" from strip/,
       agentStatus: null
     },
     {

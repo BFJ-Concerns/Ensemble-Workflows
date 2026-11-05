@@ -144,14 +144,18 @@ One family of errors propagates instead and fails the run: errors in how the
 script was written, raised before any worker spawns. These are a rejected
 `agent()` option, a malformed schema, an unresolvable `workflow()` reference
 or non-JSON `workflow()` arguments, a nesting violation, and a child
-workflow's load-time error. When several of a call's options fail the
-option check, one error names them all.
+workflow's load-time error. A call's option faults are reported as one
+error kind, `InvalidAgentOptionsError`, whether one option is wrong or
+several; when several are, its message names them all.
 
 To tell a failed call from one that legitimately answered `null`, pass
 `identity: true`. The call then resolves `{ label, phase, output, failure }`,
 where `failure` is `null` exactly when the worker completed — so
-`output: null` with `failure: null` is a genuine answer — and a `{ message }`
-account when it failed. Inside `parallel()` and `pipeline()`, an identified
+`output: null` with `failure: null` is a genuine answer — and a
+`{ kind, message }` account when it failed. `kind` is the failure's kind as a
+field to switch on — an attempt-failure kind such as `schema-validation`, or
+the error class for a failure raised as an error — and `message` is a
+one-line account. Inside `parallel()` and `pipeline()`, an identified
 call that collapses resolves this shape too, never a bare `null`.
 
 ### `workflow()` and saved workflows

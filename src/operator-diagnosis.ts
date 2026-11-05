@@ -132,11 +132,11 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     return lines;
   }
   if (error instanceof BudgetExceededError) {
-    // A budget refusal is the operator's own ceiling doing its job: the
-    // remedy is the ceiling, and the stack behind it is harness interior.
+    // A budget refusal is the operator's own threshold doing its job: the
+    // remedy is the threshold, and the stack behind it is harness interior.
     return [
       error.message,
-      `Raise the ${error.engine} ceiling (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
+      `Raise the ${error.engine} threshold (--budget ${error.engine}=<tokens>, or budgetCeilings.${error.engine} in library use), or remove it to run without one.`
     ];
   }
   if (error instanceof EngineShutdownError) {
@@ -155,14 +155,22 @@ function diagnose(error: unknown, context: TerminalPresentationContext): string[
     const exit = workerExitStatusOf(error);
     const how =
       exit?.signal !== null && exit?.signal !== undefined
-        ? `terminated by ${exit.signal}`
+        ? `was killed by ${exit.signal}`
         : exit?.exitCode !== null && exit?.exitCode !== undefined
           ? `exited with code ${exit.exitCode}`
-          : "exited unexpectedly";
+          : "stopped unexpectedly";
     // The server's message is kept whole but stripped of terminal
     // control: its stderr tail is engine-controlled bytes, and evidence
-    // preservation never licenses control injection.
-    const lines = [`Codex app-server ${how}`, ...stripControl(error.message).split("\n")];
+    // preservation never licenses control injection. A one-line message
+    // rides the cause line in brackets so the death is stated once; a
+    // longer one (a stderr tail) follows as detail.
+    const message = stripControl(error.message).trim();
+    const [firstLine, ...rest] = message.split("\n");
+    const lines = [
+      `the Codex engine process ${how}${firstLine === undefined || firstLine === "" ? "" : ` (${firstLine})`}, so the worker had no engine to run on`,
+      ...rest,
+      "Unless the run was being stopped, the workflow did not cause this: re-run it; if it recurs, check that `codex app-server` starts on this machine and that memory is not exhausted (an out-of-memory kill arrives as SIGKILL)."
+    ];
     const diagnostic = appServerDiagnosticOf(error);
     if (diagnostic !== null) {
       lines.push(`server diagnostic: ${stripControl(diagnostic.message)}`);

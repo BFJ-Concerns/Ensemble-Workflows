@@ -100,7 +100,7 @@ test("built consumer completes every admitted queued call after overshoot and re
       spent: 30,
       blocked: {
         name: "BudgetExceededError",
-        message: "Token budget exhausted for codex: spent 30 of 5 tokens"
+        message: "Token budget for codex reached: 30 tokens spent against a threshold of 5, checked before each dispatch — this agent was not started (a running agent can carry spending past the threshold)"
       }
     });
     const requests = await estate.requests();

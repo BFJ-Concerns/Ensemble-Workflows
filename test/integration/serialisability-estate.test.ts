@@ -33,7 +33,7 @@ for (const scenario of [
     const diagnostic = withoutSentinelAnnouncement(result.stderr);
     assert.equal(
       diagnostic,
-      `WorkflowScriptError: workflow return value must be a JSON value: ${scenario.path}\n`
+      `workflow return value must be a JSON value: ${scenario.path}\n`
     );
     assert.doesNotMatch(diagnostic, /\n\s+at /);
   });
@@ -50,7 +50,7 @@ test("built CLI rejects workflow arguments before resolving or executing the chi
   const diagnostic = withoutSentinelAnnouncement(result.stderr);
   assert.equal(
     diagnostic,
-    "WorkflowScriptError: workflow() arguments must be a JSON value: args[0].nested.callback is a function\n"
+    "workflow() arguments must be a JSON value: args[0].nested.callback is a function\n"
   );
   assert.doesNotMatch(diagnostic, /could not read|absent-child|\n\s+at /);
 });
@@ -77,7 +77,7 @@ for (const scenario of [
     assert.equal(result.code, 1, `${scenario.name}: ${result.stderr}`);
     assertSalvageEnvelope(result.stdout, "failed");
     const diagnostic = withoutSentinelAnnouncement(result.stderr);
-    assert.match(diagnostic, /^WorkflowScriptError: workflow return value must be a JSON value:/);
+    assert.match(diagnostic, /^workflow return value must be a JSON value:/);
     assert.match(diagnostic, new RegExp(escapeRegExp(scenario.path)));
     assert.equal(diagnostic.trim().split("\n").length, 1);
     assert.doesNotMatch(diagnostic, /RangeError|\n\s+at /);

@@ -178,6 +178,8 @@ export type { AttemptFailureEvidence, FailureClass, FailureClassification } from
 export { summariseUsage } from "./usage-summary.js";
 export type { UsageSummary } from "./usage-summary.js";
 export type { IsolatedWorktree, IsolatedWorktreeRecord, WorktreeIsolationManager } from "./worktree-isolation.js";
+export { NoWorkerScopes, SystemdWorkerScopes, containingSlice, createWorkerScopes, processTree } from "./worker-scopes.js";
+export type { LaunchOptions, ScopePlacement, WorkerScopeGrouping, WorkerScopes } from "./worker-scopes.js";
 export type {
   SavedWorkflowEntry,
   SavedWorkflowMeta,

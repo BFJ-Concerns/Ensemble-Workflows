@@ -1626,22 +1626,13 @@ export class EnsembleRuntime {
    * surface as an event the CLI logs to stderr.
    */
   async #recordAgentSafely(record: RuntimeAgentRecord): Promise<void> {
-    try {
+    await this.#recordArchiveWriteSafely(record.id, async () => {
       await this.#runRecorder?.recordAgent(record);
-    } catch (error) {
-      this.#emitEvent({
-        method: "runRecord/writeFailed",
-        params: {
-          agentId: record.id,
-          message: error instanceof Error ? error.message : String(error)
-        },
-        receivedAt: Date.now()
-      });
-    }
+    });
   }
 
-  /** Live archive writes have the same best-effort contract as settlement. */
-  async #recordLiveAttemptSafely(agentId: number, write: () => Promise<void>): Promise<void> {
+  /** Archive writes share one best-effort error-reporting contract. */
+  async #recordArchiveWriteSafely(agentId: number, write: () => Promise<void>): Promise<void> {
     try {
       await write();
     } catch (error) {
@@ -1665,14 +1656,14 @@ export class EnsembleRuntime {
     if (recorder === null || engine === "opencode") {
       return invocation.runAttempt(context);
     }
-    await this.#recordLiveAttemptSafely(agentId, () =>
+    await this.#recordArchiveWriteSafely(agentId, () =>
       recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
     let active = true;
     let transcriptPath: string | undefined;
     const pending = new Set<Promise<void>>();
     const enqueue = (write: () => Promise<void>): void => {
       if (!active) return;
-      const operation = this.#recordLiveAttemptSafely(agentId, write);
+      const operation = this.#recordArchiveWriteSafely(agentId, write);
       pending.add(operation);
       void operation.then(() => pending.delete(operation));
     };
@@ -1699,7 +1690,7 @@ export class EnsembleRuntime {
     } finally {
       active = false;
       await Promise.all(pending);
-      await this.#recordLiveAttemptSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
+      await this.#recordArchiveWriteSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
     }
   }
 

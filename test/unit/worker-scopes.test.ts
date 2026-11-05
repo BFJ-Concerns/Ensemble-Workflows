@@ -93,14 +93,32 @@ test("close stops a scope whose placement was still pending when close began", a
   // call is known to be in flight, and the call is released only once
   // close() has begun. The race is established by handshake, not timing —
   // the placement cannot complete before close starts, and close cannot
-  // start before the placement is at the manager.
+  // start before the placement is at the manager. The hold has a ceiling
+  // only so a hung test ends; reaching it fails the call rather than
+  // making it, since a call made without the release would let the
+  // placement complete before close began and the test pass on a product
+  // that never waited.
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-held-busctl-"));
   const heldBusctl = path.join(dir, "busctl");
   const inFlight = path.join(dir, "in-flight");
   const release = path.join(dir, "release");
   await writeFile(
     heldBusctl,
-    `#!/bin/sh\ntouch "${inFlight}"\ni=0\nwhile [ ! -e "${release}" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\nexec busctl "$@"\n`,
+    [
+      "#!/bin/sh",
+      `touch "${inFlight}"`,
+      "i=0",
+      `while [ ! -e "${release}" ]; do`,
+      "  if [ $i -ge 1200 ]; then",
+      '    echo "held busctl: not released within 60 s; the call was not made" >&2',
+      "    exit 1",
+      "  fi",
+      "  sleep 0.05",
+      "  i=$((i+1))",
+      "done",
+      'exec busctl "$@"',
+      ""
+    ].join("\n"),
     { mode: 0o755 }
   );
   const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}`, busctlBin: heldBusctl });

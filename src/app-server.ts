@@ -63,6 +63,7 @@ interface TurnState {
   /** Whether the supervisor-facing first-output callback has fired for this turn. */
   firstOutputSeen: boolean;
   onFirstOutput: (() => void) | undefined;
+  onTranscriptEvent: TurnStartOptions["onTranscriptEvent"];
   completedAt: number | null;
   deltaText: string;
   itemText?: string;
@@ -469,7 +470,11 @@ export class CodexAppServerTransport implements RuntimeTransport {
       });
     }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
     this.#turns.set(threadId, state);
+    for (const event of this.#transcripts.get(threadId)!.events) {
+      this.#observeTranscriptEvent(state, event);
+    }
     // The turn can terminalise while turn/start is still awaiting its
     // response (timeout, close, process death, an early error frame). This
     // pre-attached handler keeps that rejection from going unhandled while
@@ -1219,6 +1224,20 @@ export class CodexAppServerTransport implements RuntimeTransport {
       return;
     }
     transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    const params = asJsonObject(event.params);
+    if (turn !== undefined && (event.direction === "client" ||
+        (params !== null && this.#correlatesWithTurn(turn, params)))) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+
+  #observeTranscriptEvent(turn: TurnState, event: JsonObject): void {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+      // Observability must never change the turn's outcome.
+    }
   }
 
   #transcriptText(threadId: string): string {
@@ -1248,6 +1267,7 @@ export class CodexAppServerTransport implements RuntimeTransport {
       firstDeltaAt: null,
       firstOutputSeen: false,
       onFirstOutput,
+      onTranscriptEvent: undefined,
       completedAt: null,
       deltaText: "",
       items: new Map<string, number>(),

@@ -13,6 +13,7 @@
   "isolation",
   "kind",
   "label",
+  "lean",
   "model",
   "options",
   "parse_route",

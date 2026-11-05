@@ -217,12 +217,13 @@ unknown engine throws before any worker spawns.
 | `timeoutMs` | Per-attempt deadline, a positive integer up to 2147483647. Unbounded when omitted |
 | `maxAttempts` | Attempt bound, a positive integer. Default 3 |
 | `strip` | Capabilities to remove from the worker: `"skills"`, `"agents"` (see [Permissions](#permissions-and-strip)) |
+| `lean` | `true` to start the worker without the operator's interactive context (see [Lean workers](#lean-workers)) |
 | `identity` | `true` to resolve `{ label, phase, output, failure }` (see [`parallel()`](#parallel-and-pipeline)) |
 | `label`, `phase` | Bookkeeping shown in progress output and the run record |
 
 An unrecognised option, or an invalid value for `effort`, `isolation`,
-`timeoutMs`, `maxAttempts`, `identity`, or `strip`, throws before the worker
-spawns. `model`, `label`, and `phase` pass through unchecked. A `timeoutMs`
+`timeoutMs`, `maxAttempts`, `identity`, `strip`, or `lean`, throws before the
+worker spawns. `model`, `label`, and `phase` pass through unchecked. A `timeoutMs`
 above the maximum is rejected rather than silently shortened.
 
 Schemas are JSON Schema draft-07 (the default when `$schema` is omitted) or
@@ -240,6 +241,7 @@ schemas that compile are accepted.
 | `schema` | Enforced by the Codex backend and checked again by Ensemble | Sent in the prompt and checked by Ensemble | Sent in the prompt and checked by Ensemble |
 | `timeoutMs` | Ends the turn | Ends the wait for the session | Kills the subprocess |
 | `strip` | Enforced through Codex's per-thread configuration | Enforced through permission deny rules | Not supported: throws before the worker spawns |
+| `lean` | Not supported: throws before the worker spawns | The user settings layer and every MCP server withheld at dispatch | Not supported: throws before the worker spawns |
 | `fallback` entry | Yes | Yes | No |
 | `session()` | Yes | Yes | No: throws before the worker spawns |
 
@@ -288,6 +290,36 @@ worker running processes from a shell. A run-wide `--strip` and a call's own
 - **opencode** rejects any strip before the worker spawns.
 
 Each agent record lists the requested strips and how each was enforced.
+
+### Lean workers
+
+By default a worker loads the operator's whole interactive context — the
+user-level rules and instructions, the skill listing, every MCP server an
+interactive session of that engine would connect — which is most of a trivial
+worker's input spend and gives it the operator's reach over live sessions and
+desktop. `lean: true` on a call or session, or `--lean` for the whole run,
+starts the worker without that context. Its reach and its engine's built-in
+tool surface are untouched (`strip` is the lever for those), the project's own
+settings and `CLAUDE.md` still apply, and a worker nobody asked to be lean is
+unchanged. Like a strip, the lean start is opt-in only: a call cannot lift a
+run-wide `--lean`.
+
+- **Claude** dispatches the session with `--setting-sources project,local`
+  and `--strict-mcp-config`, withholding the user settings layer — the
+  operator's rules files, skill listing, plugins and their MCP servers, and
+  user-level permission mode — and every MCP server outside an explicit
+  configuration. Measured on Claude Code 2.1.300: a trivial background
+  worker's first message fell from 44,601 to 591 characters and its first
+  request's cached input from 36,706 to 30,206 tokens; the remainder is the
+  engine's own tool schemas, which Claude Code inlines whole once the user
+  layer's deny rules and tool deferral no longer apply, so a lean worker can
+  see built-in tools the operator's own sessions deny.
+- **Codex** and **opencode** have no measured route yet: a lean request on
+  either fails before the worker spawns, naming the engine, rather than
+  dispatching an ordinary worker silently.
+
+Each agent record carries `lean` naming the route the dispatching engine
+arranged it through, or `null` where nobody asked.
 
 ### Worktree isolation
 

@@ -91,7 +91,8 @@ export {
   attachPartialWorkerText,
   partialWorkerTextOf,
   attachWorkerExitStatus,
-  workerExitStatusOf
+  workerExitStatusOf,
+  LeanStartUnsupportedError
 } from "./errors.js";
 export type { WorkerExitStatus } from "./errors.js";
 export {
@@ -172,6 +173,8 @@ export type {
   EngineWorkerSession
 } from "./engines.js";
 export { STRIPPABLE_CAPABILITIES } from "./capability-stripping.js";
+export { effectiveLean, resolveLeanStart } from "./lean-start.js";
+export type { DischargedLeanStart, LeanStartSupport } from "./lean-start.js";
 export type { CapabilityEnforcement, EngineCapabilityTable, StrippableCapability } from "./capability-stripping.js";
 export { classifyAttemptFailure } from "./failure-classification.js";
 export type { AttemptFailureEvidence, FailureClass, FailureClassification } from "./failure-classification.js";

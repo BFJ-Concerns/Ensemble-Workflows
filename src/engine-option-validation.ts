@@ -61,7 +61,8 @@ const AGENT_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   identity: true,
-  strip: true
+  strip: true,
+  lean: true
 } satisfies Record<keyof AgentOptions, true>);
 const AGENT_OPTION_KEY_SET = new Set<string>(AGENT_OPTION_KEYS);
 /**
@@ -141,6 +142,11 @@ export function assertValidAgentOptions(options: object): void {
   if (values.strip !== undefined) {
     collect(() => assertValidStripOption(values.strip));
   }
+  collect(() => {
+    if (values.lean !== undefined && typeof values.lean !== "boolean") {
+      throw new InvalidAgentOptionValueError("lean", values.lean, "a boolean");
+    }
+  });
   collect(() => assertValidFallbackChain(values.fallback));
   if (errors.length === 1) {
     throw errors[0];
@@ -162,6 +168,7 @@ const WORKER_SESSION_OPTION_KEYS = Object.keys({
   label: true,
   phase: true,
   strip: true,
+  lean: true,
   stalenessMark: true
 } satisfies Record<keyof WorkerSessionOptions, true>);
 const WORKER_SESSION_OPTION_KEY_SET = new Set<string>(WORKER_SESSION_OPTION_KEYS);
@@ -197,6 +204,9 @@ export function assertValidWorkerSessionOptions(options: object): void {
   assertPositiveIntegerOption(values, "maxAttempts");
   if (values.stalenessMark !== undefined && typeof values.stalenessMark !== "boolean") {
     throw new InvalidAgentOptionValueError("stalenessMark", values.stalenessMark, "a boolean");
+  }
+  if (values.lean !== undefined && typeof values.lean !== "boolean") {
+    throw new InvalidAgentOptionValueError("lean", values.lean, "a boolean");
   }
   if (values.strip !== undefined) {
     assertValidStripOption(values.strip);

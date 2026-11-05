@@ -414,6 +414,7 @@ export class ClaudeEngineInvocation implements EngineInvocation, EngineWorkerSes
       ...(this.#options.model !== undefined ? { model: this.#options.model } : {}),
       ...(this.#options.effort !== undefined ? { effort: this.#options.effort } : {}),
       ...(denyRules.length > 0 ? { permissionDenyRules: denyRules } : {}),
+      ...(this.#options.lean === true ? { lean: true } : {}),
       // Loiter pricing: only a session meant to be resumed pays the
       // 1-hour cache-write premium; one-shot workers keep the 5m default.
       ...(this.#multiTurn ? { cacheTtl: CLAUDE_MULTITURN_CACHE_TTL } : {})

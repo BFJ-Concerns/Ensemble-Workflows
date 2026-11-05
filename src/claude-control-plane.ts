@@ -83,7 +83,20 @@ export interface ClaudeDispatchOptions {
    * engine's own default TTL.
    */
   cacheTtl?: string;
+  /**
+   * A lean start: the session is dispatched with `--setting-sources
+   * project,local --strict-mcp-config` (`LEAN_START_FLAGS`), which withholds
+   * the user settings layer — the operator's rules files, skill listing,
+   * plugins and their MCP servers, user-level permission mode — and every
+   * MCP server outside an explicit `--mcp-config`. Project and local
+   * settings, the project's CLAUDE.md, the built-in tools and this
+   * dispatch's own settings file still apply.
+   */
+  lean?: boolean;
 }
+
+/** The flags a lean dispatch adds (measured 2026-10-15 on Claude Code 2.1.300; see `ClaudeDispatchOptions.lean`). */
+export const LEAN_START_FLAGS: readonly string[] = ["--setting-sources", "project,local", "--strict-mcp-config"];
 
 /** The settings-file variable Claude Code reads a background worker's prompt-cache TTL from. */
 export const CLAUDE_CACHE_TTL_VARIABLE = "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL";
@@ -279,6 +292,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
     if (options.effort !== undefined) {
       args.push("--effort", options.effort);
+    }
+    if (options.lean === true) {
+      args.push(...LEAN_START_FLAGS);
     }
     // The worker session runs under the per-user daemon, whose environment
     // predates this run — inheritance cannot deliver the declared variables

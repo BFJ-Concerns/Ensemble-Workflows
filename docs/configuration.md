@@ -129,8 +129,8 @@ is not already running, and that daemon then serves every later Claude session
 on the machine. So that one run's settings do not leak into later sessions,
 the run's own `ENSEMBLE_` settings (`ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, `ENSEMBLE_STATUS_DIR`,
-`ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`, and
-`ENSEMBLE_CALLER_IDENTITY`) are withheld from every `claude` process Ensemble
+`ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`,
+`ENSEMBLE_CALLER_IDENTITY`, and `ENSEMBLE_DISPATCH_REMAP`) are withheld from every `claude` process Ensemble
 launches; a `worker_environment` declaration of one of those names is still
 injected. Codex and opencode workers end with the run and inherit those
 variables normally. A nested `ensemble` invocation inside a Claude worker
@@ -181,6 +181,7 @@ forwards an unknown variant without complaint.
 | `ENSEMBLE_STATUS_DIR` | Directory for live status files; must already exist while status is on |
 | `ENSEMBLE_CALLER_IDENTITY` | Opaque identity of the invoking session, recorded in the manifest's `caller_identity`; `--caller-identity` overrides it |
 | `ENSEMBLE_HOLD_SCOPE` | Scope for decision holds, inherited by nested invocations; `--hold-scope` overrides it (see [Holds](workflow-scripts.md#holds)) |
+| `ENSEMBLE_DISPATCH_REMAP` | Comma-separated dispatch remap rules, `key=engine[:model]` each; any `--remap` flag replaces the whole value (see [Dispatch remap](workflow-scripts.md#dispatch-remap)). Deliberately no configuration-file layer: a standing remap would make every cross-engine workflow on the machine single-family without a trace in the launch |
 
 The on/off switches accept `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`.
 A malformed ceiling, cap, switch, or directory value that the run would use is

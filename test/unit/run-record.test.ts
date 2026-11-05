@@ -1136,6 +1136,7 @@ function agentRecord(
     model,
     effort: null,
     fallback: null,
+    remap: null,
     answeredBy: null,
     resolvedModel: null,
     resolvedEffort: null,

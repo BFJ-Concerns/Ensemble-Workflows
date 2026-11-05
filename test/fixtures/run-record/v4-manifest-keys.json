@@ -11,6 +11,8 @@
     "cli_flags",
     "concurrency",
     "cost_rollup",
+    "dispatch_remap",
+    "dispatch_remap_unmatched",
     "ended_at",
     "environment",
     "error",

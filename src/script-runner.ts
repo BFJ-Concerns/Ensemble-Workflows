@@ -299,7 +299,13 @@ export async function runWorkflowScript(options: RunWorkflowScriptOptions): Prom
   };
   // The body starts here: its synchronous prefix runs inside this call, and
   // everything after its first await settles through the returned promise.
-  const resultPromise = run(bindings);
+  // The remap resolves a moved call's model against this script's own
+  // defaults block, so the body runs under it: a composed child's body
+  // runs under its own, and the parent's continuation returns to the
+  // parent's.
+  const runtime = options.runtime;
+  const resultPromise =
+    runtime.runWithWorkflowDefaults !== undefined ? runtime.runWithWorkflowDefaults(defaults ?? {}, () => run(bindings)) : run(bindings);
   // The body's settlement is noted in the body promise's own continuation —
   // the first microtask after it settles — never after an await the runner
   // itself takes: a timer the body armed before `return` fires on the

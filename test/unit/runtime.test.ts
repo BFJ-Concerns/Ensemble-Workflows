@@ -8,6 +8,7 @@ import { appServerErrorFromPayload } from "../../src/app-server.js";
 import { CodexEngineAdapter, EngineRegistry } from "../../src/engines.js";
 import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
+import { parseDispatchRemap } from "../../src/dispatch-remap.js";
 import {
   AgentCwdRejectedError,
   AgentOptionRejectedError,
@@ -35,7 +36,7 @@ import {
 import type { RunRecordWriter, RuntimeAgentRecord } from "../../src/run-record.js";
 import { Scheduler } from "../../src/scheduler.js";
 
-import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions } from "../../src/engines.js";
+import type { EngineAdapter, EngineAttemptResult, EngineInvocation, EngineTurnOptions, EngineWorkerSession } from "../../src/engines.js";
 
 import type {
   AgentOptions,
@@ -4263,4 +4264,209 @@ test("with no chain declared, no attempt carries a chain decision and no chain n
     [["codex/agentFailed", null]]
   );
   await runtime.close();
+});
+
+/** A ChainEngine that also holds sessions: each turn answers the next scripted step on the same engine. */
+class SessionEngine extends ChainEngine {
+  readonly sessionsCreated: Array<{ model: string | undefined }> = [];
+
+  createSession(options: EngineTurnOptions): EngineWorkerSession {
+    this.sessionsCreated.push({ model: options.model });
+    const invocation = this.createInvocation.bind(this);
+    return {
+      beginTurn: (prompt, turn) => invocation(prompt, { ...options, ...(turn.schema !== undefined ? { schema: turn.schema } : {}) }),
+      close: async () => {}
+    };
+  }
+}
+
+test("a remapped call dispatches on the target engine with that engine's declared model, the record and the notice naming the key and both targets", async () => {
+  const codex = new ChainEngine("codex", [answers("codex answered")]);
+  const claude = new ChainEngine("claude", []);
+  const records: RuntimeAgentRecord[] = [];
+  const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    dispatchRemap: parseDispatchRemap(["label:critic*=codex"])
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  runtime.onEvent((event) => { if (event.method.endsWith("/remapped")) events.push({ method: event.method, params: event.params }); });
+  // The script's defaults block: a moved call with no model named takes the
+  // target engine's declared model, as an unpinned call on it would.
+  const defaults = { codex: { model: "gpt-6.1-sol" }, claude: { model: "opus" } };
+  try {
+    assert.equal(
+      await runtime.runWithWorkflowDefaults(defaults, () => runtime.agent("review", { engine: "claude", model: "opus", effort: "low", label: "critic-1" })),
+      "codex answered"
+    );
+    assert.deepEqual(codex.dispatches, [{ model: "gpt-6.1-sol", effort: "low", prompt: "review" }]);
+    assert.equal(claude.dispatches.length, 0);
+    const record = records.at(-1)!;
+    assert.equal(record.engine, "codex");
+    assert.equal(record.model, "gpt-6.1-sol");
+    assert.equal(record.effort, "low");
+    assert.deepEqual(record.remap, [
+      { key: "label:critic*=codex", entry: -1, requested: { engine: "claude", model: "opus" }, dispatched: { engine: "codex", model: "gpt-6.1-sol" } }
+    ]);
+    assert.deepEqual(record.attempts.map((attempt) => attempt.target), [{ engine: "codex", model: "gpt-6.1-sol" }]);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.method, "codex/remapped");
+    assert.deepEqual(events[0]?.params, {
+      agentId: record.id,
+      label: "critic-1",
+      phase: null,
+      key: "label:critic*=codex",
+      entry: -1,
+      requested: { engine: "claude", model: "opus" },
+      dispatched: { engine: "codex", model: "gpt-6.1-sol" }
+    });
+    assert.deepEqual(runtime.dispatchRemapReport(), { rules: ["label:critic*=codex"], unmatched: [] });
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("the most specific key wins, a phase key reads the run's current phase, an unmoved call records no remap, and the rules that caught nothing are reported", async () => {
+  const codex = new ChainEngine("codex", [answers("astra"), answers("plain")]);
+  const claude = new ChainEngine("claude", [answers("opus")]);
+  const records: RuntimeAgentRecord[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    dispatchRemap: parseDispatchRemap(["claude=codex", "phase:crit*=codex:gpt-6-astra", "label:lead=claude:opus", "codex:gpt-6-luna=claude"])
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  try {
+    runtime.progress.setPhase("critique");
+    // The label key outranks the phase and engine keys, and may keep the engine while pinning the model.
+    assert.equal(await runtime.agent("lead", { engine: "claude", label: "lead" }), "opus");
+    assert.deepEqual(claude.dispatches.at(-1), { model: "opus", effort: undefined, prompt: "lead" });
+    assert.equal(records.at(-1)?.remap?.[0]?.key, "label:lead=claude:opus");
+    // No label: the phase key outranks the engine key, and the phase is the run's current one.
+    assert.equal(await runtime.agent("critique it", { engine: "claude" }), "astra");
+    assert.deepEqual(codex.dispatches.at(-1), { model: "gpt-6-astra", effort: undefined, prompt: "critique it" });
+    assert.equal(records.at(-1)?.remap?.[0]?.key, "phase:crit*=codex:gpt-6-astra");
+    // A call no key matches is dispatched as asked and records no remap.
+    runtime.progress.setPhase("report");
+    assert.equal(await runtime.agent("plain", { engine: "codex", model: "gpt-6.1-sol", label: "writer" }), "plain");
+    assert.deepEqual(codex.dispatches.at(-1), { model: "gpt-6.1-sol", effort: undefined, prompt: "plain" });
+    assert.equal(records.at(-1)?.remap, null);
+    // Two of the four rules never won a match.
+    assert.deepEqual(runtime.dispatchRemapReport()?.unmatched, ["claude=codex", "codex:gpt-6-luna=claude"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a fallback-chain entry and a session's creation are remapped like a call target, each move on the record", async () => {
+  // The chain: Codex refuses, the declared Claude entry is moved back onto
+  // Codex by the remap, and the second Codex step answers — a chain cannot
+  // carry a call back onto an engine the operator moved it off.
+  const codex = new SessionEngine("codex", [codexRefusal("usageLimitExceeded"), answers("codex again"), answers("session turn 1"), answers("session turn 2")]);
+  const claude = new SessionEngine("claude", []);
+  const records: RuntimeAgentRecord[] = [];
+  const remapEvents: string[] = [];
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    dispatchRemap: parseDispatchRemap(["claude:opus=codex:gpt-6.1-sol"])
+  });
+  runtime.setRunRecorder({ recordAgent: async (record) => { records.push(structuredClone(record)); } } as RunRecordWriter);
+  runtime.onEvent((event) => { if (event.method.endsWith("/remapped")) remapEvents.push(event.method); });
+  try {
+    assert.equal(
+      await runtime.agent("go", { engine: "codex", model: "gpt-6-luna", fallback: [{ engine: "claude", model: "opus", effort: "high" }] }),
+      "codex again"
+    );
+    const chained = records.at(-1)!;
+    // The record keeps the chain as declared; the move and the attempts say where the entry went.
+    assert.deepEqual(chained.fallback, [{ engine: "claude", model: "opus", effort: "high" }]);
+    assert.deepEqual(chained.remap, [
+      { key: "claude:opus=codex:gpt-6.1-sol", entry: 0, requested: { engine: "claude", model: "opus" }, dispatched: { engine: "codex", model: "gpt-6.1-sol" } }
+    ]);
+    assert.deepEqual(chained.attempts.map((attempt) => attempt.target), [
+      { engine: "codex", model: "gpt-6-luna" },
+      { engine: "codex", model: "gpt-6.1-sol" }
+    ]);
+    assert.deepEqual(chained.answeredBy, { entry: 0, engine: "codex", model: null });
+    assert.equal(claude.dispatches.length, 0);
+
+    // A session declared on Claude is created on Codex, once, for its life;
+    // the move is named on every turn's record and announced at the first.
+    const session = runtime.createWorkerSession({ engine: "claude", model: "opus", label: "builder" });
+    assert.equal(session.engine, "codex");
+    assert.equal(await session.send("one"), "session turn 1");
+    assert.equal(await session.send("two"), "session turn 2");
+    await session.close();
+    assert.deepEqual(codex.sessionsCreated, [{ model: "gpt-6.1-sol" }]);
+    assert.equal(claude.sessionsCreated.length, 0);
+    // Each turn's record is written at dispatch and again at settlement: one per turn.
+    const turns = [...new Map(records.filter((record) => record.session !== null).map((record) => [record.id, record])).values()];
+    assert.equal(turns.length, 2);
+    for (const turnRecord of turns) {
+      assert.equal(turnRecord.engine, "codex");
+      assert.equal(turnRecord.remap?.[0]?.key, "claude:opus=codex:gpt-6.1-sol");
+    }
+    assert.deepEqual(remapEvents, ["codex/remapped", "codex/remapped"], "the chain entry's move and the session's, each once");
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a remapped call keeps the rule's model under a strip, and every option the author's Proxy supplies: the moves are a view, never a copy", async () => {
+  const stripTable = { skills: { route: "config" as const, detail: "deny" }, agents: { route: "config" as const, detail: "deny" } };
+  const codex = Object.assign(new ChainEngine("codex", [answers("stripped and moved")]), { capabilities: stripTable });
+  const claude = Object.assign(new ChainEngine("claude", []), { capabilities: stripTable });
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    strip: ["agents"],
+    dispatchRemap: parseDispatchRemap(["label:critic=codex:gpt-6-luna"])
+  });
+  try {
+    // No model key on the author's object; the deadline from a get trap only.
+    const options = new Proxy({ engine: "claude", label: "critic" } as Partial<AgentOptions>, {
+      get(target, property, receiver) {
+        return property === "timeoutMs" ? 4321 : Reflect.get(target, property, receiver);
+      }
+    });
+    assert.equal(await runtime.agent("review", options), "stripped and moved");
+    assert.deepEqual(codex.dispatches, [{ model: "gpt-6-luna", effort: undefined, prompt: "review" }]);
+    const record = runtime.lastAgentRecord();
+    assert.equal(record?.model, "gpt-6-luna");
+    assert.equal(record?.options.timeoutMs, 4321);
+    assert.deepEqual(record?.strip?.requested, ["agents"]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("a moved call resolves its model against the defaults of the body that made it, under nesting and interleaving", async () => {
+  const codex = new ChainEngine("codex", [answers("parent before"), answers("child"), answers("parent after")]);
+  const claude = new ChainEngine("claude", []);
+  const runtime = new EnsembleRuntime({
+    engines: new EngineRegistry([codex, claude]),
+    cwd: "/fake/repo",
+    defaultMaxAttempts: 1,
+    dispatchRemap: parseDispatchRemap(["claude=codex"])
+  });
+  try {
+    await runtime.runWithWorkflowDefaults({ codex: { model: "parent-model" } }, async () => {
+      assert.equal(await runtime.agent("one", { engine: "claude" }), "parent before");
+      // A composed child runs under its own block …
+      await runtime.runWithWorkflowDefaults({ codex: { model: "child-model" } }, async () => {
+        assert.equal(await runtime.agent("two", { engine: "claude" }), "child");
+      });
+      // … and the parent's continuation is back under the parent's.
+      assert.equal(await runtime.agent("three", { engine: "claude" }), "parent after");
+    });
+    assert.deepEqual(codex.dispatches.map((dispatch) => dispatch.model), ["parent-model", "child-model", "parent-model"]);
+  } finally {
+    await runtime.close();
+  }
 });

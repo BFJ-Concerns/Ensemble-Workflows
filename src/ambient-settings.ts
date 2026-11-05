@@ -24,6 +24,8 @@ export const RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
  * runtime settings resolved by `resolveAmbientSettings`.
  */
 export const CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
+/** The dispatch remap's environment route: comma-separated rules, outranked whole by any `--remap` flag. */
+export const DISPATCH_REMAP_ENV = "ENSEMBLE_DISPATCH_REMAP";
 
 export type SettingLayer = "flag" | "env" | "config-file" | "default";
 
@@ -42,6 +44,7 @@ const RUN_SCOPED_ENVIRONMENT_VARIABLES: ReadonlySet<string> = new Set([
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
   CALLER_IDENTITY_ENV,
+  DISPATCH_REMAP_ENV,
   "ENSEMBLE_STATUS",
   "ENSEMBLE_STATUS_DIR",
   HOLD_SCOPE_ENV

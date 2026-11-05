@@ -1,4 +1,5 @@
 import type { StrippableCapability } from "./capability-stripping.js";
+import type { DispatchRemapRule } from "./dispatch-remap.js";
 import type { OpenCodeModelRegistryEntry } from "./opencode-model-registry.js";
 
 export type JsonObject = Record<string, unknown>;
@@ -166,6 +167,14 @@ export interface AgentCallSignature {
 
 export interface RuntimeOptions {
   cwd?: string;
+  /**
+   * The launch-time dispatch remap (C36): rules that move every dispatch a
+   * matching key names — a call's own target, each fallback-chain entry, a
+   * session's creation — onto another engine, with or without a model. A
+   * per-run tuning the CLI resolves from `--remap` or
+   * `ENSEMBLE_DISPATCH_REMAP`; never a configuration-file setting.
+   */
+  dispatchRemap?: readonly DispatchRemapRule[];
   codexBin?: string;
   agentCeiling?: number | null;
   concurrencyCaps?: EngineConcurrencyCaps;

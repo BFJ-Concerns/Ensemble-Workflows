@@ -66,6 +66,7 @@ export interface CliFlagsRecord {
   concurrency?: Record<string, number>;
   timeoutMs?: number;
   strip?: string[];
+  remap?: string[];
   jsonArgs: boolean;
 }
 
@@ -103,6 +104,8 @@ export interface EffectiveConcurrencyRecord {
 export interface EffectiveRunSettingsRecord {
   budgetCeilings: Partial<Record<EngineName, Resolved<number | null>>>;
   runTimeoutMs: Resolved<number | null>;
+  /** The dispatch remap's rules as written, with the layer that supplied them (`flag`, `env`, or `default` for none). */
+  dispatchRemap?: Resolved<string[] | null>;
 }
 
 /**
@@ -201,6 +204,18 @@ export interface DecodeFailureDiagnostic {
   linePrefix: string;
 }
 
+/**
+ * One target the launch-time dispatch remap moved: which rule (as the
+ * operator wrote it), which target of the call (`-1` the call's own, else
+ * the fallback-chain index), what the script asked for, and where it went.
+ */
+export interface DispatchRemapEvidence {
+  key: string;
+  entry: number;
+  requested: { engine: EngineName; model: string | null };
+  dispatched: { engine: EngineName; model: string | null };
+}
+
 export interface RuntimeAgentRecord {
   id: number;
   engine: EngineName;
@@ -215,8 +230,15 @@ export interface RuntimeAgentRecord {
   };
   model: string | null;
   effort: string | null;
-  /** The declared fallback chain, as the call or its engine defaults declared it; null when none. */
+  /** The declared fallback chain, as the call or its engine defaults declared it; null when none. Where the remap moved an entry, `remap` names the move and each attempt's `target` says where it went. */
   fallback: FallbackTarget[] | null;
+  /**
+   * The targets the launch-time dispatch remap moved, one entry per moved
+   * target, so a reader can name both what the script asked for and what
+   * was dispatched. `engine` and `model` above are the dispatched call
+   * target; the requested ones are here. Null when nothing moved.
+   */
+  remap: DispatchRemapEvidence[] | null;
   /**
    * Which target answered: `entry` is -1 for the call's own target and
    * the chain index thereafter, beside that target's engine and model. Null
@@ -315,6 +337,8 @@ export interface RunRecordFinishOptions {
   status: Exclude<RunStatus, "in-progress" | "abandoned" | "incomplete">;
   exitCode: number;
   result: unknown;
+  /** The remap rules that caught no dispatch, as the runtime reports them at the run's end; omitted where no remap was in force. */
+  dispatchRemapUnmatched?: string[];
   /**
    * What ended the run, when it ended badly. Null on a clean finish and
    * where the launcher never saw an error — never an inferred cause.
@@ -447,6 +471,15 @@ interface Manifest {
   /** See {@link EffectiveRunSettingsRecord}: values with their winning layers. */
   budget_ceilings: Partial<Record<EngineName, Resolved<number | null>>>;
   run_timeout_ms: Resolved<number | null>;
+  /** The launch-time dispatch remap in force: its rules as written and the layer that supplied them; `value: null` when none. */
+  dispatch_remap: Resolved<string[] | null>;
+  /**
+   * The remap rules that matched no dispatch by the run's end, as written:
+   * a mistyped key is reported here rather than silently leaving every
+   * worker where it was. Null while the run is open or where no remap was
+   * in force; `[]` when every rule caught something.
+   */
+  dispatch_remap_unmatched: string[] | null;
   git: {
     start: GitState;
     end: GitState | null;
@@ -668,6 +701,8 @@ export class RunRecordWriter {
       },
       budget_ceilings: options.effectiveSettings?.budgetCeilings ?? {},
       run_timeout_ms: options.effectiveSettings?.runTimeoutMs ?? { value: null, layer: "default" },
+      dispatch_remap: options.effectiveSettings?.dispatchRemap ?? { value: null, layer: "default" },
+      dispatch_remap_unmatched: null,
       git: {
         start: gitStart,
         end: null
@@ -930,6 +965,7 @@ export class RunRecordWriter {
       model: record.model,
       effort: record.effort,
       fallback: record.fallback,
+      remap: record.remap,
       answered_by: record.answeredBy,
       resolved_model: record.resolvedModel,
       resolved_effort: record.resolvedEffort,
@@ -1026,6 +1062,9 @@ export class RunRecordWriter {
       }
       this.manifest.status = options.status;
       this.manifest.ended_at = options.endedAt ?? new Date().toISOString();
+      if (options.dispatchRemapUnmatched !== undefined) {
+        this.manifest.dispatch_remap_unmatched = [...options.dispatchRemapUnmatched];
+      }
       this.manifest.git.end = await readGitState(this.#cwd, "git/end.diff", this.archiveDir);
       if (this.manifest.git.end.diffPath !== null) {
         await this.#trackFile(this.manifest.git.end.diffPath);

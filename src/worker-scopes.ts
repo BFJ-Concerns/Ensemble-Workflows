@@ -182,6 +182,7 @@ export class SystemdWorkerScopes implements WorkerScopes {
     const properties = [
       ["PIDs", "au", String(pids.length), ...pids.map(String)],
       ["Delegate", "b", "true"],
+      ["CollectMode", "s", "inactive-or-failed"],
       ...(this.slice !== null ? [["Slice", "s", this.slice]] : [])
     ];
     const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [

@@ -69,8 +69,9 @@ test("place puts live processes in one delegated scope per group under the launc
     assert.notEqual(elsewhere.unit, placed.unit);
     assert.equal(await cgroupUnit(other.pid!), elsewhere.unit);
 
-    const shown = await execFileAsync("systemctl", ["--user", "show", placed.unit, "-p", "Slice,Delegate,ActiveState"]);
+    const shown = await execFileAsync("systemctl", ["--user", "show", placed.unit, "-p", "Slice,Delegate,ActiveState,CollectMode"]);
     assert.match(shown.stdout, /^Delegate=yes$/m);
+    assert.match(shown.stdout, /^CollectMode=inactive-or-failed$/m, "failed worker scopes must be collected by the user manager");
     assert.match(shown.stdout, /^ActiveState=active$/m);
     if (slice !== null) {
       assert.match(shown.stdout, new RegExp(`^Slice=${slice.replace(".", "\\.")}$`, "m"));
@@ -245,7 +246,7 @@ test("createWorkerScopes discovers the launcher's slice where the user manager a
 });
 
 test("processTree lists a process with every live descendant", async () => {
-  const parent = spawn("sh", ["-c", "sleep 30 & sleep 30 & wait"], { stdio: "ignore" });
+  const parent = spawn("sh", ["-c", "sleep infinity & sleep infinity & wait"], { stdio: "ignore" });
   try {
     let tree: number[] = [];
     await waitFor(async () => (tree = await processTree(parent.pid!)).length === 3, "two sleep children");
@@ -266,7 +267,7 @@ async function ownSlice(): Promise<string | null> {
 }
 
 function sleeper(): ChildProcess {
-  return spawn("sleep", ["60"], { stdio: "ignore" });
+  return spawn("sleep", ["infinity"], { stdio: "ignore" });
 }
 
 async function cgroupUnit(pid: number): Promise<string> {
@@ -283,7 +284,9 @@ function isLive(pid: number): boolean {
   }
 }
 
-async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 5_000): Promise<void> {
+// A five-minute hang guard covers slow asynchronous systemd stops; members
+// sleep indefinitely so a missing stop cannot pass through natural expiry.
+async function waitFor(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 300_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
     assert.ok(Date.now() < deadline, `timed out waiting for ${what}`);

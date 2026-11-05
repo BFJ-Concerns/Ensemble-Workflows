@@ -16,6 +16,7 @@ import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath, type
 const exec = promisify(execFile);
 const launcher = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 const live = process.env.ENSEMBLE_LIVE === "1";
+const claudeModel = process.env.ENSEMBLE_LIVE_CLAUDE_MODEL ?? "haiku";
 type Grouping = "worker" | "run";
 interface Scenario {
   name: string;
@@ -98,11 +99,11 @@ for (const scenario of scenarios) {
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
-        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? "haiku" : process.env.ENSEMBLE_LIVE_CODEX_MODEL}`, ...flags, heldProbePrompt(probes[0]!)];
+        args = ["agent", `--engine=${scenario.direct}`, `--model=${scenario.direct === "claude" ? claudeModel : process.env.ENSEMBLE_LIVE_CODEX_MODEL}`, ...flags, heldProbePrompt(probes[0]!)];
       } else {
         const script = path.join(root, "workflow.js");
         const calls = engines.map((engine, index) => {
-          const options = JSON.stringify({ engine, model: engine === "claude" ? "haiku" : process.env.ENSEMBLE_LIVE_CODEX_MODEL, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: 600_000 });
+          const options = JSON.stringify({ engine, model: engine === "claude" ? claudeModel : process.env.ENSEMBLE_LIVE_CODEX_MODEL, cwd: root, label: `scope-${index}`, maxAttempts: 1, timeoutMs: 600_000 });
           if (!scenario.followUp) return `agent(${JSON.stringify(heldProbePrompt(probes[index]!))}, ${options})`;
           return `(async () => { const worker = session(${options}); try { const first = await worker.send(${JSON.stringify(heldProbePrompt(probes[index]!))}); const second = await worker.send(${JSON.stringify(heldProbeFollowUpPrompt(follow[index]!))}); return { first, second }; } finally { await worker.close(); } })()`;
         });
@@ -130,7 +131,7 @@ for (const scenario of scenarios) {
           projectsDir: path.join(config, "projects")
         });
         siblingHandle = await siblingPlane.dispatch({
-          prompt: heldProbePrompt(sibling), name: `sibling-${id}`, cwd: root, model: "haiku"
+          prompt: heldProbePrompt(sibling), name: `sibling-${id}`, cwd: root, model: claudeModel
         });
         await waitForPath(sibling.paths.ready, 420_000);
         const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
@@ -270,7 +271,10 @@ async function findNode(pids: number[]): Promise<number> {
 }
 
 async function waitInactive(unit: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  // This is a hang guard, not a ten-second stop deadline: systemd may wait
+  // for its configured TimeoutStopSec before terminating remaining members.
+  const deadline = Date.now() + 300_000;
+  while (Date.now() < deadline) {
     const state = await property(unit, "ActiveState").catch(() => "not-found");
     if (["inactive", "failed", "not-found"].includes(state)) return;
     await new Promise((resolve) => setTimeout(resolve, 100));

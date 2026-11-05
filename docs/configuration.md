@@ -152,6 +152,11 @@ one of them starts sits outside the box the launcher's slice draws. The
 process keeps its streams, environment, working directory and exit status.
 Without a reachable user manager the process is launched directly.
 
+When `CLAUDE_CONFIG_DIR` has a non-empty value in the launcher's environment,
+Ensemble looks for Claude session transcripts under
+`$CLAUDE_CONFIG_DIR/projects`. An unset or empty value uses
+`~/.claude/projects`.
+
 Claude sessions and the Codex app-server are placed in transient scopes in
 the slice that holds the launcher. `worker_scope` chooses one scope per Claude
 worker and one for the run's shared Codex app-server (`worker`, the default),

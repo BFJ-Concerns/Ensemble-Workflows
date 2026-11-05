@@ -215,6 +215,11 @@ export class RunProgress {
     return id;
   }
 
+  /** The phase fixed for a worker when it entered the queue. */
+  queuedAgentPhase(id: number): string | null {
+    return this.#live.get(id)?.phase ?? null;
+  }
+
   /**
    * Returns a running worker to the queue on another engine: a fallback
    * chain step across engines releases the refused engine's slot and

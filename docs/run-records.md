@@ -450,7 +450,7 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 - `resolved_cwd`, `isolation` (`null` when unused).
 - `worktree`: the isolated worktree's `branch`, `base_commit`, `tip_commit`,
   `changed`, and `removed` — or `null`.
-- `label`, `phase`, and `status`. Status is `"in-progress"`, `"complete"`,
+- `label`, `phase` (the call's explicit phase, or the run's current phase at dispatch), and `status`. Status is `"in-progress"`, `"complete"`,
   `"failed"`, `"timed-out"`, `"interrupted"`, or `"abandoned"`. `"abandoned"`
   means no outcome was observed: either the run's own close ended while the
   dispatch record was still being written, or another run's sweep found the
@@ -458,7 +458,7 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
 - `termination_cause`: the `{ kind, message }` that settled the agent at that
   status when the runtime decided it — a run that ended under the worker, or a
   deadline the runtime enforced — and `null` when the attempts already name the
-  cause. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
+  cause. An unsettled dispatch record carries `"record-unsettled"`: the writer has not yet observed an outcome, and a reaped record retains that account. A close failure after a completed attempt carries the close error here. Two deadline kinds are distinguished: `"turn-timeout"` (the per-agent
   turn deadline expired while the worker was still going) and
   `"request-timeout"` (a transport request deadline expired because the engine
   never answered a request). The first means a slow worker; the second, an
@@ -484,7 +484,8 @@ Each agent's record is at `agents/<zero-padded-id>/agent.json`:
   in flight and its spend are unobserved), `"no-attempt-ran"`, or
   `"engine-reported-no-usage"`.
 - `queued_ms`, `execution_ms`: time spent waiting for admission and time
-  spent executing.
+  spent executing. `null` on an unsettled record means the interval has not
+  been measured; it does not claim zero time. A reap preserves those values.
 - `attempts`: the attempts that have settled. An attempt still running when
   the record was written is not listed, so an empty array on an `in-progress`
   or `abandoned` record means unobserved, not "none ran". Each entry has:

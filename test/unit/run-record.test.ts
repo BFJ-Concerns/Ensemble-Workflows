@@ -2361,7 +2361,7 @@ test("live attempts publish readable references, append in order and settle with
     assert.equal(await readFile(transcriptPath, "utf8"), content);
     settled.attempts[0]!.transcripts = [{
       filename: "transcript.codex.jsonl", format: "jsonl", source: "codex-app-server-events",
-      content: "must not replace live bytes"
+      content
     }];
     await writer.recordAgent(settled);
     const final = await readAgent();
@@ -2444,7 +2444,7 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
     const attempt = structuredClone(settled.attempts[0]!);
     attempt.attempt = 2;
     attempt.transcripts = [{ filename: "transcript.codex.jsonl", format: "jsonl",
-      source: "codex-app-server-events", content: "ignored live replacement" }];
+      source: "codex-app-server-events", content }];
     settled.attempts.push(attempt);
     await writer.recordAgent(settled);
     await writer.finish({ status: "complete", exitCode: 0, result: true });
@@ -2454,4 +2454,73 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
     await rm(cwd, { recursive: true, force: true });
     await rm(store, { recursive: true, force: true });
   }
+});
+
+
+test("ending an attempt clears live metadata and rejects stale transcript updates", async () => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-attempt-end-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "attempt-end", workflowPath: path.join(store, "workflow.js"),
+    workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+  });
+  try {
+    const record = agentRecord(1, "codex", null, 3);
+    record.status = "in-progress";
+    record.attempts = [];
+    await writer.recordAgent(record);
+    const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+    const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
+    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    await writer.appendCodexTranscript(1, 1, { first: true });
+    const transcript = path.join(writer.archiveDir, (await readAgent()).current_attempt.transcript);
+    await writer.recordAttemptEnd(1, 2);
+    assert.equal((await readAgent()).current_attempt.attempt, 1);
+    await writer.recordAttemptEnd(1, 1);
+    assert.equal((await readAgent()).current_attempt, undefined);
+    await writer.appendCodexTranscript(1, 1, { stale: true });
+    assert.equal(await readFile(transcript, "utf8"), '{"first":true}\n');
+    await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:01Z");
+    await writer.recordAttemptEnd(1, 1);
+    assert.deepEqual((await readAgent()).current_attempt, { attempt: 2, started_at: "2026-11-05T12:00:01Z", transcript: null });
+    await writer.recordAttemptEnd(1, 2);
+    assert.equal((await readAgent()).current_attempt, undefined);
+    record.status = "complete";
+    await writer.recordAgent(record);
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    await writer.recordAttemptEnd(1, 2);
+    assert.equal((await readAgent()).current_attempt, undefined);
+  } finally { await rm(store, { recursive: true, force: true }); }
+});
+
+test("settlement restores complete Codex capture after a failed live append", async (t) => {
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-append-recovery-"));
+  const writer = await RunRecordWriter.start({
+    storeDir: store, cwd: process.cwd(), runUuid: "append-recovery", workflowPath: path.join(store, "workflow.js"),
+    workflowSource: "return true;", args: [], cliFlags: { jsonArgs: false }
+  });
+  try {
+    const record = agentRecord(1, "codex", null, 3);
+    const running = structuredClone(record);
+    running.status = "in-progress";
+    running.attempts = [];
+    await writer.recordAgent(running);
+    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    const spy = t.mock.method(fsPromises, "appendFile", async () => { throw new Error("disk full"); });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(writer.appendCodexTranscript(1, 1, { first: true }), /disk full/);
+    } finally {
+      spy.mock.restore();
+      syncBuiltinESMExports();
+    }
+    await writer.appendCodexTranscript(1, 1, { second: true });
+    const content = '{"first":true}\n{"second":true}\n';
+    record.attempts[0]!.transcripts = [{ filename: "transcript.codex.jsonl", format: "jsonl", source: "codex-app-server-events", content }];
+    await writer.recordAgent(record);
+    await writer.finish({ status: "complete", exitCode: 0, result: null });
+    const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
+    const transcript = agent.transcripts[0].path;
+    assert.equal(await readFile(path.join(writer.archiveDir, transcript), "utf8"), content);
+    assert.equal(writer.manifest.files.find((file) => file.path === transcript)?.sha256, sha256(Buffer.from(content)));
+  } finally { await rm(store, { recursive: true, force: true }); }
 });

@@ -1699,6 +1699,7 @@ export class EnsembleRuntime {
     } finally {
       active = false;
       await Promise.all(pending);
+      await this.#recordLiveAttemptSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
     }
   }
 

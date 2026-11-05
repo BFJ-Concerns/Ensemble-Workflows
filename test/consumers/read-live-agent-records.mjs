@@ -2,16 +2,23 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { appendFile, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { URL } from "node:url";
 
-const [store, expectedCount, timeout = "45000"] = process.argv.slice(2);
-assert.ok(store && Number(expectedCount) > 0, "usage: read-live-agent-records.mjs <store> <agent-count> [timeout-ms]");
+const [store, expectedCount, timeout = "45000", acknowledgements] = process.argv.slice(2);
+assert.ok(store && Number(expectedCount) > 0, "usage: read-live-agent-records.mjs <store> <agent-count> [timeout-ms] [acknowledgements-file]");
 const expectedKeys = JSON.parse(await readFile(new URL("../fixtures/run-record/v4-agent-keys.json", import.meta.url), "utf8"));
 const observed = new Map();
 const deadline = Date.now() + Number(timeout);
+const acknowledged = new Set();
+
+async function acknowledge(marker) {
+  if (acknowledgements === undefined || acknowledged.has(marker)) return;
+  await appendFile(acknowledgements, `${marker}\n`);
+  acknowledged.add(marker);
+}
 
 async function readJson(file) {
   try {
@@ -50,7 +57,7 @@ for (;;) {
       assert.equal(attempt.started_at, current.started_at, "start time changed during an attempt");
       if (current.transcript !== null) {
         const transcript = path.isAbsolute(current.transcript) ? current.transcript : path.join(archive, current.transcript);
-        if (agent.engine === "codex") {
+        if (!path.isAbsolute(current.transcript)) {
           assert.ok(current.transcript.startsWith(`agents/${path.basename(path.dirname(file))}/`));
         } else {
           assert.ok(path.isAbsolute(current.transcript), "engine-owned transcript must have an absolute path");
@@ -60,6 +67,11 @@ for (;;) {
         attempt.transcript = current.transcript;
         if (attempt.sizes.at(-1) !== bytes.length) attempt.sizes.push(bytes.length);
         attempt.lastContent = bytes;
+        const marker = `observed:${agent.id}:${current.attempt}`;
+        await acknowledge(`${marker}:started`);
+        const deltas = bytes.toString("utf8").split("\n").filter((line) => line.includes('"method":"item/agentMessage/delta"')).length;
+        if (deltas >= 1) await acknowledge(`${marker}:output`);
+        if (deltas >= 2) await acknowledge(`${marker}:grown`);
       }
     }
     if (manifest.status === "in-progress" || agents.length !== Number(expectedCount)) continue;
@@ -75,7 +87,7 @@ for (;;) {
         const settled = agent.attempts.find((candidate) => candidate.attempt === attempt.attempt);
         assert.ok(settled, "observed attempt is absent from the settled record");
         assert.equal(settled.started_at, attempt.started_at);
-        if (agent.engine === "codex" && attempt.transcript !== null) {
+        if (attempt.transcript !== null && !path.isAbsolute(attempt.transcript)) {
           assert.ok(agent.transcripts.some((reference) => reference.path === attempt.transcript && reference.attempt === attempt.attempt));
           const bytes = await readFile(path.join(archive, attempt.transcript));
           assert.ok(bytes.subarray(0, attempt.lastContent.length).equals(attempt.lastContent), "settlement replaced streamed bytes");

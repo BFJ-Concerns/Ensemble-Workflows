@@ -31,6 +31,7 @@ import type { OpenCodeRunner } from "../../src/opencode-engine.js";
 import type { RuntimeTransport, ThreadStartOptions, TurnResult, TurnStartOptions } from "../../src/types.js";
 
 const ignoreAttemptStart: RunRecordWriter["recordAttemptStart"] = async () => undefined;
+const ignoreAttemptEnd: RunRecordWriter["recordAttemptEnd"] = async () => undefined;
 
 // ---------------------------------------------------------------------------
 // Codex side: a scripted transport. Each runTurn consumes the next response;
@@ -185,6 +186,7 @@ test("per-turn records carry session identity, their own prompts, and dispatch-t
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
     recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -222,6 +224,7 @@ test("a failed first Codex turn carries served identity into the next dispatch",
   const captured: RuntimeAgentRecord[] = [];
   const recorder = {
     recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -427,6 +430,7 @@ test("each send is its own budget admission: a blown ceiling blocks the next tur
   const captured: RuntimeAgentRecord[] = [];
   runtime.setRunRecorder({
     recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAgent: async (record: RuntimeAgentRecord) => {
       captured.push(structuredClone(record));
     }
@@ -840,6 +844,7 @@ test("a session's chain applies to the creating turn alone, and the answering ta
       const records: RuntimeAgentRecord[] = [];
       runtime.setRunRecorder({
         recordAttemptStart: ignoreAttemptStart,
+    recordAttemptEnd: ignoreAttemptEnd,
         recordAgent: async (record) => {
           records.push(structuredClone(record));
         }
@@ -908,6 +913,7 @@ test("held turns publish separate live records and ignore prior-turn callbacks",
   const runtime = codexRuntime(transport);
   runtime.setRunRecorder({
     recordAgent: async () => undefined,
+    recordAttemptEnd: ignoreAttemptEnd,
     recordAttemptStart: async (id: number, attempt: number) => { starts.push([id, attempt]); },
     appendCodexTranscript: async (id: number, attempt: number, event: unknown) => { writes.push([id, attempt, event]); }
   } as unknown as RunRecordWriter);

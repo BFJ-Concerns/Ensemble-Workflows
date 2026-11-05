@@ -15594,7 +15594,7 @@ function sha256(text) {
 
 // src/run-record.ts
 import { createHash as createHash2 } from "node:crypto";
-import { mkdir as mkdir2, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
+import { appendFile, mkdir as mkdir2, readdir as readdir3, readFile as readFile4, realpath, rename as rename3, rm as rm2, stat as stat2, writeFile as writeFile3 } from "node:fs/promises";
 import os from "node:os";
 import path6 from "node:path";
 import { execFile } from "node:child_process";
@@ -15787,6 +15787,9 @@ var RunRecordWriter = class _RunRecordWriter {
   #tmpSeq = 0;
   #writeChain = Promise.resolve();
   #sealed = false;
+  #currentAttempts = /* @__PURE__ */ new Map();
+  #liveCodex = /* @__PURE__ */ new Map();
+  #liveCodexHashes = /* @__PURE__ */ new Map();
   constructor(archiveDir, cwd, manifest) {
     this.archiveDir = archiveDir;
     this.#cwd = cwd;
@@ -16028,6 +16031,77 @@ var RunRecordWriter = class _RunRecordWriter {
       await this.#writeManifest();
     });
   }
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id, attempt, startedAt) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === void 0 || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Clear execution metadata before another target waits for admission. */
+  async recordAttemptEnd(id, attempt) {
+    await this.#serialise(async () => {
+      if (this.#sealed || this.#currentAttempts.get(id)?.attempt !== attempt) return;
+      this.#currentAttempts.delete(id);
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id, attempt, transcriptPath) {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return;
+      await stat2(transcriptPath);
+      current2.transcript = transcriptPath;
+      await this.#publishCurrentAttempt(id);
+    });
+  }
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id, attempt, event) {
+    const content = `${JSON.stringify(event)}
+`;
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current2 = this.#currentAttempts.get(id);
+      if (current2?.attempt !== attempt) return;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir2(path6.dirname(path6.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path6.join(this.archiveDir, relativePath), content);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash2("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath,
+        size: digest.size,
+        sha256: digest.hash.copy().digest("hex")
+      });
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      if (current2.transcript !== relativePath) {
+        current2.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
+    });
+  }
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id) {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile4(path6.join(this.archiveDir, relativePath), "utf8"));
+    const current2 = this.#currentAttempts.get(id);
+    if (current2 === void 0) {
+      delete record.current_attempt;
+    } else {
+      record.current_attempt = { ...current2 };
+    }
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
+  }
   async recordAgent(record) {
     const snapshot = structuredClone(record);
     await this.#serialise(async () => {
@@ -16039,6 +16113,7 @@ var RunRecordWriter = class _RunRecordWriter {
   }
   async #recordAgent(record) {
     this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
     for (const attempt of record.attempts) {
@@ -16050,7 +16125,13 @@ var RunRecordWriter = class _RunRecordWriter {
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
+        const liveFile = this.#files.get(relativePath);
+        const liveMatches = this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath && liveFile?.sha256 === sha256(transcript.content) && (await stat2(path6.join(this.archiveDir, relativePath)).catch(() => null))?.size === liveFile.size;
+        if (liveMatches) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
         transcriptRefs.push({
           attempt: attempt.attempt,
           path: relativePath,
@@ -16064,6 +16145,7 @@ var RunRecordWriter = class _RunRecordWriter {
     }
     const agentJsonPath = `${agentDir}/agent.json`;
     await this.#writeJson(agentJsonPath, {
+      ...this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id) } } : {},
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,
@@ -16434,6 +16516,7 @@ async function resolveAbandonedAgentRecords(runDir, abandonment) {
       }
       agentRecord.status = "abandoned";
       agentRecord.abandonment = abandonment;
+      delete agentRecord.current_attempt;
       const content = `${canonicalJson(agentRecord)}
 `;
       await writeStandaloneText(agentJsonPath, content);
@@ -18223,14 +18306,14 @@ var ClaudeEngineInvocation = class {
       const previousFailure = context.previousFailure;
       if (this.#handle !== null && this.#multiTurn && !this.#turnDelivered) {
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         this.#requireValve(await this.#controlPlane.tmuxAvailable());
         return await this.#sendTurnInSession(handle, fromIndex, context);
       }
       const correcting = previousFailure !== void 0 && this.#handle !== null;
       if (correcting && await this.#controlPlane.tmuxAvailable()) {
         const handle = this.#handle;
-        fromIndex = (await this.#readTranscript(handle)).entries.length;
+        fromIndex = (await this.#readTranscript(handle, context)).entries.length;
         return await this.#correctInSession(handle, previousFailure, fromIndex, context);
       }
       if (correcting && this.#multiTurn) {
@@ -18307,7 +18390,7 @@ var ClaudeEngineInvocation = class {
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the follow-up turn: ${delivery.reason}`);
     }
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     this.#turnDelivered = true;
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
@@ -18329,12 +18412,12 @@ var ClaudeEngineInvocation = class {
     if (!delivery.delivered) {
       throw new ClaudeValveError(`reply valve failed to inject the correction: ${delivery.reason}`);
     }
-    await this.#awaitReceipt(handle, fromIndex);
+    await this.#awaitReceipt(handle, fromIndex, observers);
     const transcript = await this.#runToCompletion(handle, fromIndex, observers);
     return this.#buildResult(handle, transcript, fromIndex);
   }
   /** Confirm the steered worker received the message (started generating, or the transcript grew). */
-  async #awaitReceipt(handle, mark) {
+  async #awaitReceipt(handle, mark, observers) {
     const deadline = Date.now() + this.#receiptTimeoutMs;
     for (; ; ) {
       this.#assertOpen();
@@ -18343,7 +18426,7 @@ var ClaudeEngineInvocation = class {
       if (status.status === "busy") {
         return;
       }
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null && transcript.entries.length > mark) {
         return;
       }
@@ -18403,7 +18486,7 @@ var ClaudeEngineInvocation = class {
     let awaitingTask = false;
     for (; ; ) {
       this.#assertOpen();
-      const transcript = await this.#tryReadTranscript(handle);
+      const transcript = await this.#tryReadTranscript(handle, observers);
       if (transcript !== null) {
         sawLife = true;
         this.#reportUsage(handle, transcript.entries, fromIndex);
@@ -18450,12 +18533,12 @@ var ClaudeEngineInvocation = class {
           throw new ClaudeBlockedError("worker blocked awaiting input beyond the recovery bound");
         }
         nudges += 1;
-        const mark = (await this.#tryReadTranscript(handle))?.entries.length ?? fromIndex;
+        const mark = (await this.#tryReadTranscript(handle, observers))?.entries.length ?? fromIndex;
         const delivery = await this.#controlPlane.steer(handle, this.#blockedNudge(status.waitingFor));
         if (!delivery.delivered) {
           throw new ClaudeValveError(`reply valve failed to inject the blocked-worker nudge: ${delivery.reason}`);
         }
-        await this.#awaitReceipt(handle, mark);
+        await this.#awaitReceipt(handle, mark, observers);
         continue;
       }
       if (sawLife && !awaitingTask && (status.state === "done" || status.status === "idle")) {
@@ -18539,17 +18622,22 @@ var ClaudeEngineInvocation = class {
       ]
     };
   }
-  async #readTranscript(handle) {
+  async #readTranscript(handle, observers) {
     const path15 = await this.#controlPlane.transcriptPath(handle);
     if (path15 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path15);
+    const transcript = await readTranscriptFile(path15);
+    try {
+      observers?.onTranscriptPath?.(path15);
+    } catch {
+    }
+    return transcript;
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
-  async #tryReadTranscript(handle) {
+  async #tryReadTranscript(handle, observers) {
     try {
-      return await this.#readTranscript(handle);
+      return await this.#readTranscript(handle, observers);
     } catch (error) {
       if (error instanceof ClaudeTranscriptError) {
         return null;
@@ -19331,7 +19419,11 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       });
     }
     const state = this.#createTurnState(threadId, options.timeoutMs, options.onFirstOutput);
+    state.onTranscriptEvent = options.onTranscriptEvent;
     this.#turns.set(threadId, state);
+    for (const event of this.#transcripts.get(threadId).events) {
+      this.#observeTranscriptEvent(state, event);
+    }
     state.promise.catch(() => void 0);
     try {
       const params = {
@@ -19942,6 +20034,16 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       return;
     }
     transcript.events.push(event);
+    const turn = this.#turns.get(threadId);
+    if (turn !== void 0) {
+      this.#observeTranscriptEvent(turn, event);
+    }
+  }
+  #observeTranscriptEvent(turn, event) {
+    try {
+      turn.onTranscriptEvent?.(event);
+    } catch {
+    }
   }
   #transcriptText(threadId) {
     const transcript = this.#transcripts.get(threadId);
@@ -19965,6 +20067,7 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
       firstDeltaAt: null,
       firstOutputSeen: false,
       onFirstOutput,
+      onTranscriptEvent: void 0,
       completedAt: null,
       deltaText: "",
       items: /* @__PURE__ */ new Map(),
@@ -21417,7 +21520,9 @@ var CodexWorkerSession = class {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...schema !== void 0 ? { schema: normaliseForCodexOutputSchema(schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {}
+      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
   /**
@@ -21456,15 +21561,17 @@ var CodexEngineInvocation = class {
   }
   async runAttempt(context) {
     const prompt = promptWithFailureFeedback(this.#prompt, context.previousFailure);
-    return this.#runTurnInCwd(prompt, this.#options.cwd, context.onLiveEvidence);
+    return this.#runTurnInCwd(prompt, this.#options.cwd, context);
   }
-  async #runTurnInCwd(prompt, cwd, onLiveEvidence) {
+  async #runTurnInCwd(prompt, cwd, context) {
     const threadId = await openCodexThread(this.#transport, this.#options, cwd);
     return this.#transport.runTurn(threadId, prompt, {
       ...this.#options.timeoutMs !== void 0 ? { timeoutMs: this.#options.timeoutMs } : {},
       ...this.#options.schema !== void 0 ? { schema: normaliseForCodexOutputSchema(this.#options.schema) } : {},
       ...this.#options.model !== void 0 ? { model: this.#options.model } : {},
-      ...onLiveEvidence !== void 0 ? { onFirstOutput: onLiveEvidence } : {}
+      ...context.onLiveEvidence !== void 0 ? { onFirstOutput: context.onLiveEvidence } : {},
+      ...context.onTranscriptEvent !== void 0 ? { onTranscriptEvent: context.onTranscriptEvent } : {},
+      ...context.onTranscriptPath !== void 0 ? { onTranscriptPath: context.onTranscriptPath } : {}
     });
   }
 };
@@ -22729,6 +22836,60 @@ var EnsembleRuntime = class _EnsembleRuntime {
       });
     }
   }
+  /** Live archive writes have the same best-effort contract as settlement. */
+  async #recordLiveAttemptSafely(agentId, write) {
+    try {
+      await write();
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { agentId, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
+  }
+  /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
+  async #runRecordedAttempt(engine, invocation, context, agentId, startedAt) {
+    const recorder = this.#runRecorder;
+    if (recorder === null || engine === "opencode") {
+      return invocation.runAttempt(context);
+    }
+    await this.#recordLiveAttemptSafely(agentId, () => recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    let active = true;
+    let transcriptPath;
+    const pending = /* @__PURE__ */ new Set();
+    const enqueue = (write) => {
+      if (!active) return;
+      const operation = this.#recordLiveAttemptSafely(agentId, write);
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation));
+    };
+    try {
+      return await invocation.runAttempt({
+        ...context,
+        ...engine === "codex" ? {
+          onTranscriptEvent: (event) => enqueue(() => recorder.appendCodexTranscript(agentId, context.attempt, event))
+        } : {
+          onTranscriptPath: (path15) => {
+            if (path15 === transcriptPath || !active) return;
+            transcriptPath = path15;
+            enqueue(async () => {
+              try {
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path15);
+              } catch (error) {
+                transcriptPath = void 0;
+                throw error;
+              }
+            });
+          }
+        }
+      });
+    } finally {
+      active = false;
+      await Promise.all(pending);
+      await this.#recordLiveAttemptSafely(agentId, () => recorder.recordAttemptEnd(agentId, context.attempt));
+    }
+  }
   async #recordSettlementSafely(agentId, record) {
     if (this.#abandonedAgentIds.has(agentId)) {
       return;
@@ -23045,12 +23206,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -23109,12 +23270,12 @@ var EnsembleRuntime = class _EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...previousFailure !== void 0 ? { previousFailure } : {}
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);

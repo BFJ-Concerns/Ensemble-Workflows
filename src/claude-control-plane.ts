@@ -341,35 +341,30 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Prompts routinely contain whole diffs and can exceed the platform's argv
       // ceiling. Claude's background mode accepts its initial prompt on stdin, so
       // keep argv small and stream the bytes without involving a shell.
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      // `claude --bg` prints the short id and returns; if it failed outright there
-      // is no session to wait for, so surface immediately with its stderr.
-      if (!dispatch.ok && (await this.#findByName(options.name)) === null) {
-        // A refusal before any session exists: the directory is the
-        // fact the operator needs, Claude Code's own words are the reason,
-        // and the declaration is named so a refusal that survived it reads
-        // as the substrate's, not as a lift the harness forgot. The text is
-        // engine-controlled and lands on a one-line operator surface, so it
-        // takes the bounded-evidence discipline: control stripped,
-        // whitespace flattened, bounded.
-        throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
-            `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
-            boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
-        );
-      }
+      //
+      // The roster is read while `claude --bg` is still running, not once it
+      // has returned: the row registers, and names its pid, seconds before
+      // the command exits (measured on Claude Code 2.1.318: pid at ~0.9 s,
+      // exit at ~4 s), and Linux never moves memory already charged when a
+      // process changes cgroup, so every moment the session spends outside
+      // its scope is memory charged to the supervisor's cgroup for good.
+      const dispatch: { result: ExecResult | null } = { result: null };
+      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+        (result) => (dispatch.result = result),
+        (error: unknown) => (dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) })
+      );
 
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      // The registration window opens when `claude --bg` returns: a slow
+      // daemon start spends the command's own time, not the session's.
+      let deadline: number | null = null;
       for (;;) {
         const found = await this.#findByName(options.name);
         if (found !== null) {
           registered = found.handle;
-          // Linux never moves memory already charged when a process
-          // changes cgroup, so the session is placed the moment the
-          // roster names its process. The row registers before it carries
-          // a pid (measured: about half a second before), so the wait
-          // continues, bounded, for the pid alone; past the bound the
-          // next poll places it.
+          // The row registers before it carries a pid (measured: about half
+          // a second before), so the wait continues, bounded, for the pid
+          // alone, and the session is placed the moment it is named; past
+          // the bound the next poll places it.
           const settled = Date.now() + this.#placementSettleMs;
           let pid = found.pid;
           while (pid === null && Date.now() < settled) {
@@ -381,15 +376,34 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
           }
           break;
         }
-        if (Date.now() >= deadline) {
-          // The daemon took the dispatch and never surfaced the session: an
-          // operational failure the retry loop spends an attempt on, not a
-          // refusal — Claude Code did not decline.
-          throw new ClaudeRegistrationTimeoutError(
-            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-          );
+        if (dispatch.result !== null) {
+          // `claude --bg` prints the short id and returns; if it failed outright there
+          // is no session to wait for, so surface immediately with its stderr.
+          if (!dispatch.result.ok) {
+            // A refusal before any session exists: the directory is the
+            // fact the operator needs, Claude Code's own words are the reason,
+            // and the declaration is named so a refusal that survived it reads
+            // as the substrate's, not as a lift the harness forgot. The text is
+            // engine-controlled and lands on a one-line operator surface, so it
+            // takes the bounded-evidence discipline: control stripped,
+            // whitespace flattened, bounded.
+            throw new ClaudeDispatchError(
+              `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} ` +
+                `(workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` +
+                boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (Date.now() >= deadline) {
+            // The daemon took the dispatch and never surfaced the session: an
+            // operational failure the retry loop spends an attempt on, not a
+            // refusal — Claude Code did not decline.
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+            );
+          }
         }
-        await delay(500);
+        await delay(dispatch.result === null ? 100 : 500);
       }
     } finally {
       if (registered === null) {

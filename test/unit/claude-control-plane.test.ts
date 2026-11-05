@@ -1266,6 +1266,21 @@ async function processesNaming(text: string): Promise<number[]> {
   return pids;
 }
 
+function fileExists(file: string): Promise<boolean> {
+  return access(file).then(
+    () => true,
+    () => false
+  );
+}
+
+async function waitUntil(condition: () => boolean | Promise<boolean>, what: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await condition())) {
+    assert.ok(Date.now() < deadline, `timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 function restoreEnv(name: string, saved: string | undefined): void {
   if (saved === undefined) {
     delete process.env[name];
@@ -1343,28 +1358,45 @@ test("every claude process the control plane starts is launched through the scop
   }
 });
 
-test("a session is placed in its own scope once the roster names its pid, and placed again when the pid changes", async () => {
+test("a session is placed while `claude --bg` still runs, once the roster names its pid, and placed again when the pid changes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
   const first = spawn("sleep", ["60"], { stdio: "ignore" });
   const replacement = spawn("sleep", ["60"], { stdio: "ignore" });
   try {
     const stubPath = path.join(dir, "claude-stub.mjs");
-    const pidPath = path.join(dir, "roster-pid");
+    const releasePath = path.join(dir, "release-bg");
+    const bgExitedPath = path.join(dir, "bg-exited");
+    const queriesPath = path.join(dir, "roster-queries");
+    const replacementPath = path.join(dir, "replacement-pid");
     const sessionId = "00000000-0000-4000-8000-00000000000b";
     const name = "placement-probe";
-    // The roster carries no pid until the file names one: the row registers
-    // first and the supervisor reports the process a moment later.
+    // `claude --bg` holds until the test releases it, as the real command
+    // outlives the session's registration by seconds. The roster counts its
+    // queries and answers the first two without a pid — the row registers
+    // before the supervisor reports its process — then names the first
+    // process, until a replacement pid is named. Count-based, not timed: the
+    // control plane necessarily sees the row without a pid before it can see
+    // one with it, however quickly or slowly it polls.
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
-        import { readFile } from "node:fs/promises";
+        import { access, readFile, writeFile } from "node:fs/promises";
         const args = process.argv.slice(2);
+        const exists = (file) => access(file).then(() => true, () => false);
         if (args[0] === "--bg") {
           for await (const chunk of process.stdin) void chunk;
+          const deadline = Date.now() + 10_000;
+          while (!(await exists(${JSON.stringify(releasePath)})) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          await writeFile(${JSON.stringify(bgExitedPath)}, "");
           process.exit(0);
         }
         if (args[0] === "agents" && args[1] === "--json") {
-          const pid = await readFile(${JSON.stringify(pidPath)}, "utf8").then((text) => Number(text.trim())).catch(() => null);
+          const queries = Number(await readFile(${JSON.stringify(queriesPath)}, "utf8").catch(() => "0")) + 1;
+          await writeFile(${JSON.stringify(queriesPath)}, String(queries));
+          const replacement = await readFile(${JSON.stringify(replacementPath)}, "utf8").then((text) => Number(text.trim())).catch(() => null);
+          const pid = replacement ?? (queries > 2 ? ${first.pid} : null);
           process.stdout.write(JSON.stringify([{
             id: "placed-1",
             sessionId: ${JSON.stringify(sessionId)},
@@ -1381,11 +1413,16 @@ test("a session is placed in its own scope once the roster names its pid, and pl
     );
     await chmod(stubPath, 0o755);
 
-    const placed: { group: string; pids: number[] }[] = [];
+    const placed: { group: string; pids: number[]; bgStillRunning: boolean; rosterQueries: number }[] = [];
     const scopes: WorkerScopes = {
       slice: "agents.slice",
       async place(group, pids): Promise<ScopePlacement> {
-        placed.push({ group, pids: [...pids] });
+        placed.push({
+          group,
+          pids: [...pids],
+          bgStillRunning: !(await fileExists(bgExitedPath)),
+          rosterQueries: Number(await readFile(queriesPath, "utf8"))
+        });
         return { kind: "placed", unit: `ensemble-test-${group}.scope`, pids };
       },
       async launch(file, args, options) {
@@ -1400,21 +1437,30 @@ test("a session is placed in its own scope once the roster names its pid, and pl
       placementSettleMs: 2_000,
       scopes
     });
-    // Name the pid only after dispatch has begun, so registration is seen without it first.
-    const naming = setTimeout(() => void writeFile(pidPath, `${first.pid}\n`), 300);
-    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
-    clearTimeout(naming);
+    const dispatching = controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    // Placed before `claude --bg` is released: the roster was read while the
+    // command still ran, and read again until it named the pid.
+    await waitUntil(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 3_000);
+    assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
+    assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
+    await writeFile(releasePath, "");
+    const handle = await dispatching;
+    await waitUntil(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 3_000);
 
-    assert.deepEqual(placed, [{ group: name, pids: [first.pid] }], "the session was not placed once its pid was named");
+    assert.deepEqual(
+      placed.map(({ group, pids }) => ({ group, pids })),
+      [{ group: name, pids: [first.pid] }],
+      "the session was not placed once its pid was named"
+    );
     assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${name}.scope`, pids: [first.pid] });
 
     // The same pid again places nothing more; a new pid is placed again.
     await controlPlane.poll(handle);
     assert.equal(placed.length, 1);
-    await writeFile(pidPath, `${replacement.pid}\n`);
+    await writeFile(replacementPath, `${replacement.pid}\n`);
     const status = await controlPlane.poll(handle);
     assert.equal(status.present, true);
-    assert.deepEqual(placed.at(-1), { group: name, pids: [replacement.pid] }, "the replacement pid was not placed");
+    assert.deepEqual(placed.at(-1)?.pids, [replacement.pid], "the replacement pid was not placed");
     assert.equal(placed.length, 2);
   } finally {
     first.kill("SIGKILL");

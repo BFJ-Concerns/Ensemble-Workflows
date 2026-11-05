@@ -17655,13 +17655,12 @@ var ClaudeCliControlPlane = class {
     args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
     try {
-      const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
-      if (!dispatch.ok && await this.#findByName(options.name) === null) {
-        throw new ClaudeDispatchError(
-          `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.stderr.trim() || dispatch.stdout.trim() || "claude --bg exited without a message")
-        );
-      }
-      const deadline = Date.now() + this.#dispatchTimeoutMs;
+      const dispatch = { result: null };
+      void this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd).then(
+        (result) => dispatch.result = result,
+        (error) => dispatch.result = { ok: false, stdout: "", stderr: error instanceof Error ? error.message : String(error) }
+      );
+      let deadline = null;
       for (; ; ) {
         const found = await this.#findByName(options.name);
         if (found !== null) {
@@ -17677,12 +17676,20 @@ var ClaudeCliControlPlane = class {
           }
           break;
         }
-        if (Date.now() >= deadline) {
-          throw new ClaudeRegistrationTimeoutError(
-            `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
-          );
+        if (dispatch.result !== null) {
+          if (!dispatch.result.ok) {
+            throw new ClaudeDispatchError(
+              `Claude Code refused to dispatch worker '${options.name}' in ${options.cwd} (workspace declared sandboxed via ${SANDBOXED_WORKSPACE_VARIABLE}): ` + boundedEvidence(dispatch.result.stderr.trim() || dispatch.result.stdout.trim() || "claude --bg exited without a message")
+            );
+          }
+          deadline ??= Date.now() + this.#dispatchTimeoutMs;
+          if (Date.now() >= deadline) {
+            throw new ClaudeRegistrationTimeoutError(
+              `dispatched session '${options.name}' in ${options.cwd} did not register within ${this.#dispatchTimeoutMs}ms`
+            );
+          }
         }
-        await delay(500);
+        await delay(dispatch.result === null ? 100 : 500);
       }
     } finally {
       if (registered === null) {

@@ -1376,7 +1376,11 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
     // before the supervisor reports its process — then names the first
     // process, until a replacement pid is named. Count-based, not timed: the
     // control plane necessarily sees the row without a pid before it can see
-    // one with it, however quickly or slowly it polls.
+    // one with it, however quickly or slowly it polls. Every bound below is
+    // a ceiling on a hang, never a deadline the product must meet: the
+    // fixture runs real subprocesses and files for each roster read, and a
+    // busy machine is given minutes before anything is judged. The hold's
+    // own ceiling fails the command rather than returning as if released.
     await writeFile(
       stubPath,
       `#!/usr/bin/env node
@@ -1385,8 +1389,13 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
         const exists = (file) => access(file).then(() => true, () => false);
         if (args[0] === "--bg") {
           for await (const chunk of process.stdin) void chunk;
-          const deadline = Date.now() + 10_000;
-          while (!(await exists(${JSON.stringify(releasePath)})) && Date.now() < deadline) {
+          const deadline = Date.now() + 120_000;
+          while (!(await exists(${JSON.stringify(releasePath)}))) {
+            if (Date.now() >= deadline) {
+              await writeFile(${JSON.stringify(bgExitedPath)}, "not released within 120 s");
+              process.stderr.write("held claude --bg: not released within 120 s\\n");
+              process.exit(1);
+            }
             await new Promise((resolve) => setTimeout(resolve, 20));
           }
           await writeFile(${JSON.stringify(bgExitedPath)}, "");
@@ -1433,19 +1442,20 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
     const controlPlane = new ClaudeCliControlPlane({
       claudeBin: stubPath,
       projectsDir: dir,
-      dispatchTimeoutMs: 2_000,
-      placementSettleMs: 2_000,
+      dispatchTimeoutMs: 60_000,
+      placementSettleMs: 60_000,
       scopes
     });
     const dispatching = controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
     // Placed before `claude --bg` is released: the roster was read while the
     // command still ran, and read again until it named the pid.
-    await waitUntil(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 3_000);
+    await waitUntil(() => placed.length > 0, "the session to be placed while `claude --bg` was still running", 90_000);
     assert.equal(placed[0]!.bgStillRunning, true, "the session was placed only after `claude --bg` returned");
     assert.ok(placed[0]!.rosterQueries >= 3, `the roster was read ${placed[0]!.rosterQueries} time(s) before placement; the two pid-less answers were never seen`);
     await writeFile(releasePath, "");
     const handle = await dispatching;
-    await waitUntil(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 3_000);
+    await waitUntil(() => fileExists(bgExitedPath), "`claude --bg` to return once released", 60_000);
+    assert.equal(await readFile(bgExitedPath, "utf8"), "", "`claude --bg` returned on its own ceiling, not on release");
 
     assert.deepEqual(
       placed.map(({ group, pids }) => ({ group, pids })),

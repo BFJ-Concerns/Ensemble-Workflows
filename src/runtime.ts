@@ -79,6 +79,7 @@ import type {
 import type {
   EngineAdapter,
   EngineAttemptFailure,
+  EngineAttemptContext,
   PreviousAttemptFailure,
   EngineAttemptResult,
   EngineInvocation,
@@ -1639,6 +1640,68 @@ export class EnsembleRuntime {
     }
   }
 
+  /** Live archive writes have the same best-effort contract as settlement. */
+  async #recordLiveAttemptSafely(agentId: number, write: () => Promise<void>): Promise<void> {
+    try {
+      await write();
+    } catch (error) {
+      this.#emitEvent({
+        method: "runRecord/writeFailed",
+        params: { agentId, message: error instanceof Error ? error.message : String(error) },
+        receivedAt: Date.now()
+      });
+    }
+  }
+
+  /** Bind transcript callbacks to one attempt and drain them before its outcome is recorded. */
+  async #runRecordedAttempt(
+    engine: EngineName,
+    invocation: EngineInvocation,
+    context: EngineAttemptContext,
+    agentId: number,
+    startedAt: number
+  ): Promise<EngineAttemptResult> {
+    const recorder = this.#runRecorder;
+    if (recorder === null || engine === "opencode") {
+      return invocation.runAttempt(context);
+    }
+    await this.#recordLiveAttemptSafely(agentId, () =>
+      recorder.recordAttemptStart(agentId, context.attempt, new Date(startedAt).toISOString()));
+    let active = true;
+    let transcriptPath: string | undefined;
+    const pending = new Set<Promise<void>>();
+    const enqueue = (write: () => Promise<void>): void => {
+      if (!active) return;
+      const operation = this.#recordLiveAttemptSafely(agentId, write);
+      pending.add(operation);
+      void operation.then(() => pending.delete(operation));
+    };
+    try {
+      return await invocation.runAttempt({
+        ...context,
+        ...(engine === "codex" ? {
+          onTranscriptEvent: (event: unknown) => enqueue(() => recorder.appendCodexTranscript(agentId, context.attempt, event))
+        } : {
+          onTranscriptPath: (path: string) => {
+            if (path === transcriptPath || !active) return;
+            transcriptPath = path;
+            enqueue(async () => {
+              try {
+                await recorder.recordClaudeTranscript(agentId, context.attempt, path);
+              } catch (error) {
+                transcriptPath = undefined;
+                throw error;
+              }
+            });
+          }
+        })
+      });
+    } finally {
+      active = false;
+      await Promise.all(pending);
+    }
+  }
+
   async #recordSettlementSafely(agentId: number, record: RuntimeAgentRecord): Promise<void> {
     if (this.#abandonedAgentIds.has(agentId)) {
       return;
@@ -2050,12 +2113,12 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);
@@ -2134,12 +2197,12 @@ export class EnsembleRuntime {
       this.progress.noteAttempt(agentId, attempt);
       const startedAt = Date.now();
       try {
-        const result = await invocation.runAttempt({
+        const result = await this.#runRecordedAttempt(engine, invocation, {
           attempt,
           onLiveEvidence: () => this.progress.noteAgentEvidence(agentId),
           onWaiting: (wait) => this.progress.noteAgentWaiting(agentId, wait),
           ...(previousFailure !== undefined ? { previousFailure } : {})
-        });
+        }, agentId, startedAt);
         this.#recordResolvedUnpinnedModel(engine, options, agentId, agentRecord, result);
         recordTurnMetadata(agentRecord, result);
         const operationalFailure = this.#recordOperationalFailure(agentRecord, attempt, startedAt, result, attempts);

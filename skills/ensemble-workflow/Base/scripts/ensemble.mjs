@@ -16838,7 +16838,7 @@ function findErrorCode(error, code) {
 }
 
 // src/runtime.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 
 // src/agent-placement.ts
 import { stat as stat3 } from "node:fs/promises";
@@ -17880,7 +17880,7 @@ var ClaudeCliControlPlane = class {
   }
   /**
    * Place the session's process and its live descendants in the scope
-   * named for its dispatch. The tree, not the pid alone: helpers the
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
    * session forked before this moment (MCP servers, shells) would
    * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
    * is recorded, never thrown.
@@ -19401,6 +19401,9 @@ var RunProgress = class {
 function rank(state) {
   return state === "running" ? 0 : 1;
 }
+
+// src/engines.ts
+import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/app-server.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -21976,7 +21979,7 @@ var OpenCodeEngineAdapter = class {
 async function createDefaultEngineRegistry(options) {
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === void 0;
-  const workerScopes = options.workerScopes ?? await createWorkerScopes();
+  const workerScopes = options.workerScopes ?? await createWorkerScopes({ label: `${process.pid}-${randomUUID5()}` });
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -22233,7 +22236,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
     this.#strip = options.strip ?? [];
     this.budget = new TokenBudget(options.budgetCeilings);
     this.progress = new RunProgress({
-      runId: options.runId ?? randomUUID5(),
+      runId: options.runId ?? randomUUID6(),
       budget: this.budget,
       ...options.now !== void 0 ? { now: options.now } : {}
     });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { parseWorkerScopeGrouping } from "./ambient-settings.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
@@ -753,7 +754,7 @@ export async function createDefaultEngineRegistry(
   // script actually uses (no engine is privileged).
   const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === undefined;
-  const workerScopes = options.workerScopes ?? (await createWorkerScopes());
+  const workerScopes = options.workerScopes ?? (await createWorkerScopes({ label: `${process.pid}-${randomUUID()}` }));
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,

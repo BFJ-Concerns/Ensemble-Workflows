@@ -209,8 +209,8 @@ export interface ClaudeCliControlPlaneOptions {
    * the supervisor's cgroup, outside the launcher's box. The roster names
    * that process by `pid` shortly after the session registers; the moment
    * it does, the process and its live descendants are placed in a scope
-   * named for the dispatch (one scope per worker), and a session the
-   * supervisor restarts under a new pid is placed again at the next poll.
+   * named for the dispatch or shared by the run, according to `workerScope`.
+   * A session restarted under a new pid is placed again at the next poll.
    * Placement is best-effort: its outcome is kept per session
    * (`placementOf`), and a refusal never fails the dispatch.
    *
@@ -666,7 +666,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /**
    * Place the session's process and its live descendants in the scope
-   * named for its dispatch. The tree, not the pid alone: helpers the
+   * chosen by the run's grouping. The tree, not the pid alone: helpers the
    * session forked before this moment (MCP servers, shells) would
    * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
    * is recorded, never thrown.

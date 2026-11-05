@@ -2171,3 +2171,27 @@ test("runtime forwards run grouping to the real Codex process", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+
+test("separate runtimes in one process keep distinct scopes and independent teardown", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-runtime-scope-ownership-"));
+  const captures = [path.join(directory, "first"), path.join(directory, "second")];
+  const bins: string[] = [];
+  const runtimes: EnsembleRuntime[] = [];
+  try {
+    for (const capture of captures) {
+      const codexBin = await fakeCodexTurnServer({ cgroupCapturePath: capture });
+      bins.push(codexBin);
+      runtimes.push(await createRuntime({ cwd: directory, codexBin, workerScope: "run" }));
+    }
+    await Promise.all(runtimes.map((runtime) => runtime.agent("hello", { engine: "codex" })));
+    const cgroups = await Promise.all(captures.map((capture) => readFile(capture, "utf8")));
+    assert.notEqual(cgroups[0], cgroups[1], "two runtimes adopted the same scope");
+    await runtimes[0]!.close();
+    assert.equal(await runtimes[1]!.agent("hello", { engine: "codex" }), "hello", "closing another runtime ended this app-server");
+  } finally {
+    await Promise.all(runtimes.map((runtime) => runtime.close()));
+    await Promise.all(bins.map((bin) => rm(path.dirname(bin), { recursive: true, force: true })));
+    await rm(directory, { recursive: true, force: true });
+  }
+});

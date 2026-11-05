@@ -8,7 +8,9 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { resolveAmbientSettings } from "../../src/ambient-settings.js";
-import { containingSlice, processTree } from "../../src/worker-scopes.js";
+import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
+import { readProcessStartTicks } from "../../src/process-owner-evidence.js";
+import { SystemdWorkerScopes, containingSlice, processTree } from "../../src/worker-scopes.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
 
 const exec = promisify(execFile);
@@ -62,10 +64,15 @@ for (const scenario of scenarios) {
     const follow = engines.map((_, index): HeldProbe => ({
       paths: probePaths(root, `follow-${index}`), evidence: { kind: "cgroup" }, token: `FOLLOW_${randomUUID()}`
     }));
+    const sibling: HeldProbe = { paths: probePaths(root, "outside-sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
     const units = new Set<string>();
     const observations: Record<string, unknown> = {};
     let run: ReturnType<typeof launch> | undefined;
     let supervisor: number | null = null;
+    let supervisorIdentity: Awaited<ReturnType<typeof knownProcess>> | undefined;
+    let siblingScopes: SystemdWorkerScopes | undefined;
+    let siblingPlane: ClaudeCliControlPlane | undefined;
+    let siblingHandle: ClaudeSessionHandle | undefined;
     const env: NodeJS.ProcessEnv = {
       ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
       XDG_CONFIG_HOME: xdg, ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
@@ -87,7 +94,7 @@ for (const scenario of scenarios) {
           claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config }
         }
       }), { mode: 0o600 });
-      assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
+      assert.equal((await daemonStatus(env)).pid, null, "the private config directory already had a daemon");
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
@@ -109,9 +116,33 @@ for (const scenario of scenarios) {
       const firstPaths = await observe(probes, run, engines, env, slice, box, scenario.fallback === true, units);
       observations.first = firstPaths;
       if (engines.includes("claude") && !scenario.fallback) {
-        supervisor = await daemonPid(env);
+        const status = await daemonStatus(env);
+        observations.supervisorStartStatus = status;
+        supervisor = status.pid;
         assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
-        observations.supervisorBeforeTeardown = supervisor;
+        // An on-demand supervisor intentionally exits after its last client
+        // settles. Keep a sibling outside this run alive so teardown must
+        // preserve a supervisor that is still serving another session.
+        siblingScopes = new SystemdWorkerScopes({ slice: parent, label: `sibling-${id}` });
+        siblingPlane = new ClaudeCliControlPlane({
+          scopes: siblingScopes,
+          workerEnv: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config },
+          projectsDir: path.join(config, "projects")
+        });
+        siblingHandle = await siblingPlane.dispatch({
+          prompt: heldProbePrompt(sibling), name: `sibling-${id}`, cwd: root, model: "haiku"
+        });
+        await waitForPath(sibling.paths.ready, 420_000);
+        const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
+        assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the sibling is inside the tested run's slice");
+        const afterSibling = await daemonStatus(env);
+        assert.equal(afterSibling.pid, supervisor, "starting the outside sibling replaced the supervisor");
+        supervisorIdentity = await knownProcess(supervisor);
+        assert.ok(supervisorIdentity.startTicks !== null, "the supervisor has no readable process identity");
+        assert.ok(supervisorIdentity.cgroup !== null);
+        assert.equal(containingSlice(supervisorIdentity.cgroup), parent, "the supervisor is inside the tested run's slice");
+        observations.supervisorBeforeTeardown = { pid: supervisor, ...supervisorIdentity };
+        observations.outsideSibling = { sessionId: siblingHandle.sessionId, cgroup: siblingGroup };
         assert.equal(run.settled, false, "launcher settled before supervisor observation");
       }
       if (scenario.direct === undefined) assert.equal(new Set(firstPaths).size, scenario.expected === "run" ? 1 : 3);
@@ -138,17 +169,32 @@ for (const scenario of scenarios) {
       }
       for (const unit of units) await waitInactive(unit);
       if (supervisor !== null) {
-        const after = await daemonPid(env);
+        const after = await daemonStatus(env);
         observations.supervisorAfterTeardown = after;
-        assert.equal(after, supervisor, "worker teardown replaced or stopped the private supervisor");
+        const processAfterTeardown = await knownProcess(supervisor);
+        observations.supervisorProcessAfterTeardown = processAfterTeardown;
+        assert.equal(after.pid, supervisor, "worker teardown replaced or stopped the private supervisor");
+        assert.deepEqual(processAfterTeardown, supervisorIdentity, "worker teardown changed the supervisor's process identity or cgroup");
         const { stdout } = await exec("claude", ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
-        assert.ok(Array.isArray(JSON.parse(stdout)), "the surviving supervisor cannot serve its roster");
-        assert.equal(await daemonPid(env), supervisor, "roster access replaced the private supervisor");
+        const rows = JSON.parse(stdout) as { sessionId?: string; pid?: number }[];
+        assert.ok(Array.isArray(rows), "the surviving supervisor cannot serve its roster");
+        const siblingRow = rows.find((row) => row.sessionId === siblingHandle!.sessionId);
+        assert.ok(typeof siblingRow?.pid === "number", "worker teardown lost the outside sibling");
+        const siblingGroup = (await readFile(`/proc/${siblingRow.pid}/cgroup`, "utf8")).trim().slice(3);
+        assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the outside sibling moved into the tested run");
+        assert.equal((await siblingPlane!.poll(siblingHandle!)).state, "working", "worker teardown settled the outside sibling");
+        const afterRoster = await daemonStatus(env);
+        observations.supervisorAfterRoster = afterRoster;
+        observations.supervisorProcessAfterRoster = await knownProcess(supervisor);
+        assert.equal(afterRoster.pid, supervisor, "roster access replaced the private supervisor");
+        assert.deepEqual(await knownProcess(supervisor), supervisorIdentity, "roster access changed the supervisor's identity");
       }
     } finally {
-      await Promise.all([...probes, ...follow].map((probe) => writeFile(probe.paths.release, "")));
+      await Promise.all([...probes, ...follow, sibling].map((probe) => writeFile(probe.paths.release, "")));
       await exec("systemctl", ["--user", "stop", box, slice, ...units]).catch(() => undefined);
       if (run) observations.result = await run.result;
+      if (siblingPlane && siblingHandle) await siblingPlane.stop(siblingHandle);
+      if (siblingScopes) await siblingScopes.close();
       await exec("claude", ["daemon", "stop", "--any"], { env }).catch(() => undefined);
       await exec("systemctl", ["--user", "stop", slice, parent]).catch(() => undefined);
       t.diagnostic(JSON.stringify(observations));
@@ -248,13 +294,25 @@ function launch(args: string[], env: NodeJS.ProcessEnv): { settled: boolean; res
   return run;
 }
 
-/** Read-only status: observing the private supervisor must never start one. */
-async function daemonPid(env: NodeJS.ProcessEnv): Promise<number | null> {
+/** Read-only status, with the command's evidence retained even when it fails. */
+async function daemonStatus(env: NodeJS.ProcessEnv): Promise<{ pid: number | null; code: number | string; stdout: string; stderr: string }> {
+  let result: { code: number | string; stdout: string; stderr: string };
   try {
-    const { stdout } = await exec("claude", ["daemon", "status"], { env });
-    const match = /^pid:\s+(\d+)/m.exec(stdout);
-    return match === null ? null : Number(match[1]);
-  } catch {
-    return null;
+    const { stdout, stderr } = await exec("claude", ["daemon", "status"], { env });
+    result = { code: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as Error & { code?: number | string; stdout?: string; stderr?: string };
+    result = { code: failed.code ?? "unknown", stdout: failed.stdout ?? "", stderr: failed.stderr ?? failed.message };
   }
+  const match = /^pid:\s+(\d+)/m.exec(result.stdout);
+  return { ...result, pid: match === null ? null : Number(match[1]) };
+}
+
+/** Identity and membership of an already identified supervisor, never PID discovery. */
+async function knownProcess(pid: number): Promise<{ startTicks: string | null; cgroup: string | null }> {
+  const [startTicks, cgroup] = await Promise.all([
+    readProcessStartTicks("/proc", pid),
+    readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null)
+  ]);
+  return { startTicks, cgroup };
 }

@@ -17,7 +17,7 @@ for (const engine of ["claude", "codex"] as const) {
   test(`live ${engine} archive reader follows running, queued and held turns through settlement`, {
     skip: process.env.ENSEMBLE_LIVE !== "1", timeout: 1_200_000
   }, async () => {
-    const directory = await mkdtemp(path.resolve(`.live-agent-records-${engine}-`));
+    const directory = await mkdtemp(`/mnt/ai-data/scratch/live-agent-records-${engine}-`);
     const processes: Array<Promise<unknown>> = [];
     const probes: HeldProbe[] = ["first", "queued", "held-first", "held-second"].map((name) => ({
       paths: probePaths(directory, name),

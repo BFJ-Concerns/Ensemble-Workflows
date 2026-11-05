@@ -76,6 +76,31 @@ test("place puts live processes in one delegated scope per group under the launc
   }
 });
 
+test("close stops a scope whose placement was still pending when close began", async () => {
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}` });
+  const member = sleeper();
+  try {
+    // Not awaited: the placement is in flight at the manager when close() begins.
+    const pending = scopes.place("late", [member.pid!]);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await scopes.close();
+    const outcome = await pending;
+    // A placement the manager had accepted must be stopped by the close
+    // that followed it; one refused because the close came first leaves
+    // the process with its caller. Neither may leave an active scope.
+    if (outcome.kind === "placed") {
+      await waitFor(() => !isLive(member.pid!), "a process placed before close to be ended by it");
+    } else {
+      assert.equal(outcome.kind, "refused", JSON.stringify(outcome));
+    }
+    const shown = await execFileAsync("systemctl", ["--user", "show", scopes.unitFor("late"), "-p", "ActiveState"]);
+    assert.doesNotMatch(shown.stdout, /^ActiveState=active$/m, "the scope created during close was left active");
+  } finally {
+    member.kill("SIGKILL");
+    await scopes.close();
+  }
+});
+
 test("place refuses processes that already exited and drops them from a mixed list", async () => {
   const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `exit-${process.pid}` });
   const gone = sleeper();
@@ -153,10 +178,12 @@ test("without a reachable user manager, placement is unavailable and launch runs
 test("createWorkerScopes discovers the launcher's slice where the user manager answers", async () => {
   const scopes = await createWorkerScopes();
   assert.equal(scopes.constructor, SystemdWorkerScopes);
-  // Read independently of containingSlice: the last slice segment of this process's own cgroup path.
+  // Read independently of containingSlice: the last slice segment below the
+  // user manager's service in this process's own cgroup path, or null when
+  // the process sits directly in the user manager (init.scope and the like).
   const segments = (await readFile("/proc/self/cgroup", "utf8")).trim().slice("0::".length).split("/");
-  const expected = segments.filter((segment) => segment.endsWith(".slice")).at(-1) ?? null;
-  assert.ok(expected !== null && !/^user(-\d+)?\.slice$/.test(expected), `this test needs a slice below the user manager, not ${expected}`);
+  const below = segments.slice(segments.findIndex((segment) => /^user@\d+\.service$/.test(segment)) + 1);
+  const expected = below.filter((segment) => segment.endsWith(".slice")).at(-1) ?? null;
   assert.equal(scopes.slice, expected);
 });
 

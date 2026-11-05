@@ -133,6 +133,9 @@ export class SystemdWorkerScopes implements WorkerScopes {
   }
 
   async #placeInTurn(group: string, requested: readonly number[]): Promise<ScopePlacement> {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
     // A pid that exited between the caller's reading and this call makes
     // the manager refuse the whole list ("No such process"), so only live
     // processes are offered; one that exits after the check is retried
@@ -240,6 +243,11 @@ export class SystemdWorkerScopes implements WorkerScopes {
 
   async close(): Promise<void> {
     this.#closed = true;
+    // A placement already queued runs to its end before the units are
+    // read: one accepted after the snapshot would otherwise leave a scope
+    // nobody stops. Placements queued from here on are refused above.
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
     const units = [...this.#units.values()];
     this.#units.clear();
     // Stopping a scope ends every process still in it — a worker's escaped

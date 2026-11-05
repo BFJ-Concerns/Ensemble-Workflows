@@ -579,6 +579,8 @@ test("a registered session is handed to the worker bound's adopt when the launch
         import { writeFile } from "node:fs/promises";
         await writeFile(${JSON.stringify(adoptArgvPath)}, JSON.stringify(process.argv.slice(2)));
         if (process.env.BOUND_STUB_HANG === "1") {
+          // Ignores SIGTERM, as a wedged bound might: only SIGKILL ends it.
+          process.on("SIGTERM", () => {});
           process.stderr.write("adopting " + process.argv[4] + "\\n");
           setTimeout(() => {}, 30_000);
         } else {
@@ -618,8 +620,9 @@ test("a registered session is handed to the worker bound's adopt when the launch
     assert.deepEqual(JSON.parse(await readFile(adoptArgvPath, "utf8")), ["adopt", "--session", sessionId]);
     assert.match(stderrLines.join(""), /\[worker-bound\] .* adopt --session .* failed: no output\n/);
 
-    // A bound that never answers is cut off at the adopt deadline: the handle
-    // comes back so the engine can reach the session, and the line says why.
+    // A bound that never answers, and shrugs off SIGTERM, is cut off at the
+    // adopt deadline: the handle comes back so the engine can reach the
+    // session, and the line says why.
     stderrLines.length = 0;
     const hanging = new ClaudeCliControlPlane({
       claudeBin: stubPath,

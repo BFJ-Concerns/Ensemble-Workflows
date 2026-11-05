@@ -768,8 +768,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
   /**
    * Runs a control-plane child to its exit. With `timeoutMs`, a child still
-   * running at the deadline is killed and the result names the deadline as
-   * its `cause`; without one, the wait is unbounded.
+   * running at the deadline is killed with SIGKILL — a signal it cannot
+   * ignore, since execFile waits for the child to exit after its default
+   * SIGTERM and a child that handles it would hold the deadline open — and
+   * the result names the deadline as its `cause`; without one, the wait is
+   * unbounded.
    */
   #run(file: string, args: string[], options: { timeoutMs?: number } = {}): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve) => {
@@ -777,7 +780,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         file,
         args,
         {
-          ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+          ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs, killSignal: "SIGKILL" as const } : {}),
           maxBuffer: 32 * 1024 * 1024,
           env: this.#env
         },

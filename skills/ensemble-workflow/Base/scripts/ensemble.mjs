@@ -17342,6 +17342,7 @@ var ClaudeCliControlPlane = class {
   #workerEnv;
   /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
   #holdScope;
+  #adoptTimeoutMs;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = /* @__PURE__ */ new Map();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
@@ -17358,6 +17359,7 @@ var ClaudeCliControlPlane = class {
     };
     this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
+    this.#adoptTimeoutMs = options.adoptTimeoutMs ?? 1e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4e3;
@@ -17416,17 +17418,22 @@ var ClaudeCliControlPlane = class {
    * Hands a registered session to the machine-wide worker bound when this
    * launcher runs under one (`BOUND_BIN_VARIABLE` in its environment).
    * Best-effort: the session is already running, so a failed adoption is
-   * one stderr line and the dispatch stands.
+   * one stderr line and the dispatch stands. The wait is bounded by
+   * `adoptTimeoutMs`: the engine holds no handle to the session until
+   * `dispatch` returns, so a `close()` during this wait cannot stop it, and
+   * an unbounded `bound` would leave the session running past the run.
    */
   async #adopt(sessionId) {
     const bound = this.#env[BOUND_BIN_VARIABLE];
     if (bound === void 0 || bound.length === 0) {
       return;
     }
-    const result = await this.#run(bound, ["adopt", "--session", sessionId]);
+    const result = await this.#run(bound, ["adopt", "--session", sessionId], { timeoutMs: this.#adoptTimeoutMs });
     if (!result.ok) {
+      const stderr = result.stderr.trim();
+      const reason = [result.cause, stderr.length > 0 ? boundedEvidence(stderr) : void 0].filter((part) => part !== void 0).join("; ");
       process.stderr.write(
-        `[worker-bound] ${bound} adopt --session ${sessionId} failed: ${boundedEvidence(result.stderr.trim() || "no output")}
+        `[worker-bound] ${bound} adopt --session ${sessionId} failed: ${reason.length > 0 ? reason : "no output"}
 `
       );
     }
@@ -17693,14 +17700,28 @@ var ClaudeCliControlPlane = class {
     }
     return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
   }
-  #run(file, args, cwd) {
+  /**
+   * Runs a control-plane child to its exit. With `timeoutMs`, a child still
+   * running at the deadline is killed and the result names the deadline as
+   * its `cause`; without one, the wait is unbounded.
+   */
+  #run(file, args, options = {}) {
     return new Promise((resolve) => {
       execFile3(
         file,
         args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
+        {
+          ...options.timeoutMs !== void 0 ? { timeout: options.timeoutMs } : {},
+          maxBuffer: 32 * 1024 * 1024,
+          env: this.#env
+        },
         (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
+          if (error === null) {
+            resolve({ ok: true, stdout, stderr });
+            return;
+          }
+          const cause = error.killed ? `no reply within ${options.timeoutMs} ms` : typeof error.code === "string" ? error.message.split("\n")[0] : void 0;
+          resolve({ ok: false, stdout, stderr, ...cause !== void 0 ? { cause } : {} });
         }
       );
     });

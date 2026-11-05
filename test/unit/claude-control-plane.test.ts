@@ -1359,9 +1359,17 @@ test("every claude process the control plane starts is launched through the scop
 });
 
 test("a session is placed while `claude --bg` still runs, once the roster names its pid, and placed again when the pid changes", async () => {
+  await sessionPlacement("worker");
+});
+
+test("run grouping places the first and replacement Claude PIDs in the shared run group", async () => {
+  await sessionPlacement("run");
+});
+
+async function sessionPlacement(workerScope: "worker" | "run"): Promise<void> {
   const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
-  const first = spawn("sleep", ["60"], { stdio: "ignore" });
-  const replacement = spawn("sleep", ["60"], { stdio: "ignore" });
+  const first = spawn("sleep", ["300"], { stdio: "ignore" });
+  const replacement = spawn("sleep", ["300"], { stdio: "ignore" });
   try {
     const stubPath = path.join(dir, "claude-stub.mjs");
     const releasePath = path.join(dir, "release-bg");
@@ -1370,6 +1378,7 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
     const replacementPath = path.join(dir, "replacement-pid");
     const sessionId = "00000000-0000-4000-8000-00000000000b";
     const name = "placement-probe";
+    const group = workerScope === "run" ? "run" : name;
     // `claude --bg` holds until the test releases it, as the real command
     // outlives the session's registration by seconds. The roster counts its
     // queries and answers the first two without a pid — the row registers
@@ -1444,6 +1453,7 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
       projectsDir: dir,
       dispatchTimeoutMs: 60_000,
       placementSettleMs: 60_000,
+      workerScope,
       scopes
     });
     const dispatching = controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
@@ -1459,10 +1469,10 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
 
     assert.deepEqual(
       placed.map(({ group, pids }) => ({ group, pids })),
-      [{ group: name, pids: [first.pid] }],
+      [{ group, pids: [first.pid] }],
       "the session was not placed once its pid was named"
     );
-    assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${name}.scope`, pids: [first.pid] });
+    assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${group}.scope`, pids: [first.pid] });
 
     // The same pid again places nothing more; a new pid is placed again.
     await controlPlane.poll(handle);
@@ -1472,9 +1482,10 @@ test("a session is placed while `claude --bg` still runs, once the roster names 
     assert.equal(status.present, true);
     assert.deepEqual(placed.at(-1)?.pids, [replacement.pid], "the replacement pid was not placed");
     assert.equal(placed.length, 2);
+    assert.equal(placed.at(-1)?.group, group);
   } finally {
     first.kill("SIGKILL");
     replacement.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });
   }
-});
+}

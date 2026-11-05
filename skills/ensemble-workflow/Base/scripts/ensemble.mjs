@@ -15173,12 +15173,14 @@ function assertValidRaiseHoldOptions(options) {
 }
 
 // src/ambient-settings.ts
+var WORKER_SCOPE_ENV = "ENSEMBLE_WORKER_SCOPE";
 var CONFIG_SCHEMA_VERSION = 1;
 var AGENT_CEILING_ENV = "ENSEMBLE_AGENT_CEILING";
 var RUN_RECORD_ENV = "ENSEMBLE_RUN_RECORD";
 var RUN_RECORD_DIR_ENV = "ENSEMBLE_RUN_RECORD_DIR";
 var CALLER_IDENTITY_ENV = "ENSEMBLE_CALLER_IDENTITY";
 var RUN_SCOPED_ENVIRONMENT_VARIABLES = /* @__PURE__ */ new Set([
+  WORKER_SCOPE_ENV,
   AGENT_CEILING_ENV,
   RUN_RECORD_ENV,
   RUN_RECORD_DIR_ENV,
@@ -15220,6 +15222,7 @@ function resolveAmbientSettings(input) {
   };
   return {
     configFile,
+    workerScope: input.flags?.workerScope !== void 0 ? { value: parseWorkerScopeGrouping(input.flags.workerScope, "--worker-scope"), layer: "flag" } : input.env[WORKER_SCOPE_ENV] !== void 0 ? { value: parseWorkerScopeGrouping(input.env[WORKER_SCOPE_ENV], WORKER_SCOPE_ENV), layer: "env" } : config?.worker_scope !== void 0 ? { value: config.worker_scope, layer: "config-file" } : { value: "worker", layer: "default" },
     agentCeiling: resolveAgentCeiling({
       flag: input.flags?.agentCeiling,
       env: input.env[AGENT_CEILING_ENV],
@@ -15272,13 +15275,16 @@ function readMachineConfig(configFile) {
   }
   assertKnownKeys(
     parsed,
-    ["schema_version", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
+    ["schema_version", "worker_scope", "agent_ceiling", "concurrency", "run_record", "status", "worker_environment", "opencode_models"],
     configFile
   );
   if (parsed.schema_version !== CONFIG_SCHEMA_VERSION) {
     throw new AmbientConfigError(
       `Unsupported schema_version ${String(parsed.schema_version)} in ${configFile}; understood versions: ${CONFIG_SCHEMA_VERSION}`
     );
+  }
+  if (parsed.worker_scope !== void 0) {
+    parseWorkerScopeGrouping(parsed.worker_scope, `worker_scope in ${configFile}`);
   }
   validateOptionalPositiveInteger(parsed, "agent_ceiling", configFile);
   validateSection(parsed, "concurrency", ENGINES, configFile, validateOptionalPositiveInteger);
@@ -15563,6 +15569,12 @@ function isNodeError2(error, code) {
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+function parseWorkerScopeGrouping(value, source) {
+  if (value !== "worker" && value !== "run") {
+    throw new AmbientConfigError(`Invalid value for ${source}: expected worker or run; got ${JSON.stringify(value)}`);
+  }
+  return value;
 }
 
 // src/completion-sentinel.ts
@@ -17317,6 +17329,7 @@ import path11 from "node:path";
 import { execFile as execFile3, spawn } from "node:child_process";
 import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
 import path10 from "node:path";
+var RUN_SCOPE_GROUP = "run";
 var SystemdWorkerScopes = class {
   slice;
   #label;
@@ -17597,6 +17610,7 @@ var ClaudeCliControlPlane = class {
   #valveSubmitSettleMs;
   #valveKillSettleMs;
   #scopes;
+  #workerScope;
   #placementSettleMs;
   /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
   #placements = /* @__PURE__ */ new Map();
@@ -17634,6 +17648,7 @@ var ClaudeCliControlPlane = class {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 1e4;
   }
@@ -17871,7 +17886,7 @@ var ClaudeCliControlPlane = class {
    * is recorded, never thrown.
    */
   async #place(handle, pid) {
-    const outcome = await this.#scopes.place(handle.name, await processTree(pid, this.#procDir));
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
   }
   async stop(handle) {
@@ -19508,6 +19523,9 @@ var CodexAppServerTransport = class _CodexAppServerTransport {
   static async start(options) {
     const transport = new _CodexAppServerTransport(options);
     try {
+      if (transport.#process.pid !== void 0 && options.scopes !== void 0) {
+        await options.scopes.place(options.scopeGroup ?? "codex", [transport.#process.pid]);
+      }
       await transport.#handshake(options.clientName, options.clientVersion);
     } catch (error) {
       await transport.close();
@@ -21956,11 +21974,14 @@ var OpenCodeEngineAdapter = class {
   }
 };
 async function createDefaultEngineRegistry(options) {
+  const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === void 0;
   const workerScopes = options.workerScopes ?? await createWorkerScopes();
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    scopes: workerScopes,
+    scopeGroup: grouping === "run" ? RUN_SCOPE_GROUP : "codex",
     ...options.workerEnvironment?.codex !== void 0 ? { workerEnv: options.workerEnvironment.codex } : {},
     requestTimeoutMs: options.requestTimeoutMs,
     ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
@@ -21981,7 +22002,8 @@ async function createDefaultEngineRegistry(options) {
         controlPlane: new ClaudeCliControlPlane({
           ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
           ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
-          scopes: workerScopes
+          scopes: workerScopes,
+          workerScope: grouping
         }),
         ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
         // Claude deliberately emits the same usage event shape as Codex. Keep the
@@ -22266,6 +22288,7 @@ var EnsembleRuntime = class _EnsembleRuntime {
       cwd,
       codexBin: options.codexBin ?? "codex",
       holdScope,
+      ...options.workerScope !== void 0 ? { workerScope: options.workerScope } : {},
       requestTimeoutMs: options.requestTimeoutMs ?? 3e4,
       ...options.retryPromiseSilenceTimeoutMs !== void 0 ? { retryPromiseSilenceTimeoutMs: options.retryPromiseSilenceTimeoutMs } : {},
       ...options.firstOutputTimeoutMs !== void 0 ? { firstOutputTimeoutMs: options.firstOutputTimeoutMs } : {},
@@ -30752,7 +30775,8 @@ var AGENT_INVOCATION_OPTIONS = {
   concurrency: { type: "string", multiple: true },
   timeout: { type: "string" },
   "caller-identity": { type: "string" },
-  "hold-scope": { type: "string" }
+  "hold-scope": { type: "string" },
+  "worker-scope": { type: "string" }
 };
 async function runEnsembleCli(argv, options = {}) {
   const stdin = options.stdin ?? process.stdin;
@@ -30926,6 +30950,7 @@ async function runEnsembleCli(argv, options = {}) {
       env,
       cwd,
       flags: {
+        ...invocation.workerScope !== void 0 ? { workerScope: invocation.workerScope } : {},
         ...invocation.agentCeiling !== void 0 ? { agentCeiling: invocation.agentCeiling } : {},
         ...invocation.concurrencyCaps !== void 0 ? { concurrencyCaps: invocation.concurrencyCaps } : {}
       }
@@ -30966,6 +30991,7 @@ async function runEnsembleCli(argv, options = {}) {
     const holdScope = resolveHoldScope(invocation.holdScope, env);
     runtime = await (options.createRuntime ?? createRuntime2)({
       cwd,
+      workerScope: ambientSettings.workerScope.value,
       ...invocation.budgetCeilings !== void 0 ? { budgetCeilings: invocation.budgetCeilings } : {},
       ...holdScope !== null ? { holdScope } : {},
       ...invocation.strip !== void 0 ? { strip: invocation.strip } : {},
@@ -31542,7 +31568,8 @@ async function parseWorkflowInvocation(argv, cwd, program) {
         timeout: { type: "string" },
         strip: { type: "string", multiple: true },
         "caller-identity": { type: "string" },
-        "hold-scope": { type: "string" }
+        "hold-scope": { type: "string" },
+        "worker-scope": { type: "string" }
       },
       strict: true,
       allowPositionals: false
@@ -31561,6 +31588,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   return {
     kind: "workflow",
     scriptArg: split.scriptArg,
@@ -31572,6 +31600,7 @@ async function parseWorkflowInvocation(argv, cwd, program) {
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...strip !== void 0 ? { strip } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31622,6 +31651,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
   const strip = parseStripList(parsed.values.strip);
   const callerIdentity = parseCallerIdentity(parsed.values["caller-identity"]);
   const holdScope = parseHoldScope(parsed.values["hold-scope"]);
+  const workerScope = parsed.values["worker-scope"] === void 0 ? void 0 : parseWorkerScopeGrouping(parsed.values["worker-scope"], "--worker-scope");
   const agentOptions = {
     engine,
     ...parsed.values.model !== void 0 ? { model: parsed.values.model } : {},
@@ -31645,6 +31675,7 @@ async function parseAgentInvocation(argv, cwd, stdin, program) {
     ...concurrencyCaps !== void 0 ? { concurrencyCaps } : {},
     ...timeoutMs !== void 0 ? { timeoutMs } : {},
     ...callerIdentity !== void 0 ? { callerIdentity } : {},
+    ...workerScope !== void 0 ? { workerScope } : {},
     ...holdScope !== void 0 ? { holdScope } : {}
   };
 }
@@ -31794,10 +31825,10 @@ function isBooleanAgentFlag(value) {
   return AGENT_INVOCATION_OPTIONS[name].type === "boolean";
 }
 function isKnownOption(value) {
-  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--hold-scope";
+  return value === "--json-args" || value === "--budget" || value === "--agent-ceiling" || value === "--concurrency" || value === "--timeout" || value === "--strip" || value === "--caller-identity" || value === "--worker-scope" || value === "--hold-scope";
 }
 function isKnownInlineOption(value) {
-  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--hold-scope=");
+  return value.startsWith("--json-args=") || value.startsWith("--budget=") || value.startsWith("--agent-ceiling=") || value.startsWith("--concurrency=") || value.startsWith("--timeout=") || value.startsWith("--strip=") || value.startsWith("--caller-identity=") || value.startsWith("--worker-scope=") || value.startsWith("--hold-scope=");
 }
 async function parseJsonArgs(value, cwd) {
   return parseJsonValue(value, cwd, "--json-args");
@@ -32061,7 +32092,8 @@ var RUN_OPTION_SYNOPSES = [
   "--timeout ms",
   "--strip capability",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 var AGENT_OPTION_SYNOPSES = [
   "--model <model>",
@@ -32080,7 +32112,8 @@ var AGENT_OPTION_SYNOPSES = [
   "--concurrency engine=N",
   "--timeout ms",
   "--caller-identity <identity>",
-  "--hold-scope <scope>"
+  "--hold-scope <scope>",
+  "--worker-scope worker|run"
 ];
 function usage(program) {
   const forms = [

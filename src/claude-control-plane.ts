@@ -7,7 +7,7 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
-import { NoWorkerScopes, processTree, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
+import { NoWorkerScopes, RUN_SCOPE_GROUP, processTree, type WorkerScopeGrouping, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -224,6 +224,7 @@ export interface ClaudeCliControlPlaneOptions {
    * machine without a systemd user manager.
    */
   scopes?: WorkerScopes;
+  workerScope?: WorkerScopeGrouping;
   /** How long after registration to wait for the roster to name the session's pid before leaving placement to the next poll. */
   placementSettleMs?: number;
 }
@@ -251,6 +252,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
   #scopes: WorkerScopes;
+  #workerScope: WorkerScopeGrouping;
   #placementSettleMs: number;
   /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
   #placements = new Map<string, { pid: number; outcome: ScopePlacement }>();
@@ -303,6 +305,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#workerScope = options.workerScope ?? "worker";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
     this.#placementSettleMs = options.placementSettleMs ?? 10_000;
   }
@@ -669,7 +672,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
    * is recorded, never thrown.
    */
   async #place(handle: ClaudeSessionHandle, pid: number): Promise<void> {
-    const outcome = await this.#scopes.place(handle.name, await processTree(pid, this.#procDir));
+    const outcome = await this.#scopes.place(this.#workerScope === "run" ? RUN_SCOPE_GROUP : handle.name, await processTree(pid, this.#procDir));
     this.#placements.set(handle.sessionId, { pid, outcome });
   }
 

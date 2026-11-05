@@ -2370,13 +2370,13 @@ test("CLI entrypoint keeps exact usage streams under hostile colour variables", 
       "Run options (before the script path):\n" +
       "  --json-args '<json>|@file'  --budget engine=N  --concurrency engine=N\n" +
       "  --agent-ceiling N|null  --timeout ms  --strip capability\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "Agent options (after agent, before the prompt):\n" +
       "  --model <model>  --effort <effort>  --label <label>  --phase <phase>\n" +
       "  --cwd <path>  --isolation worktree  --identity  --schema '<json>|@file'\n" +
       "  --max-attempts N  --task <identity>  --strip capability  --budget engine=N\n" +
       "  --agent-ceiling N|null  --concurrency engine=N  --timeout ms\n" +
-      "  --caller-identity <identity>  --hold-scope <scope>\n" +
+      "  --caller-identity <identity>  --hold-scope <scope>  --worker-scope worker|run\n" +
       "The prompt is the one positional argument, or stdin when omitted.\n" +
       "Run `ensemble --help` for orientation; each subcommand answers --help.\n"
   );
@@ -3968,6 +3968,37 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
     assert.match(usageErr.text(), /Usage: ensemble holds answer/);
   } finally {
     holds.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test("both CLI forms deliver worker scope grouping and reject invalid flags", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-scope-"));
+  const script = path.join(directory, "workflow.js");
+  await writeFile(script, 'return "done";');
+  try {
+    for (const invocation of [[script], ["agent", "--engine", "codex", "hello"]]) {
+      for (const flag of [["--worker-scope", "run"], ["--worker-scope=worker"]]) {
+        const seen: RuntimeOptions[] = [];
+        const stderr = new CaptureStream();
+        const args = invocation[0] === "agent" ? ["agent", ...flag, ...invocation.slice(1)] : [...flag, ...invocation];
+        const code = await runEnsembleCli(args, {
+          cwd: directory, env: { XDG_CONFIG_HOME: directory, ENSEMBLE_WORKER_SCOPE: "run" },
+          stdout: new CaptureStream(), stderr, runRecordDir: null,
+          createRuntime: async (options) => { seen.push(options ?? {}); return fakeRuntime(); }
+        });
+        assert.equal(code, 0, stderr.text());
+        assert.equal(seen[0]?.workerScope, flag.length === 2 ? "run" : "worker");
+      }
+      const args = invocation[0] === "agent" ? ["agent", "--worker-scope=invalid", ...invocation.slice(1)] : ["--worker-scope=invalid", ...invocation];
+      const stderr = new CaptureStream();
+      const code = await runEnsembleCli(args, { cwd: directory, stdout: new CaptureStream(), stderr, runRecordDir: null,
+        createRuntime: async () => { assert.fail("invalid grouping started a runtime"); } });
+      assert.equal(code, 2);
+      assert.match(stderr.text(), /--worker-scope.*worker or run/);
+    }
+  } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -6,11 +6,11 @@ file.
 
 ## How settings resolve
 
-The agent ceiling, each engine's concurrency cap, the durable run record, and
+Worker scope grouping, the agent ceiling, each engine's concurrency cap, the durable run record, and
 the live status file each resolve independently through these layers, highest
 first:
 
-1. A command-line flag (agent ceiling and concurrency caps only; see
+1. A command-line flag (worker scope grouping, agent ceiling and concurrency caps; see
    [CLI](cli.md)).
 2. An `ENSEMBLE_` environment variable.
 3. The machine configuration file, `$XDG_CONFIG_HOME/ensemble/config.json`
@@ -26,6 +26,7 @@ concurrency caps with the layer that supplied each (`flag`, `env`,
 | Setting | Default |
 |---|---|
 | Concurrency cap | `codex` 12, `claude` 12, `opencode` 2 workers at once |
+| Worker scope grouping | `worker` |
 | Agent ceiling (all engines together) | Unbounded |
 | Durable run record | On, stored under `$XDG_DATA_HOME/ensemble/` (normally `~/.local/share/ensemble/`) |
 | Live status file | On when the run's working directory contains a `.claude/` directory; written there |
@@ -52,6 +53,7 @@ version 1:
 {
   "schema_version": 1,
   "agent_ceiling": 2,
+  "worker_scope": "worker",
   "concurrency": {
     "codex": 4,
     "claude": 2,
@@ -82,6 +84,7 @@ version 1:
 | Key | Type | Description |
 |---|---|---|
 | `schema_version` | integer | Must be `1` |
+| `worker_scope` | `"worker"` or `"run"` | Systemd scope grouping for Claude and Codex workers |
 | `agent_ceiling` | integer | Maximum workers running at once across every engine |
 | `concurrency.<engine>` | integer | Maximum workers running at once on that engine |
 | `run_record.enabled` | boolean | Whether runs write a durable run record |
@@ -149,14 +152,23 @@ one of them starts sits outside the box the launcher's slice draws. The
 process keeps its streams, environment, working directory and exit status.
 Without a reachable user manager the process is launched directly.
 
-Each Claude worker session is placed in a transient scope of its own, named
-for the dispatch, in the slice that holds the launcher: the daemon forks the
-session's process in its own cgroup, and the roster (`claude agents --json`)
-names that process by `pid` shortly after the session registers. Ensemble
-moves the process and its descendants the moment the pid appears, and moves a
-session the daemon restarts under a new pid at the next poll. Placement is
+Claude sessions and the Codex app-server are placed in transient scopes in
+the slice that holds the launcher. `worker_scope` chooses one scope per Claude
+worker and one for the run's shared Codex app-server (`worker`, the default),
+or one scope shared by both engines (`run`). Codex workers are threads of one
+process, so they share a scope even in `worker` mode. `ENSEMBLE_WORKER_SCOPE`
+overrides the file; `--worker-scope worker|run` overrides both.
+
+The daemon forks each Claude session in its own cgroup, and the roster
+(`claude agents --json`) names that process by `pid` shortly after registration.
+Ensemble moves the process and its descendants when the pid appears, and
+moves a session the daemon restarts under a new pid at the next poll. Codex
+placement completes before the app-server's protocol handshake. Placement is
 best-effort: without a reachable user manager, or when the manager refuses,
-the session runs where the daemon started it.
+workers run where they started. Linux keeps memory already charged before a
+move in the original cgroup. Run teardown stops the scopes Ensemble owns;
+Claude control-command scopes and the shared supervisor are outside that
+ownership.
 
 > [!WARNING]
 > Relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, not by pointing
@@ -200,6 +212,7 @@ forwards an unknown variant without complaint.
 | `ENSEMBLE_STATUS` | Turns the live status file on or off |
 | `ENSEMBLE_STATUS_DIR` | Directory for live status files; must already exist while status is on |
 | `ENSEMBLE_CALLER_IDENTITY` | Opaque identity of the invoking session, recorded in the manifest's `caller_identity`; `--caller-identity` overrides it |
+| `ENSEMBLE_WORKER_SCOPE` | `worker` or `run`; systemd worker grouping, overridden by `--worker-scope` |
 | `ENSEMBLE_HOLD_SCOPE` | Scope for decision holds, inherited by nested invocations; `--hold-scope` overrides it (see [Holds](workflow-scripts.md#holds)) |
 
 The on/off switches accept `on`/`off`, `true`/`false`, `yes`/`no`, or `1`/`0`.
@@ -236,8 +249,8 @@ contain.
 
 Ensemble can also be used as a library from a source checkout
 (`createRuntime()` and the rest of the API exported by `src/index.ts`). The
-standalone launcher exports nothing. Apart from `holdScope`, which mirrors
-`--hold-scope`, these options have no flag or environment variable:
+standalone launcher exports nothing. Apart from `holdScope` and `workerScope`, which mirror their CLI flags,
+these options have no flag or environment variable:
 
 | Option | Default | Description |
 |---|---|---|
@@ -246,6 +259,7 @@ standalone launcher exports nothing. Apart from `holdScope`, which mirrors
 | `requestTimeoutMs` | 30 seconds | Codex app-server transport request timeout |
 | `claudeSessionStaleAfterMs` | 60 minutes, or a cache TTL declared in `worker_environment` | When a held Claude session is marked stale (see [Sessions](workflow-scripts.md#multi-turn-sessions)) |
 | `codexSessionStaleAfterMs` | 60 minutes | When a held Codex session is marked stale |
+| `workerScope` | `worker` | Systemd scope grouping (`worker` or `run`); the library uses the explicit option or its default |
 | `holdScope` | None | Hold scope for the runtime's runs; overrides `ENSEMBLE_HOLD_SCOPE` |
 
 `firstOutputTimeoutMs` is satisfied by any output-bearing turn frame, not only

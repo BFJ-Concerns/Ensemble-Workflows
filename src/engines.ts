@@ -1,6 +1,7 @@
+import { parseWorkerScopeGrouping } from "./ambient-settings.js";
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
-import { createWorkerScopes, type WorkerScopes } from "./worker-scopes.js";
+import { createWorkerScopes, RUN_SCOPE_GROUP, type WorkerScopeGrouping, type WorkerScopes } from "./worker-scopes.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
@@ -737,6 +738,7 @@ export interface CreateDefaultEngineRegistryOptions {
    * its close.
    */
   workerScopes?: WorkerScopes;
+  workerScope?: WorkerScopeGrouping;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
@@ -749,11 +751,14 @@ export async function createDefaultEngineRegistry(
   // manager; the engines themselves stay lazy. The app-server spawns when
   // the first worker names Codex, so a run needs only the engines its
   // script actually uses (no engine is privileged).
+  const grouping = parseWorkerScopeGrouping(options.workerScope ?? "worker", "workerScope");
   const ownsScopes = options.workerScopes === undefined;
   const workerScopes = options.workerScopes ?? (await createWorkerScopes());
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
+    scopes: workerScopes,
+    scopeGroup: grouping === "run" ? RUN_SCOPE_GROUP : "codex",
     ...(options.workerEnvironment?.codex !== undefined ? { workerEnv: options.workerEnvironment.codex } : {}),
     requestTimeoutMs: options.requestTimeoutMs,
     ...(options.retryPromiseSilenceTimeoutMs !== undefined
@@ -777,7 +782,8 @@ export async function createDefaultEngineRegistry(
         controlPlane: new ClaudeCliControlPlane({
           ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
           ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
-          scopes: workerScopes
+          scopes: workerScopes,
+          workerScope: grouping
         }),
         ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
         // Claude deliberately emits the same usage event shape as Codex. Keep the

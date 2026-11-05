@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { resolveAmbientSettings } from "../../src/ambient-settings.js";
 import { containingSlice, processTree } from "../../src/worker-scopes.js";
 import { heldProbeFollowUpPrompt, heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
 
@@ -45,8 +47,8 @@ for (const scenario of scenarios) {
     await exec("systemctl", ["--user", "show-environment"]).catch((error: unknown) => {
       throw new Error("UNPROVEN: a reachable systemd user manager is required", { cause: error });
     });
-    // Keep all test-owned files inside this checkout; no operator configuration is changed.
-    const root = await mkdtemp(path.resolve(".worker-scopes-live-"));
+    const machineEnvironment = resolveAmbientSettings({ env: process.env, cwd: process.cwd() }).workerEnvironment;
+    const root = await mkdtemp(path.join(tmpdir(), "ensemble-worker-scopes-live-"));
     const config = path.join(root, "claude");
     const xdg = path.join(root, "config");
     const id = randomUUID().replaceAll("-", "");
@@ -63,6 +65,7 @@ for (const scenario of scenarios) {
     const units = new Set<string>();
     const observations: Record<string, unknown> = {};
     let run: ReturnType<typeof launch> | undefined;
+    let supervisor: number | null = null;
     const env: NodeJS.ProcessEnv = {
       ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SANDBOXED: "1",
       XDG_CONFIG_HOME: xdg, ENSEMBLE_CONCURRENCY_CLAUDE: "2", ENSEMBLE_CONCURRENCY_CODEX: "2", ENSEMBLE_RUN_RECORD_DIR: path.join(root, "records"),
@@ -76,7 +79,15 @@ for (const scenario of scenarios) {
       await mkdir(path.join(xdg, "ensemble"), { recursive: true });
       await writeFile(path.join(config, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
       await writeFile(path.join(config, "settings.json"), JSON.stringify({ skipDangerousModePermissionPrompt: true }), { mode: 0o600 });
-      await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({ schema_version: 1, ...(scenario.config ? { worker_scope: scenario.config } : {}) }));
+      await writeFile(path.join(xdg, "ensemble", "config.json"), JSON.stringify({
+        schema_version: 1,
+        ...(scenario.config ? { worker_scope: scenario.config } : {}),
+        worker_environment: {
+          ...machineEnvironment,
+          claude: { ...machineEnvironment.claude, CLAUDE_CONFIG_DIR: config }
+        }
+      }), { mode: 0o600 });
+      assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
       const flags = scenario.flag ? [`--worker-scope=${scenario.flag}`] : [];
       let args: string[];
       if (scenario.direct) {
@@ -97,6 +108,12 @@ for (const scenario of scenarios) {
       run = launch(["--user", "--scope", "--quiet", "--collect", `--unit=${box}`, `--slice=${slice}`, "--", ...childEnv, process.execPath, launcher, ...args], env);
       const firstPaths = await observe(probes, run, engines, env, slice, box, scenario.fallback === true, units);
       observations.first = firstPaths;
+      if (engines.includes("claude") && !scenario.fallback) {
+        supervisor = await daemonPid(env);
+        assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
+        observations.supervisorBeforeTeardown = supervisor;
+        assert.equal(run.settled, false, "launcher settled before supervisor observation");
+      }
       if (scenario.direct === undefined) assert.equal(new Set(firstPaths).size, scenario.expected === "run" ? 1 : 3);
       if (scenario.interrupt) {
         // Signal the launcher, not systemd-run's wrapper or the workers.
@@ -120,6 +137,14 @@ for (const scenario of scenarios) {
         for (const probe of [...probes, ...(scenario.followUp ? follow : [])]) assert.ok(result.stdout.includes(probe.token), JSON.stringify(result));
       }
       for (const unit of units) await waitInactive(unit);
+      if (supervisor !== null) {
+        const after = await daemonPid(env);
+        observations.supervisorAfterTeardown = after;
+        assert.equal(after, supervisor, "worker teardown replaced or stopped the private supervisor");
+        const { stdout } = await exec("claude", ["agents", "--json"], { env, maxBuffer: 32 * 1024 * 1024 });
+        assert.ok(Array.isArray(JSON.parse(stdout)), "the surviving supervisor cannot serve its roster");
+        assert.equal(await daemonPid(env), supervisor, "roster access replaced the private supervisor");
+      }
     } finally {
       await Promise.all([...probes, ...follow].map((probe) => writeFile(probe.paths.release, "")));
       await exec("systemctl", ["--user", "stop", box, slice, ...units]).catch(() => undefined);
@@ -221,4 +246,15 @@ function launch(args: string[], env: NodeJS.ProcessEnv): { settled: boolean; res
     child.on("close", (code, signal) => { run.settled = true; resolve({ code, signal, stdout, stderr }); });
   });
   return run;
+}
+
+/** Read-only status: observing the private supervisor must never start one. */
+async function daemonPid(env: NodeJS.ProcessEnv): Promise<number | null> {
+  try {
+    const { stdout } = await exec("claude", ["daemon", "status"], { env });
+    const match = /^pid:\s+(\d+)/m.exec(stdout);
+    return match === null ? null : Number(match[1]);
+  } catch {
+    return null;
+  }
 }

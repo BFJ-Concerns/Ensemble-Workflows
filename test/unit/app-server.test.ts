@@ -963,8 +963,8 @@ test("a terminal frame from an abandoned turn cannot settle the live turn on a r
       timeoutMs: 2_000,
       onTranscriptEvent: (event) => observed.push(structuredClone(event))
     });
-    assert.ok(observed.length > 0);
-    assert.ok(!JSON.stringify(observed).includes('"turnId":"turn-1"'));
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     // Settled by its own completion, not the straggler's: the fake's turn-2
     // answer arrives only after both turn-1 stragglers have been sent.
     assert.equal(second.text, "the live turn's own answer");
@@ -997,8 +997,8 @@ test("a straggler arriving before the live turn learns its id is not learned as 
       timeoutMs: 2_000,
       onTranscriptEvent: (event) => observed.push(structuredClone(event))
     });
-    assert.ok(observed.length > 0);
-    assert.ok(!JSON.stringify(observed).includes('"turnId":"turn-1"'));
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+    assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     assert.equal(second.text, "the live turn's own answer");
   } finally {
     await transport.close();

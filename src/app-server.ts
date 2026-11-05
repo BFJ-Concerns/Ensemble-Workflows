@@ -1225,9 +1225,10 @@ export class CodexAppServerTransport implements RuntimeTransport {
     }
     transcript.events.push(event);
     const turn = this.#turns.get(threadId);
-    const params = asJsonObject(event.params);
-    if (turn !== undefined && (event.direction === "client" ||
-        (params !== null && this.#correlatesWithTurn(turn, params)))) {
+    // The current capture retains every frame on its thread, including
+    // abandoned-turn stragglers. Its observer receives the same evidence;
+    // turn correlation governs settlement and identity elsewhere.
+    if (turn !== undefined) {
       this.#observeTranscriptEvent(turn, event);
     }
   }

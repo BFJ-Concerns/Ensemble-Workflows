@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,69 +10,69 @@ import { promisify } from "node:util";
 import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
 import { SystemdWorkerScopes, containingSlice, parentSlice } from "../../src/worker-scopes.js";
 
+import { heldProbePrompt, probePaths, waitForPath, type HeldProbe } from "./held-worker-probes.js";
+
 const execFileAsync = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
 const bundledCliPath = path.resolve("skills/ensemble-workflow/Base/scripts/ensemble.mjs");
 
 /**
- * The supervisor boundary, measured on a supervisor this test owns. A private
- * `CLAUDE_CONFIG_DIR` gives Claude Code its own daemon (socket directory,
- * lock and roster), authenticated by the same environment the operator's
- * is; the operator's supervisor is read, never started, moved or stopped.
- *
- * The built launcher runs inside a scope this test creates — the box — and
- * dispatches one Claude worker. Observed from outside the box: the daemon
- * the launcher started sits outside the box's slice; the worker's roster
- * row gains its pid after registering and the process is then in a worker
- * scope beside the box; the daemon survives the box ending and serves a
- * second launcher run under the same pid. Teardown stops only the owned
- * daemon. Each run draws the Claude allowance, so the journey stays at two
- * workers.
+ * Two workers under a supervisor this test owns. The first stays alive
+ * after placement while the supervisor starts its sibling; worker-written
+ * cgroup files witness that both can execute in their assigned scopes.
+ * The first launcher's box then ends while the sibling is still alive,
+ * and the same supervisor serves the sibling through completion.
  */
-test("the built launcher starts an owned supervisor outside its box and places its worker beside the box", { skip: !isLive, timeout: 600_000 }, async (t) => {
+test("the built launcher preserves an owned supervisor and sibling while moving workers", { skip: !isLive, timeout: 900_000 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-boundary-"));
   const configDir = path.join(root, "claude-config");
   await mkdir(configDir, { mode: 0o700 });
-  // The owned configuration carries only what a background dispatch needs:
-  // onboarding done, and the bypass-permissions disclaimer accepted (Claude
-  // Code refuses `--bg --dangerously-skip-permissions` until it is). Its
-  // authentication is the environment's, the same the operator's uses.
+  // Onboarding and bypass consent belong only to this proof's private daemon.
   await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
   await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
-  // The launcher keeps the test process's own environment (the suite's record
-  // store included); the control plane withholds run settings from the daemon itself.
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configDir,
-    CLAUDE_CODE_SANDBOXED: "1"
+    CLAUDE_CODE_SANDBOXED: "1",
+    // Keep this placement journey in worker mode regardless of ambient run tuning.
+    ENSEMBLE_WORKER_SCOPE: "worker"
   };
+  const first: HeldProbe = { paths: probePaths(root, "first"), evidence: { kind: "cgroup" }, token: `FIRST_${randomUUID()}` };
+  const sibling: HeldProbe = { paths: probePaths(root, "sibling"), evidence: { kind: "cgroup" }, token: `SIBLING_${randomUUID()}` };
   const ownCgroup = cgroupPath(await readFile("/proc/self/cgroup", "utf8"));
   const slice = containingSlice(`0::${ownCgroup}\n`);
   const operatorDaemon = await daemonPid(process.env);
   const observations: Record<string, unknown> = { ownCgroup, slice, operatorDaemonBefore: operatorDaemon };
+  const boxes = [`ensemble-live-box-${process.pid}.scope`, `ensemble-live-box-${process.pid}-sibling.scope`];
+  const runs: ReturnType<typeof launchInBox>[] = [];
 
   try {
     assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
-
-    // Run 1: the launcher inside an owned box scope, observed from outside.
-    const box = `ensemble-live-box-${process.pid}.scope`;
-    const run1 = launchInBox(box, slice, env);
+    const run1 = launchInBox(boxes[0]!, slice, env, heldProbePrompt(first));
+    runs.push(run1);
     const seen = await watchRoster(env, 120_000);
     observations.firstRegistration = seen;
     assert.ok(seen.registered !== null, "the worker never registered in the owned roster");
     assert.ok(seen.pid !== null, "the roster never named the worker's pid");
+    assert.ok(seen.processIdentity !== null, "the roster pid did not name a live process");
     const workerCgroup = await waitForCgroup(seen.pid, (cgroup) => /\/ensemble-\d+-.*\.scope$/.test(cgroup), 30_000);
     observations.workerCgroup = workerCgroup;
     assert.ok(workerCgroup !== null, "the worker's process was never placed in an ensemble worker scope");
-    assert.ok(!workerCgroup.includes(`/${box}`), `the worker sits inside the box itself: ${workerCgroup}`);
+    assert.ok(!workerCgroup.includes(`/${boxes[0]}`), `the worker sits inside the box itself: ${workerCgroup}`);
     if (slice !== null) {
-      assert.ok(workerCgroup.split("/").includes(slice), `the worker's scope is not in the launcher's slice ${slice}: ${workerCgroup}`);
+      assert.equal(containingSlice(`0::${workerCgroup}\n`), slice, "the worker is outside the launcher's containing slice");
     }
+    await waitForPath(first.paths.ready, 420_000);
+    assert.equal(run1.settled, false, "the first worker settled before observation");
+    observations.firstShellCgroup = await readFile(first.paths.evidence, "utf8");
+    assert.equal(cgroupPath(String(observations.firstShellCgroup)), workerCgroup, "the first worker's shell escaped its placement");
+
     const daemon = await daemonPid(env);
     assert.ok(daemon !== null, "the launcher's claude commands did not start the owned daemon");
+    assert.notEqual(daemon, seen.pid, "the roster pid names the supervisor rather than the worker");
     const daemonCgroup = cgroupPath(await readFile(`/proc/${daemon}/cgroup`, "utf8"));
     observations.ownedDaemon = { pid: daemon, cgroup: daemonCgroup };
-    assert.ok(!daemonCgroup.includes(`/${box}`), `the daemon sits inside the box: ${daemonCgroup}`);
+    assert.ok(!daemonCgroup.includes(`/${boxes[0]}`), `the daemon sits inside the box: ${daemonCgroup}`);
     if (slice !== null) {
       assert.ok(!daemonCgroup.split("/").includes(slice), `the daemon sits inside the launcher's slice ${slice}: ${daemonCgroup}`);
       const parent = parentSlice(slice);
@@ -80,36 +81,57 @@ test("the built launcher starts an owned supervisor outside its box and places i
         `the daemon did not land in ${parent}: ${daemonCgroup}`
       );
     }
-    const result1 = await run1;
-    observations.run1 = { code: result1.code, stdout: result1.stdout.trim().slice(0, 200), stderrTail: result1.stderr.trim().slice(-400) };
+
+    // Starting and executing a sibling after moving the first worker
+    // exercises the supervisor, not just its status endpoint.
+    const run2 = launchInBox(boxes[1]!, slice, env, heldProbePrompt(sibling));
+    runs.push(run2);
+    const seen2 = await watchRoster(env, 120_000, seen.registered.sessionId);
+    observations.siblingRegistration = seen2;
+    assert.ok(seen2.pid !== null, "the sibling worker's pid was never named");
+    assert.notEqual(seen2.pid, seen.pid, "the roster returned the first worker as its sibling");
+    assert.notEqual(seen2.pid, daemon, "the sibling roster pid names the supervisor");
+    const siblingCgroup = await waitForCgroup(seen2.pid, (cgroup) => /\/ensemble-\d+-.*\.scope$/.test(cgroup), 30_000);
+    assert.ok(siblingCgroup !== null, "the sibling worker was never placed");
+    assert.notEqual(siblingCgroup, workerCgroup, "different workers share a scope in worker mode");
+    if (slice !== null) {
+      assert.equal(containingSlice(`0::${siblingCgroup}\n`), slice);
+    }
+    await waitForPath(sibling.paths.ready, 420_000);
+    assert.equal(run2.settled, false, "the sibling settled before observation");
+    observations.siblingShellCgroup = await readFile(sibling.paths.evidence, "utf8");
+    assert.equal(cgroupPath(String(observations.siblingShellCgroup)), siblingCgroup);
+    assert.equal(await daemonPid(env), daemon, "moving a worker replaced its supervisor");
+
+    await writeFile(first.paths.release, "");
+    const result1 = await run1.result;
+    observations.run1 = result1;
     assert.equal(result1.code, 0, result1.stderr);
+    await execFileAsync("systemctl", ["--user", "stop", boxes[0]!]).catch((error: unknown) => {
+      // --collect may already have removed an empty box when its launcher exited.
+      if (!(error instanceof Error) || !/not loaded|not found/.test(error.message)) throw error;
+    });
+    assert.equal(await daemonPid(env), daemon, "the supervisor did not survive its launcher's box ending");
+    const siblingRow = await waitForRow(env, seen2.registered!.sessionId, (row) => row.pid === seen2.pid, 30_000);
+    assert.ok(siblingRow !== null, "the supervisor lost its sibling when the first box ended");
+    assert.equal(run2.settled, false, "the sibling ended with the first launcher's box");
+    assert.equal(cgroupPath(await readFile(`/proc/${seen2.pid}/cgroup`, "utf8")), siblingCgroup);
+    observations.siblingAfterBox = { pid: seen2.pid, cgroup: siblingCgroup, daemon: await daemonPid(env) };
 
-    // The box has ended with its launcher; the daemon outlives it.
-    await execFileAsync("systemctl", ["--user", "stop", "--no-block", box]).catch(() => undefined);
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-    assert.equal(await daemonPid(env), daemon, "the owned daemon did not survive its launcher's box ending");
-    const rosterAfter = await roster(env);
-    assert.ok(rosterAfter.ok, "the owned daemon's roster stopped answering after the box ended");
-
-    // Run 2: the same daemon serves another launcher, whose worker is placed too.
-    const box2 = `ensemble-live-box-${process.pid}-2.scope`;
-    const run2 = launchInBox(box2, slice, env);
-    const seen2 = await watchRoster(env, 120_000, seen.registered?.sessionId);
-    observations.secondRegistration = seen2;
-    assert.ok(seen2.pid !== null, "the second worker's pid was never named");
-    const workerCgroup2 = await waitForCgroup(seen2.pid, (cgroup) => /\/ensemble-\d+-.*\.scope$/.test(cgroup), 30_000);
-    observations.workerCgroup2 = workerCgroup2;
-    assert.ok(workerCgroup2 !== null, "the second worker was never placed");
-    assert.notEqual(workerCgroup2, workerCgroup, "the second worker shares the first worker's scope");
-    const result2 = await run2;
-    observations.run2 = { code: result2.code, stdout: result2.stdout.trim().slice(0, 200) };
+    await writeFile(sibling.paths.release, "");
+    const result2 = await run2.result;
+    observations.run2 = result2;
     assert.equal(result2.code, 0, result2.stderr);
     assert.equal(await daemonPid(env), daemon, "a second daemon replaced the owned one");
   } finally {
-    // Only the owned daemon is stopped; the operator's is read again to show it was never touched.
-    await execFileAsync("claude", ["daemon", "stop", "--any"], { env }).catch((error: Error) => {
-      observations.ownedDaemonStop = error.message.slice(0, 200);
-    });
+    await Promise.all([first, sibling].map((probe) => writeFile(probe.paths.release, "")));
+    // Stop proof-owned boxes before their private supervisor. A failed
+    // observation must not leave a launcher or polling probe behind.
+    await Promise.all(boxes.map((box) => execFileAsync("systemctl", ["--user", "stop", box]).catch(() => undefined)));
+    await Promise.all(runs.map((run) => run.result));
+    if ((await daemonPid(env)) !== null) {
+      await execFileAsync("claude", ["daemon", "stop", "--any"], { env });
+    }
     observations.operatorDaemonAfter = await daemonPid(process.env);
     t.diagnostic(JSON.stringify(observations));
     await rm(root, { recursive: true, force: true });
@@ -186,7 +208,9 @@ test("a session the owned supervisor restarts under a new pid is placed again at
     );
     assert.equal(again.unit, first.unit, "the restarted session was placed in a different scope");
     const afterPoll = cgroupPath(await readFile(`/proc/${replacedPid}/cgroup`, "utf8"));
-    observations.replacement = { ...(observations.replacement as object), cgroupAfterPoll: afterPoll, daemonAfter: await daemonPid(env) };
+    const daemonAfter = await daemonPid(env);
+    observations.replacement = { ...(observations.replacement as object), cgroupAfterPoll: afterPoll, daemonAfter };
+    assert.equal(daemonAfter, daemon, "re-placing a restarted worker changed its supervisor");
     assert.ok(afterPoll.endsWith(`/${first.unit}`), `the new process is not in the session's scope after the poll: ${afterPoll}`);
   } finally {
     if (handle !== null) {
@@ -203,7 +227,10 @@ test("a session the owned supervisor restarts under a new pid is placed again at
   }
 });
 
-function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv, prompt: string): {
+  settled: boolean;
+  result: Promise<{ code: number | null; stdout: string; stderr: string }>;
+} {
   const child = spawn(
     "systemd-run",
     [
@@ -219,43 +246,55 @@ function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv)
       "agent",
       "--engine=claude",
       "--model=haiku",
-      "Reply with exactly the word done and nothing else."
+      prompt
     ],
     { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] }
   );
-  return new Promise((resolve) => {
+  const run = { settled: false, result: Promise.resolve({ code: null as number | null, stdout: "", stderr: "" }) };
+  run.result = new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => (stdout += chunk));
     child.stderr.on("data", (chunk: string) => (stderr += chunk));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("error", (error) => {
+      run.settled = true;
+      resolve({ code: null, stdout, stderr: `${stderr}\n${error.message}` });
+    });
+    child.on("close", (code) => {
+      run.settled = true;
+      resolve({ code, stdout, stderr });
+    });
   });
+  return run;
 }
 
 interface RosterWatch {
-  registered: { sessionId: string; name: string; atMs: number } | null;
+  registered: { sessionId: string; name: string; atMs: number; pid: number | null } | null;
   pid: number | null;
   pidAtMs: number | null;
-  pidArgv0: string | null;
+  processIdentity: { comm: string; executable: string } | null;
 }
 
 /** Poll the owned roster until an ensemble worker registers and its pid is named: when each happened, and what the pid names. */
 async function watchRoster(env: NodeJS.ProcessEnv, timeoutMs: number, ignoreSessionId?: string): Promise<RosterWatch> {
   const started = Date.now();
-  const watch: RosterWatch = { registered: null, pid: null, pidAtMs: null, pidArgv0: null };
+  const watch: RosterWatch = { registered: null, pid: null, pidAtMs: null, processIdentity: null };
   while (Date.now() - started < timeoutMs) {
     // The daemon is started by the launcher, never by this watcher: the roster is read only once the daemon exists.
     if ((await daemonPid(env)) !== null) {
       const { rows } = await roster(env);
       const row = rows.find((entry) => entry.kind === "background" && typeof entry.name === "string" && entry.name.startsWith("ensemble-") && entry.sessionId !== ignoreSessionId);
       if (row !== undefined && typeof row.sessionId === "string" && typeof row.name === "string") {
-        watch.registered ??= { sessionId: row.sessionId, name: row.name, atMs: Date.now() - started };
+        watch.registered ??= { sessionId: row.sessionId, name: row.name, atMs: Date.now() - started, pid: typeof row.pid === "number" ? row.pid : null };
         if (typeof row.pid === "number") {
           watch.pid = row.pid;
           watch.pidAtMs = Date.now() - started;
-          watch.pidArgv0 = (await readFile(`/proc/${row.pid}/cmdline`, "utf8").catch(() => "")).split("\0")[0] ?? null;
+          watch.processIdentity = {
+            comm: (await readFile(`/proc/${row.pid}/comm`, "utf8")).trim(),
+            executable: await readlink(`/proc/${row.pid}/exe`)
+          };
           return watch;
         }
       }

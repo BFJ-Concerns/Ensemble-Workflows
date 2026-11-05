@@ -10,6 +10,7 @@ import {
   SystemdWorkerScopes,
   containingSlice,
   createWorkerScopes,
+  parentSlice,
   processTree
 } from "../../src/worker-scopes.js";
 
@@ -27,6 +28,13 @@ test("containingSlice names the nearest slice below the user manager and nothing
   assert.equal(containingSlice("0::/system.slice/foo.service\n"), null);
   assert.equal(containingSlice("0::/\n"), null);
   assert.equal(containingSlice(""), null);
+});
+
+test("parentSlice follows systemd's nesting-by-name", () => {
+  assert.equal(parentSlice("agents-run1.slice"), "agents.slice");
+  assert.equal(parentSlice("app-foot-bar.slice"), "app-foot.slice");
+  assert.equal(parentSlice("agents.slice"), "-.slice");
+  assert.equal(parentSlice("app.slice"), "-.slice");
 });
 
 test("unit names carry the label and group made unit-name safe", () => {
@@ -143,8 +151,9 @@ test("concurrent first placements for one group share one scope", async () => {
   }
 });
 
-test("launch runs a command outside the launcher's scope with its streams, environment and exit status intact", async () => {
-  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `launch-${process.pid}` });
+test("launch runs a command outside the launcher's slice with its streams, environment and exit status intact", async () => {
+  const slice = await ownSlice();
+  const scopes = new SystemdWorkerScopes({ slice, label: `launch-${process.pid}` });
   const probe = `read x; echo "in=$x probe=$ENSEMBLE_LAUNCH_PROBE"; cat /proc/self/cgroup; echo oops >&2; exit 3`;
   const child = await scopes.launch("sh", ["-c", probe], {
     env: { ...process.env, ENSEMBLE_LAUNCH_PROBE: "seen" },
@@ -158,6 +167,19 @@ test("launch runs a command outside the launcher's scope with its streams, envir
   const ownCgroup = (await readFile("/proc/self/cgroup", "utf8")).trim();
   assert.notEqual(cgroup, ownCgroup, "the command ran in the launcher's own cgroup");
   assert.doesNotMatch(cgroup ?? "", /ensemble-/, "the command landed in a worker scope the manager owns");
+  // Outside the box the launcher's slice draws: a sibling scope inside that
+  // slice would still share its memory limit and die with it. The command
+  // lands in the parent slice instead (the user manager's root for a
+  // top-level slice, where the path has no slice segment at all).
+  const segments = (cgroup ?? "").split("/");
+  if (slice !== null) {
+    assert.ok(!segments.includes(slice), `the command stayed inside the launcher's slice ${slice}: ${cgroup}`);
+    const parent = parentSlice(slice);
+    assert.ok(
+      parent === "-.slice" ? segments.at(-2)?.endsWith(".service") : segments.includes(parent),
+      `the command did not land in ${parent}: ${cgroup}`
+    );
+  }
   await scopes.close();
 });
 

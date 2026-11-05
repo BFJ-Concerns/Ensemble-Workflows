@@ -223,20 +223,44 @@ export class SystemdWorkerScopes implements WorkerScopes {
     }
   }
 
+  /**
+   * The slice a launched command's scope goes in: the parent of the
+   * launcher's own slice, so the command — and a supervisor it starts —
+   * sits outside the box the launcher's slice draws, whether that box is
+   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
+   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
+   * launches into the user manager's root slice. Null where the launcher's
+   * slice is unknown: the manager's default then applies.
+   */
+  get launchSlice(): string | null {
+    return this.slice === null ? null : parentSlice(this.slice);
+  }
+
   async launch(file: string, args: readonly string[], options: LaunchOptions): Promise<ChildProcess> {
     // `--scope` runs the command as systemd-run's own child with the
     // caller's streams, environment and working directory, and exits with
     // the command's status; the command and everything it starts sit in a
-    // fresh scope the user manager places in its default slice — never in
-    // the launcher's. `--collect` lets a scope that failed be garbage
-    // collected like one that ended cleanly. The caller's options go
-    // through untouched — systemd-run finds the bus from the same
-    // environment the command runs under, and an environment the caller
-    // narrowed (a run's own settings withheld from a child that can start
-    // the supervisor) must stay narrowed.
+    // fresh scope in `launchSlice`, outside the launcher's own slice.
+    // `--collect` lets a scope that failed be garbage collected like one
+    // that ended cleanly. The caller's options go through untouched —
+    // systemd-run finds the bus from the same environment the command
+    // runs under, and an environment the caller narrowed (a run's own
+    // settings withheld from a child that can start the supervisor) must
+    // stay narrowed.
+    const slice = this.launchSlice;
     return spawn(
       this.#systemdRunBin,
-      ["--user", "--scope", "--quiet", "--collect", `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(), "--", file, ...args],
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        ...(slice !== null ? [`--slice=${slice}`] : []),
+        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
+        "--",
+        file,
+        ...args
+      ],
       options
     );
   }
@@ -351,6 +375,17 @@ export function containingSlice(cgroupFile: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * The slice a slice lives in, from systemd's naming: `agents-run1.slice`
+ * lives in `agents.slice`, and a name with no dash lives in the root
+ * slice, `-.slice`.
+ */
+export function parentSlice(slice: string): string {
+  const name = slice.slice(0, -".slice".length);
+  const dash = name.lastIndexOf("-");
+  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
 }
 
 /**

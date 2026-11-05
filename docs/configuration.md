@@ -142,11 +142,12 @@ For the same reason the daemon must not live in the launcher's own cgroup: a
 memory limit or an ending there would take every Claude session on the
 machine with it. Where a systemd user manager is reachable, Ensemble runs
 each `claude` (and `tmux`) process it launches in a transient scope of its
-own, under the user manager's default slice (`systemd-run --user --scope`),
-so a daemon one of them starts stays outside whatever scope or slice holds the
-launcher. The process keeps its streams, environment, working directory and
-exit status. Without a reachable user manager the process is launched
-directly.
+own (`systemd-run --user --scope`) in the parent of the slice that holds the
+launcher — a launcher in `agents-run1.slice` launches into `agents.slice`, one
+in `agents.slice` or `app.slice` into the user manager's root — so a daemon
+one of them starts sits outside the box the launcher's slice draws. The
+process keeps its streams, environment, working directory and exit status.
+Without a reachable user manager the process is launched directly.
 
 > [!WARNING]
 > Relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, not by pointing

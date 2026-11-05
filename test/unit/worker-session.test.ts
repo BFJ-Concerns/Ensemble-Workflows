@@ -921,7 +921,7 @@ test("held turns publish separate live records and ignore prior-turn callbacks",
   try {
     assert.equal(await session.send("first"), "first");
     assert.equal(await session.send("second"), "second");
-    assert.deepEqual(starts, [[1, 1], [2, 1]]);
+    assert.deepEqual(starts, [[1, 1], [2, 1]], "each held turn must publish a distinct agent record");
     assert.deepEqual(writes, [[1, 1, { prompt: "first" }], [2, 1, { prompt: "second" }]]);
   } finally {
     await session.close();

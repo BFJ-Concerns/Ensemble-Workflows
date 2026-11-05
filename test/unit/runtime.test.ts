@@ -4374,7 +4374,7 @@ for (const structured of [false, true]) {
     const transport = new FakeTransport([turn(structured ? "invalid JSON" : ""), turn(structured ? '{"answer":"yes"}' : "yes")]);
     const runTurn = transport.runTurn.bind(transport);
     transport.runTurn = async (thread, prompt, options) => {
-      assert.equal(starts.at(-1)?.attempt, callbacks.length + 1);
+      assert.equal(starts.at(-1)?.attempt, callbacks.length + 1, "publish attempt start before invoking the engine");
       if (callbacks.length > 0) assert.equal(writes.length, callbacks.length, "retry outran transcript persistence");
       callbacks.push(options);
       options.onTranscriptEvent?.({ thread });
@@ -4429,7 +4429,7 @@ test("live archive write failures report the agent and preserve its answer", asy
     assert.deepEqual(failures, [
       { agentId: 1, message: "start unavailable" },
       { agentId: 1, message: "append unavailable" }
-    ]);
+    ], "both live write failures must identify the agent without losing its answer");
   } finally {
     await runtime.close();
   }
@@ -4489,7 +4489,7 @@ test("fallback targets publish their own transcript and reject callbacks from th
   claude.createInvocation = (prompt, options) => {
     const invocation = claudeInvocation(prompt, options);
     return { runAttempt: (context) => {
-      assert.deepEqual(starts, [[1, 1], [1, 2]]);
+      assert.deepEqual(starts, [[1, 1], [1, 2]], "fallback must publish the admitted target as a distinct attempt");
       refusedContext?.onTranscriptEvent?.({ late: true });
       context.onTranscriptPath?.("/fake/claude/session.jsonl");
       context.onTranscriptPath?.("/fake/claude/session.jsonl");

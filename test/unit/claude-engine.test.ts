@@ -1919,7 +1919,7 @@ test("Claude reports a readable transcript after an initially absent path", asyn
     });
     assert.equal(result.text, "ok");
     assert.ok(reads >= 2);
-    assert.ok(paths.length > 0);
+    assert.ok(paths.length > 0, "transcript discovery must notify the observer after an initially absent path");
     assert.equal(await readFile(paths[0]!, "utf8"), result.transcripts![0]!.content);
     await invocation.close?.();
   });
@@ -1944,7 +1944,7 @@ test("Claude reports its transcript for every held-session turn and correction",
         onTranscriptPath: (file) => paths[2]!.push(file)
       })).text, "corrected");
       for (const captured of paths) {
-        assert.ok(captured.length > 0);
+        assert.ok(captured.length > 0, "each held turn and correction must publish its transcript path");
         assert.ok(captured.every((file) => file === paths[0]![0]));
       }
     } finally {

@@ -963,7 +963,8 @@ test("a terminal frame from an abandoned turn cannot settle the live turn on a r
       timeoutMs: 2_000,
       onTranscriptEvent: (event) => observed.push(structuredClone(event))
     });
-    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
     assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     // Settled by its own completion, not the straggler's: the fake's turn-2
     // answer arrives only after both turn-1 stragglers have been sent.
@@ -997,7 +998,8 @@ test("a straggler arriving before the live turn learns its id is not learned as 
       timeoutMs: 2_000,
       onTranscriptEvent: (event) => observed.push(structuredClone(event))
     });
-    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+    assert.deepEqual(observed, second.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+      "the live observer must retain every captured frame, including abandoned-turn stragglers");
     assert.ok(JSON.stringify(observed).includes('"turnId":"turn-1"'));
     assert.equal(second.text, "the live turn's own answer");
   } finally {
@@ -2123,7 +2125,8 @@ test("live transcript events stay ordered across concurrent threads and successi
         }
       })));
     for (const [index, result] of results.entries()) {
-      assert.deepEqual(captures[index], result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)));
+      assert.deepEqual(captures[index], result.transcripts![0]!.content.trim().split("\n").map((line) => JSON.parse(line)),
+        "concurrent live observers must receive their own complete ordered capture");
       assert.equal(result.text, "hello");
     }
     const previous = structuredClone(captures[0]);

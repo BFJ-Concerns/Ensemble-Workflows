@@ -2346,7 +2346,7 @@ test("live attempts publish readable references, append in order and settle with
     await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
     assert.deepEqual((await readAgent()).current_attempt, {
       attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null
-    });
+    }, "execution start must be readable before transcript discovery");
     const external = path.join(store, "claude.jsonl");
     await writeFile(external, "{}\n");
     await writer.recordClaudeTranscript(1, 1, external);
@@ -2422,7 +2422,7 @@ test("live Codex appends avoid transcript rereads and settled artefact rewrites"
       await Promise.all(Array.from({ length: 8 }, (_, index) =>
         writer.appendCodexTranscript(1, 2, { index })));
       assert.equal(reads.includes(transcriptPath), false);
-      assert.equal(reads.includes(previousPath), false);
+      assert.equal(reads.includes(previousPath), false, "live appends must not reread settled artefacts");
     } finally {
       spy.mock.restore();
       syncBuiltinESMExports();
@@ -2476,7 +2476,7 @@ test("ending an attempt clears live metadata and rejects stale transcript update
     await writer.recordAttemptEnd(1, 2);
     assert.equal((await readAgent()).current_attempt.attempt, 1);
     await writer.recordAttemptEnd(1, 1);
-    assert.equal((await readAgent()).current_attempt, undefined);
+    assert.equal((await readAgent()).current_attempt, undefined, "ending the active attempt must clear live metadata");
     await writer.appendCodexTranscript(1, 1, { stale: true });
     assert.equal(await readFile(transcript, "utf8"), '{"first":true}\n');
     await writer.recordAttemptStart(1, 2, "2026-11-05T12:00:01Z");
@@ -2520,7 +2520,8 @@ test("settlement restores complete Codex capture after a failed live append", as
     await writer.finish({ status: "complete", exitCode: 0, result: null });
     const agent = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000001/agent.json"), "utf8"));
     const transcript = agent.transcripts[0].path;
-    assert.equal(await readFile(path.join(writer.archiveDir, transcript), "utf8"), content);
+    assert.equal(await readFile(path.join(writer.archiveDir, transcript), "utf8"), content,
+      "settlement must repair the event lost by the failed live append");
     assert.equal(writer.manifest.files.find((file) => file.path === transcript)?.sha256, sha256(Buffer.from(content)));
   } finally { await rm(store, { recursive: true, force: true }); }
 });

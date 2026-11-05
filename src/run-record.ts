@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -595,6 +595,8 @@ export class RunRecordWriter {
   #tmpSeq = 0;
   #writeChain: Promise<unknown> = Promise.resolve();
   #sealed = false;
+  #currentAttempts = new Map<number, { attempt: number; started_at: string; transcript: string | null }>();
+  #liveCodex = new Map<string, string>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -869,6 +871,46 @@ export class RunRecordWriter {
     });
   }
 
+  /** Publish execution start separately from dispatch and settlement. */
+  async recordAttemptStart(id: number, attempt: number, startedAt: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const record = this.#agents.get(id);
+      if (record === undefined || record.status !== "in-progress") return;
+      this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
+      await this.#recordAgent(record);
+    });
+  }
+
+  /** Reference Claude's own readable transcript without copying a growing file. */
+  async recordClaudeTranscript(id: number, attempt: number, transcriptPath: string): Promise<void> {
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      await stat(transcriptPath);
+      current.transcript = transcriptPath;
+      await this.#recordAgent(this.#agents.get(id)!);
+    });
+  }
+
+  /** Append an event before publishing its archive reference. */
+  async appendCodexTranscript(id: number, attempt: number, event: unknown): Promise<void> {
+    const content = `${JSON.stringify(event)}\n`;
+    await this.#serialise(async () => {
+      if (this.#sealed) return;
+      const current = this.#currentAttempts.get(id);
+      if (current?.attempt !== attempt) return;
+      const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
+      await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
+      await appendFile(path.join(this.archiveDir, relativePath), content);
+      await this.#trackFile(relativePath);
+      this.#liveCodex.set(`${id}:${attempt}`, relativePath);
+      current.transcript = relativePath;
+      await this.#recordAgent(this.#agents.get(id)!);
+    });
+  }
+
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {
     // Snapshot at the boundary: the runtime keeps mutating its live record
     // between the dispatch-time write and settlement, and the manifest
@@ -886,6 +928,7 @@ export class RunRecordWriter {
 
   async #recordAgent(record: RuntimeAgentRecord): Promise<void> {
     this.#agents.set(record.id, record);
+    if (record.status !== "in-progress") this.#currentAttempts.delete(record.id);
     const agentDir = `agents/${padId(record.id)}`;
     const transcriptRefs = [];
 
@@ -902,7 +945,11 @@ export class RunRecordWriter {
         index += 1;
         const suffix = transcript.format === "jsonl" ? "jsonl" : "txt";
         const relativePath = `${agentDir}/attempt-${padAttempt(attempt.attempt)}-${index}-${safeName(transcript.filename, suffix)}`;
-        await this.#writeText(relativePath, transcript.content);
+        if (this.#liveCodex.get(`${record.id}:${attempt.attempt}`) === relativePath) {
+          await this.#trackFile(relativePath);
+        } else {
+          await this.#writeText(relativePath, transcript.content);
+        }
         transcriptRefs.push({
           attempt: attempt.attempt,
           path: relativePath,
@@ -917,6 +964,7 @@ export class RunRecordWriter {
 
     const agentJsonPath = `${agentDir}/agent.json`;
     await this.#writeJson(agentJsonPath, {
+      ...(this.#currentAttempts.has(record.id) ? { current_attempt: { ...this.#currentAttempts.get(record.id)! } } : {}),
       schema_version: SCHEMA_VERSION,
       kind: "agent_record",
       id: record.id,

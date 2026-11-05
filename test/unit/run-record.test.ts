@@ -2323,3 +2323,66 @@ test("a tally named __proto__ is recorded as an own property, not swallowed by t
   await rm(store, { recursive: true, force: true });
   await rm(cwd, { recursive: true, force: true });
 });
+
+
+test("live attempts publish readable references, append in order and settle without extra keys", async () => {
+  const cwd = await gitRepo("ensemble-live-record-");
+  const store = await mkdtemp(path.join(tmpdir(), "ensemble-live-store-"));
+  try {
+    const writer = await RunRecordWriter.start({
+      storeDir: store, cwd, runUuid: "live-record",
+      workflowPath: path.join(cwd, "workflow.js"), workflowSource: "return true;",
+      args: [], cliFlags: { jsonArgs: false }
+    });
+    const settled = agentRecord(1, "codex", null, 3);
+    const running = structuredClone(settled);
+    running.status = "in-progress";
+    running.attempts = [];
+    await writer.recordAgent(running);
+    const agentPath = path.join(writer.archiveDir, "agents/000001/agent.json");
+    const readAgent = async () => JSON.parse(await readFile(agentPath, "utf8"));
+    assert.equal((await readAgent()).current_attempt, undefined);
+    await writer.recordAttemptStart(1, 1, "2026-11-05T12:00:00Z");
+    assert.deepEqual((await readAgent()).current_attempt, {
+      attempt: 1, started_at: "2026-11-05T12:00:00Z", transcript: null
+    });
+    const external = path.join(store, "claude.jsonl");
+    await writeFile(external, "{}\n");
+    await writer.recordClaudeTranscript(1, 1, external);
+    assert.equal(await readFile((await readAgent()).current_attempt.transcript, "utf8"), "{}\n");
+    const event = { message: "first" };
+    const first = writer.appendCodexTranscript(1, 1, event);
+    event.message = "mutated";
+    await Promise.all([first, writer.appendCodexTranscript(1, 1, { message: "second" })]);
+    const relativePath = (await readAgent()).current_attempt.transcript;
+    const transcriptPath = path.join(writer.archiveDir, relativePath);
+    const content = '{"message":"first"}\n{"message":"second"}\n';
+    assert.equal(await readFile(transcriptPath, "utf8"), content);
+    settled.attempts[0]!.transcripts = [{
+      filename: "transcript.codex.jsonl", format: "jsonl", source: "codex-app-server-events",
+      content: "must not replace live bytes"
+    }];
+    await writer.recordAgent(settled);
+    const final = await readAgent();
+    assert.equal(final.current_attempt, undefined);
+    assert.equal(final.transcripts[0].path, relativePath);
+    assert.equal(await readFile(transcriptPath, "utf8"), content);
+    await writer.appendCodexTranscript(1, 1, { late: true });
+    assert.equal(await readFile(transcriptPath, "utf8"), content);
+    assert.equal(writer.manifest.files.find((file) => file.path === relativePath)?.sha256, sha256(Buffer.from(content)));
+    const comparison = agentRecord(2, "codex", null, 3);
+    await writer.recordAgent(comparison);
+    const other = JSON.parse(await readFile(path.join(writer.archiveDir, "agents/000002/agent.json"), "utf8"));
+    assert.deepEqual(Object.keys(final).sort(), Object.keys(other).sort());
+    await writer.finish({ status: "complete", exitCode: 0, result: true });
+    const before = await readFile(agentPath, "utf8");
+    await writer.recordAttemptStart(1, 2, "late");
+    await writer.recordClaudeTranscript(1, 1, external);
+    await writer.appendCodexTranscript(1, 1, { sealed: true });
+    assert.equal(await readFile(agentPath, "utf8"), before);
+    assert.equal(await readFile(transcriptPath, "utf8"), content);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+    await rm(store, { recursive: true, force: true });
+  }
+});

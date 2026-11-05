@@ -6,12 +6,12 @@ file.
 
 ## How settings resolve
 
-Worker scope grouping, the agent ceiling, each engine's concurrency cap, the durable run record, and
-the live status file each resolve independently through these layers, highest
-first:
+Worker scope grouping, the agent ceiling, each engine's concurrency cap,
+the durable run record, and the live status file each resolve independently
+through these layers, highest first:
 
-1. A command-line flag (worker scope grouping, agent ceiling and concurrency caps; see
-   [CLI](cli.md)).
+1. A command-line flag (worker scope grouping, agent ceiling and concurrency
+   caps; see [CLI](cli.md)).
 2. An `ENSEMBLE_` environment variable.
 3. The machine configuration file, `$XDG_CONFIG_HOME/ensemble/config.json`
    (normally `~/.config/ensemble/config.json`).
@@ -133,7 +133,7 @@ on the machine. So that one run's settings do not leak into later sessions,
 the run's own `ENSEMBLE_` settings (`ENSEMBLE_RUN_RECORD`,
 `ENSEMBLE_RUN_RECORD_DIR`, `ENSEMBLE_STATUS`, `ENSEMBLE_STATUS_DIR`,
 `ENSEMBLE_AGENT_CEILING`, `ENSEMBLE_CONCURRENCY_*`, `ENSEMBLE_HOLD_SCOPE`, and
-`ENSEMBLE_CALLER_IDENTITY`) are withheld from every `claude` process Ensemble
+`ENSEMBLE_CALLER_IDENTITY`, `ENSEMBLE_WORKER_SCOPE`) are withheld from every `claude` process Ensemble
 launches; a `worker_environment` declaration of one of those names is still
 injected. Codex and opencode workers end with the run and inherit those
 variables normally. A nested `ensemble` invocation inside a Claude worker
@@ -163,9 +163,9 @@ The daemon forks each Claude session in its own cgroup, and the roster
 (`claude agents --json`) names that process by `pid` shortly after registration.
 Ensemble moves the process and its descendants when the pid appears, and
 moves a session the daemon restarts under a new pid at the next poll. Codex
-placement completes before the app-server's protocol handshake. Placement is
-best-effort: without a reachable user manager, or when the manager refuses,
-workers run where they started. Linux keeps memory already charged before a
+placement is attempted before the app-server's protocol handshake. Placement
+is best-effort: without a reachable user manager workers run where they
+started; manager refusals do not fail dispatch. Linux keeps memory already charged before a
 move in the original cgroup. Run teardown stops the scopes Ensemble owns;
 Claude control-command scopes and the shared supervisor are outside that
 ownership.
@@ -249,8 +249,9 @@ contain.
 
 Ensemble can also be used as a library from a source checkout
 (`createRuntime()` and the rest of the API exported by `src/index.ts`). The
-standalone launcher exports nothing. Apart from `holdScope` and `workerScope`, which mirror their CLI flags,
-these options have no flag or environment variable:
+standalone launcher exports nothing. Apart from `holdScope` and
+`workerScope`, which mirror their CLI flags, these options have no flag or
+environment variable:
 
 | Option | Default | Description |
 |---|---|---|

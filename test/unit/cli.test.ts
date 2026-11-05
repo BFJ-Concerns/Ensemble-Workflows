@@ -3976,7 +3976,7 @@ test("ensemble holds answer writes the decision, reports what the raiser did wit
 test("both CLI forms deliver worker scope grouping and reject invalid flags", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ensemble-cli-worker-scope-"));
   const script = path.join(directory, "workflow.js");
-  await writeFile(script, 'return "done";');
+  await writeFile(script, 'export const meta = { name: "scope-settings" }; return "done";');
   try {
     for (const invocation of [[script], ["agent", "--engine", "codex", "hello"]]) {
       for (const flag of [["--worker-scope", "run"], ["--worker-scope=worker"]]) {

@@ -492,7 +492,6 @@ const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
-    if (cgroupCapturePath !== null) writeFileSync(cgroupCapturePath, readFileSync("/proc/self/cgroup", "utf8"));
     send({ id: message.id, result: {} });
   }
 });
@@ -1762,7 +1761,6 @@ const send = (message, afterWrite) => process.stdout.write(JSON.stringify(messag
 reader.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
-    if (cgroupCapturePath !== null) writeFileSync(cgroupCapturePath, readFileSync("/proc/self/cgroup", "utf8"));
     send({ id: message.id, result: {} });
     return;
   }

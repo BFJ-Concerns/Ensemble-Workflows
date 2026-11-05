@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -87,29 +88,35 @@ test("place puts live processes in one delegated scope per group under the launc
 });
 
 test("close stops a scope whose placement was still pending when close began", async () => {
-  // A busctl that answers slowly holds the placement in flight at the
-  // manager for longer than close() takes to begin, so the race is certain
-  // rather than a matter of timing: close starts while the scope is being
-  // created and must still end it.
-  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-slow-busctl-"));
-  const slowBusctl = path.join(dir, "busctl");
-  await writeFile(slowBusctl, `#!/bin/sh\nsleep 0.3\nexec busctl "$@"\n`, { mode: 0o755 });
-  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}`, busctlBin: slowBusctl });
+  // The manager's bus call is held in flight by a busctl that reports when
+  // it has started and waits to be released: close() begins only once the
+  // call is known to be in flight, and the call is released only once
+  // close() has begun. The race is established by handshake, not timing —
+  // the placement cannot complete before close starts, and close cannot
+  // start before the placement is at the manager.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-held-busctl-"));
+  const heldBusctl = path.join(dir, "busctl");
+  const inFlight = path.join(dir, "in-flight");
+  const release = path.join(dir, "release");
+  await writeFile(
+    heldBusctl,
+    `#!/bin/sh\ntouch "${inFlight}"\ni=0\nwhile [ ! -e "${release}" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\nexec busctl "$@"\n`,
+    { mode: 0o755 }
+  );
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}`, busctlBin: heldBusctl });
   const member = sleeper();
   try {
-    // Not awaited: the placement is in flight at the manager when close() begins.
     const pending = scopes.place("late", [member.pid!]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await scopes.close();
+    await waitFor(() => existsSync(inFlight), "the placement's bus call to be in flight");
+    const closing = scopes.close();
+    await writeFile(release, "");
+    await closing;
     const outcome = await pending;
-    // A placement the manager had accepted must be stopped by the close
-    // that followed it; one refused because the close came first leaves
-    // the process with its caller. Neither may leave an active scope.
-    if (outcome.kind === "placed") {
-      await waitFor(() => !isLive(member.pid!), "a process placed before close to be ended by it");
-    } else {
-      assert.equal(outcome.kind, "refused", JSON.stringify(outcome));
-    }
+    // The manager accepted the placement after close began, so close must
+    // have waited for it and stopped the scope it produced: the member is
+    // ended and the scope is not left active.
+    assert.equal(outcome.kind, "placed", JSON.stringify(outcome));
+    await waitFor(() => !isLive(member.pid!), "a process placed while close ran to be ended by it");
     const shown = await execFileAsync("systemctl", ["--user", "show", scopes.unitFor("late"), "-p", "ActiveState"]);
     assert.doesNotMatch(shown.stdout, /^ActiveState=active$/m, "the scope created during close was left active");
   } finally {

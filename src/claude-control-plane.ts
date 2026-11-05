@@ -20,6 +20,15 @@ import { boundedEvidence } from "./operator-diagnosis.js";
  * children burning CPU for ~90 minutes after their worker died).
  */
 export const WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
+/**
+ * Set by the machine-wide worker bound's `bound run` in the environment of a
+ * launcher it runs: the path of the `bound` command. A dispatched session is
+ * a child of the per-user daemon, not of this launcher, so the bound cannot
+ * see it from the launcher's cgroup; `bound adopt --session <id>` moves the
+ * session's processes into the run's slice, where its footprint is measured
+ * and the slice's memory backstop reaches it.
+ */
+export const BOUND_BIN_VARIABLE = "AGENT_BOUND_BIN";
 /** Per-dispatch settings directories live under the temp root as `<prefix><dispatch name>-<random>`. */
 const SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 /** Each valve's private tmux socket lives at `<tmux's socket root>/<prefix><random>/tmux.sock`. */
@@ -193,6 +202,13 @@ export interface ClaudeCliControlPlaneOptions {
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
   dispatchTimeoutMs?: number;
+  /**
+   * How long a registered session's hand-over to the machine-wide worker
+   * bound (`bound adopt`) may take before the dispatch stops waiting for it
+   * and returns the handle, so the engine can reach the session from the
+   * moment the bound could have hung. Defaults to 10 seconds.
+   */
+  adoptTimeoutMs?: number;
   /** Grace between SIGTERM and SIGKILL when reaping tagged descendants at stop(). */
   reapGraceMs?: number;
   /** The proc filesystem root the reaper scans. Injectable for tests; on a platform without one the reap is a no-op. */
@@ -207,6 +223,13 @@ interface ExecResult {
   ok: boolean;
   stdout: string;
   stderr: string;
+  /**
+   * Why the command produced no verdict of its own: it could not be spawned
+   * (`spawn <file> ENOENT`), or it ran past the caller's `timeoutMs` and was
+   * killed. Absent when the process ran to its own exit, where `stderr`
+   * carries its words.
+   */
+  cause?: string;
 }
 
 /**
@@ -237,6 +260,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #workerEnv: Record<string, string>;
   /** The resolved hold scope every dispatched session inherits by its settings file; null for the shared scope. */
   #holdScope: string | null;
+  #adoptTimeoutMs: number;
   /** Per-session settings directories, removed when the session stops. */
   #settingsDirs = new Map<string, string>();
   /** The one-time sweep of settings directories earlier launchers left behind, run before this control plane's first dispatch. */
@@ -264,6 +288,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     };
     this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
+    this.#adoptTimeoutMs = options.adoptTimeoutMs ?? 10_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";
     this.#valveAttachSettleMs = options.valveAttachSettleMs ?? 4_000;
@@ -355,7 +380,34 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // Unreachable: every path that leaves the loop without a handle throws.
       throw new ClaudeRegistrationTimeoutError(`dispatched session '${options.name}' in ${options.cwd} was lost before registration`);
     }
+    await this.#adopt(registered.sessionId);
     return registered;
+  }
+
+  /**
+   * Hands a registered session to the machine-wide worker bound when this
+   * launcher runs under one (`BOUND_BIN_VARIABLE` in its environment).
+   * Best-effort: the session is already running, so a failed adoption is
+   * one stderr line and the dispatch stands. The wait is bounded by
+   * `adoptTimeoutMs`: the engine holds no handle to the session until
+   * `dispatch` returns, so a `close()` during this wait cannot stop it, and
+   * an unbounded `bound` would leave the session running past the run.
+   */
+  async #adopt(sessionId: string): Promise<void> {
+    const bound = this.#env[BOUND_BIN_VARIABLE];
+    if (bound === undefined || bound.length === 0) {
+      return;
+    }
+    const result = await this.#run(bound, ["adopt", "--session", sessionId], { timeoutMs: this.#adoptTimeoutMs });
+    if (!result.ok) {
+      const stderr = result.stderr.trim();
+      const reason = [result.cause, stderr.length > 0 ? boundedEvidence(stderr) : undefined]
+        .filter((part): part is string => part !== undefined)
+        .join("; ");
+      process.stderr.write(
+        `[worker-bound] ${bound} adopt --session ${sessionId} failed: ${reason.length > 0 ? reason : "no output"}\n`
+      );
+    }
   }
 
   /**
@@ -714,14 +766,38 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return { ok: true, rows: parsed.filter((row): row is RosterRow => typeof row === "object" && row !== null) };
   }
 
-  #run(file: string, args: string[], cwd?: string): Promise<ExecResult> {
+  /**
+   * Runs a control-plane child to its exit. With `timeoutMs`, a child still
+   * running at the deadline is killed with SIGKILL — a signal it cannot
+   * ignore, since execFile waits for the child to exit after its default
+   * SIGTERM and a child that handles it would hold the deadline open — and
+   * the result names the deadline as its `cause`; without one, the wait is
+   * unbounded.
+   */
+  #run(file: string, args: string[], options: { timeoutMs?: number } = {}): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve) => {
       execFile(
         file,
         args,
-        { ...(cwd !== undefined ? { cwd } : {}), maxBuffer: 32 * 1024 * 1024, env: this.#env },
+        {
+          ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs, killSignal: "SIGKILL" as const } : {}),
+          maxBuffer: 32 * 1024 * 1024,
+          env: this.#env
+        },
         (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
+          if (error === null) {
+            resolve({ ok: true, stdout, stderr });
+            return;
+          }
+          // `killed` is set only when execFile itself killed the child, which
+          // it does at the deadline; a string `code` is a spawn failure
+          // (ENOENT, EACCES) that never reached the child.
+          const cause = error.killed
+            ? `no reply within ${options.timeoutMs} ms`
+            : typeof error.code === "string"
+              ? error.message.split("\n")[0]
+              : undefined;
+          resolve({ ok: false, stdout, stderr, ...(cause !== undefined ? { cause } : {}) });
         }
       );
     });

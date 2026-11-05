@@ -44,8 +44,12 @@ for (;;) {
       if (agent === null) continue;
       const observation = observed.get(file) ?? { id: agent.id, label: agent.label, queued: false, attempts: new Map() };
       observed.set(file, observation);
+      observation.session = agent.session;
       const current = agent.current_attempt;
-      if (agent.status === "in-progress" && current === undefined) observation.queued = true;
+      if (agent.status === "in-progress" && current === undefined) {
+        observation.queued = true;
+        await acknowledge(`queued:${agent.label}`);
+      }
       if (current === undefined) continue;
       assert.equal(agent.status, "in-progress");
       assert.ok(Number.isInteger(current.attempt) && current.attempt > 0);
@@ -66,7 +70,15 @@ for (;;) {
         if (attempt.transcript !== null) assert.equal(attempt.transcript, current.transcript);
         attempt.transcript = current.transcript;
         if (attempt.sizes.at(-1) !== bytes.length) attempt.sizes.push(bytes.length);
+        if (attempt.lastContent !== null) {
+          assert.ok(bytes.subarray(0, attempt.lastContent.length).equals(attempt.lastContent), "live transcript lost previously read bytes");
+        }
         attempt.lastContent = bytes;
+        await acknowledge(`readable:${agent.label}`);
+        if (attempt.sizes.length > 1) {
+          await acknowledge(`growth:${agent.label}`);
+          await acknowledge(`growth:${agent.id}:${current.attempt}`);
+        }
         const marker = `observed:${agent.id}:${current.attempt}`;
         await acknowledge(`${marker}:started`);
         const deltas = bytes.toString("utf8").split("\n").filter((line) => line.includes('"method":"item/agentMessage/delta"')).length;
@@ -87,6 +99,12 @@ for (;;) {
         const settled = agent.attempts.find((candidate) => candidate.attempt === attempt.attempt);
         assert.ok(settled, "observed attempt is absent from the settled record");
         assert.equal(settled.started_at, attempt.started_at);
+        if (attempt.transcript !== null && path.isAbsolute(attempt.transcript)) {
+          const reference = agent.transcripts.find((candidate) => candidate.attempt === attempt.attempt);
+          assert.ok(reference, "engine-owned live transcript was not archived");
+          const bytes = await readFile(path.join(archive, reference.path));
+          assert.ok(bytes.subarray(0, attempt.lastContent.length).equals(attempt.lastContent), "archive lost engine-owned transcript bytes");
+        }
         if (attempt.transcript !== null && !path.isAbsolute(attempt.transcript)) {
           assert.ok(agent.transcripts.some((reference) => reference.path === attempt.transcript && reference.attempt === attempt.attempt));
           const bytes = await readFile(path.join(archive, attempt.transcript));

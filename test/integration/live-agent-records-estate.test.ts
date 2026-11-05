@@ -82,7 +82,7 @@ test("an independent reader follows queued, retried and held workers through the
     assert.equal(JSON.parse(run.stdout), "complete");
     assert.equal(read.code, 0, read.stderr);
     const observations = JSON.parse(read.stdout) as Array<{
-      id: number; label: string; queued: boolean;
+      id: number; label: string; queued: boolean; session: { id: number; turn: number } | null;
       attempts: Array<{ attempt: number; transcript: string; sizes: number[]; readable: boolean }>;
     }>;
     assert.equal(observations.length, 4);
@@ -95,6 +95,12 @@ test("an independent reader follows queued, retried and held workers through the
         assert.ok(attempt.sizes.length > 1, `never observed transcript growth for agent ${observation.id}`);
       }
     }
+    const held = observations.filter((agent) => agent.label === "held");
+    assert.equal(held.length, 2);
+    assert.ok(held[0]!.session);
+    assert.deepEqual(held.map((agent) => agent.session), [
+      { id: held[0]!.session.id, turn: 1 }, { id: held[0]!.session.id, turn: 2 }
+    ]);
     assert.equal(new Set(observations.flatMap((agent) => agent.attempts.map((attempt) => attempt.transcript))).size, 5);
   } finally {
     await Promise.allSettled(processes);

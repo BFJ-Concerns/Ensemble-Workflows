@@ -15,7 +15,7 @@ import {
   valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
-import type { WorkerScopes } from "../../src/worker-scopes.js";
+import type { ScopePlacement, WorkerScopes } from "../../src/worker-scopes.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
@@ -1339,6 +1339,86 @@ test("every claude process the control plane starts is launched through the scop
       assert.equal(entry.env?.[SANDBOXED_WORKSPACE_VARIABLE], "1");
     }
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a session is placed in its own scope once the roster names its pid, and placed again when the pid changes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+  const first = spawn("sleep", ["60"], { stdio: "ignore" });
+  const replacement = spawn("sleep", ["60"], { stdio: "ignore" });
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const pidPath = path.join(dir, "roster-pid");
+    const sessionId = "00000000-0000-4000-8000-00000000000b";
+    const name = "placement-probe";
+    // The roster carries no pid until the file names one: the row registers
+    // first and the supervisor reports the process a moment later.
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        import { readFile } from "node:fs/promises";
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          for await (const chunk of process.stdin) void chunk;
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          const pid = await readFile(${JSON.stringify(pidPath)}, "utf8").then((text) => Number(text.trim())).catch(() => null);
+          process.stdout.write(JSON.stringify([{
+            id: "placed-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working",
+            ...(pid === null ? {} : { pid })
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    const placed: { group: string; pids: number[] }[] = [];
+    const scopes: WorkerScopes = {
+      slice: "agents.slice",
+      async place(group, pids): Promise<ScopePlacement> {
+        placed.push({ group, pids: [...pids] });
+        return { kind: "placed", unit: `ensemble-test-${group}.scope`, pids };
+      },
+      async launch(file, args, options) {
+        return spawn(file, [...args], options);
+      },
+      async close() {}
+    };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 2_000,
+      placementSettleMs: 2_000,
+      scopes
+    });
+    // Name the pid only after dispatch has begun, so registration is seen without it first.
+    const naming = setTimeout(() => void writeFile(pidPath, `${first.pid}\n`), 300);
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    clearTimeout(naming);
+
+    assert.deepEqual(placed, [{ group: name, pids: [first.pid] }], "the session was not placed once its pid was named");
+    assert.deepEqual(controlPlane.placementOf(handle), { kind: "placed", unit: `ensemble-test-${name}.scope`, pids: [first.pid] });
+
+    // The same pid again places nothing more; a new pid is placed again.
+    await controlPlane.poll(handle);
+    assert.equal(placed.length, 1);
+    await writeFile(pidPath, `${replacement.pid}\n`);
+    const status = await controlPlane.poll(handle);
+    assert.equal(status.present, true);
+    assert.deepEqual(placed.at(-1), { group: name, pids: [replacement.pid] }, "the replacement pid was not placed");
+    assert.equal(placed.length, 2);
+  } finally {
+    first.kill("SIGKILL");
+    replacement.kill("SIGKILL");
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -149,6 +149,15 @@ one of them starts sits outside the box the launcher's slice draws. The
 process keeps its streams, environment, working directory and exit status.
 Without a reachable user manager the process is launched directly.
 
+Each Claude worker session is placed in a transient scope of its own, named
+for the dispatch, in the slice that holds the launcher: the daemon forks the
+session's process in its own cgroup, and the roster (`claude agents --json`)
+names that process by `pid` shortly after the session registers. Ensemble
+moves the process and its descendants the moment the pid appears, and moves a
+session the daemon restarts under a new pid at the next poll. Placement is
+best-effort: without a reachable user manager, or when the manager refuses,
+the session runs where the daemon started it.
+
 > [!WARNING]
 > Relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, not by pointing
 > `XDG_DATA_HOME` at another directory. Claude Code keeps its own data under

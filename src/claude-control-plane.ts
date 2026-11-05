@@ -7,7 +7,7 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
-import { NoWorkerScopes, type WorkerScopes } from "./worker-scopes.js";
+import { NoWorkerScopes, processTree, type ScopePlacement, type WorkerScopes } from "./worker-scopes.js";
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -202,15 +202,30 @@ export interface ClaudeCliControlPlaneOptions {
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
   /**
-   * Launches every `claude` and `tmux` process this control plane starts.
-   * Any of them can start the per-user supervisor, which then serves every
-   * Claude session on the machine and must not sit in the launcher's own
-   * box — a memory limit or an ending there would take them all — so the
-   * systemd manager runs each in a transient scope of its own, outside that
-   * box. Omitted, commands are launched directly, as on a machine without
-   * a systemd user manager.
+   * Places each dispatched session in a worker scope and launches every
+   * `claude` and `tmux` process this control plane starts.
+   *
+   * Placement: the supervisor forks the session's process, so it starts in
+   * the supervisor's cgroup, outside the launcher's box. The roster names
+   * that process by `pid` shortly after the session registers; the moment
+   * it does, the process and its live descendants are placed in a scope
+   * named for the dispatch (one scope per worker), and a session the
+   * supervisor restarts under a new pid is placed again at the next poll.
+   * Placement is best-effort: its outcome is kept per session
+   * (`placementOf`), and a refusal never fails the dispatch.
+   *
+   * Launch: any `claude` command can start the per-user supervisor, which
+   * then serves every Claude session on the machine and must not sit in
+   * the launcher's own box — a memory limit or an ending there would take
+   * them all — so the systemd manager runs each command in a transient
+   * scope of its own, outside that box.
+   *
+   * Omitted, nothing is placed and commands are launched directly, as on a
+   * machine without a systemd user manager.
    */
   scopes?: WorkerScopes;
+  /** How long after registration to wait for the roster to name the session's pid before leaving placement to the next poll. */
+  placementSettleMs?: number;
 }
 
 interface ExecResult {
@@ -236,6 +251,9 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
   #scopes: WorkerScopes;
+  #placementSettleMs: number;
+  /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
+  #placements = new Map<string, { pid: number; outcome: ScopePlacement }>();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -282,6 +300,12 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 10_000;
+  }
+
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle: ClaudeSessionHandle): ScopePlacement | null {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -333,9 +357,24 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
       const deadline = Date.now() + this.#dispatchTimeoutMs;
       for (;;) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
+        const found = await this.#findByName(options.name);
+        if (found !== null) {
+          registered = found.handle;
+          // Linux never moves memory already charged when a process
+          // changes cgroup, so the session is placed the moment the
+          // roster names its process. The row registers before it carries
+          // a pid (measured: about half a second before), so the wait
+          // continues, bounded, for the pid alone; past the bound the
+          // next poll places it.
+          const settled = Date.now() + this.#placementSettleMs;
+          let pid = found.pid;
+          while (pid === null && Date.now() < settled) {
+            await delay(100);
+            pid = (await this.#findByName(options.name))?.pid ?? null;
+          }
+          if (pid !== null) {
+            await this.#place(registered, pid);
+          }
           break;
         }
         if (Date.now() >= deadline) {
@@ -494,6 +533,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
+    // A session the supervisor restarted runs under a new pid, in the
+    // supervisor's cgroup again: place it again.
+    if (typeof record.pid === "number" && this.#placements.get(handle.sessionId)?.pid !== record.pid) {
+      await this.#place(handle, record.pid);
+    }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : undefined;
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
@@ -599,10 +643,23 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     }
   }
 
+  /**
+   * Place the session's process and its live descendants in the scope
+   * named for its dispatch. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle: ClaudeSessionHandle, pid: number): Promise<void> {
+    const outcome = await this.#scopes.place(handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+  }
+
   async stop(handle: ClaudeSessionHandle): Promise<void> {
     // Best-effort teardown; `stop`/`rm` can mishandle an already-exited session,
     // so failures are swallowed rather than allowed to mask the real result.
     await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
     // The session is over; anything still carrying its tag is a descendant
     // the daemon will never reap (they reparent to the user session, not to
     // the harness). Ownership means killing them here, not warning about them.
@@ -687,7 +744,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
 
-  async #findByName(name: string): Promise<ClaudeSessionHandle | null> {
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
+  async #findByName(name: string): Promise<{ handle: ClaudeSessionHandle; pid: number | null } | null> {
     const { rows } = await this.#roster();
     const match = rows.find(
       (row) => row.kind === "background" && row.name === name && typeof row.sessionId === "string"
@@ -699,10 +757,13 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     // daemon has not yet surfaced one.
     const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
     return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" ? match.pid : null
     };
   }
 
@@ -782,6 +843,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
 
 interface RosterRow {
   id?: unknown;
+  /** The session's own process while it lives (Claude Code 2.1.318); absent for the first moments after registration. */
+  pid?: unknown;
   name?: unknown;
   kind?: unknown;
   status?: unknown;

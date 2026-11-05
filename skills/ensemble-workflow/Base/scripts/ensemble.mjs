@@ -17354,6 +17354,9 @@ var SystemdWorkerScopes = class {
     return turn;
   }
   async #placeInTurn(group, requested) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
     const unit = this.unitFor(group);
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const pids = requested.filter(isLive);
@@ -17425,15 +17428,40 @@ var SystemdWorkerScopes = class {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
   }
+  /**
+   * The slice a launched command's scope goes in: the parent of the
+   * launcher's own slice, so the command — and a supervisor it starts —
+   * sits outside the box the launcher's slice draws, whether that box is
+   * the slice itself or a scope inside it. A launcher in `agents-run1.slice`
+   * launches into `agents.slice`; one in `agents.slice` or `app.slice`
+   * launches into the user manager's root slice. Null where the launcher's
+   * slice is unknown: the manager's default then applies.
+   */
+  get launchSlice() {
+    return this.slice === null ? null : parentSlice(this.slice);
+  }
   async launch(file, args, options) {
+    const slice = this.launchSlice;
     return spawn(
       this.#systemdRunBin,
-      ["--user", "--scope", "--quiet", "--collect", `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(), "--", file, ...args],
+      [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        ...slice !== null ? [`--slice=${slice}`] : [],
+        `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(),
+        "--",
+        file,
+        ...args
+      ],
       options
     );
   }
   async close() {
     this.#closed = true;
+    await Promise.all([...this.#groupTurns.values()]);
+    this.#groupTurns.clear();
     const units = [...this.#units.values()];
     this.#units.clear();
     await Promise.all(
@@ -17505,6 +17533,30 @@ function containingSlice(cgroupFile) {
   }
   return null;
 }
+function parentSlice(slice) {
+  const name = slice.slice(0, -".slice".length);
+  const dash = name.lastIndexOf("-");
+  return dash === -1 ? "-.slice" : `${name.slice(0, dash)}.slice`;
+}
+async function processTree(pid, procDir = "/proc") {
+  const seen = /* @__PURE__ */ new Set([pid]);
+  const queue = [pid];
+  while (queue.length > 0) {
+    const parent = queue.shift();
+    const taskDir = path10.join(procDir, String(parent), "task");
+    const tasks = await readdir4(taskDir).catch(() => []);
+    for (const task of tasks) {
+      const children = await readFile5(path10.join(taskDir, task, "children"), "utf8").catch(() => "");
+      for (const child of children.split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number)) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+  }
+  return [...seen];
+}
 function userManagerAnswers(busctlBin, env) {
   return new Promise((resolve) => {
     execFile3(
@@ -17545,6 +17597,9 @@ var ClaudeCliControlPlane = class {
   #valveSubmitSettleMs;
   #valveKillSettleMs;
   #scopes;
+  #placementSettleMs;
+  /** The pid each session was last placed under, and how that placement went; a changed roster pid is placed again. */
+  #placements = /* @__PURE__ */ new Map();
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17580,6 +17635,11 @@ var ClaudeCliControlPlane = class {
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
     this.#scopes = options.scopes ?? new NoWorkerScopes();
+    this.#placementSettleMs = options.placementSettleMs ?? 1e4;
+  }
+  /** How the session's process was last placed, or null before the roster has named a pid for it. */
+  placementOf(handle) {
+    return this.#placements.get(handle.sessionId)?.outcome ?? null;
   }
   async dispatch(options) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
@@ -17603,9 +17663,18 @@ var ClaudeCliControlPlane = class {
       }
       const deadline = Date.now() + this.#dispatchTimeoutMs;
       for (; ; ) {
-        const handle = await this.#findByName(options.name);
-        if (handle !== null) {
-          registered = handle;
+        const found = await this.#findByName(options.name);
+        if (found !== null) {
+          registered = found.handle;
+          const settled = Date.now() + this.#placementSettleMs;
+          let pid = found.pid;
+          while (pid === null && Date.now() < settled) {
+            await delay(100);
+            pid = (await this.#findByName(options.name))?.pid ?? null;
+          }
+          if (pid !== null) {
+            await this.#place(registered, pid);
+          }
           break;
         }
         if (Date.now() >= deadline) {
@@ -17709,6 +17778,9 @@ var ClaudeCliControlPlane = class {
     if (record === null) {
       return { status: "absent", state: "unknown", present: false };
     }
+    if (typeof record.pid === "number" && this.#placements.get(handle.sessionId)?.pid !== record.pid) {
+      await this.#place(handle, record.pid);
+    }
     const waitingFor = typeof record.waitingFor === "string" ? record.waitingFor : void 0;
     return {
       status: typeof record.status === "string" ? record.status : "unknown",
@@ -17784,8 +17856,20 @@ var ClaudeCliControlPlane = class {
       await rm4(socketDir, { recursive: true, force: true }).catch(() => void 0);
     }
   }
+  /**
+   * Place the session's process and its live descendants in the scope
+   * named for its dispatch. The tree, not the pid alone: helpers the
+   * session forked before this moment (MCP servers, shells) would
+   * otherwise stay in the supervisor's cgroup. Best-effort — the outcome
+   * is recorded, never thrown.
+   */
+  async #place(handle, pid) {
+    const outcome = await this.#scopes.place(handle.name, await processTree(pid, this.#procDir));
+    this.#placements.set(handle.sessionId, { pid, outcome });
+  }
   async stop(handle) {
     await this.#run(this.#claudeBin, ["stop", handle.id]);
+    this.#placements.delete(handle.sessionId);
     await this.#reapTaggedDescendants(handle.name);
     await this.#run(this.#claudeBin, ["rm", handle.id]);
     const settingsDir = this.#settingsDirs.get(handle.sessionId);
@@ -17854,6 +17938,7 @@ var ClaudeCliControlPlane = class {
   async tmuxAvailable() {
     return (await this.#run(this.#tmuxBin, ["-V"])).ok;
   }
+  /** The roster's row for a dispatch, as a handle plus the pid the row names (null until the supervisor reports one). */
   async #findByName(name) {
     const { rows } = await this.#roster();
     const match = rows.find(
@@ -17864,10 +17949,13 @@ var ClaudeCliControlPlane = class {
     }
     const id = typeof match.id === "string" && match.id.length > 0 ? match.id : match.sessionId;
     return {
-      id,
-      sessionId: match.sessionId,
-      name,
-      cwd: typeof match.cwd === "string" ? match.cwd : ""
+      handle: {
+        id,
+        sessionId: match.sessionId,
+        name,
+        cwd: typeof match.cwd === "string" ? match.cwd : ""
+      },
+      pid: typeof match.pid === "number" ? match.pid : null
     };
   }
   // `ok: false` means the query could not be performed (process error, empty or

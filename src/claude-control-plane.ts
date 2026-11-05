@@ -189,7 +189,7 @@ export interface ClaudeCliControlPlaneOptions {
    * the resolved value, or the flag's precedence is silently lost here.
    */
   holdScope?: string | null;
-  /** Defaults to `~/.claude/projects`. */
+  /** Where Claude Code keeps session transcripts. Defaults to `projects` under `CLAUDE_CONFIG_DIR`, else `~/.claude/projects`. */
   projectsDir?: string;
   /** How long to wait for a dispatched session to register in the roster. */
   dispatchTimeoutMs?: number;
@@ -291,7 +291,11 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path.join(homedir(), ".claude", "projects");
+    // Claude Code keeps everything under CLAUDE_CONFIG_DIR when it is set —
+    // transcripts included — and a daemon started under one serves sessions
+    // whose transcripts land there, not under the home directory.
+    this.#projectsDir =
+      options.projectsDir ?? path.join(process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude"), "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 30_000;
     this.#reapGraceMs = options.reapGraceMs ?? 5_000;
     this.#procDir = options.procDir ?? "/proc";

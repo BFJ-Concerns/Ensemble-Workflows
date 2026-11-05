@@ -17626,7 +17626,7 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path11.join(homedir3(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path11.join(process.env.CLAUDE_CONFIG_DIR || path11.join(homedir3(), ".claude"), "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";

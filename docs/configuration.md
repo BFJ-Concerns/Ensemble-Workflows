@@ -138,6 +138,16 @@ therefore resolves those settings from the machine configuration and the
 defaults. The hold scope is the exception: it is passed to the worker session
 through the settings file, so nested invocations still share it.
 
+For the same reason the daemon must not live in the launcher's own cgroup: a
+memory limit or an ending there would take every Claude session on the
+machine with it. Where a systemd user manager is reachable, Ensemble runs
+each `claude` (and `tmux`) process it launches in a transient scope of its
+own, under the user manager's default slice (`systemd-run --user --scope`),
+so a daemon one of them starts stays outside whatever scope or slice holds the
+launcher. The process keeps its streams, environment, working directory and
+exit status. Without a reachable user manager the process is launched
+directly.
+
 > [!WARNING]
 > Relocate the run record with `ENSEMBLE_RUN_RECORD_DIR`, not by pointing
 > `XDG_DATA_HOME` at another directory. Claude Code keeps its own data under

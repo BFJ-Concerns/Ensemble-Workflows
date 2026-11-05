@@ -1,4 +1,3 @@
-import { execFile, spawn } from "node:child_process";
 import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, hostname, tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +7,7 @@ import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "./errors.js
 import { HOLD_SCOPE_ENV, resolveHoldScope } from "./holds.js";
 import { captureProcessOwner, judgeOwnerGone } from "./process-owner-evidence.js";
 import { boundedEvidence } from "./operator-diagnosis.js";
+import { NoWorkerScopes, type WorkerScopes } from "./worker-scopes.js";
 
 /**
  * Per-dispatch ownership tag. The variable rides the same settings-file `env`
@@ -201,6 +201,16 @@ export interface ClaudeCliControlPlaneOptions {
   valveAttachSettleMs?: number;
   valveSubmitSettleMs?: number;
   valveKillSettleMs?: number;
+  /**
+   * Launches every `claude` and `tmux` process this control plane starts.
+   * Any of them can start the per-user supervisor, which then serves every
+   * Claude session on the machine and must not sit in the launcher's own
+   * box — a memory limit or an ending there would take them all — so the
+   * systemd manager runs each in a transient scope of its own, outside that
+   * box. Omitted, commands are launched directly, as on a machine without
+   * a systemd user manager.
+   */
+  scopes?: WorkerScopes;
 }
 
 interface ExecResult {
@@ -225,6 +235,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   #valveAttachSettleMs: number;
   #valveSubmitSettleMs: number;
   #valveKillSettleMs: number;
+  #scopes: WorkerScopes;
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -270,6 +281,7 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1_000;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2_000;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
   }
 
   async dispatch(options: ClaudeDispatchOptions): Promise<ClaudeSessionHandle> {
@@ -715,25 +727,27 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
   }
 
   #run(file: string, args: string[], cwd?: string): Promise<ExecResult> {
-    return new Promise<ExecResult>((resolve) => {
-      execFile(
-        file,
-        args,
-        { ...(cwd !== undefined ? { cwd } : {}), maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
+    return this.#launch(file, args, null, cwd);
   }
 
   #runWithInput(file: string, args: string[], input: string, cwd?: string): Promise<ExecResult> {
+    return this.#launch(file, args, input, cwd);
+  }
+
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file: string, args: string[], input: string | null, cwd?: string): Promise<ExecResult> {
+    const child = await this.#scopes.launch(file, args, {
+      ...(cwd !== undefined ? { cwd } : {}),
+      env: this.#env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
     return new Promise<ExecResult>((resolve) => {
-      const child = spawn(file, args, {
-        ...(cwd !== undefined ? { cwd } : {}),
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       let settled = false;
@@ -744,8 +758,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
         }
       };
 
-      child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-      child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      child.stdout?.on("data", (chunk: Buffer) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
       child.on("error", (error) => {
         finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
       });
@@ -760,8 +774,8 @@ export class ClaudeCliControlPlane implements ClaudeControlPlane {
       // A child that rejects input may close stdin before this write completes.
       // Its exit status/stderr above is the useful dispatch error; suppress the
       // stream's secondary EPIPE so it cannot become an unhandled exception.
-      child.stdin.on("error", () => undefined);
-      child.stdin.end(input);
+      child.stdin?.on("error", () => undefined);
+      child.stdin?.end(input ?? undefined);
     });
   }
 }

@@ -3242,8 +3242,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path15) {
-      let input = path15;
+    function removeDotSegments(path16) {
+      let input = path16;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3495,8 +3495,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path15, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path15 && path15 !== "/" ? path15 : void 0;
+        const [path16, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path16 && path16 !== "/" ? path16 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -13834,13 +13834,13 @@ var require_acorn_globals = __commonJS({
 
 // src/cli/ensemble.ts
 import { realpathSync } from "node:fs";
-import path14 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 
 // src/cli.ts
-import { readFile as readFile9, stat as stat4 } from "node:fs/promises";
+import { readFile as readFile10, stat as stat4 } from "node:fs/promises";
 import { hostname as hostname4 } from "node:os";
-import path13 from "node:path";
+import path14 from "node:path";
 import { parseArgs } from "node:util";
 
 // src/ambient-settings.ts
@@ -17309,10 +17309,225 @@ function claudeApiErrorOf(diagnostics) {
 }
 
 // src/claude-control-plane.ts
-import { execFile as execFile3, spawn } from "node:child_process";
-import { access, mkdtemp, readFile as readFile5, readdir as readdir4, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { access, mkdtemp, readFile as readFile6, readdir as readdir5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir3, hostname as hostname3, tmpdir } from "node:os";
+import path11 from "node:path";
+
+// src/worker-scopes.ts
+import { execFile as execFile3, spawn } from "node:child_process";
+import { readFile as readFile5, readdir as readdir4 } from "node:fs/promises";
 import path10 from "node:path";
+var SystemdWorkerScopes = class {
+  slice;
+  #label;
+  #busctlBin;
+  #systemdRunBin;
+  #systemctlBin;
+  #env;
+  #procDir;
+  #moveTimeoutMs;
+  /** Units this manager created, by group: the set `close()` stops. */
+  #units = /* @__PURE__ */ new Map();
+  /** One placement at a time per group, so concurrent first placements create one scope rather than race for the name. */
+  #groupTurns = /* @__PURE__ */ new Map();
+  #closed = false;
+  constructor(options = {}) {
+    this.slice = options.slice ?? null;
+    this.#label = options.label ?? String(process.pid);
+    this.#busctlBin = options.busctlBin ?? "busctl";
+    this.#systemdRunBin = options.systemdRunBin ?? "systemd-run";
+    this.#systemctlBin = options.systemctlBin ?? "systemctl";
+    this.#env = options.env ?? process.env;
+    this.#procDir = options.procDir ?? "/proc";
+    this.#moveTimeoutMs = options.moveTimeoutMs ?? 5e3;
+  }
+  /** The unit a group's processes are placed in: `ensemble-<label>-<group>.scope`, the group made unit-name safe. */
+  unitFor(group) {
+    return `ensemble-${unitSafe(this.#label)}-${unitSafe(group)}.scope`;
+  }
+  async place(group, pids) {
+    if (this.#closed) {
+      return { kind: "refused", reason: "the scope manager is closed" };
+    }
+    const turn = (this.#groupTurns.get(group) ?? Promise.resolve()).then(() => this.#placeInTurn(group, pids));
+    this.#groupTurns.set(group, turn.catch(() => void 0));
+    return turn;
+  }
+  async #placeInTurn(group, requested) {
+    const unit = this.unitFor(group);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const pids = requested.filter(isLive);
+      if (pids.length === 0) {
+        return { kind: "refused", reason: "every process to place had already exited" };
+      }
+      const outcome = this.#units.has(group) ? await this.#attach(unit, pids, true) : await this.#start(unit, pids, true);
+      if (outcome === null) {
+        this.#units.set(group, unit);
+        if (!await this.#moved(unit, pids)) {
+          return { kind: "refused", reason: `the manager accepted ${unit} but its processes had not moved within ${this.#moveTimeoutMs}ms` };
+        }
+        return { kind: "placed", unit, pids };
+      }
+      if (/No such process/.test(outcome)) {
+        continue;
+      }
+      return { kind: "refused", reason: outcome };
+    }
+    return { kind: "refused", reason: "the processes to place exited while being placed" };
+  }
+  /**
+   * Create the group's scope around these processes. A unit of that name
+   * already loaded — a leftover of an earlier launcher with this label, or
+   * a concurrent creation — is joined instead. Null on success; otherwise
+   * the manager's refusal. Each route falls back to the other once: the
+   * unit's state can change between the two calls, and a second flip is
+   * reported rather than chased.
+   */
+  async #start(unit, pids, joinExisting) {
+    const properties = [
+      ["PIDs", "au", String(pids.length), ...pids.map(String)],
+      ["Delegate", "b", "true"],
+      ...this.slice !== null ? [["Slice", "s", this.slice]] : []
+    ];
+    const started = await this.#manager("StartTransientUnit", "ssa(sv)a(sa(sv))", [
+      unit,
+      "fail",
+      String(properties.length),
+      ...properties.flat(),
+      "0"
+    ]);
+    if (started === null || !joinExisting || !/already loaded/.test(started)) {
+      return started;
+    }
+    return this.#attach(unit, pids, false);
+  }
+  /** Add processes to the group's existing scope; a scope that ended with its last process is created again. */
+  async #attach(unit, pids, recreateGone) {
+    const attached = await this.#manager("AttachProcessesToUnit", "ssau", [unit, "/", String(pids.length), ...pids.map(String)]);
+    if (attached === null || !recreateGone || !/not loaded/.test(attached)) {
+      return attached;
+    }
+    return this.#start(unit, pids, false);
+  }
+  /** Whether every listed process that is still alive sits in the unit, waited for up to the move timeout. */
+  async #moved(unit, pids) {
+    const deadline = Date.now() + this.#moveTimeoutMs;
+    for (; ; ) {
+      const lines = await Promise.all(
+        pids.map((pid) => readFile5(path10.join(this.#procDir, String(pid), "cgroup"), "utf8").catch(() => null))
+      );
+      if (lines.every((line) => line === null || line.trimEnd().endsWith(`/${unit}`))) {
+        return true;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  async launch(file, args, options) {
+    return spawn(
+      this.#systemdRunBin,
+      ["--user", "--scope", "--quiet", "--collect", `--description=ensemble: ${file} ${args[0] ?? ""}`.trimEnd(), "--", file, ...args],
+      options
+    );
+  }
+  async close() {
+    this.#closed = true;
+    const units = [...this.#units.values()];
+    this.#units.clear();
+    await Promise.all(
+      units.map(
+        (unit) => new Promise((resolve) => {
+          execFile3(this.#systemctlBin, ["--user", "stop", "--no-block", unit], { env: this.#env }, () => resolve());
+        })
+      )
+    );
+  }
+  /** One call on the manager object. Null when it succeeded; otherwise the bounded text of its refusal. */
+  #manager(method, signature, args) {
+    return new Promise((resolve) => {
+      execFile3(
+        this.#busctlBin,
+        [
+          "--user",
+          "call",
+          "org.freedesktop.systemd1",
+          "/org/freedesktop/systemd1",
+          "org.freedesktop.systemd1.Manager",
+          method,
+          signature,
+          ...args
+        ],
+        { env: this.#env },
+        (error, _stdout, stderr) => {
+          resolve(error === null ? null : boundedEvidence(stderr.trim() || error.message));
+        }
+      );
+    });
+  }
+};
+var NoWorkerScopes = class {
+  slice = null;
+  async place() {
+    return { kind: "unavailable" };
+  }
+  async launch(file, args, options) {
+    return spawn(file, [...args], options);
+  }
+  async close() {
+  }
+};
+async function createWorkerScopes(options = {}) {
+  const { procDir = "/proc", ...systemd } = options;
+  const env = systemd.env ?? process.env;
+  if (!await userManagerAnswers(systemd.busctlBin ?? "busctl", env)) {
+    return new NoWorkerScopes();
+  }
+  const cgroup = await readFile5(path10.join(procDir, "self", "cgroup"), "utf8").catch(() => "");
+  return new SystemdWorkerScopes({ ...systemd, slice: containingSlice(cgroup) });
+}
+function containingSlice(cgroupFile) {
+  const line = cgroupFile.split("\n").find((entry) => entry.startsWith("0::"));
+  if (line === void 0) {
+    return null;
+  }
+  const segments = line.slice("0::".length).split("/").filter((segment) => segment.length > 0);
+  const userManager = segments.findIndex((segment) => /^user@\d+\.service$/.test(segment));
+  if (userManager === -1) {
+    return null;
+  }
+  for (let index = segments.length - 1; index > userManager; index -= 1) {
+    const segment = segments[index];
+    if (segment.endsWith(".slice")) {
+      return segment;
+    }
+  }
+  return null;
+}
+function userManagerAnswers(busctlBin, env) {
+  return new Promise((resolve) => {
+    execFile3(
+      busctlBin,
+      ["--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.DBus.Peer", "Ping"],
+      { env, timeout: 5e3 },
+      (error) => resolve(error === null)
+    );
+  });
+}
+function isLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function unitSafe(text) {
+  return text.replace(/[^A-Za-z0-9:_.-]/g, "_").slice(0, 64);
+}
+
+// src/claude-control-plane.ts
 var WORKER_MARKER_VARIABLE = "ENSEMBLE_CLAUDE_WORKER";
 var SETTINGS_DIR_PREFIX = "ensemble-claude-env-";
 var VALVE_DIR_PREFIX = "ensemble-claude-valve-";
@@ -17329,6 +17544,7 @@ var ClaudeCliControlPlane = class {
   #valveAttachSettleMs;
   #valveSubmitSettleMs;
   #valveKillSettleMs;
+  #scopes;
   #valveCounter = 0;
   /**
    * Where each valve's socket directory is made: where tmux keeps its own
@@ -17355,7 +17571,7 @@ var ClaudeCliControlPlane = class {
       ...this.#workerEnv,
       [SANDBOXED_WORKSPACE_VARIABLE]: "1"
     };
-    this.#projectsDir = options.projectsDir ?? path10.join(homedir3(), ".claude", "projects");
+    this.#projectsDir = options.projectsDir ?? path11.join(homedir3(), ".claude", "projects");
     this.#dispatchTimeoutMs = options.dispatchTimeoutMs ?? 3e4;
     this.#reapGraceMs = options.reapGraceMs ?? 5e3;
     this.#procDir = options.procDir ?? "/proc";
@@ -17363,6 +17579,7 @@ var ClaudeCliControlPlane = class {
     this.#valveSubmitSettleMs = options.valveSubmitSettleMs ?? 1e3;
     this.#valveKillSettleMs = options.valveKillSettleMs ?? 2e3;
     this.#valveSocketRoot = process.env.TMUX_TMPDIR || "/tmp";
+    this.#scopes = options.scopes ?? new NoWorkerScopes();
   }
   async dispatch(options) {
     const args = ["--bg", "--name", options.name, "--dangerously-skip-permissions"];
@@ -17375,7 +17592,7 @@ var ClaudeCliControlPlane = class {
     this.#orphanSweep ??= this.#sweepOrphanedSettingsDirs();
     await this.#orphanSweep;
     const settingsDir = await this.#writeWorkerSettings(options.name, options.permissionDenyRules, options.cacheTtl);
-    args.push("--settings", path10.join(settingsDir, "settings.json"));
+    args.push("--settings", path11.join(settingsDir, "settings.json"));
     let registered = null;
     try {
       const dispatch = await this.#runWithInput(this.#claudeBin, args, options.prompt, options.cwd);
@@ -17431,10 +17648,10 @@ var ClaudeCliControlPlane = class {
     const settings = permissionDenyRules !== void 0 && permissionDenyRules.length > 0 ? { env, permissions: { deny: permissionDenyRules } } : { env };
     const owner = `${JSON.stringify(await captureProcessOwner(this.#procDir, hostname3()))}
 `;
-    const dir = await mkdtemp(path10.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
+    const dir = await mkdtemp(path11.join(tmpdir(), `${SETTINGS_DIR_PREFIX}${dispatchName}-`));
     try {
-      await writeFile5(path10.join(dir, OWNER_FILENAME), owner, { mode: 384 });
-      await writeFile5(path10.join(dir, "settings.json"), `${JSON.stringify(settings)}
+      await writeFile5(path11.join(dir, OWNER_FILENAME), owner, { mode: 384 });
+      await writeFile5(path11.join(dir, "settings.json"), `${JSON.stringify(settings)}
 `, {
         mode: 384
       });
@@ -17467,15 +17684,15 @@ var ClaudeCliControlPlane = class {
    */
   async #sweepOrphanedSettingsDirs() {
     const root = tmpdir();
-    const entries = await readdir4(root, { withFileTypes: true }).catch(() => []);
+    const entries = await readdir5(root, { withFileTypes: true }).catch(() => []);
     const host = hostname3();
     for (const entry of entries) {
       if (!entry.isDirectory() || !entry.name.startsWith(SETTINGS_DIR_PREFIX)) {
         continue;
       }
-      const dir = path10.join(root, entry.name);
+      const dir = path11.join(root, entry.name);
       try {
-        const owner = JSON.parse(await readFile5(path10.join(dir, OWNER_FILENAME), "utf8"));
+        const owner = JSON.parse(await readFile6(path11.join(dir, OWNER_FILENAME), "utf8"));
         if (owner !== null && typeof owner === "object" && await judgeOwnerGone(owner, this.#procDir, host) !== null) {
           await this.#removeSettingsDir(dir);
         }
@@ -17504,13 +17721,13 @@ var ClaudeCliControlPlane = class {
     const filename = `${handle.sessionId}.jsonl`;
     let projectDirs;
     try {
-      const entries = await readdir4(this.#projectsDir, { withFileTypes: true });
+      const entries = await readdir5(this.#projectsDir, { withFileTypes: true });
       projectDirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     } catch {
       return null;
     }
     for (const dir of projectDirs) {
-      const candidate = path10.join(this.#projectsDir, dir, filename);
+      const candidate = path11.join(this.#projectsDir, dir, filename);
       try {
         await access(candidate);
         return candidate;
@@ -17527,12 +17744,12 @@ var ClaudeCliControlPlane = class {
     const valve = `ensemble-valve-${handle.id}-${this.#valveCounter}`;
     let socketDir;
     try {
-      socketDir = await mkdtemp(path10.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
+      socketDir = await mkdtemp(path11.join(this.#valveSocketRoot, VALVE_DIR_PREFIX));
     } catch (error) {
       const said = error instanceof Error ? error.message : String(error);
       return { delivered: false, reason: `valve socket directory failed: ${boundedEvidence(said)}` };
     }
-    const server = ["-S", path10.join(socketDir, "tmux.sock")];
+    const server = ["-S", path11.join(socketDir, "tmux.sock")];
     try {
       const created = await this.#run(this.#tmuxBin, [
         ...server,
@@ -17609,7 +17826,7 @@ var ClaudeCliControlPlane = class {
     const needle = `${WORKER_MARKER_VARIABLE}=${dispatchName}`;
     let entries;
     try {
-      entries = await readdir4(this.#procDir);
+      entries = await readdir5(this.#procDir);
     } catch {
       return [];
     }
@@ -17624,7 +17841,7 @@ var ClaudeCliControlPlane = class {
       }
       let environ;
       try {
-        environ = await readFile5(path10.join(this.#procDir, entry, "environ"), "utf8");
+        environ = await readFile6(path11.join(this.#procDir, entry, "environ"), "utf8");
       } catch {
         continue;
       }
@@ -17673,24 +17890,25 @@ var ClaudeCliControlPlane = class {
     return { ok: true, rows: parsed.filter((row) => typeof row === "object" && row !== null) };
   }
   #run(file, args, cwd) {
-    return new Promise((resolve) => {
-      execFile3(
-        file,
-        args,
-        { ...cwd !== void 0 ? { cwd } : {}, maxBuffer: 32 * 1024 * 1024, env: this.#env },
-        (error, stdout, stderr) => {
-          resolve({ ok: error === null, stdout, stderr });
-        }
-      );
-    });
+    return this.#launch(file, args, null, cwd);
   }
   #runWithInput(file, args, input, cwd) {
+    return this.#launch(file, args, input, cwd);
+  }
+  /**
+   * The one route every control-plane child takes: launched by the scope
+   * manager (outside the launcher's box, where a systemd user manager is
+   * reachable), under the spread `#env`, with its output collected and its
+   * exit status read as the verdict. `input` is streamed to stdin and the
+   * stream then closed; null closes it at once.
+   */
+  async #launch(file, args, input, cwd) {
+    const child = await this.#scopes.launch(file, args, {
+      ...cwd !== void 0 ? { cwd } : {},
+      env: this.#env,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
     return new Promise((resolve) => {
-      const child = spawn(file, args, {
-        ...cwd !== void 0 ? { cwd } : {},
-        env: this.#env,
-        stdio: ["pipe", "pipe", "pipe"]
-      });
       const stdout = [];
       const stderr = [];
       let settled = false;
@@ -17700,8 +17918,8 @@ var ClaudeCliControlPlane = class {
           resolve(result);
         }
       };
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
+      child.stdout?.on("data", (chunk) => stdout.push(chunk));
+      child.stderr?.on("data", (chunk) => stderr.push(chunk));
       child.on("error", (error) => {
         finish({ ok: false, stdout: Buffer.concat(stdout).toString(), stderr: error.message });
       });
@@ -17712,8 +17930,8 @@ var ClaudeCliControlPlane = class {
           stderr: Buffer.concat(stderr).toString()
         });
       });
-      child.stdin.on("error", () => void 0);
-      child.stdin.end(input);
+      child.stdin?.on("error", () => void 0);
+      child.stdin?.end(input ?? void 0);
     });
   }
 };
@@ -17760,7 +17978,7 @@ function delay(ms) {
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/claude-transcript.ts
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 function parseTranscriptText(text) {
   const entries = [];
   for (const line of text.split("\n")) {
@@ -17774,14 +17992,14 @@ function parseTranscriptText(text) {
   }
   return entries;
 }
-async function readTranscriptFile(path15) {
+async function readTranscriptFile(path16) {
   let text;
   try {
-    text = await readFile6(path15, "utf8");
+    text = await readFile7(path16, "utf8");
   } catch (error) {
-    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path15}`, { cause: error });
+    throw new ClaudeTranscriptError(`could not read Claude transcript at ${path16}`, { cause: error });
   }
-  return { path: path15, text, entries: parseTranscriptText(text) };
+  return { path: path16, text, entries: parseTranscriptText(text) };
 }
 function finalAssistantText(entries, fromIndex = 0) {
   for (let index = entries.length - 1; index >= Math.max(0, fromIndex); index -= 1) {
@@ -18540,11 +18758,11 @@ var ClaudeEngineInvocation = class {
     };
   }
   async #readTranscript(handle) {
-    const path15 = await this.#controlPlane.transcriptPath(handle);
-    if (path15 === null) {
+    const path16 = await this.#controlPlane.transcriptPath(handle);
+    if (path16 === null) {
       throw new ClaudeTranscriptError(`no transcript found for session ${handle.sessionId}`);
     }
-    return readTranscriptFile(path15);
+    return readTranscriptFile(path16);
   }
   /** Like #readTranscript, but a not-yet-present transcript is `null` (still working), not an error. */
   async #tryReadTranscript(handle) {
@@ -20951,14 +21169,14 @@ function assertCompilableSchema(schema) {
 }
 function findLocalReferenceCycle(schema) {
   const seenObjects = /* @__PURE__ */ new Set();
-  const visit = (value, path15) => {
+  const visit = (value, path16) => {
     if (typeof value !== "object" || value === null || seenObjects.has(value)) return null;
     seenObjects.add(value);
     const object = value;
     if (typeof object.$ref === "string") {
-      const seenRefs = /* @__PURE__ */ new Set([path15]);
+      const seenRefs = /* @__PURE__ */ new Set([path16]);
       let current2 = object;
-      let currentPath = path15;
+      let currentPath = path16;
       while (typeof current2.$ref === "string") {
         const targetPath = current2.$ref;
         const target = localPointerTarget(schema, targetPath);
@@ -20970,7 +21188,7 @@ function findLocalReferenceCycle(schema) {
       }
     }
     for (const [key, child] of Object.entries(object)) {
-      const cycle = visit(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      const cycle = visit(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
       if (cycle !== null) return cycle;
     }
     return null;
@@ -20995,14 +21213,14 @@ function normaliseForCodexOutputSchema(schema) {
 function assertAcyclicSchemaObject(schema) {
   const active = /* @__PURE__ */ new Map();
   const visited = /* @__PURE__ */ new Set();
-  const walk = (value, path15) => {
+  const walk = (value, path16) => {
     if (typeof value !== "object" || value === null) return;
     const firstSeenAt = active.get(value);
-    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path15, firstSeenAt);
+    if (firstSeenAt !== void 0) throw new CyclicAgentSchemaError(path16, firstSeenAt);
     if (visited.has(value)) return;
-    active.set(value, path15);
+    active.set(value, path16);
     for (const [key, child] of Object.entries(value)) {
-      walk(child, `${path15}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
+      walk(child, `${path16}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`);
     }
     active.delete(value);
     visited.add(value);
@@ -21263,10 +21481,13 @@ function classifyDescendants(source, region) {
 // src/engines.ts
 var EngineRegistry = class {
   #engines = /* @__PURE__ */ new Map();
-  constructor(engines) {
+  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  #shared;
+  constructor(engines, shared = []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
+    this.#shared = shared;
   }
   get(name) {
     return this.#engines.get(name);
@@ -21276,6 +21497,7 @@ var EngineRegistry = class {
   }
   async close() {
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
     const failures = results.filter((result) => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0].reason;
@@ -21639,6 +21861,8 @@ var OpenCodeEngineAdapter = class {
   }
 };
 async function createDefaultEngineRegistry(options) {
+  const ownsScopes = options.workerScopes === void 0;
+  const workerScopes = options.workerScopes ?? await createWorkerScopes();
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -21651,31 +21875,35 @@ async function createDefaultEngineRegistry(options) {
     clientVersion: options.clientVersion,
     onEvent: options.onEvent
   });
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      controlPlane: new ClaudeCliControlPlane({
-        ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
-        ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {}
+  return new EngineRegistry(
+    [
+      new CodexEngineAdapter({
+        transport,
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
-      ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
-      ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
-      ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
-      ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
+      new ClaudeEngineAdapter({
+        cwd: options.cwd,
+        controlPlane: new ClaudeCliControlPlane({
+          ...options.workerEnvironment?.claude !== void 0 ? { workerEnv: options.workerEnvironment.claude } : {},
+          ...options.holdScope !== void 0 ? { holdScope: options.holdScope } : {},
+          scopes: workerScopes
+        }),
+        ...options.concurrencyCaps?.claude !== void 0 ? { concurrency: options.concurrencyCaps.claude } : {},
+        // Claude deliberately emits the same usage event shape as Codex. Keep the
+        // adapter sink labelled so accounting never has to infer engine from payload.
+        onEvent: options.onClaudeEvent
+      }),
+      new OpenCodeEngineAdapter({
+        cwd: options.cwd,
+        ...options.openCodeBin !== void 0 ? { bin: options.openCodeBin } : {},
+        ...options.workerEnvironment?.opencode !== void 0 ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) } : {},
+        ...options.concurrencyCaps?.opencode !== void 0 ? { concurrency: options.concurrencyCaps.opencode } : {},
+        ...options.openCodeModels !== void 0 ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {},
+        onEvent: options.onOpenCodeEvent
+      })
+    ],
+    ownsScopes ? [workerScopes] : []
+  );
 }
 async function openCodexThread(transport, options, cwd) {
   try {
@@ -23733,9 +23961,9 @@ function describeWorkerFailure(error) {
 // src/script-runner.ts
 import vm from "node:vm";
 import { createHash as createHash3 } from "node:crypto";
-import { readFile as readFile8 } from "node:fs/promises";
+import { readFile as readFile9 } from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
-import path12 from "node:path";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
 
 // node_modules/acorn/dist/acorn.mjs
@@ -29430,9 +29658,9 @@ var import_acorn_globals = __toESM(require_acorn_globals(), 1);
 
 // src/workflow-registry.ts
 import { constants } from "node:fs";
-import { access as access2, readdir as readdir5, readFile as readFile7 } from "node:fs/promises";
+import { access as access2, readdir as readdir6, readFile as readFile8 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import path11 from "node:path";
+import path12 from "node:path";
 var WorkflowResolutionError = class extends PreSpawnAuthorError {
 };
 var NestedWorkflowError = class extends WorkflowResolutionError {
@@ -29441,10 +29669,10 @@ var NestedWorkflowError = class extends WorkflowResolutionError {
   }
 };
 function defaultWorkflowRegistryDirs(cwd, env = process.env) {
-  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path11.join(homedir4(), ".local", "share");
+  const dataHome2 = env.XDG_DATA_HOME !== void 0 && env.XDG_DATA_HOME.length > 0 ? env.XDG_DATA_HOME : path12.join(homedir4(), ".local", "share");
   return {
-    project: path11.join(cwd, ".claude", "ensemble", "workflows"),
-    user: path11.join(dataHome2, "ensemble", "workflows")
+    project: path12.join(cwd, ".claude", "ensemble", "workflows"),
+    user: path12.join(dataHome2, "ensemble", "workflows")
   };
 }
 async function resolveWorkflowReference(nameOrRef, options) {
@@ -29454,7 +29682,7 @@ async function resolveWorkflowReference(nameOrRef, options) {
   if (typeof nameOrRef !== "object" || nameOrRef === null || typeof nameOrRef.scriptPath !== "string" || nameOrRef.scriptPath.trim().length === 0) {
     throw new WorkflowResolutionError("workflow() expects a workflow name string or { scriptPath: string }");
   }
-  const scriptPath = path11.resolve(options.cwd, nameOrRef.scriptPath);
+  const scriptPath = path12.resolve(options.cwd, nameOrRef.scriptPath);
   try {
     await access2(scriptPath, constants.R_OK);
   } catch (error) {
@@ -29511,7 +29739,7 @@ async function resolveWorkflowName(name, options) {
 async function listRegistryDir(dir, scope, readMeta) {
   let directoryEntries;
   try {
-    directoryEntries = await readdir5(dir, { withFileTypes: true });
+    directoryEntries = await readdir6(dir, { withFileTypes: true });
   } catch (error) {
     if (isMissingDirectory(error)) {
       return { entries: [], notes: [] };
@@ -29527,9 +29755,9 @@ async function listRegistryDir(dir, scope, readMeta) {
     if (!entry.isFile() || !isWorkflowScript(entry.name)) {
       continue;
     }
-    const scriptPath = path11.join(dir, entry.name);
+    const scriptPath = path12.join(dir, entry.name);
     try {
-      const source = await readFile7(scriptPath, "utf8");
+      const source = await readFile8(scriptPath, "utf8");
       const meta = savedWorkflowMeta(readMeta(source, scriptPath));
       if (meta === null) {
         notes.push({ scriptPath, message: "meta.name must be a string" });
@@ -29592,14 +29820,14 @@ function assertJsonSerialisable(value, label, pathRoot) {
     throw new WorkflowScriptError(`${label} must be a JSON value: JSON.stringify rejected it (${message})`);
   }
 }
-function findUnserialisable(value, path15, ancestors, honourToJson) {
+function findUnserialisable(value, path16, ancestors, honourToJson) {
   switch (typeof value) {
     case "function":
-      return `${path15} is a function`;
+      return `${path16} is a function`;
     case "symbol":
-      return `${path15} is a symbol`;
+      return `${path16} is a symbol`;
     case "bigint":
-      return `${path15} is a BigInt`;
+      return `${path16} is a BigInt`;
     case "object":
       break;
     default:
@@ -29610,16 +29838,16 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
   }
   const toJson = value.toJSON;
   if (honourToJson && typeof toJson === "function") {
-    return findUnserialisable(toJson.call(value), path15, ancestors, false);
+    return findUnserialisable(toJson.call(value), path16, ancestors, false);
   }
   if (ancestors.has(value)) {
-    return `${path15} closes a cycle`;
+    return `${path16} closes a cycle`;
   }
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
-        const offence = findUnserialisable(value[index], `${path15}[${index}]`, ancestors, true);
+        const offence = findUnserialisable(value[index], `${path16}[${index}]`, ancestors, true);
         if (offence !== null) {
           return offence;
         }
@@ -29627,7 +29855,7 @@ function findUnserialisable(value, path15, ancestors, honourToJson) {
       return null;
     }
     for (const [key, entry] of Object.entries(value)) {
-      const offence = findUnserialisable(entry, `${path15}.${key}`, ancestors, true);
+      const offence = findUnserialisable(entry, `${path16}.${key}`, ancestors, true);
       if (offence !== null) {
         return offence;
       }
@@ -29670,8 +29898,8 @@ async function runWorkflowScript(options) {
     // one registry choice, consulted at both load and dispatch.
     options.runtime.openCodeModelRegistry
   );
-  const resolvedFilename = path12.resolve(options.filename);
-  const cwd = options.cwd ?? path12.dirname(resolvedFilename);
+  const resolvedFilename = path13.resolve(options.filename);
+  const cwd = options.cwd ?? path13.dirname(resolvedFilename);
   const workflowDepth = options.workflowDepth ?? 0;
   const hooks = createWorkflowHooks({
     runtime: options.runtime,
@@ -30094,7 +30322,7 @@ function acornSyntaxErrorPosition(wrappedSource) {
 }
 async function readWorkflowScript(scriptPath) {
   try {
-    return await readFile8(scriptPath, "utf8");
+    return await readFile9(scriptPath, "utf8");
   } catch (error) {
     const code = error.code;
     const reason = code === "ENOENT" ? "no file exists at this path" : code === "EISDIR" ? "the path is a directory, not a script file" : code === "EACCES" ? "the file is not readable" : error instanceof Error ? error.message : String(error);
@@ -30961,7 +31189,7 @@ function workflowName(meta) {
 async function prepareRun(invocation, cwd) {
   if (invocation.kind === "agent") {
     if (invocation.agentOptions.cwd !== void 0) {
-      const requestedCwd = path13.resolve(cwd, invocation.agentOptions.cwd);
+      const requestedCwd = path14.resolve(cwd, invocation.agentOptions.cwd);
       let isDirectory2 = false;
       try {
         isDirectory2 = (await stat4(requestedCwd)).isDirectory();
@@ -30973,7 +31201,7 @@ async function prepareRun(invocation, cwd) {
       }
     }
     return {
-      workflowPath: path13.join(cwd, "<ensemble-agent>"),
+      workflowPath: path14.join(cwd, "<ensemble-agent>"),
       source: singleAgentWorkflowSource(invocation),
       runnerArgs: [],
       recordArgs: {
@@ -30985,7 +31213,7 @@ async function prepareRun(invocation, cwd) {
   if (invocation.scriptArg === void 0) {
     throw new Error("workflow invocation has no script path");
   }
-  const workflowPath = path13.resolve(cwd, invocation.scriptArg);
+  const workflowPath = path14.resolve(cwd, invocation.scriptArg);
   return {
     workflowPath,
     source: await readWorkflowScript(workflowPath),
@@ -31487,10 +31715,10 @@ async function parseJsonValue(value, cwd, flagName) {
     if (filename.length === 0) {
       throw new CliUsageError(`${flagName} @file requires a file path`);
     }
-    const filePath = path13.resolve(cwd, filename);
+    const filePath = path14.resolve(cwd, filename);
     sourceDescription = filePath;
     try {
-      source = await readFile9(filePath, "utf8");
+      source = await readFile10(filePath, "utf8");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new CliUsageError(`${flagName} could not read ${filePath}: ${message}`);
@@ -31725,7 +31953,7 @@ function programNameFor(scriptPath) {
   if (scriptPath === void 0 || scriptPath.length === 0) {
     return DEFAULT_PROGRAM_NAME;
   }
-  const file = path13.basename(scriptPath);
+  const file = path14.basename(scriptPath);
   return /\.(?:mjs|cjs|js)$/.test(file) ? `node ${file}` : file;
 }
 var USAGE_WIDTH = 80;
@@ -31831,7 +32059,7 @@ function isError(error) {
 }
 
 // src/cli/ensemble.ts
-var isMain = process.argv[1] !== void 0 && realpathSync(path14.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
+var isMain = process.argv[1] !== void 0 && realpathSync(path15.resolve(process.argv[1])) === fileURLToPath4(import.meta.url);
 function flushed(stream) {
   return new Promise((resolve) => {
     stream.write("", () => resolve());

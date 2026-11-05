@@ -15,6 +15,7 @@ import {
   valveSlices
 } from "../../src/claude-control-plane.js";
 import { ClaudeDispatchError, ClaudeRegistrationTimeoutError } from "../../src/errors.js";
+import type { WorkerScopes } from "../../src/worker-scopes.js";
 import { writeProcStat } from "../fixtures/proc-stat.js";
 import { hermeticEstateEnvironment } from "../integration/estate-process.js";
 
@@ -1272,3 +1273,72 @@ function restoreEnv(name: string, saved: string | undefined): void {
     process.env[name] = saved;
   }
 }
+
+test("every claude process the control plane starts is launched through the scope manager", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-claude-control-plane-"));
+  try {
+    const stubPath = path.join(dir, "claude-stub.mjs");
+    const sessionId = "00000000-0000-4000-8000-00000000000a";
+    const name = "scoped-launch-probe";
+    await writeFile(
+      stubPath,
+      `#!/usr/bin/env node
+        const args = process.argv.slice(2);
+        if (args[0] === "--bg") {
+          for await (const chunk of process.stdin) void chunk;
+          process.exit(0);
+        }
+        if (args[0] === "agents" && args[1] === "--json") {
+          process.stdout.write(JSON.stringify([{
+            id: "scoped-1",
+            sessionId: ${JSON.stringify(sessionId)},
+            name: ${JSON.stringify(name)},
+            kind: "background",
+            cwd: ${JSON.stringify(dir)},
+            status: "busy",
+            state: "working"
+          }]));
+        }
+        process.exit(0);
+      `
+    );
+    await chmod(stubPath, 0o755);
+
+    // A manager that records what it is asked to launch and then launches it
+    // itself: the control plane must never reach spawn directly, since the
+    // manager is what keeps a supervisor these commands may start outside
+    // the launcher's box.
+    const launched: { file: string; args: string[]; env: NodeJS.ProcessEnv | undefined }[] = [];
+    const scopes: WorkerScopes = {
+      slice: null,
+      async place() {
+        return { kind: "unavailable" as const };
+      },
+      async launch(file, args, options) {
+        launched.push({ file, args: [...args], env: options.env });
+        return spawn(file, [...args], options);
+      },
+      async close() {}
+    };
+    const controlPlane = new ClaudeCliControlPlane({
+      claudeBin: stubPath,
+      projectsDir: dir,
+      dispatchTimeoutMs: 1_000,
+      scopes
+    });
+    const handle = await controlPlane.dispatch({ prompt: "hello", name, cwd: dir });
+    await controlPlane.stop(handle);
+
+    const commands = launched.filter((entry) => entry.file === stubPath).map((entry) => entry.args.slice(0, 2).join(" "));
+    assert.ok(commands.includes("--bg --name"), `dispatch was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("agents --json"), `roster query was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("stop scoped-1"), `stop was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    assert.ok(commands.includes("rm scoped-1"), `rm was not launched through the scope manager: ${JSON.stringify(commands)}`);
+    // The narrowed environment the control plane composes is what the manager launches with.
+    for (const entry of launched) {
+      assert.equal(entry.env?.[SANDBOXED_WORKSPACE_VARIABLE], "1");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

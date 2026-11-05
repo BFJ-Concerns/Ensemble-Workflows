@@ -1,5 +1,6 @@
 import { LazyCodexAppServerTransport } from "./app-server.js";
 import { ClaudeCliControlPlane } from "./claude-control-plane.js";
+import { createWorkerScopes, type WorkerScopes } from "./worker-scopes.js";
 import { ClaudeEngineInvocation, claudeNativeEffort } from "./claude-engine.js";
 import { requireRegisteredOpenCodeModel } from "./engine-option-validation.js";
 import {
@@ -180,11 +181,14 @@ export interface EngineAdapter {
 
 export class EngineRegistry {
   #engines = new Map<EngineName, EngineAdapter>();
+  /** Resources the engines share and the registry therefore owns, closed after every engine has. */
+  #shared: readonly { close(): Promise<void> }[];
 
-  constructor(engines: EngineAdapter[]) {
+  constructor(engines: EngineAdapter[], shared: readonly { close(): Promise<void> }[] = []) {
     for (const engine of engines) {
       this.#engines.set(engine.name, engine);
     }
+    this.#shared = shared;
   }
 
   get(name: EngineName): EngineAdapter | undefined {
@@ -204,6 +208,10 @@ export class EngineRegistry {
     // synchronously-throwing close into a rejection, so one bad adapter
     // cannot stop the others from being closed at all.
     const results = await Promise.allSettled([...this.#engines.values()].map(async (engine) => engine.close()));
+    // Shared resources go after the engines that used them: a worker scope
+    // stopped while its engine is still tearing a worker down would end the
+    // worker under the engine's feet.
+    await Promise.allSettled(this.#shared.map(async (resource) => resource.close()));
     const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failures.length === 1) {
       throw failures[0]!.reason;
@@ -722,6 +730,13 @@ export interface CreateDefaultEngineRegistryOptions {
    * control plane resolves the scope its own environment names.
    */
   holdScope?: string | null;
+  /**
+   * The scope manager the engines place and launch processes through.
+   * Omitted, the machine's own is built here — the systemd one where a
+   * user manager answers, the fallback otherwise — and the registry owns
+   * its close.
+   */
+  workerScopes?: WorkerScopes;
   onEvent: (event: RuntimeEvent) => void;
   onClaudeEvent: (event: RuntimeEvent) => void;
   onOpenCodeEvent: (event: RuntimeEvent) => void;
@@ -730,9 +745,12 @@ export interface CreateDefaultEngineRegistryOptions {
 export async function createDefaultEngineRegistry(
   options: CreateDefaultEngineRegistryOptions
 ): Promise<EngineRegistry> {
-  // Lazy: constructing the registry performs no I/O. The app-server spawns
-  // when the first worker names Codex, so a run needs only the engines its
+  // The one I/O here is the scope manager's probe of the systemd user
+  // manager; the engines themselves stay lazy. The app-server spawns when
+  // the first worker names Codex, so a run needs only the engines its
   // script actually uses (no engine is privileged).
+  const ownsScopes = options.workerScopes === undefined;
+  const workerScopes = options.workerScopes ?? (await createWorkerScopes());
   const transport = new LazyCodexAppServerTransport({
     cwd: options.cwd,
     codexBin: options.codexBin,
@@ -748,33 +766,37 @@ export async function createDefaultEngineRegistry(
     onEvent: options.onEvent
   });
 
-  return new EngineRegistry([
-    new CodexEngineAdapter({
-      transport,
-      concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
-    }),
-    new ClaudeEngineAdapter({
-      cwd: options.cwd,
-      controlPlane: new ClaudeCliControlPlane({
-        ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
-        ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {})
+  return new EngineRegistry(
+    [
+      new CodexEngineAdapter({
+        transport,
+        concurrency: options.concurrencyCaps?.codex ?? defaultCodexConcurrency()
       }),
-      ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
-      // Claude deliberately emits the same usage event shape as Codex. Keep the
-      // adapter sink labelled so accounting never has to infer engine from payload.
-      onEvent: options.onClaudeEvent
-    }),
-    new OpenCodeEngineAdapter({
-      cwd: options.cwd,
-      ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
-      ...(options.workerEnvironment?.opencode !== undefined
-        ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
-        : {}),
-      ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
-      ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
-      onEvent: options.onOpenCodeEvent
-    })
-  ]);
+      new ClaudeEngineAdapter({
+        cwd: options.cwd,
+        controlPlane: new ClaudeCliControlPlane({
+          ...(options.workerEnvironment?.claude !== undefined ? { workerEnv: options.workerEnvironment.claude } : {}),
+          ...(options.holdScope !== undefined ? { holdScope: options.holdScope } : {}),
+          scopes: workerScopes
+        }),
+        ...(options.concurrencyCaps?.claude !== undefined ? { concurrency: options.concurrencyCaps.claude } : {}),
+        // Claude deliberately emits the same usage event shape as Codex. Keep the
+        // adapter sink labelled so accounting never has to infer engine from payload.
+        onEvent: options.onClaudeEvent
+      }),
+      new OpenCodeEngineAdapter({
+        cwd: options.cwd,
+        ...(options.openCodeBin !== undefined ? { bin: options.openCodeBin } : {}),
+        ...(options.workerEnvironment?.opencode !== undefined
+          ? { runner: new OpenCodeCliRunner(options.openCodeBin, { workerEnv: options.workerEnvironment.opencode }) }
+          : {}),
+        ...(options.concurrencyCaps?.opencode !== undefined ? { concurrency: options.concurrencyCaps.opencode } : {}),
+        ...(options.openCodeModels !== undefined ? { modelRegistry: createOpenCodeModelRegistry(options.openCodeModels) } : {}),
+        onEvent: options.onOpenCodeEvent
+      })
+    ],
+    ownsScopes ? [workerScopes] : []
+  );
 }
 
 /**

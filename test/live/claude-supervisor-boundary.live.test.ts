@@ -6,7 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { containingSlice, parentSlice } from "../../src/worker-scopes.js";
+import { ClaudeCliControlPlane, type ClaudeSessionHandle } from "../../src/claude-control-plane.js";
+import { SystemdWorkerScopes, containingSlice, parentSlice } from "../../src/worker-scopes.js";
 
 const execFileAsync = promisify(execFile);
 const isLive = process.env.ENSEMBLE_LIVE === "1";
@@ -116,6 +117,92 @@ test("the built launcher starts an owned supervisor outside its box and places i
   }
 });
 
+/**
+ * Replacement, measured on an owned supervisor through the control plane
+ * that places sessions. `claude respawn <id>` makes the supervisor restart a
+ * session: the row keeps its id and session id and names a new process,
+ * forked in the supervisor's own cgroup; the control plane's next poll must
+ * place that process in the session's scope. The control plane rather than
+ * the built launcher drives this leg because a respawn interrupts the
+ * session's turn and leaves it idle, so a launcher run could not carry a
+ * respawned worker to completion.
+ */
+test("a session the owned supervisor restarts under a new pid is placed again at the next poll", { skip: !isLive, timeout: 300_000 }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "ensemble-supervisor-replacement-"));
+  const configDir = path.join(root, "claude-config");
+  await mkdir(configDir, { mode: 0o700 });
+  await writeFile(path.join(configDir, ".claude.json"), `${JSON.stringify({ hasCompletedOnboarding: true })}\n`, { mode: 0o600 });
+  await writeFile(path.join(configDir, "settings.json"), `${JSON.stringify({ skipDangerousModePermissionPrompt: true })}\n`, { mode: 0o600 });
+  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_SANDBOXED: "1" };
+  const slice = containingSlice(await readFile("/proc/self/cgroup", "utf8"));
+  const operatorDaemon = await daemonPid(process.env);
+  const scopes = new SystemdWorkerScopes({ slice, label: `live-replacement-${process.pid}` });
+  // The control plane's own `claude` commands run under the owned configuration; transcripts land under it too.
+  const controlPlane = new ClaudeCliControlPlane({
+    workerEnv: { CLAUDE_CONFIG_DIR: configDir },
+    projectsDir: path.join(configDir, "projects"),
+    scopes
+  });
+  const observations: Record<string, unknown> = { slice, operatorDaemonBefore: operatorDaemon };
+  let handle: ClaudeSessionHandle | null = null;
+
+  try {
+    assert.equal(await daemonPid(env), null, "the private config directory already had a daemon");
+    handle = await controlPlane.dispatch({
+      prompt: "Reply with exactly the word done and nothing else.",
+      name: `ensemble-replacement-${process.pid}`,
+      cwd: root,
+      model: "haiku"
+    });
+    const first = controlPlane.placementOf(handle);
+    assert.ok(first !== null && first.kind === "placed", `the session was not placed at dispatch: ${JSON.stringify(first)}`);
+    const firstPid = first.pids[0]!;
+    const firstCgroup = cgroupPath(await readFile(`/proc/${firstPid}/cgroup`, "utf8"));
+    observations.first = { id: handle.id, sessionId: handle.sessionId, pid: firstPid, unit: first.unit, cgroup: firstCgroup };
+    assert.ok(firstCgroup.endsWith(`/${first.unit}`), `the session's process is not in its scope: ${firstCgroup}`);
+    const daemon = await daemonPid(env);
+    observations.ownedDaemon = daemon;
+    assert.ok(daemon !== null, "the control plane's claude commands did not start the owned daemon");
+
+    // The supervisor restarts the session: the same row, a new process.
+    await execFileAsync("claude", ["respawn", handle.id], { env });
+    const replaced = await waitForRow(env, handle.sessionId, (row) => typeof row.pid === "number" && row.pid !== firstPid, 30_000);
+    assert.ok(replaced !== null && typeof replaced.pid === "number", "the roster never named a new pid for the restarted session");
+    const replacedPid = replaced.pid;
+    assert.equal(replaced.id, handle.id, "the restarted session changed its id");
+    const beforePoll = cgroupPath(await readFile(`/proc/${replacedPid}/cgroup`, "utf8"));
+    observations.replacement = { pid: replacedPid, cgroupBeforePoll: beforePoll, firstPidLive: processLives(firstPid) };
+    assert.ok(
+      !beforePoll.endsWith(`/${first.unit}`),
+      `the supervisor started the new process already inside the worker scope, so re-placement has nothing to show: ${beforePoll}`
+    );
+
+    const status = await controlPlane.poll(handle);
+    assert.equal(status.present, true, "the restarted session is absent from the roster");
+    const again = controlPlane.placementOf(handle);
+    assert.ok(
+      again !== null && again.kind === "placed" && again.pids.includes(replacedPid),
+      `the new pid was not placed at the poll: ${JSON.stringify(again)}`
+    );
+    assert.equal(again.unit, first.unit, "the restarted session was placed in a different scope");
+    const afterPoll = cgroupPath(await readFile(`/proc/${replacedPid}/cgroup`, "utf8"));
+    observations.replacement = { ...(observations.replacement as object), cgroupAfterPoll: afterPoll, daemonAfter: await daemonPid(env) };
+    assert.ok(afterPoll.endsWith(`/${first.unit}`), `the new process is not in the session's scope after the poll: ${afterPoll}`);
+  } finally {
+    if (handle !== null) {
+      await controlPlane.stop(handle);
+    }
+    await scopes.close();
+    await execFileAsync("claude", ["daemon", "stop", "--any"], { env }).catch((error: Error) => {
+      observations.ownedDaemonStop = error.message.slice(0, 200);
+    });
+    observations.operatorDaemonAfter = await daemonPid(process.env);
+    t.diagnostic(JSON.stringify(observations));
+    await rm(root, { recursive: true, force: true });
+    assert.equal(observations.operatorDaemonAfter, operatorDaemon, "the operator's daemon changed during the journey");
+  }
+});
+
 function launchInBox(unit: string, slice: string | null, env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     "systemd-run",
@@ -191,7 +278,31 @@ async function waitForCgroup(pid: number, accept: (cgroup: string) => boolean, t
   return last !== null && accept(last) ? last : null;
 }
 
+/** Poll the owned roster until the session's row satisfies `accept`, or the time runs out. */
+async function waitForRow(env: NodeJS.ProcessEnv, sessionId: string, accept: (row: RosterRow) => boolean, timeoutMs: number): Promise<RosterRow | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { rows } = await roster(env);
+    const row = rows.find((entry) => entry.sessionId === sessionId);
+    if (row !== undefined && accept(row)) {
+      return row;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
+function processLives(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface RosterRow {
+  id?: unknown;
   kind?: unknown;
   name?: unknown;
   sessionId?: unknown;

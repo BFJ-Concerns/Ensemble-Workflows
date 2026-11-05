@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import { appendFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -597,6 +597,7 @@ export class RunRecordWriter {
   #sealed = false;
   #currentAttempts = new Map<number, { attempt: number; started_at: string; transcript: string | null }>();
   #liveCodex = new Map<string, string>();
+  #liveCodexHashes = new Map<string, { hash: Hash; size: number }>();
 
   private constructor(archiveDir: string, cwd: string, manifest: Manifest) {
     this.archiveDir = archiveDir;
@@ -878,7 +879,7 @@ export class RunRecordWriter {
       const record = this.#agents.get(id);
       if (record === undefined || record.status !== "in-progress") return;
       this.#currentAttempts.set(id, { attempt, started_at: startedAt, transcript: null });
-      await this.#recordAgent(record);
+      await this.#publishCurrentAttempt(id);
     });
   }
 
@@ -890,7 +891,7 @@ export class RunRecordWriter {
       if (current?.attempt !== attempt) return;
       await stat(transcriptPath);
       current.transcript = transcriptPath;
-      await this.#recordAgent(this.#agents.get(id)!);
+      await this.#publishCurrentAttempt(id);
     });
   }
 
@@ -904,11 +905,30 @@ export class RunRecordWriter {
       const relativePath = `agents/${padId(id)}/attempt-${padAttempt(attempt)}-1-transcript.codex.jsonl`;
       await mkdir(path.dirname(path.join(this.archiveDir, relativePath)), { recursive: true });
       await appendFile(path.join(this.archiveDir, relativePath), content);
-      await this.#trackFile(relativePath);
+      const digest = this.#liveCodexHashes.get(relativePath) ?? { hash: createHash("sha256"), size: 0 };
+      digest.hash.update(content);
+      digest.size += Buffer.byteLength(content);
+      this.#liveCodexHashes.set(relativePath, digest);
+      this.#files.set(relativePath, {
+        path: relativePath, size: digest.size, sha256: digest.hash.copy().digest("hex")
+      });
       this.#liveCodex.set(`${id}:${attempt}`, relativePath);
-      current.transcript = relativePath;
-      await this.#recordAgent(this.#agents.get(id)!);
+      if (current.transcript !== relativePath) {
+        current.transcript = relativePath;
+        await this.#publishCurrentAttempt(id);
+      } else {
+        await this.#writeManifest();
+      }
     });
+  }
+
+  /** Update live metadata without replaying settled attempt artefact writes. */
+  async #publishCurrentAttempt(id: number): Promise<void> {
+    const relativePath = `agents/${padId(id)}/agent.json`;
+    const record = JSON.parse(await readFile(path.join(this.archiveDir, relativePath), "utf8"));
+    record.current_attempt = { ...this.#currentAttempts.get(id)! };
+    await this.#writeJson(relativePath, record);
+    await this.#writeManifest();
   }
 
   async recordAgent(record: RuntimeAgentRecord): Promise<void> {

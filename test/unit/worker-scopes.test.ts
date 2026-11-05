@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -85,12 +87,19 @@ test("place puts live processes in one delegated scope per group under the launc
 });
 
 test("close stops a scope whose placement was still pending when close began", async () => {
-  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}` });
+  // A busctl that answers slowly holds the placement in flight at the
+  // manager for longer than close() takes to begin, so the race is certain
+  // rather than a matter of timing: close starts while the scope is being
+  // created and must still end it.
+  const dir = await mkdtemp(path.join(tmpdir(), "ensemble-slow-busctl-"));
+  const slowBusctl = path.join(dir, "busctl");
+  await writeFile(slowBusctl, `#!/bin/sh\nsleep 0.3\nexec busctl "$@"\n`, { mode: 0o755 });
+  const scopes = new SystemdWorkerScopes({ slice: await ownSlice(), label: `drain-${process.pid}`, busctlBin: slowBusctl });
   const member = sleeper();
   try {
     // Not awaited: the placement is in flight at the manager when close() begins.
     const pending = scopes.place("late", [member.pid!]);
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await scopes.close();
     const outcome = await pending;
     // A placement the manager had accepted must be stopped by the close
@@ -106,6 +115,7 @@ test("close stops a scope whose placement was still pending when close began", a
   } finally {
     member.kill("SIGKILL");
     await scopes.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

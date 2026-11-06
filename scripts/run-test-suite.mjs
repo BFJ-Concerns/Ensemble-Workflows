@@ -123,6 +123,11 @@ async function finish(code, signal) {
 
 childExited.then(async ([code, signal]) => {
   const streamsClosed = await waitForChildStreamsOrGrace();
+  const streamWaitResultPath =
+    process.env.ENSEMBLE_SUITE_TEST_CONTEXT === "1" ? process.env.ENSEMBLE_SUITE_TEST_STREAM_WAIT_RESULT_PATH : undefined;
+  if (streamWaitResultPath !== undefined) {
+    await writeFile(streamWaitResultPath, streamsClosed ? "closed\n" : "grace\n");
+  }
   if (!streamsClosed) {
     child.stdout.destroy();
     child.stderr.destroy();

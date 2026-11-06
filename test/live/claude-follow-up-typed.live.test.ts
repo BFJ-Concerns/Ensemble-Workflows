@@ -70,7 +70,6 @@ for (const pause of [false, true]) {
       const records = await Promise.all(files.map(async (file) => JSON.parse(await readFile(path.join(archive, file), "utf8")) as AgentRecord));
       records.sort((left, right) => left.session.turn - right.session.turn);
       assert.equal(records.length, 3, "the held session must retain all three turns");
-      assert.deepEqual(records.map((record) => record.status), ["complete", "complete", "complete"]);
       assert.equal(new Set(records.map((record) => record.session.id)).size, 1);
       assert.equal(new Set(records.flatMap((record) => record.transcripts.map((ref) => ref.session_id))).size, 1);
 
@@ -86,11 +85,18 @@ for (const pause of [false, true]) {
         // expansion as text blocks. Count every input, including fragments
         // without our marker, rather than trusting the runtime's turn count.
         const inputs = entries.filter((entry) => entry.type === "user" && typeof entry.message?.content === "string");
-        assert.equal(inputs.length, index + 1, "a follow-up split into extra native submissions");
         // Locate this test's unique input row, never an assistant's echo or
         // an earlier turn's classification. No transcript rows are seeded.
         const start = entries.findIndex((entry) => entry.type === "user" && (JSON.stringify(entry.message?.content) ?? "").includes(marker));
         assert.ok(start >= 0, "the follow-up's input row is missing");
+        // Retain the native arrival rows before assertions, including failures.
+        // The fixture owns their text; credentials and unrelated rows are
+        // not captured. These TAP diagnostics survive a failed delivery check.
+        const rows = entries.slice(start, start + (kind === "command" ? 2 : 1)).filter((entry) => entry.type === "user").map((entry) => {
+          const row = entry as typeof entry & { uuid?: string; timestamp?: string };
+          return { type: row.type, uuid: row.uuid, timestamp: row.timestamp, content: row.message?.content };
+        });
+        console.log(JSON.stringify({ pause, kind, rows }));
         const arrival = followUpArrival(entries, start, prompt);
         assert.equal(arrival.kind, kind, `unexpected native input shape: ${JSON.stringify(arrival).slice(0, 400)}`);
         if (arrival.kind === "command") {
@@ -100,15 +106,9 @@ for (const pause of [false, true]) {
         } else if (arrival.kind === "plain") {
           assert.equal(arrival.exact, true, "the plain input changed in transit");
         }
-        // Test output retains only the asserted native rows and their UUIDs.
-        // The fixture owns their text; credentials and unrelated rows are
-        // not captured. A verifier can retain these TAP diagnostics.
-        const rows = entries.slice(start, start + (kind === "command" ? 2 : 1)).map((entry) => {
-          const row = entry as typeof entry & { uuid?: string; timestamp?: string };
-          return { type: row.type, uuid: row.uuid, timestamp: row.timestamp, content: row.message?.content };
-        });
-        console.log(JSON.stringify({ pause, kind, rows }));
+        assert.equal(inputs.length, index + 1, "a follow-up split into extra native submissions");
       }
+      assert.deepEqual(records.map((record) => record.status), ["complete", "complete", "complete"]);
       if (pause) {
         const events = (await readFile(path.join(directory, "pause.jsonl"), "utf8")).trim().split("\n")
           .map((line) => JSON.parse(line) as { event: string; pid: number; state?: string; before?: string; after?: string; exit?: number; bytes?: number; units?: number; sends?: number });

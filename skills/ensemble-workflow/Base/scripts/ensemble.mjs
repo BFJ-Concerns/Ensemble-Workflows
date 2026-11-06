@@ -23116,6 +23116,9 @@ var EnsembleRuntime = class _EnsembleRuntime {
       await Promise.all(pending);
       try {
         if (result !== void 0) {
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
           if (record !== void 0) {
             this.progress.noteAgentIdentity(agentId, {
               resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),

@@ -1767,6 +1767,11 @@ export class EnsembleRuntime {
       await Promise.all(pending);
       try {
         if (result !== undefined) {
+          // A final transcript read can fail after earlier polls reported usage.
+          // Keep that observed account on the result the archive will consume.
+          if (result.tokenUsageEvents.length === 0 && observedUsage.length > 0) {
+            result.tokenUsageEvents = [...observedUsage];
+          }
           if (record !== undefined) {
             this.progress.noteAgentIdentity(agentId, {
               resolvedModel: result.resolvedModel ?? (record.session === null ? null : record.resolvedModel),

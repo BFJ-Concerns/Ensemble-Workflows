@@ -12,6 +12,7 @@ import { parallel } from "../../src/hooks.js";
 import { EnsembleRuntime } from "../../src/runtime.js";
 import {
   AgentCwdRejectedError,
+  attachFailedTurnResult,
   AgentOptionRejectedError,
   AgentPromptRejectedError,
   AppServerExitedError,
@@ -4821,6 +4822,34 @@ test("streamed usage survives a thrown attempt and accumulates on its retry", as
     assert.deepEqual(observations, [50_000, 60_000]);
     assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
     assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+  } finally { await runtime.close(); }
+});
+
+test("an attached failure with empty usage retains streamed tokens across a retry", async () => {
+  const observations: Array<number | null> = [];
+  let calls = 0;
+  class UsageEngine extends ChainEngine {
+    override createInvocation(): EngineInvocation {
+      return { runAttempt: async (context) => {
+        calls += 1;
+        const amount = calls === 1 ? 50_000 : 10_000;
+        const event = { threadId: "usage", turnId: String(calls), last: usage(amount), total: usage(amount), raw: {} };
+        context.onUsage?.(event);
+        observations.push(runtime.progress.snapshot().agents[0]!.spent);
+        if (calls === 1) {
+          throw attachFailedTurnResult(new Error("final transcript unreadable"), turn("partial answer"));
+        }
+        return { ...turn("answer"), tokenUsageEvents: [event] };
+      } };
+    }
+  }
+  const { runtime, records } = chainRuntime([new UsageEngine("claude", [])], 2);
+  try {
+    assert.equal(await runtime.agent("work", { engine: "claude" }), "answer");
+    assert.deepEqual(observations, [50_000, 60_000]);
+    assert.equal(runtime.progress.snapshot().agents[0]!.spent, 60_000);
+    assert.deepEqual(records.at(-1)?.attempts.map((attempt) => attempt.tokenUsageEvents.reduce((sum, event) => sum + event.last.totalTokens, 0)), [50_000, 10_000]);
+    assert.equal(records.at(-1)?.attempts[0]?.rawOutput, "partial answer");
   } finally { await runtime.close(); }
 });
 

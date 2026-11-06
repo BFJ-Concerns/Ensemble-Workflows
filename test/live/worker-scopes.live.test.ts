@@ -121,6 +121,8 @@ for (const scenario of scenarios) {
         observations.supervisorStartStatus = status;
         supervisor = status.pid;
         assert.ok(supervisor !== null, "the launcher did not start the private supervisor");
+        observations.supervisorBeforeSibling = await knownProcess(supervisor);
+        observations.lifecycleBeforeSibling = await supervisorLifecycle(config);
         // An on-demand supervisor intentionally exits after its last client
         // settles. Keep a sibling outside this run alive so teardown must
         // preserve a supervisor that is still serving another session.
@@ -137,6 +139,9 @@ for (const scenario of scenarios) {
         const siblingGroup = (await readFile(sibling.paths.evidence, "utf8")).trim().slice(3);
         assert.equal(containingSlice(`0::${siblingGroup}`), parent, "the sibling is inside the tested run's slice");
         const afterSibling = await daemonStatus(env);
+        observations.supervisorAfterSibling = afterSibling;
+        observations.originalSupervisorAfterSibling = await knownProcess(supervisor);
+        observations.lifecycleAfterSibling = await supervisorLifecycle(config);
         assert.equal(afterSibling.pid, supervisor, "starting the outside sibling replaced the supervisor");
         supervisorIdentity = await knownProcess(supervisor);
         assert.ok(supervisorIdentity.startTicks !== null, "the supervisor has no readable process identity");
@@ -191,6 +196,13 @@ for (const scenario of scenarios) {
         assert.deepEqual(await knownProcess(supervisor), supervisorIdentity, "roster access changed the supervisor's identity");
       }
     } finally {
+      // Capture before releasing held workers or stopping proof-owned units:
+      // teardown would otherwise hide why the original supervisor ended.
+      if (supervisor !== null) {
+        observations.supervisorBeforeCleanup = await daemonStatus(env);
+        observations.originalSupervisorBeforeCleanup = await knownProcess(supervisor);
+        observations.lifecycleBeforeCleanup = await supervisorLifecycle(config);
+      }
       await Promise.all([...probes, ...follow, sibling].map((probe) => writeFile(probe.paths.release, "")));
       await exec("systemctl", ["--user", "stop", box, slice, ...units]).catch(() => undefined);
       if (run) observations.result = await run.result;
@@ -201,6 +213,23 @@ for (const scenario of scenarios) {
       t.diagnostic(JSON.stringify(observations));
       await rm(root, { recursive: true, force: true });
     }
+  });
+}
+
+/** Only lifecycle fields, never raw daemon messages that might contain private data. */
+async function supervisorLifecycle(config: string): Promise<Record<string, string>[]> {
+  const text = await readFile(path.join(config, "daemon.log"), "utf8").catch(() => "");
+  return text.split("\n").flatMap<Record<string, string>>((line) => {
+    const at = /^\[([^\]]+)\]/.exec(line)?.[1] ?? "unknown";
+    const start = /daemon start .*version=([\w.-]+) pid=(\d+)/.exec(line);
+    if (start) return [{ at, event: "start", version: start[1]!, pid: start[2]! }];
+    const competing = /another daemon is already running \(pid=(\d+), version=([\w.-]+)/.exec(line);
+    if (competing) return [{ at, event: "competing-start", pid: competing[1]!, version: competing[2]! }];
+    const end = /shutting down \(cause=([\w_-]+), uptime=(\d+)s, leases=(\d+), live_workers=(\d+)/.exec(line);
+    if (end) return [{ at, event: "shutdown", cause: end[1]!, uptime: end[2]!, leases: end[3]!, liveWorkers: end[4]! }];
+    const settled = /bg settled ([\w-]+) \(([\w-]+)\)/.exec(line);
+    if (settled) return [{ at, event: "settled", worker: settled[1]!, outcome: settled[2]! }];
+    return [];
   });
 }
 
